@@ -71,8 +71,6 @@
       "Bash(git repack:*)",
       "Bash(git checkout:*)",
       "Bash(more:*)",
-      "Bash(\"C:\\\\Program Files\\\\GitHub CLI\\\\gh.exe\" release create v0.2.0 --title \"Maity Desktop v0.2.0\" --notes \"$\\(cat <<''EOF''\n## 🎉 Maity Desktop v0.2.0\n\n### Grabadora de reuniones con transcripción AI\n\n**Características principales:**\n- 🎤 Grabación de audio \\(micrófono + audio del sistema\\)\n- 📝 Transcripción en tiempo real con Deepgram o Whisper local\n- 🤖 Resúmenes AI con múltiples proveedores \\(Ollama, OpenRouter, etc.\\)\n- 🔍 Detección automática de reuniones \\(Zoom, Teams, Meet, etc.\\)\n- 🌙 Modo oscuro completo\n- 🔒 Privacidad: todo se procesa localmente\n\n### Instalación\n- **Windows:** Descarga `Maity_0.2.0_x64-setup.exe` \\(recomendado\\) o `Maity_0.2.0_x64_en-US.msi`\n\n### Requisitos\n- Windows 10/11 \\(64-bit\\)\n- 8 GB RAM mínimo\n- Micrófono\n\n---\n*Generado con Claude Code*\nEOF\n\\)\" \"target/release/bundle/msi/Maity_0.2.0_x64_en-US.msi\" \"target/release/bundle/nsis/Maity_0.2.0_x64-setup.exe\")",
-      "Bash(\"C:\\\\Program Files\\\\GitHub CLI\\\\gh.exe\" release create v0.2.0 --title \"Maity Desktop v0.2.0\" --notes \"## Maity Desktop v0.2.0\n\n### Grabadora de reuniones con transcripcion AI\n\n**Caracteristicas principales:**\n- Grabacion de audio \\(microfono + audio del sistema\\)\n- Transcripcion en tiempo real con Deepgram o Whisper local\n- Resumenes AI con multiples proveedores \\(Ollama, OpenRouter, etc.\\)\n- Deteccion automatica de reuniones \\(Zoom, Teams, Meet, etc.\\)\n- Modo oscuro completo\n- Privacidad: todo se procesa localmente\n\n### Instalacion\n- **Windows:** Descarga Maity_0.2.0_x64-setup.exe \\(recomendado\\) o Maity_0.2.0_x64_en-US.msi\n\n### Requisitos\n- Windows 10/11 \\(64-bit\\)\n- 8 GB RAM minimo\n- Microfono\n\n---\n*Primera version publica*\" \"target/release/bundle/msi/Maity_0.2.0_x64_en-US.msi\" \"target/release/bundle/nsis/Maity_0.2.0_x64-setup.exe\")",
       "Bash(for dir in framer-motion tiptap remirror radix-ui react-markdown)",
       "Bash(do find \"d:\\\\Proyectos de Kiro\\\\Grbadora_Maity_V3_Meetle\\\\meetily\\\\frontend\\\\node_modules\\\\.pnpm\" -maxdepth 1 -type d -name \"*$dir*\")",
       "Bash(while read d)",
@@ -86,5 +84,9 @@
       "Bash(git -C \"D:\\\\Proyectos de Kiro\\\\Grbadora_Maity_V3_Meetle\\\\meetily\" log --oneline --all --grep=\"backend\\\\|Backend\")",
       "Bash(echo:*)"
     ]
-  }
+  },
+  "enabledMcpjsonServers": [
+    "supabase"
+  ],
+  "enableAllProjectMcpServers": true
 }
