@@ -2,7 +2,7 @@
 
 import { Section as SectionType, Block } from '@/types';
 import { BlockComponent } from './Block';
-import { EditableTitle } from '../EditableTitle';
+import { EditableTitle } from '@/components/shared/EditableTitle';
 import { useState, useRef } from 'react';
 import { motion } from 'framer-motion';
 

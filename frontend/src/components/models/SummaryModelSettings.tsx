@@ -3,8 +3,9 @@
 import { useState, useEffect, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { toast } from 'sonner';
-import { ModelConfig, ModelSettingsModal } from '@/components/ModelSettingsModal';
-import { Switch } from './ui/switch';
+import { ModelSettingsModal } from '@/components/models/ModelSettingsModal';
+import type { ModelConfig } from '@/types/models';
+import { Switch } from '@/components/ui/switch';
 import { useConfig } from '@/contexts/ConfigContext';
 
 interface SummaryModelSettingsProps {

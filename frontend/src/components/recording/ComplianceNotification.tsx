@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useRef } from 'react';
-import { Button } from './ui/button';
+import { Button } from '@/components/ui/button';
 import { AlertTriangle, CheckCircle, X } from 'lucide-react';
 
 interface ComplianceNotificationProps {

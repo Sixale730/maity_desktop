@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { toast } from 'sonner';
-import { TranscriptModelProps } from '@/components/TranscriptSettings';
+import type { TranscriptModelProps } from '@/types/transcript';
 
 export type ModalType =
   | 'modelSettings'

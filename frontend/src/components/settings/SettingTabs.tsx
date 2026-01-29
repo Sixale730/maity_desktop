@@ -1,9 +1,12 @@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { ModelConfig, ModelSettingsModal } from "./ModelSettingsModal"
-import { TranscriptModelProps, TranscriptSettings } from "./TranscriptSettings"
-import { RecordingSettings, RecordingPreferences } from "./RecordingSettings"
-import { About } from "./About"
-import { MeetingDetectorSettings } from "./MeetingDetectorSettings"
+import { ModelSettingsModal } from "@/components/models/ModelSettingsModal"
+import type { ModelConfig } from "@/types/models"
+import { TranscriptSettings } from "@/components/transcript/TranscriptSettings"
+import type { TranscriptModelProps } from "@/types/transcript"
+import { RecordingSettings } from "@/components/recording/RecordingSettings"
+import type { RecordingPreferences } from "@/types/audio"
+import { About } from "@/components/settings/About"
+import { MeetingDetectorSettings } from "@/components/meeting-detection/MeetingDetectorSettings"
 
 interface SettingTabsProps {
     modelConfig: ModelConfig;

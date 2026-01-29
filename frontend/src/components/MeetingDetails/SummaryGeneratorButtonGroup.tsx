@@ -1,6 +1,7 @@
 "use client";
 
-import { ModelConfig, ModelSettingsModal } from '@/components/ModelSettingsModal';
+import { ModelSettingsModal } from '@/components/models/ModelSettingsModal';
+import type { ModelConfig } from '@/types/models';
 import {
   Dialog,
   DialogContent,
@@ -22,7 +23,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { toast } from 'sonner';
 import { useState, useEffect, useRef } from 'react';
 import { isOllamaNotInstalledError } from '@/lib/utils';
-import { BuiltInModelInfo } from '@/lib/builtin-ai';
+import { BuiltInModelInfo } from '@/lib/engines/builtin-ai';
 
 interface SummaryGeneratorButtonGroupProps {
   modelConfig: ModelConfig;

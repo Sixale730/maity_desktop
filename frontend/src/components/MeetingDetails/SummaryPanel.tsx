@@ -1,10 +1,10 @@
 "use client";
 
 import { Summary, SummaryResponse, Transcript } from '@/types';
-import { EditableTitle } from '@/components/EditableTitle';
+import { EditableTitle } from '@/components/shared/EditableTitle';
 import { BlockNoteSummaryView, BlockNoteSummaryViewRef } from '@/components/AISummary/BlockNoteSummaryView';
-import { EmptyStateSummary } from '@/components/EmptyStateSummary';
-import { ModelConfig } from '@/components/ModelSettingsModal';
+import { EmptyStateSummary } from '@/components/shared/EmptyStateSummary';
+import type { ModelConfig } from '@/types/models';
 import { SummaryGeneratorButtonGroup } from './SummaryGeneratorButtonGroup';
 import { SummaryUpdaterButtonGroup } from './SummaryUpdaterButtonGroup';
 import Analytics from '@/lib/analytics';

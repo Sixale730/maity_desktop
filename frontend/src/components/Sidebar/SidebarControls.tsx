@@ -3,7 +3,7 @@
 import React from 'react';
 import { Settings, Mic, Square } from 'lucide-react';
 import { useRouter } from 'next/navigation';
-import Info from '../Info';
+import Info from '@/components/shared/Info';
 
 interface SidebarControlsProps {
   isRecording: boolean;

@@ -2,9 +2,9 @@
 
 import { Transcript } from '@/types';
 import { useEffect, useRef, useState, memo } from 'react';
-import { ConfidenceIndicator } from './ConfidenceIndicator';
-import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
-import { RecordingStatusBar } from './RecordingStatusBar';
+import { ConfidenceIndicator } from '@/components/transcript/ConfidenceIndicator';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { RecordingStatusBar } from '@/components/recording/RecordingStatusBar';
 import { motion, AnimatePresence } from 'framer-motion';
 
 // Speaker indicator component to show who is speaking

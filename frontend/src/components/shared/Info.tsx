@@ -1,8 +1,8 @@
 import React from "react";
 import { Info as InfoIcon } from "lucide-react";
-import { Dialog, DialogContent, DialogTitle, DialogTrigger } from "./ui/dialog";
-import { VisuallyHidden } from "./ui/visually-hidden";
-import { About } from "./About";
+import { Dialog, DialogContent, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { VisuallyHidden } from "@/components/ui/visually-hidden";
+import { About } from "@/components/settings/About";
 
 interface InfoProps {
     isCollapsed: boolean;

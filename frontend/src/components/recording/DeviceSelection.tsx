@@ -3,34 +3,14 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { RefreshCw, Mic, Speaker } from 'lucide-react';
 import { usePlatform } from '@/hooks/usePlatform';
-import { AudioLevelMeter, CompactAudioLevelMeter } from './AudioLevelMeter';
-import { AudioBackendSelector } from './AudioBackendSelector';
+import { AudioLevelMeter, CompactAudioLevelMeter } from '@/components/recording/AudioLevelMeter';
+import { AudioBackendSelector } from '@/components/recording/AudioBackendSelector';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Label } from '@/components/ui/label';
 import Analytics from '@/lib/analytics';
+import type { AudioDevice, SelectedDevices, AudioLevelData, AudioLevelUpdate } from '@/types/audio';
 
-export interface AudioDevice {
-  name: string;
-  device_type: 'Input' | 'Output';
-}
-
-export interface SelectedDevices {
-  micDevice: string | null;
-  systemDevice: string | null;
-}
-
-export interface AudioLevelData {
-  device_name: string;
-  device_type: string;
-  rms_level: number;
-  peak_level: number;
-  is_active: boolean;
-}
-
-export interface AudioLevelUpdate {
-  timestamp: number;
-  levels: AudioLevelData[];
-}
+export type { AudioDevice, SelectedDevices, AudioLevelData, AudioLevelUpdate };
 
 interface DeviceSelectionProps {
   selectedDevices: SelectedDevices;

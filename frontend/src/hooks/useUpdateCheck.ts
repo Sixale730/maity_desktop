@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { updateService, UpdateInfo } from '@/services/updateService';
-import { showUpdateNotification } from '@/components/UpdateNotification';
+import { showUpdateNotification } from '@/components/updates/UpdateNotification';
 
 interface UseUpdateCheckOptions {
   checkOnMount?: boolean;

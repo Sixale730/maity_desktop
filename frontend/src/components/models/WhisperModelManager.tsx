@@ -1,35 +1,39 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { motion, AnimatePresence } from 'framer-motion';
 import { toast } from 'sonner';
 import {
-  ParakeetModelInfo,
+  ModelInfo,
   ModelStatus,
-  ParakeetAPI,
-  getModelDisplayInfo,
-  getModelDisplayName,
-  formatFileSize
-} from '../lib/parakeet';
+  getModelIcon,
+  formatFileSize,
+  getModelPerformanceBadge,
+  isQuantizedModel,
+  getModelTagline,
+  WhisperAPI
+} from '@/lib/engines/whisper';
+import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '@/components/ui/accordion';
 
-interface ParakeetModelManagerProps {
+interface ModelManagerProps {
   selectedModel?: string;
   onModelSelect?: (modelName: string) => void;
   className?: string;
   autoSave?: boolean;
 }
 
-export function ParakeetModelManager({
+export function ModelManager({
   selectedModel,
   onModelSelect,
   className = '',
   autoSave = false
-}: ParakeetModelManagerProps) {
-  const [models, setModels] = useState<ParakeetModelInfo[]>([]);
+}: ModelManagerProps) {
+  const [models, setModels] = useState<ModelInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [initialized, setInitialized] = useState(false);
   const [downloadingModels, setDownloadingModels] = useState<Set<string>>(new Set());
+  const [hasUserSelection, setHasUserSelection] = useState(false);
 
   // Refs for stable callbacks
   const onModelSelectRef = useRef(onModelSelect);
@@ -44,23 +48,68 @@ export function ParakeetModelManager({
     autoSaveRef.current = autoSave;
   }, [onModelSelect, autoSave]);
 
-  // Initialize and load models
+  // Load persisted downloading state from localStorage
+  const getPersistedDownloadingModels = (): Set<string> => {
+    try {
+      const saved = localStorage.getItem('downloading-models');
+      return saved ? new Set<string>(JSON.parse(saved) as string[]) : new Set<string>();
+    } catch {
+      return new Set<string>();
+    }
+  };
+
+  // Persist downloading state to localStorage
+  const updateDownloadingModels = (updater: (prev: Set<string>) => Set<string>) => {
+    setDownloadingModels(prev => {
+      const newSet = updater(prev);
+      localStorage.setItem('downloading-models', JSON.stringify(Array.from(newSet)));
+      return newSet;
+    });
+  };
+
+  // Initialize models
   useEffect(() => {
     if (initialized) return;
 
     const initializeModels = async () => {
       try {
         setLoading(true);
-        await ParakeetAPI.init();
-        const modelList = await ParakeetAPI.getAvailableModels();
-        setModels(modelList);
+        await WhisperAPI.init();
+        const modelList = await WhisperAPI.getAvailableModels();
 
-        // Auto-select first available model if none selected
-        if (!selectedModel) {
-          const recommendedModel = modelList.find(m =>
-            m.name === 'parakeet-tdt-0.6b-v3-int8' && m.status === 'Available'
+        // Apply persisted downloading states
+        const persistedDownloading = getPersistedDownloadingModels();
+        const modelsWithDownloadState = modelList.map(model => {
+          if (persistedDownloading.has(model.name) && model.status !== 'Available') {
+            if (typeof model.status === 'object' && 'Corrupted' in model.status) {
+              updateDownloadingModels(prev => {
+                const newSet = new Set(prev);
+                newSet.delete(model.name);
+                return newSet;
+              });
+              return model;
+            } else if (model.status === 'Missing') {
+              updateDownloadingModels(prev => {
+                const newSet = new Set(prev);
+                newSet.delete(model.name);
+                return newSet;
+              });
+              return model;
+            } else {
+              return { ...model, status: { Downloading: 0 } as ModelStatus };
+            }
+          }
+          return model;
+        });
+
+        setModels(modelsWithDownloadState);
+
+        // Auto-select first available model on initial load
+        if (!hasUserSelection && !selectedModel) {
+          const recommendedModel = modelsWithDownloadState.find(m =>
+            m.name === 'base' && m.status === 'Available'
           );
-          const anyAvailable = modelList.find(m => m.status === 'Available');
+          const anyAvailable = modelsWithDownloadState.find(m => m.status === 'Available');
           const toSelect = recommendedModel || anyAvailable;
 
           if (toSelect && onModelSelect) {
@@ -70,7 +119,7 @@ export function ParakeetModelManager({
 
         setInitialized(true);
       } catch (err) {
-        console.error('Failed to initialize Parakeet:', err);
+        console.error('Failed to initialize Whisper:', err);
         setError(err instanceof Error ? err.message : 'Failed to load models');
         toast.error('Error al cargar modelos de transcripción', {
           description: err instanceof Error ? err.message : 'Error desconocido',
@@ -91,11 +140,11 @@ export function ParakeetModelManager({
     let unlistenError: (() => void) | null = null;
 
     const setupListeners = async () => {
-      console.log('[ParakeetModelManager] Setting up event listeners...');
+      console.log('[ModelManager] Setting up event listeners...');
 
       // Download progress with throttling
       unlistenProgress = await listen<{ modelName: string; progress: number }>(
-        'parakeet-model-download-progress',
+        'model-download-progress',
         (event) => {
           const { modelName, progress } = event.payload;
           const now = Date.now();
@@ -107,7 +156,7 @@ export function ParakeetModelManager({
             Math.abs(progress - throttleData.progress) >= 5;
 
           if (shouldUpdate) {
-            console.log(`[ParakeetModelManager] Progress update for ${modelName}: ${progress}%`);
+            console.log(`[ModelManager] Progress update for ${modelName}: ${progress}%`);
             progressThrottleRef.current.set(modelName, { progress, timestamp: now });
 
             setModels(prevModels =>
@@ -123,11 +172,11 @@ export function ParakeetModelManager({
 
       // Download complete
       unlistenComplete = await listen<{ modelName: string }>(
-        'parakeet-model-download-complete',
+        'model-download-complete',
         (event) => {
           const { modelName } = event.payload;
-          const displayInfo = getModelDisplayInfo(modelName);
-          const displayName = displayInfo?.friendlyName || modelName;
+          const model = models.find(m => m.name === modelName);
+          const displayName = getDisplayName(modelName);
 
           setModels(prevModels =>
             prevModels.map(model =>
@@ -146,7 +195,7 @@ export function ParakeetModelManager({
           // Clean up throttle data
           progressThrottleRef.current.delete(modelName);
 
-          toast.success(`${displayInfo?.icon || '✓'} ¡${displayName} listo!`, {
+          toast.success(`${getModelIcon(model?.accuracy || 'Good')} ¡${displayName} listo!`, {
             description: 'Modelo descargado y listo para usar',
             duration: 4000
           });
@@ -163,11 +212,10 @@ export function ParakeetModelManager({
 
       // Download error
       unlistenError = await listen<{ modelName: string; error: string }>(
-        'parakeet-model-download-error',
+        'model-download-error',
         (event) => {
           const { modelName, error } = event.payload;
-          const displayInfo = getModelDisplayInfo(modelName);
-          const displayName = displayInfo?.friendlyName || modelName;
+          const displayName = getDisplayName(modelName);
 
           setModels(prevModels =>
             prevModels.map(model =>
@@ -201,7 +249,7 @@ export function ParakeetModelManager({
     setupListeners();
 
     return () => {
-      console.log('[ParakeetModelManager] Cleaning up event listeners...');
+      console.log('[ModelManager] Cleaning up event listeners...');
       if (unlistenProgress) unlistenProgress();
       if (unlistenComplete) unlistenComplete();
       if (unlistenError) unlistenError();
@@ -211,7 +259,7 @@ export function ParakeetModelManager({
   const saveModelSelection = async (modelName: string) => {
     try {
       await invoke('api_save_transcript_config', {
-        provider: 'parakeet',
+        provider: 'localWhisper',
         model: modelName,
         apiKey: null
       });
@@ -221,13 +269,12 @@ export function ParakeetModelManager({
   };
 
   const cancelDownload = async (modelName: string) => {
-    const displayInfo = getModelDisplayInfo(modelName);
-    const displayName = displayInfo?.friendlyName || modelName;
+    const displayName = getDisplayName(modelName);
 
     try {
-      await ParakeetAPI.cancelDownload(modelName);
+      await WhisperAPI.cancelDownload(modelName);
 
-      setDownloadingModels(prev => {
+      updateDownloadingModels(prev => {
         const newSet = new Set(prev);
         newSet.delete(modelName);
         return newSet;
@@ -259,11 +306,10 @@ export function ParakeetModelManager({
   const downloadModel = async (modelName: string) => {
     if (downloadingModels.has(modelName)) return;
 
-    const displayInfo = getModelDisplayInfo(modelName);
-    const displayName = displayInfo?.friendlyName || modelName;
+    const displayName = getDisplayName(modelName);
 
     try {
-      setDownloadingModels(prev => new Set([...prev, modelName]));
+      updateDownloadingModels(prev => new Set([...prev, modelName]));
 
       setModels(prevModels =>
         prevModels.map(model =>
@@ -275,13 +321,13 @@ export function ParakeetModelManager({
 
       toast.info(`Descargando ${displayName}...`, {
         description: 'Esto puede tomar unos minutos',
-        duration: 5000  // Auto-dismiss after 5 seconds
+        duration: 5000
       });
 
-      await ParakeetAPI.downloadModel(modelName);
+      await WhisperAPI.downloadModel(modelName);
     } catch (err) {
       console.error('Download failed:', err);
-      setDownloadingModels(prev => {
+      updateDownloadingModels(prev => {
         const newSet = new Set(prev);
         newSet.delete(modelName);
         return newSet;
@@ -297,6 +343,8 @@ export function ParakeetModelManager({
   };
 
   const selectModel = async (modelName: string) => {
+    setHasUserSelection(true);
+
     if (onModelSelect) {
       onModelSelect(modelName);
     }
@@ -305,22 +353,20 @@ export function ParakeetModelManager({
       await saveModelSelection(modelName);
     }
 
-    const displayInfo = getModelDisplayInfo(modelName);
-    const displayName = displayInfo?.friendlyName || modelName;
+    const displayName = getDisplayName(modelName);
     toast.success(`Cambiado a ${displayName}`, {
       duration: 3000
     });
   };
 
   const deleteModel = async (modelName: string) => {
-    const displayInfo = getModelDisplayInfo(modelName);
-    const displayName = displayInfo?.friendlyName || modelName;
+    const displayName = getDisplayName(modelName);
 
     try {
-      await ParakeetAPI.deleteCorruptedModel(modelName);
+      await WhisperAPI.deleteCorruptedModel(modelName);
 
       // Refresh models list
-      const modelList = await ParakeetAPI.getAvailableModels();
+      const modelList = await WhisperAPI.getAvailableModels();
       setModels(modelList);
 
       toast.success(`${displayName} eliminado`, {
@@ -341,10 +387,25 @@ export function ParakeetModelManager({
     }
   };
 
+  const getDisplayName = (modelName: string): string => {
+    const modelNameMapping: { [key: string]: string } = {
+      "base": "Small",
+      "small": "Medium",
+      "large-v3-turbo": "Large"
+    };
+
+    const basicModelNames = ["base", "small", "large-v3-turbo"];
+    if (basicModelNames.includes(modelName)) {
+      return modelNameMapping[modelName] || modelName;
+    }
+    return `Whisper ${modelName}`;
+  };
+
   if (loading) {
     return (
       <div className={`space-y-3 ${className}`}>
         <div className="animate-pulse space-y-3">
+          <div className="h-20 bg-[#e7e7e9] dark:bg-gray-700 rounded-lg"></div>
           <div className="h-20 bg-[#e7e7e9] dark:bg-gray-700 rounded-lg"></div>
           <div className="h-20 bg-[#e7e7e9] dark:bg-gray-700 rounded-lg"></div>
         </div>
@@ -361,42 +422,23 @@ export function ParakeetModelManager({
     );
   }
 
-  const recommendedModel = models.find(m =>
-    m.name === 'parakeet-tdt-0.6b-v3-int8'
-  );
-  const otherModels = models.filter(m =>
-    m.name !== 'parakeet-tdt-0.6b-v3-int8'
-  );
+  const basicModelNames = ["base", "small", "large-v3-turbo"];
+  const basicModels = models.filter(m => basicModelNames.includes(m.name))
+    .sort((a, b) => basicModelNames.indexOf(a.name) - basicModelNames.indexOf(b.name));
+  const advancedModels = models.filter(m => !basicModelNames.includes(m.name));
 
   return (
     <div className={`space-y-3 ${className}`}>
-      {/* Recommended Model */}
-      {recommendedModel && (
-        <ModelCard
-          model={recommendedModel}
-          isSelected={selectedModel === recommendedModel.name}
-          isRecommended={true}
-          onSelect={() => {
-            if (recommendedModel.status === 'Available') {
-              selectModel(recommendedModel.name);
-            }
-          }}
-          onDownload={() => downloadModel(recommendedModel.name)}
-          onCancel={() => cancelDownload(recommendedModel.name)}
-          onDelete={() => deleteModel(recommendedModel.name)}
-          isDownloading={downloadingModels.has(recommendedModel.name)}
-        />
-      )}
-
-      {/* Other Models */}
-      {otherModels.length > 0 && (
-        <div className="space-y-3">
-          {otherModels.map(model => (
+      {/* Basic Models */}
+      <div className="space-y-3">
+        {basicModels.map((model) => {
+          const isRecommended = model.name === 'base';
+          return (
             <ModelCard
               key={model.name}
               model={model}
               isSelected={selectedModel === model.name}
-              isRecommended={false}
+              isRecommended={isRecommended}
               onSelect={() => {
                 if (model.status === 'Available') {
                   selectModel(model.name);
@@ -406,9 +448,43 @@ export function ParakeetModelManager({
               onCancel={() => cancelDownload(model.name)}
               onDelete={() => deleteModel(model.name)}
               isDownloading={downloadingModels.has(model.name)}
+              displayName={getDisplayName(model.name)}
             />
-          ))}
-        </div>
+          );
+        })}
+      </div>
+
+      {/* Advanced Models */}
+      {advancedModels.length > 0 && (
+        <Accordion type="single" collapsible className="w-full">
+          <AccordionItem value="advanced-models">
+            <AccordionTrigger>
+              <span className='text-lg'>Modelos Avanzados</span>
+            </AccordionTrigger>
+            <AccordionContent>
+              <div className="space-y-3 pt-4">
+                {advancedModels.map((model) => (
+                  <ModelCard
+                    key={model.name}
+                    model={model}
+                    isSelected={selectedModel === model.name}
+                    isRecommended={false}
+                    onSelect={() => {
+                      if (model.status === 'Available') {
+                        selectModel(model.name);
+                      }
+                    }}
+                    onDownload={() => downloadModel(model.name)}
+                    onCancel={() => cancelDownload(model.name)}
+                    onDelete={() => deleteModel(model.name)}
+                    isDownloading={downloadingModels.has(model.name)}
+                    displayName={getDisplayName(model.name)}
+                  />
+                ))}
+              </div>
+            </AccordionContent>
+          </AccordionItem>
+        </Accordion>
       )}
 
       {/* Helper text */}
@@ -418,7 +494,7 @@ export function ParakeetModelManager({
           animate={{ opacity: 1, y: 0 }}
           className="text-xs text-[#6a6a6d] dark:text-gray-400 text-center pt-2"
         >
-          Usando {getModelDisplayName(selectedModel)} para transcripción
+          Usando {getDisplayName(selectedModel)} para transcripción
         </motion.div>
       )}
     </div>
@@ -427,7 +503,7 @@ export function ParakeetModelManager({
 
 // Model Card Component
 interface ModelCardProps {
-  model: ParakeetModelInfo;
+  model: ModelInfo;
   isSelected: boolean;
   isRecommended: boolean;
   onSelect: () => void;
@@ -435,6 +511,7 @@ interface ModelCardProps {
   onCancel: () => void;
   onDelete: () => void;
   isDownloading: boolean;
+  displayName: string;
 }
 
 function ModelCard({
@@ -445,13 +522,10 @@ function ModelCard({
   onDownload,
   onCancel,
   onDelete,
-  isDownloading
+  isDownloading,
+  displayName
 }: ModelCardProps) {
   const [isHovered, setIsHovered] = useState(false);
-  const displayInfo = getModelDisplayInfo(model.name);
-  const displayName = displayInfo?.friendlyName || model.name;
-  const icon = displayInfo?.icon || '📦';
-  const tagline = displayInfo?.tagline || model.description || '';
 
   const isAvailable = model.status === 'Available';
   const isMissing = model.status === 'Missing';
@@ -495,7 +569,7 @@ function ModelCard({
           <div className="flex-1">
             {/* Model Name */}
             <div className="flex items-center gap-2 mb-1">
-              <span className="text-2xl">{icon}</span>
+              <span className="text-2xl">{getModelIcon(model.accuracy)}</span>
               <h3 className="font-semibold text-[#000000] dark:text-white">{displayName}</h3>
               {isSelected && isAvailable && (
                 <motion.span
@@ -506,10 +580,37 @@ function ModelCard({
                   ✓
                 </motion.span>
               )}
+              {isQuantizedModel(model.name) && (
+                <span className={`px-2 py-0.5 rounded-full text-xs ${
+                  getModelPerformanceBadge(model.name).color === 'green'
+                    ? 'bg-[#c5fceb] text-[#108c5c]'
+                    : getModelPerformanceBadge(model.name).color === 'orange'
+                      ? 'bg-[#ffe0eb] text-[#990030]'
+                      : 'bg-[#e7e7e9] dark:bg-gray-700 text-[#3a3a3c] dark:text-gray-200'
+                }`}>
+                  {getModelPerformanceBadge(model.name).label}
+                </span>
+              )}
             </div>
 
             {/* Tagline */}
-            <p className="text-sm text-[#4a4a4c] dark:text-gray-300 ml-9">{tagline}</p>
+            <p className="text-sm text-[#4a4a4c] dark:text-gray-300 ml-9">{getModelTagline(model.name, model.speed, model.accuracy)}</p>
+
+            {/* Model Specs */}
+            <div className="flex items-center space-x-4 text-sm text-[#4a4a4c] dark:text-gray-300 ml-9 mt-2">
+              <span className="flex items-center space-x-1">
+                <span>📦</span>
+                <span>{formatFileSize(model.size_mb)}</span>
+              </span>
+              <span className="flex items-center space-x-1">
+                <span>🎯</span>
+                <span>{model.accuracy} precisión</span>
+              </span>
+              <span className="flex items-center space-x-1">
+                <span>⚡</span>
+                <span>{model.speed} procesamiento</span>
+              </span>
+            </div>
           </div>
 
           {/* Status/Action */}

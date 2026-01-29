@@ -1,4 +1,4 @@
-export interface Summary {
+export interface ProcessedSummary {
     key_points: string[];
     action_items: string[];
     decisions: string[];
@@ -6,8 +6,8 @@ export interface Summary {
     participants?: string[];
 }
 
-export interface SummaryResponse {
-    summary: Summary;
+export interface ProcessSummaryResponse {
+    summary: ProcessedSummary;
     raw_summary?: string;
 }
 

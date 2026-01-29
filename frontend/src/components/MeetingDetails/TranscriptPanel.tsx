@@ -1,8 +1,8 @@
 "use client";
 
 import { Transcript, TranscriptSegmentData } from '@/types';
-import { TranscriptView } from '@/components/TranscriptView';
-import { VirtualizedTranscriptView } from '@/components/VirtualizedTranscriptView';
+import { TranscriptView } from '@/components/transcript/TranscriptView';
+import { VirtualizedTranscriptView } from '@/components/transcript/VirtualizedTranscriptView';
 import { TranscriptButtonGroup } from './TranscriptButtonGroup';
 import { useMemo } from 'react';
 

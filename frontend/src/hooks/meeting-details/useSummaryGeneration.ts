@@ -1,12 +1,12 @@
 import { useState, useCallback } from 'react';
 import { Transcript, Summary } from '@/types';
-import { ModelConfig } from '@/components/ModelSettingsModal';
+import type { ModelConfig } from '@/types/models';
 import { CurrentMeeting, useSidebar } from '@/components/Sidebar/SidebarProvider';
 import { invoke as invokeTauri } from '@tauri-apps/api/core';
 import { toast } from 'sonner';
 import Analytics from '@/lib/analytics';
 import { isOllamaNotInstalledError } from '@/lib/utils';
-import { BuiltInModelInfo } from '@/lib/builtin-ai';
+import { BuiltInModelInfo } from '@/lib/engines/builtin-ai';
 
 type SummaryStatus = 'idle' | 'processing' | 'summarizing' | 'regenerating' | 'completed' | 'error';
 

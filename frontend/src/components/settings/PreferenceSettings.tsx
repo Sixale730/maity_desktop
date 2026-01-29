@@ -1,11 +1,11 @@
 "use client"
 
 import { useEffect, useState, useRef } from "react"
-import { Switch } from "./ui/switch"
+import { Switch } from "@/components/ui/switch"
 import { FolderOpen } from "lucide-react"
 import { invoke } from "@tauri-apps/api/core"
 import Analytics from "@/lib/analytics"
-import AnalyticsConsentSwitch from "./AnalyticsConsentSwitch"
+import AnalyticsConsentSwitch from "@/components/analytics/AnalyticsConsentSwitch"
 import { useConfig, NotificationSettings } from "@/contexts/ConfigContext"
 
 export function PreferenceSettings() {

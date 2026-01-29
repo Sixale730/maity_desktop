@@ -5,10 +5,11 @@ import { ArrowLeft, Settings2, Mic, Database as DatabaseIcon, SparkleIcon } from
 import { useRouter } from 'next/navigation';
 import { invoke } from '@tauri-apps/api/core';
 import { motion } from 'framer-motion';
-import { TranscriptSettings, TranscriptModelProps } from '@/components/TranscriptSettings';
-import { RecordingSettings } from '@/components/RecordingSettings';
-import { PreferenceSettings } from '@/components/PreferenceSettings';
-import { SummaryModelSettings } from '@/components/SummaryModelSettings';
+import { TranscriptSettings } from '@/components/transcript/TranscriptSettings';
+import type { TranscriptModelProps } from '@/types/transcript';
+import { RecordingSettings } from '@/components/recording/RecordingSettings';
+import { PreferenceSettings } from '@/components/settings/PreferenceSettings';
+import { SummaryModelSettings } from '@/components/models/SummaryModelSettings';
 import { useConfig } from '@/contexts/ConfigContext';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 

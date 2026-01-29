@@ -1,8 +1,8 @@
-import { ModelConfig } from "@/components/ModelSettingsModal";
-import { PreferenceSettings } from "@/components/PreferenceSettings";
-import { DeviceSelection } from "@/components/DeviceSelection";
-import { LanguageSelection } from "@/components/LanguageSelection";
-import { TranscriptSettings } from "@/components/TranscriptSettings";
+import type { ModelConfig } from "@/types/models";
+import { PreferenceSettings } from "@/components/settings/PreferenceSettings";
+import { DeviceSelection } from "@/components/recording/DeviceSelection";
+import { LanguageSelection } from "@/components/transcript/LanguageSelection";
+import { TranscriptSettings } from "@/components/transcript/TranscriptSettings";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { toast } from "sonner";
 import { useConfig } from "@/contexts/ConfigContext";

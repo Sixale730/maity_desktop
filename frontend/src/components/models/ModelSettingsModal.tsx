@@ -1,9 +1,9 @@
 import { useState, useEffect, useRef } from 'react';
-import { useSidebar } from './Sidebar/SidebarProvider';
+import { useSidebar } from '@/components/Sidebar/SidebarProvider';
 import { invoke } from '@tauri-apps/api/core';
 import { Button } from '@/components/ui/button';
 import { useOllamaDownload } from '@/contexts/OllamaDownloadContext';
-import { BuiltInModelManager } from '@/components/BuiltInModelManager';
+import { BuiltInModelManager } from '@/components/models/BuiltInModelManager';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { useConfig } from '@/contexts/ConfigContext';
@@ -18,30 +18,12 @@ import { Switch } from '@/components/ui/switch';
 import { Lock, Unlock, Eye, EyeOff } from 'lucide-react';
 import { cn, isOllamaNotInstalledError } from '@/lib/utils';
 import { toast } from 'sonner';
-import { OllamaSettings } from './ModelSettings/OllamaSettings';
-import { CustomOpenAISettings } from './ModelSettings/CustomOpenAISettings';
+import { OllamaSettings } from '@/components/models/ModelSettings/OllamaSettings';
+import { CustomOpenAISettings } from '@/components/models/ModelSettings/CustomOpenAISettings';
+import type { ModelConfig } from '@/types/models';
+import type { OllamaModel } from '@/types/models';
 
-export interface ModelConfig {
-  provider: 'ollama' | 'groq' | 'claude' | 'openai' | 'openrouter' | 'builtin-ai' | 'custom-openai';
-  model: string;
-  whisperModel: string;
-  apiKey?: string | null;
-  ollamaEndpoint?: string | null;
-  // Custom OpenAI fields
-  customOpenAIEndpoint?: string | null;
-  customOpenAIModel?: string | null;
-  customOpenAIApiKey?: string | null;
-  maxTokens?: number | null;
-  temperature?: number | null;
-  topP?: number | null;
-}
-
-interface OllamaModel {
-  name: string;
-  id: string;
-  size: string;
-  modified: string;
-}
+export type { ModelConfig };
 
 interface OpenRouterModel {
   id: string;

@@ -5,10 +5,10 @@ import { ChevronDown, ChevronRight, File, Settings, ChevronLeftCircle, ChevronRi
 import { useRouter, usePathname } from 'next/navigation';
 import { useSidebar } from './SidebarProvider';
 import type { CurrentMeeting } from '@/components/Sidebar/SidebarProvider';
-import { ConfirmationModal } from '../ConfirmationModel/confirmation-modal';
-import { ModelConfig } from '@/components/ModelSettingsModal';
-import { SettingTabs } from '../SettingTabs';
-import { TranscriptModelProps } from '@/components/TranscriptSettings';
+import { ConfirmationModal } from '../ConfirmationModal/confirmation-modal';
+import type { ModelConfig } from '@/types/models';
+import { SettingTabs } from '@/components/settings/SettingTabs';
+import type { TranscriptModelProps } from '@/types/transcript';
 import Analytics from '@/lib/analytics';
 import { invoke } from '@tauri-apps/api/core';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
@@ -23,11 +23,11 @@ import {
 } from "@/components/ui/dialog"
 import { VisuallyHidden } from "@/components/ui/visually-hidden"
 
-import { MessageToast } from '../MessageToast';
-import Logo from '../Logo';
-import Info from '../Info';
-import { ComplianceNotification } from '../ComplianceNotification';
-import { Input } from '../ui/input';
+import { MessageToast } from '@/components/shared/MessageToast';
+import Logo from '@/components/shared/Logo';
+import Info from '@/components/shared/Info';
+import { ComplianceNotification } from '@/components/recording/ComplianceNotification';
+import { Input } from '@/components/ui/input';
 import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupInput } from '../ui/input-group';
 import { SidebarControls } from './SidebarControls';
 

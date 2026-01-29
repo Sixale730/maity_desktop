@@ -2,17 +2,13 @@ import React, { useState, useEffect } from 'react';
 import { Switch } from '@/components/ui/switch';
 import { FolderOpen } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
-import { DeviceSelection, SelectedDevices } from '@/components/DeviceSelection';
+import { DeviceSelection } from '@/components/recording/DeviceSelection';
+import type { SelectedDevices } from '@/types/audio';
+import type { RecordingPreferences } from '@/types/audio';
 import Analytics from '@/lib/analytics';
 import { toast } from 'sonner';
 
-export interface RecordingPreferences {
-  save_folder: string;
-  auto_save: boolean;
-  file_format: string;
-  preferred_mic_device: string | null;
-  preferred_system_device: string | null;
-}
+export type { RecordingPreferences };
 
 interface RecordingSettingsProps {
   onSave?: (preferences: RecordingPreferences) => void;

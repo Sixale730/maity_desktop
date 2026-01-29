@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { Summary, Block } from '@/types';
 import { Section } from './Section';
-import { EditableTitle } from '../EditableTitle';
+import { EditableTitle } from '@/components/shared/EditableTitle';
 import { ContextMenu } from './ContextMenu';
 import { ExclamationTriangleIcon, CheckCircleIcon, ClipboardDocumentCheckIcon } from '@heroicons/react/24/outline';
 

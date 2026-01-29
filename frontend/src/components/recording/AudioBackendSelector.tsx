@@ -1,12 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { Info } from 'lucide-react';
+import type { BackendInfo } from '@/types/audio';
 
-export interface BackendInfo {
-  id: string;
-  name: string;
-  description: string;
-}
+export type { BackendInfo };
 
 interface AudioBackendSelectorProps {
   currentBackend?: string;

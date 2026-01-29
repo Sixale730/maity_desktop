@@ -1,5 +1,5 @@
-import { VirtualizedTranscriptView } from '@/components/VirtualizedTranscriptView';
-import { PermissionWarning } from '@/components/PermissionWarning';
+import { VirtualizedTranscriptView } from '@/components/transcript/VirtualizedTranscriptView';
+import { PermissionWarning } from '@/components/recording/PermissionWarning';
 import { Button } from '@/components/ui/button';
 import { ButtonGroup } from '@/components/ui/button-group';
 import { Copy, GlobeIcon } from 'lucide-react';

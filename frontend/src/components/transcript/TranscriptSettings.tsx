@@ -1,20 +1,16 @@
 import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
-import { Input } from './ui/input';
-import { Button } from './ui/button';
-import { Label } from './ui/label';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Input } from '@/components/ui/input';
+import { Button } from '@/components/ui/button';
+import { Label } from '@/components/ui/label';
 import { Eye, EyeOff, Lock, Unlock, Save, Loader2, CheckCircle } from 'lucide-react';
-import { ModelManager } from './WhisperModelManager';
-import { ParakeetModelManager } from './ParakeetModelManager';
+import { ModelManager } from '@/components/models/WhisperModelManager';
+import { ParakeetModelManager } from '@/components/models/ParakeetModelManager';
 import { toast } from 'sonner';
+import type { TranscriptModelProps } from '@/types/transcript';
 
-
-export interface TranscriptModelProps {
-    provider: 'localWhisper' | 'parakeet' | 'deepgram' | 'elevenLabs' | 'groq' | 'openai';
-    model: string;
-    apiKey?: string | null;
-}
+export type { TranscriptModelProps };
 
 export interface TranscriptSettingsProps {
     transcriptModelConfig: TranscriptModelProps;

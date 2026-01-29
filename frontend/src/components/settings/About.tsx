@@ -2,13 +2,13 @@ import React, { useState, useEffect } from "react";
 import { invoke } from '@tauri-apps/api/core';
 import { getVersion } from '@tauri-apps/api/app';
 import Image from 'next/image';
-import AnalyticsConsentSwitch from "./AnalyticsConsentSwitch";
-import { UpdateDialog } from "./UpdateDialog";
+import AnalyticsConsentSwitch from "@/components/analytics/AnalyticsConsentSwitch";
+import { UpdateDialog } from "@/components/updates/UpdateDialog";
 import { updateService, UpdateInfo } from '@/services/updateService';
-import { Button } from './ui/button';
+import { Button } from '@/components/ui/button';
 import { Loader2, CheckCircle2 } from 'lucide-react';
 import { toast } from 'sonner';
-import { LogExporter } from './LogExporter';
+import { LogExporter } from '@/components/settings/LogExporter';
 
 
 export function About() {

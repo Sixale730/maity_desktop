@@ -4,7 +4,10 @@
 
 # dependencies
 /node_modules
-**/models
+**/models/*.bin
+**/models/*.gguf
+**/models/*.onnx
+/frontend/models/
 /.pnp
 .pnp.*
 .yarn/*

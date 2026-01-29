@@ -6,40 +6,11 @@
  */
 
 import { invoke } from '@tauri-apps/api/core';
-import { TranscriptModelProps } from '@/components/TranscriptSettings';
+import type { TranscriptModelProps } from '@/types/transcript';
+import type { ModelConfig, CustomOpenAIConfig } from '@/types/models';
+import type { DevicePreferences } from '@/types/audio';
 
-export interface ModelConfig {
-  provider: 'ollama' | 'groq' | 'claude' | 'openrouter' | 'openai' | 'builtin-ai' | 'custom-openai';
-  model: string;
-  whisperModel: string;
-  apiKey?: string | null;
-  ollamaEndpoint?: string | null;
-  // Custom OpenAI fields (only populated when provider is 'custom-openai')
-  customOpenAIEndpoint?: string | null;
-  customOpenAIModel?: string | null;
-  customOpenAIApiKey?: string | null;
-  maxTokens?: number | null;
-  temperature?: number | null;
-  topP?: number | null;
-}
-
-export interface CustomOpenAIConfig {
-  endpoint: string;
-  apiKey: string | null;
-  model: string;
-  maxTokens: number | null;
-  temperature: number | null;
-  topP: number | null;
-}
-
-export interface RecordingPreferences {
-  preferred_mic_device: string | null;
-  preferred_system_device: string | null;
-}
-
-export interface LanguagePreference {
-  language: string;
-}
+export type { ModelConfig, CustomOpenAIConfig };
 
 /**
  * Configuration Service
@@ -66,8 +37,8 @@ export class ConfigService {
    * Get saved audio device preferences
    * @returns Promise with { preferred_mic_device, preferred_system_device }
    */
-  async getRecordingPreferences(): Promise<RecordingPreferences> {
-    return invoke<RecordingPreferences>('get_recording_preferences');
+  async getRecordingPreferences(): Promise<DevicePreferences> {
+    return invoke<DevicePreferences>('get_recording_preferences');
   }
 
   /**

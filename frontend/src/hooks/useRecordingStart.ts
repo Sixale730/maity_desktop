@@ -6,7 +6,7 @@ import { useConfig } from '@/contexts/ConfigContext';
 import { useRecordingState, RecordingStatus } from '@/contexts/RecordingStateContext';
 import { recordingService } from '@/services/recordingService';
 import Analytics from '@/lib/analytics';
-import { showRecordingNotification } from '@/lib/recordingNotification';
+import { showRecordingNotification } from '@/components/recording/recordingNotification';
 import { toast } from 'sonner';
 
 interface UseRecordingStartReturn {
