@@ -52,10 +52,7 @@ Required packages:
 - python-multipart
 - aiosqlite
 
-3. Initialize the database:
-```bash
-python -c "from app.db import init_db; import asyncio; asyncio.run(init_db())"
-```
+3. The database auto-initializes when `DatabaseManager()` is first instantiated, so no manual setup is needed.
 
 ### Running the Server
 
