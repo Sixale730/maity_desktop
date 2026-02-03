@@ -34,7 +34,7 @@ Set-ExecutionPolicy RemoteSigned -Scope CurrentUser
 
 | Fase | Que hace |
 |------|----------|
-| **1. Deteccion** | Verifica si Git, Node.js (>= 18), pnpm (>= 9), Rust (>= 1.77), Python (>= 3.8), VS Build Tools 2022 (C++) y CMake estan instalados. |
+| **1. Deteccion** | Verifica si Git, Node.js (>= 18), pnpm (>= 9), Rust (>= 1.77), Python (>= 3.8), VS Build Tools 2022 (C++), CMake y LLVM estan instalados. |
 | **2. Instalacion** | Lista las herramientas faltantes y pide confirmacion antes de instalarlas via `winget` (o `npm` para pnpm). |
 | **3. Configuracion** | Ejecuta `pnpm install` en `frontend/` y crea un virtual environment en `backend/venv` con las dependencias de `requirements.txt` y `requirements-dev.txt`. |
 | **4. Verificacion** | Re-detecta todas las herramientas y muestra un resumen con estado OK/FAIL para cada una. |
@@ -75,6 +75,19 @@ Ejecutar cada comando en PowerShell (abrir como administrador si algun instalado
 | Python | >= 3.8 | `winget install --id Python.Python.3.12 -e` |
 | VS Build Tools 2022 | con carga C++ | ver comando abajo |
 | CMake | cualquiera | `winget install --id Kitware.CMake -e` |
+| LLVM | >= 14 | `winget install --id LLVM.LLVM -e` |
+
+**LLVM/Clang** — requerido para compilar el motor de transcripcion local:
+
+El proyecto usa `whisper-rs` para transcripcion local con Whisper.cpp. Esta dependencia usa `bindgen` para generar bindings de Rust a C++, y `bindgen` necesita `libclang.dll` para parsear el codigo C/C++. Sin LLVM instalado, el build de Cargo falla con errores como:
+
+```
+error: failed to run custom build command for `whisper-rs-sys`
+...
+Unable to find libclang
+```
+
+> **Nota**: LLVM es necesario incluso si solo vas a usar transcripcion en la nube (Deepgram), porque `whisper-rs` actualmente es una dependencia obligatoria del proyecto.
 
 **VS Build Tools 2022** (con carga de trabajo C++ incluida):
 
@@ -99,6 +112,7 @@ pnpm --version         # 9.x.x o superior
 rustc --version        # rustc 1.77.x o superior
 python --version       # Python 3.8+ (recomendado 3.12)
 cmake --version        # cmake version 3.x.x
+clang --version        # clang version 14.x.x o superior
 ```
 
 Para verificar VS Build Tools, confirmar que existe el directorio:
@@ -198,5 +212,7 @@ Para mas detalles, consultar:
 | `pnpm install` falla con errores de Node | Version de Node.js < 18 | Verificar con `node --version` y actualizar si es necesario. |
 | Error de permisos al ejecutar scripts `.ps1` | Politica de ejecucion restrictiva | Ejecutar `Set-ExecutionPolicy RemoteSigned -Scope CurrentUser`. |
 | `pnpm run tauri:dev` falla en la compilacion de Rust | Falta CMake o VS Build Tools | Verificar ambas herramientas estan instaladas (ver tabla de requisitos). |
+| Error `Unable to find libclang` o `failed to run custom build command for whisper-rs-sys` | LLVM no instalado | Instalar LLVM con `winget install LLVM.LLVM`. Cerrar y reabrir la terminal. Verificar con `clang --version`. |
+| `clang` instalado pero `libclang` no encontrado | LLVM no esta en PATH | Agregar `C:\Program Files\LLVM\bin` al PATH del sistema. Alternativamente, definir la variable de entorno `LIBCLANG_PATH=C:\Program Files\LLVM\bin`. |
 | El backend no inicia (error de modulo) | Virtual environment no activado o dependencias no instaladas | Activar venv (`.\venv\Scripts\Activate.ps1`) y ejecutar `pip install -r requirements.txt`. |
 | FFmpeg no encontrado al codificar grabaciones | FFmpeg no esta en PATH | Instalar FFmpeg (`winget install Gyan.FFmpeg`) o colocarlo en el directorio de trabajo. |
