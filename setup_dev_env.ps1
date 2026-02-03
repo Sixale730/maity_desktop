@@ -190,6 +190,21 @@ if (Test-CommandExists "cmake") {
     $missing += "cmake"
 }
 
+# LLVM/Clang (required by whisper-rs-sys bindgen)
+$llvmLibclang = "C:\Program Files\LLVM\bin\libclang.dll"
+if (Test-Path $llvmLibclang) {
+    if (Test-CommandExists "clang") {
+        $clangRaw = (clang --version 2>&1 | Select-Object -First 1) | Out-String
+        $clangVer = Get-VersionFromString $clangRaw
+        Write-Status "LLVM/Clang $clangVer" "OK"
+    } else {
+        Write-Status "LLVM/Clang (libclang.dll found)" "OK"
+    }
+} else {
+    Write-Status "LLVM/Clang - not found (required by whisper-rs)" "FAIL"
+    $missing += "llvm"
+}
+
 # ── Phase 2: Install missing prerequisites ──────────────────────────────────
 
 if ($missing.Count -gt 0) {
@@ -206,6 +221,7 @@ if ($missing.Count -gt 0) {
             "python"       { Write-Host "    - Python 3.12          (via winget: Python.Python.3.12)" }
             "vsbuildtools" { Write-Host "    - VS Build Tools 2022  (via winget: Microsoft.VisualStudio.2022.BuildTools + C++ workload)" }
             "cmake"        { Write-Host "    - CMake                (via winget: Kitware.CMake)" }
+            "llvm"         { Write-Host "    - LLVM/Clang           (via winget: LLVM.LLVM)" }
         }
     }
     Write-Host ""
@@ -270,6 +286,11 @@ if ($missing.Count -gt 0) {
                 winget install --id Kitware.CMake -e --accept-source-agreements --accept-package-agreements
                 Refresh-PathEnv
             }
+            "llvm" {
+                Write-Status "Installing LLVM..." "INSTALL"
+                winget install --id LLVM.LLVM -e --accept-source-agreements --accept-package-agreements
+                Refresh-PathEnv
+            }
         }
     }
 
@@ -286,6 +307,16 @@ Write-Header "Phase 3: Configuring project"
 
 # Refresh PATH one more time before project setup
 Refresh-PathEnv
+
+# Set LIBCLANG_PATH if not already set (required by whisper-rs-sys bindgen)
+$llvmBinPath = "C:\Program Files\LLVM\bin"
+if ((Test-Path "$llvmBinPath\libclang.dll") -and (-not $env:LIBCLANG_PATH)) {
+    [System.Environment]::SetEnvironmentVariable("LIBCLANG_PATH", $llvmBinPath, "User")
+    $env:LIBCLANG_PATH = $llvmBinPath
+    Write-Status "Set LIBCLANG_PATH=$llvmBinPath" "OK"
+} elseif ($env:LIBCLANG_PATH) {
+    Write-Status "LIBCLANG_PATH already set to $env:LIBCLANG_PATH" "OK"
+}
 
 # Resolve python command (may have changed after install)
 $pythonCmd = $null
@@ -428,6 +459,17 @@ if (Test-CommandExists "cmake") {
     $v = Get-VersionFromString ((cmake --version 2>&1 | Select-Object -First 1) | Out-String)
     Write-Status "CMake $v" "OK"
 } else { Write-Status "CMake - not found" "FAIL" }
+
+# LLVM
+$llvmLibclang = "C:\Program Files\LLVM\bin\libclang.dll"
+if (Test-Path $llvmLibclang) {
+    if (Test-CommandExists "clang") {
+        $v = Get-VersionFromString ((clang --version 2>&1 | Select-Object -First 1) | Out-String)
+        Write-Status "LLVM/Clang $v" "OK"
+    } else {
+        Write-Status "LLVM/Clang (libclang.dll present)" "OK"
+    }
+} else { Write-Status "LLVM/Clang - not found" "FAIL" }
 
 # Frontend deps
 if (Test-Path $nodeModulesDir) {
