@@ -11,32 +11,10 @@ function getSupabaseClient(): SupabaseClient {
     return supabaseInstance
   }
 
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
-  const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
-
-  // During build time (SSG), env vars may not be available
-  // Only throw in browser where the client is actually needed
-  if (!supabaseUrl || !supabaseAnonKey) {
-    if (isBrowser) {
-      console.error(
-        'Supabase environment variables are not configured. ' +
-        'Set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY.'
-      )
-    }
-    // Return a stub client that will fail gracefully
-    // This allows the build to complete; runtime errors will surface in the browser
-    supabaseInstance = createClient(
-      'https://placeholder.supabase.co',
-      'placeholder-key',
-      {
-        auth: {
-          persistSession: false,
-          autoRefreshToken: false,
-        },
-      }
-    )
-    return supabaseInstance
-  }
+  // Credenciales de producción de Supabase (seguras para cliente - la seguridad viene de RLS)
+  // Las variables de entorno pueden usarse para override en desarrollo
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://nhlrtflkxoojvhbyocet.supabase.co'
+  const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5obHJ0ZmxreG9vanZoYnlvY2V0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTIxNjY3MTUsImV4cCI6MjA2Nzc0MjcxNX0.u7FqcLjO1sVxy-L3yrHp0JkC0WKv9xCQxFBwsVixqbw'
 
   supabaseInstance = createClient(supabaseUrl, supabaseAnonKey, {
     auth: {
