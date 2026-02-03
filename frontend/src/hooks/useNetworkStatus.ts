@@ -16,16 +16,22 @@ interface UseNetworkStatusOptions {
   checkBackend?: boolean
 }
 
+// In Tauri's WebView2 on Windows, navigator.onLine incorrectly returns false
+// because the webview loads from localhost without real network context.
+// Desktop apps always have system-level network access, so we bypass that check.
+const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
+
 /**
  * Hook to monitor network connectivity status
  *
  * Monitors both browser online/offline events and backend reachability.
+ * In Tauri (desktop), navigator.onLine is unreliable and is bypassed.
  */
 export function useNetworkStatus(options: UseNetworkStatusOptions = {}): NetworkStatus {
   const { checkInterval = 30000, checkBackend = true } = options
 
   const [status, setStatus] = useState<NetworkStatus>({
-    isOnline: typeof navigator !== 'undefined' ? navigator.onLine : true,
+    isOnline: isTauri ? true : (typeof navigator !== 'undefined' ? navigator.onLine : true),
     isBackendReachable: true,
     lastChecked: null,
   })
@@ -62,6 +68,11 @@ export function useNetworkStatus(options: UseNetworkStatusOptions = {}): Network
     }
 
     const handleOffline = () => {
+      if (isTauri) {
+        // Ignore offline events in Tauri - navigator.onLine is unreliable in WebView2
+        console.log('[useNetworkStatus] Ignoring offline event in Tauri (unreliable in WebView2)')
+        return
+      }
       console.log('[useNetworkStatus] Browser reports offline')
       setStatus(prev => ({
         ...prev,
