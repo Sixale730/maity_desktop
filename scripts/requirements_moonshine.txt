@@ -1,0 +1,7 @@
+# Dependencias para probar Moonshine base-es
+# Instalar con: pip install -r requirements_moonshine.txt
+
+useful-moonshine>=0.1.0
+onnxruntime>=1.16.0
+numpy>=1.24.0
+soundfile>=0.12.0

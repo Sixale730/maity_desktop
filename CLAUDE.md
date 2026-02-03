@@ -503,6 +503,12 @@ $env:RUST_LOG="debug"; ./clean_run_windows.bat
 **Integración Whisper**:
 - [frontend/src-tauri/src/whisper_engine/whisper_engine.rs](frontend/src-tauri/src/whisper_engine/whisper_engine.rs) - Gestión de modelos Whisper y transcripción
 
+**Scripts de Evaluación**:
+- [scripts/test_moonshine_spanish.py](scripts/test_moonshine_spanish.py) - Script para probar Moonshine base-es en español
+- [scripts/generate_test_audio.py](scripts/generate_test_audio.py) - Grabador de audios de prueba para evaluación
+- [scripts/requirements_moonshine.txt](scripts/requirements_moonshine.txt) - Dependencias Python para pruebas de Moonshine
+- [scripts/moonshine_evaluation_results.md](scripts/moonshine_evaluation_results.md) - Plantilla para documentar resultados de evaluación
+
 ---
 
 ## Protocolo Guardian - Modo Protegido
