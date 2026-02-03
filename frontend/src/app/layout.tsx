@@ -26,6 +26,7 @@ import { OfflineIndicator } from '@/components/shared/OfflineIndicator'
 import { AuthProvider, useAuth } from '@/contexts/AuthContext'
 import { LoginScreen } from '@/components/Auth'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { ThemeProvider } from '@/contexts/ThemeContext'
 
 // Create a client outside the component to avoid re-creating it on every render
 const queryClient = new QueryClient({
@@ -59,12 +60,12 @@ function AuthGate({ children }: { children: React.ReactNode }) {
 
   // SSG hydration placeholder
   if (!mounted) {
-    return <div className="flex flex-col h-screen bg-[#f5f5f6] dark:bg-gray-900" />
+    return <div className="flex flex-col h-screen bg-background" />
   }
 
   // Auth loading state
   if (isLoading) {
-    return <div className="flex flex-col h-screen bg-[#f5f5f6] dark:bg-gray-900" />
+    return <div className="flex flex-col h-screen bg-background" />
   }
 
   // Not authenticated — show login
@@ -193,13 +194,15 @@ export default function RootLayout({
       <body className={`${sourceSans3.variable} font-sans antialiased`}>
         <ErrorBoundary>
           <QueryClientProvider client={queryClient}>
-            <AnalyticsProvider>
-              <AuthProvider>
-                <AuthGate>
-                  <AppContent>{children}</AppContent>
-                </AuthGate>
-              </AuthProvider>
-            </AnalyticsProvider>
+            <ThemeProvider>
+              <AnalyticsProvider>
+                <AuthProvider>
+                  <AuthGate>
+                    <AppContent>{children}</AppContent>
+                  </AuthGate>
+                </AuthProvider>
+              </AnalyticsProvider>
+            </ThemeProvider>
           </QueryClientProvider>
         </ErrorBoundary>
         <Toaster position="bottom-center" richColors closeButton />

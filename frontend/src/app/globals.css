@@ -135,6 +135,66 @@
     --chart-4: 341 100% 70%;           /* Rosa más claro */
     --chart-5: 233 88% 77%;            /* Azul más claro */
   }
+
+  /* === PALETA GRIS NEUTRO (default) === */
+  .dark.theme-neutral {
+    --background: 0 0% 7%;              /* #121212 */
+    --foreground: 0 0% 98%;             /* #fafafa */
+    --card: 0 0% 10%;                   /* #1a1a1a */
+    --card-foreground: 0 0% 98%;
+    --popover: 0 0% 10%;
+    --popover-foreground: 0 0% 98%;
+    --secondary: 0 0% 13%;              /* #212121 */
+    --secondary-foreground: 0 0% 98%;
+    --muted: 0 0% 15%;                  /* #262626 */
+    --muted-foreground: 0 0% 64%;       /* #a3a3a3 */
+    --border: 0 0% 18%;                 /* #2e2e2e */
+    --input: 0 0% 18%;
+    /* Mantener rosa como acento */
+    --primary: 341 100% 50%;
+    --accent: 341 100% 50%;
+    --ring: 341 100% 50%;
+  }
+
+  /* === PALETA GRIS FRÍO (tinte azul) === */
+  .dark.theme-cool {
+    --background: 240 20% 6%;           /* #0f0f14 */
+    --foreground: 220 15% 95%;          /* #f0f2f5 */
+    --card: 240 15% 9%;                 /* #16161e */
+    --card-foreground: 220 15% 95%;
+    --popover: 240 15% 9%;
+    --popover-foreground: 220 15% 95%;
+    --secondary: 240 12% 15%;           /* #1e1e2e */
+    --secondary-foreground: 220 15% 95%;
+    --muted: 240 10% 18%;               /* #252536 */
+    --muted-foreground: 230 10% 60%;    /* #9498b0 */
+    --border: 240 12% 20%;              /* #2a2a3d */
+    --input: 240 12% 20%;
+    /* Mantener rosa como acento */
+    --primary: 341 100% 50%;
+    --accent: 341 100% 50%;
+    --ring: 341 100% 50%;
+  }
+
+  /* === PALETA GRIS CÁLIDO (tinte marrón) === */
+  .dark.theme-warm {
+    --background: 30 10% 7%;            /* #141210 */
+    --foreground: 40 10% 95%;           /* #f5f3f0 */
+    --card: 30 8% 9%;                   /* #1a1816 */
+    --card-foreground: 40 10% 95%;
+    --popover: 30 8% 9%;
+    --popover-foreground: 40 10% 95%;
+    --secondary: 30 8% 12%;             /* #211f1c */
+    --secondary-foreground: 40 10% 95%;
+    --muted: 30 6% 15%;                 /* #282522 */
+    --muted-foreground: 35 8% 58%;      /* #9e968a */
+    --border: 30 8% 16%;                /* #2e2a26 */
+    --input: 30 8% 16%;
+    /* Mantener rosa como acento */
+    --primary: 341 100% 50%;
+    --accent: 341 100% 50%;
+    --ring: 341 100% 50%;
+  }
 }
 
 @layer base {

@@ -2,7 +2,8 @@
 
 import { useEffect, useState, useRef } from "react"
 import { Switch } from "@/components/ui/switch"
-import { FolderOpen, LogOut } from "lucide-react"
+import { FolderOpen, LogOut, Palette } from "lucide-react"
+import { ThemeSelector } from "@/components/settings/ThemeSelector"
 import { invoke } from "@tauri-apps/api/core"
 import Analytics from "@/lib/analytics"
 import AnalyticsConsentSwitch from "@/components/analytics/AnalyticsConsentSwitch"
@@ -151,64 +152,46 @@ export function PreferenceSettings() {
 
   return (
     <div className="space-y-6">
+      {/* Theme Section */}
+      <div className="bg-card rounded-lg border border-border p-6 shadow-sm">
+        <div className="flex items-center gap-2 mb-4">
+          <Palette className="w-5 h-5 text-foreground" />
+          <h3 className="text-lg font-semibold text-foreground">Tema</h3>
+        </div>
+        <p className="text-sm text-muted-foreground mb-4">
+          Elige la paleta de colores para la interfaz
+        </p>
+        <ThemeSelector />
+      </div>
+
       {/* Notifications Section */}
-      <div className="bg-white dark:bg-gray-800 rounded-lg border border-[#e7e7e9] dark:border-gray-700 p-6 shadow-sm">
+      <div className="bg-card rounded-lg border border-border p-6 shadow-sm">
         <div className="flex items-center justify-between">
           <div>
-            <h3 className="text-lg font-semibold text-[#000000] dark:text-white mb-2">Notificaciones</h3>
-            <p className="text-sm text-[#4a4a4c] dark:text-gray-300">Habilitar o deshabilitar notificaciones de inicio y fin de reunión</p>
+            <h3 className="text-lg font-semibold text-foreground mb-2">Notificaciones</h3>
+            <p className="text-sm text-muted-foreground">Habilitar o deshabilitar notificaciones de inicio y fin de reunión</p>
           </div>
           <Switch checked={notificationsEnabledValue} onCheckedChange={setNotificationsEnabled} />
         </div>
       </div>
 
       {/* Data Storage Locations Section */}
-      <div className="bg-white dark:bg-gray-800 rounded-lg border border-[#e7e7e9] dark:border-gray-700 p-6 shadow-sm">
-        <h3 className="text-lg font-semibold text-[#000000] dark:text-white mb-4">Ubicaciones de Almacenamiento de Datos</h3>
-        <p className="text-sm text-[#4a4a4c] dark:text-gray-300 mb-6">
+      <div className="bg-card rounded-lg border border-border p-6 shadow-sm">
+        <h3 className="text-lg font-semibold text-foreground mb-4">Ubicaciones de Almacenamiento de Datos</h3>
+        <p className="text-sm text-muted-foreground mb-6">
           Ver y acceder donde Maity almacena tus datos
         </p>
 
         <div className="space-y-4">
-          {/* Database Location */}
-          {/* <div className="p-4 border rounded-lg bg-[#f5f5f6]">
-            <div className="font-medium mb-2">Database</div>
-            <div className="text-sm text-[#4a4a4c] dark:text-gray-300 mb-3 break-all font-mono text-xs">
-              {storageLocations?.database || 'Loading...'}
-            </div>
-            <button
-              onClick={() => handleOpenFolder('database')}
-              className="flex items-center gap-2 px-3 py-2 text-sm border border-[#d0d0d3] rounded-md hover:bg-[#e7e7e9] transition-colors"
-            >
-              <FolderOpen className="w-4 h-4" />
-              Open Folder
-            </button>
-          </div> */}
-
-          {/* Models Location */}
-          {/* <div className="p-4 border rounded-lg bg-[#f5f5f6]">
-            <div className="font-medium mb-2">Whisper Models</div>
-            <div className="text-sm text-[#4a4a4c] dark:text-gray-300 mb-3 break-all font-mono text-xs">
-              {storageLocations?.models || 'Loading...'}
-            </div>
-            <button
-              onClick={() => handleOpenFolder('models')}
-              className="flex items-center gap-2 px-3 py-2 text-sm border border-[#d0d0d3] rounded-md hover:bg-[#e7e7e9] transition-colors"
-            >
-              <FolderOpen className="w-4 h-4" />
-              Open Folder
-            </button>
-          </div> */}
-
           {/* Recordings Location */}
-          <div className="p-4 border dark:border-gray-600 rounded-lg bg-[#f5f5f6] dark:bg-gray-700">
-            <div className="font-medium mb-2 dark:text-white">Grabaciones de Reuniones</div>
-            <div className="text-sm text-[#4a4a4c] dark:text-gray-300 mb-3 break-all font-mono text-xs">
+          <div className="p-4 border border-border rounded-lg bg-secondary">
+            <div className="font-medium mb-2 text-foreground">Grabaciones de Reuniones</div>
+            <div className="text-sm text-muted-foreground mb-3 break-all font-mono text-xs">
               {storageLocations?.recordings || 'Cargando...'}
             </div>
             <button
               onClick={() => handleOpenFolder('recordings')}
-              className="flex items-center gap-2 px-3 py-2 text-sm border border-[#d0d0d3] dark:border-gray-600 rounded-md hover:bg-[#e7e7e9] dark:hover:bg-gray-600 transition-colors dark:text-gray-200"
+              className="flex items-center gap-2 px-3 py-2 text-sm border border-border rounded-md hover:bg-muted transition-colors text-foreground"
             >
               <FolderOpen className="w-4 h-4" />
               Abrir Carpeta
@@ -216,27 +199,27 @@ export function PreferenceSettings() {
           </div>
         </div>
 
-        <div className="mt-4 p-3 bg-[#f0f2fe] dark:bg-blue-900/30 rounded-md">
-          <p className="text-xs text-[#1e2a6e] dark:text-blue-300">
+        <div className="mt-4 p-3 bg-[#ff0050]/10 rounded-md">
+          <p className="text-xs text-[#ff0050]">
             <strong>Nota:</strong> La base de datos y los modelos se almacenan juntos en el directorio de datos de tu aplicación para una gestión unificada.
           </p>
         </div>
       </div>
 
       {/* Analytics Section */}
-      <div className="bg-white dark:bg-gray-800 rounded-lg border border-[#e7e7e9] dark:border-gray-700 p-6 shadow-sm">
+      <div className="bg-card rounded-lg border border-border p-6 shadow-sm">
         <AnalyticsConsentSwitch />
       </div>
 
       {/* Account Section */}
-      <div className="bg-white dark:bg-gray-800 rounded-lg border border-[#e7e7e9] dark:border-gray-700 p-6 shadow-sm">
-        <h3 className="text-lg font-semibold text-[#000000] dark:text-white mb-4">Cuenta</h3>
-        <p className="text-sm text-[#4a4a4c] dark:text-gray-300 mb-4">
+      <div className="bg-card rounded-lg border border-border p-6 shadow-sm">
+        <h3 className="text-lg font-semibold text-foreground mb-4">Cuenta</h3>
+        <p className="text-sm text-muted-foreground mb-4">
           Cerrar sesión de tu cuenta de Google
         </p>
         <button
           onClick={signOut}
-          className="flex items-center gap-2 px-4 py-2 text-sm text-red-600 dark:text-red-400 border border-red-300 dark:border-red-600 rounded-md hover:bg-red-50 dark:hover:bg-red-900/30 transition-colors"
+          className="flex items-center gap-2 px-4 py-2 text-sm text-[#ff0050] border border-[#ff0050]/50 rounded-md hover:bg-[#ff0050]/10 transition-colors"
         >
           <LogOut className="w-4 h-4" />
           Cerrar sesión

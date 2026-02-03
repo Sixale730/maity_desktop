@@ -62,19 +62,19 @@ export default function SettingsPage() {
   }, [activeTab]);
 
   return (
-    <div className="h-screen bg-[#f5f5f6] dark:bg-gray-900 flex flex-col">
+    <div className="h-screen bg-background flex flex-col">
       {/* Fixed Header */}
-      <div className="sticky top-0 z-10 bg-[#f5f5f6] dark:bg-gray-900 border-b border-[#e7e7e9] dark:border-gray-700">
+      <div className="sticky top-0 z-10 bg-background border-b border-border">
         <div className="max-w-6xl mx-auto px-8 py-6">
           <div className="flex items-center gap-4">
             <button
               onClick={() => router.back()}
-              className="flex items-center gap-2 text-[#4a4a4c] dark:text-gray-300 hover:text-[#000000] dark:hover:text-white transition-colors"
+              className="flex items-center gap-2 text-muted-foreground hover:text-foreground transition-colors"
             >
               <ArrowLeft className="w-5 h-5" />
               <span>Volver</span>
             </button>
-            <h1 className="text-3xl font-bold text-[#000000] dark:text-white">Configuración</h1>
+            <h1 className="text-3xl font-bold text-foreground">Configuración</h1>
           </div>
         </div>
       </div>
@@ -84,7 +84,7 @@ export default function SettingsPage() {
         <div className="max-w-6xl mx-auto p-8 pt-6">
           {/* Tabs */}
           <Tabs value={activeTab} onValueChange={setActiveTab}>
-            <TabsList className="bg-transparent relative rounded-none border-b border-[#e7e7e9] dark:border-gray-700 p-0 h-auto">
+            <TabsList className="bg-transparent relative rounded-none border-b border-border p-0 h-auto">
               {TABS.map((tab, index) => {
                 const Icon = tab.icon;
                 return (
@@ -92,7 +92,7 @@ export default function SettingsPage() {
                     key={tab.value}
                     value={tab.value}
                     ref={el => { tabRefs.current[index] = el }}
-                    className="flex items-center gap-2 px-6 py-4 bg-transparent rounded-none border-0 data-[state=active]:bg-transparent data-[state=active]:text-blue-600 dark:data-[state=active]:text-blue-400 data-[state=active]:shadow-none text-[#4a4a4c] dark:text-gray-400 hover:text-[#000000] dark:hover:text-white relative z-10"
+                    className="flex items-center gap-2 px-6 py-4 bg-transparent rounded-none border-0 data-[state=active]:bg-transparent data-[state=active]:text-[#ff0050] data-[state=active]:shadow-none text-muted-foreground hover:text-foreground relative z-10"
                   >
                     <Icon className="w-4 h-4" />
                     {tab.label}
@@ -101,7 +101,7 @@ export default function SettingsPage() {
               })}
 
               <motion.div
-                className="absolute bottom-0 z-20 h-0.5 bg-[#3a4ac3]"
+                className="absolute bottom-0 z-20 h-0.5 bg-[#ff0050]"
                 layoutId="underline"
                 style={{ left: underlineStyle.left, width: underlineStyle.width }}
                 transition={{ type: 'spring', stiffness: 400, damping: 40 }}
