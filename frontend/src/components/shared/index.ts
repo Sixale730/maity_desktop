@@ -6,4 +6,4 @@ export { EmptyStateSummary } from './EmptyStateSummary';
 export { OfflineIndicator } from './OfflineIndicator';
 export { default as Logo } from './Logo';
 export { default as Info } from './Info';
-export { DownloadProgressToast } from './DownloadProgressToast';
+export { useDownloadProgressToast, DownloadProgressToastProvider } from './DownloadProgressToast';
