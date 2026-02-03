@@ -106,6 +106,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, [])
 
+  // Ref to avoid re-subscription of auth listener when callback changes
+  const fetchOrCreateMaityUserRef = useRef(fetchOrCreateMaityUser)
+  useEffect(() => {
+    fetchOrCreateMaityUserRef.current = fetchOrCreateMaityUser
+  }, [fetchOrCreateMaityUser])
+
   // Handle a deep-link callback URL containing OAuth tokens
   const handleDeepLinkCallback = useCallback(async (url: string) => {
     if (!url.startsWith('maity://auth/callback')) return
@@ -136,7 +142,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         console.log('[Auth] Session established successfully')
         setSession(data.session)
         setUser(data.session.user)
-        await fetchOrCreateMaityUser(data.session.user)
+        await fetchOrCreateMaityUserRef.current(data.session.user)
       }
     } catch (err) {
       console.error('[Auth] Error setting session:', err)
@@ -144,36 +150,42 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     } finally {
       isHandlingCallback.current = false
     }
-  }, [fetchOrCreateMaityUser])
+  }, [])
 
   // Initialize auth: restore session and subscribe to changes
   useEffect(() => {
     let authSubscription: { data: { subscription: { unsubscribe: () => void } } } | null = null
+    let isMounted = true
 
     const initialize = async () => {
       try {
         // Restore existing session
         const { data: { session: existingSession } } = await supabase.auth.getSession()
-        if (existingSession) {
+        if (existingSession && isMounted) {
           console.log('[Auth] Restored existing session')
           setSession(existingSession)
           setUser(existingSession.user)
-          await fetchOrCreateMaityUser(existingSession.user)
+          await fetchOrCreateMaityUserRef.current(existingSession.user)
         }
       } catch (err) {
         console.error('[Auth] Failed to restore session:', err)
       } finally {
-        setIsLoading(false)
+        if (isMounted) {
+          setIsLoading(false)
+        }
       }
 
       // Subscribe to auth state changes (token refresh, sign-out, etc.)
       authSubscription = supabase.auth.onAuthStateChange(async (event, newSession) => {
-        console.log('[Auth] Auth state changed:', event)
+        console.log('[Auth] Auth state changed:', event, 'session:', !!newSession)
+
+        if (!isMounted) return
+
         setSession(newSession)
         setUser(newSession?.user ?? null)
 
         if (newSession?.user) {
-          await fetchOrCreateMaityUser(newSession.user)
+          await fetchOrCreateMaityUserRef.current(newSession.user)
         } else {
           setMaityUser(null)
         }
@@ -183,9 +195,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     initialize()
 
     return () => {
+      isMounted = false
       authSubscription?.data.subscription.unsubscribe()
     }
-  }, [fetchOrCreateMaityUser])
+  }, []) // Sin dependencias - solo se ejecuta una vez al montar
 
   // Listen for auth tokens from the localhost OAuth server (primary on Windows)
   useEffect(() => {
@@ -212,7 +225,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             console.log('[Auth] Session established via localhost OAuth server')
             setSession(data.session)
             setUser(data.session.user)
-            await fetchOrCreateMaityUser(data.session.user)
+            await fetchOrCreateMaityUserRef.current(data.session.user)
           }
         } catch (err) {
           console.error('[Auth] Error setting session from localhost tokens:', err)
@@ -226,7 +239,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return () => {
       unlistenTokens.then((fn) => fn())
     }
-  }, [fetchOrCreateMaityUser])
+  }, [])
 
   // Listen for PKCE auth code from the localhost OAuth server
   useEffect(() => {
@@ -250,7 +263,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             console.log('[Auth] Session established via PKCE code exchange')
             setSession(data.session)
             setUser(data.session.user)
-            await fetchOrCreateMaityUser(data.session.user)
+            await fetchOrCreateMaityUserRef.current(data.session.user)
           }
         } catch (err) {
           console.error('[Auth] Error exchanging PKCE code:', err)
@@ -264,7 +277,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return () => {
       unlistenCode.then((fn) => fn())
     }
-  }, [fetchOrCreateMaityUser])
+  }, [])
 
   // Listen for deep-link events as fallback (macOS: onOpenUrl, Windows: single-instance event)
   useEffect(() => {
@@ -338,15 +351,28 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [])
 
   const signOut = useCallback(async () => {
+    console.log('[Auth] signOut called')
     try {
-      await supabase.auth.signOut()
+      // Reset flags BEFORE calling signOut to ensure clean state
+      isHandlingCallback.current = false
+      setError(null)
+
+      const { error } = await supabase.auth.signOut()
+      if (error) {
+        console.error('[Auth] Supabase signOut error:', error)
+        // Fallback: limpiar estado manualmente si Supabase falla
+        setSession(null)
+        setUser(null)
+        setMaityUser(null)
+      } else {
+        console.log('[Auth] Signed out successfully, waiting for listener to update state')
+      }
+    } catch (err) {
+      console.error('[Auth] Error signing out:', err)
+      // Fallback: limpiar estado manualmente en caso de excepción
       setSession(null)
       setUser(null)
       setMaityUser(null)
-      setError(null)
-      console.log('[Auth] Signed out successfully')
-    } catch (err) {
-      console.error('[Auth] Error signing out:', err)
     }
   }, [])
 
