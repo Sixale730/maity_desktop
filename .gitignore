@@ -2,6 +2,9 @@
 
 /experiments
 
+# Claude Code local settings
+.claude/settings.local.json
+
 # dependencies
 /node_modules
 **/models/*.bin
