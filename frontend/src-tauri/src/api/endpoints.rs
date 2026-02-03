@@ -850,21 +850,34 @@ pub async fn debug_backend_connection<R: Runtime>(app: AppHandle<R>) -> Result<S
 
 #[tauri::command]
 pub async fn open_external_url(url: String) -> Result<(), String> {
-    use std::process::Command;
-
-    let result = if cfg!(target_os = "windows") {
-        Command::new("cmd").args(&["/C", "start", &url]).output()
-    } else if cfg!(target_os = "macos") {
-        Command::new("open").arg(&url).output()
-    } else {
-        // Linux and other Unix-like systems
-        Command::new("xdg-open").arg(&url).output()
-    };
-
+    let result = open_url_platform(&url);
     match result {
         Ok(_) => Ok(()),
         Err(e) => Err(format!("Failed to open URL: {}", e)),
     }
+}
+
+#[cfg(target_os = "windows")]
+fn open_url_platform(url: &str) -> std::io::Result<std::process::Output> {
+    use std::os::windows::process::CommandExt;
+    use std::process::Command;
+    // raw_arg bypasses Rust's quote escaping, so cmd.exe sees: start "" "url"
+    // "" = required window title, "url" = quoted URL so & is not a cmd separator
+    Command::new("cmd")
+        .raw_arg(format!("/C start \"\" \"{}\"", url))
+        .output()
+}
+
+#[cfg(target_os = "macos")]
+fn open_url_platform(url: &str) -> std::io::Result<std::process::Output> {
+    use std::process::Command;
+    Command::new("open").arg(url).output()
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+fn open_url_platform(url: &str) -> std::io::Result<std::process::Output> {
+    use std::process::Command;
+    Command::new("xdg-open").arg(url).output()
 }
 
 // ===== CUSTOM OPENAI API COMMANDS =====
