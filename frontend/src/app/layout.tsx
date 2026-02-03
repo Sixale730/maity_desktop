@@ -23,6 +23,8 @@ import { RecordingPostProcessingProvider } from '@/contexts/RecordingPostProcess
 import { ErrorBoundary } from '@/components/shared/ErrorBoundary'
 import { MeetingDetectionDialog } from '@/components/meeting-detection/MeetingDetectionDialog'
 import { OfflineIndicator } from '@/components/shared/OfflineIndicator'
+import { AuthProvider, useAuth } from '@/contexts/AuthContext'
+import { LoginScreen } from '@/components/Auth'
 
 const sourceSans3 = Source_Sans_3({
   subsets: ['latin'],
@@ -32,22 +34,44 @@ const sourceSans3 = Source_Sans_3({
 
 // export { metadata } from './metadata'
 
-export default function RootLayout({
-  children,
-}: {
-  children: React.ReactNode
-}) {
+/**
+ * AuthGate: renders LoginScreen when not authenticated, otherwise renders children.
+ * Must be used inside AuthProvider.
+ */
+function AuthGate({ children }: { children: React.ReactNode }) {
+  const { isAuthenticated, isLoading } = useAuth()
   const [mounted, setMounted] = useState(false)
-  const [showOnboarding, setShowOnboarding] = useState(false)
-  const [onboardingCompleted, setOnboardingCompleted] = useState(false)
 
-  // Hydration guard: wait until client-side mount before rendering content
-  // that depends on browser APIs (localStorage, window, navigator).
-  // SSG renders with mounted=false → placeholder. Client hydrates with
-  // mounted=false → same placeholder (match!). Then useEffect sets mounted=true.
   useEffect(() => {
     setMounted(true)
   }, [])
+
+  // SSG hydration placeholder
+  if (!mounted) {
+    return <div className="flex flex-col h-screen bg-[#f5f5f6] dark:bg-gray-900" />
+  }
+
+  // Auth loading state
+  if (isLoading) {
+    return <div className="flex flex-col h-screen bg-[#f5f5f6] dark:bg-gray-900" />
+  }
+
+  // Not authenticated — show login
+  if (!isAuthenticated) {
+    return <LoginScreen />
+  }
+
+  // Authenticated — render app content
+  return <>{children}</>
+}
+
+/**
+ * AppContent: the main app shell (onboarding check, sidebar, etc.)
+ * Rendered only when the user is authenticated.
+ */
+function AppContent({ children }: { children: React.ReactNode }) {
+  const [showOnboarding, setShowOnboarding] = useState(false)
+  const [onboardingCompleted, setOnboardingCompleted] = useState(false)
 
   useEffect(() => {
     // Check onboarding status first
@@ -79,6 +103,7 @@ export default function RootLayout({
       return () => document.removeEventListener('contextmenu', handleContextMenu);
     }
   }, []);
+
   useEffect(() => {
     // Listen for tray recording toggle request
     const unlisten = listen('request-recording-toggle', () => {
@@ -107,51 +132,62 @@ export default function RootLayout({
   }
 
   return (
+    <RecordingStateProvider>
+      <TranscriptProvider>
+        <ConfigProvider>
+          <OllamaDownloadProvider>
+            <OnboardingProvider>
+              <UpdateCheckProvider>
+                <SidebarProvider>
+                  <TooltipProvider>
+                    <RecordingPostProcessingProvider>
+                      {/* Download progress toast provider - listens for background downloads */}
+                      <DownloadProgressToastProvider />
+
+                      {/* Meeting detection dialog - listens for meeting-detected events */}
+                      <MeetingDetectionDialog />
+
+                      {/* Show onboarding or main app */}
+                      {showOnboarding ? (
+                        <OnboardingFlow onComplete={handleOnboardingComplete} />
+                      ) : (
+                        <div className="flex flex-col h-screen">
+                          {/* Offline indicator at the top */}
+                          <OfflineIndicator />
+                          <div className="flex flex-1 overflow-hidden">
+                            <Sidebar />
+                            <MainContent>{children}</MainContent>
+                          </div>
+                        </div>
+                      )}
+                    </RecordingPostProcessingProvider>
+                  </TooltipProvider>
+                </SidebarProvider>
+              </UpdateCheckProvider>
+            </OnboardingProvider>
+          </OllamaDownloadProvider>
+        </ConfigProvider>
+      </TranscriptProvider>
+    </RecordingStateProvider>
+  )
+}
+
+export default function RootLayout({
+  children,
+}: {
+  children: React.ReactNode
+}) {
+  return (
     <html lang="en" className="dark">
       <body className={`${sourceSans3.variable} font-sans antialiased`}>
         <ErrorBoundary>
-        <AnalyticsProvider>
-          <RecordingStateProvider>
-            <TranscriptProvider>
-              <ConfigProvider>
-                <OllamaDownloadProvider>
-                  <OnboardingProvider>
-                    <UpdateCheckProvider>
-                      <SidebarProvider>
-                        <TooltipProvider>
-                          <RecordingPostProcessingProvider>
-                            {/* Download progress toast provider - listens for background downloads */}
-                            <DownloadProgressToastProvider />
-
-                            {/* Meeting detection dialog - listens for meeting-detected events */}
-                            <MeetingDetectionDialog />
-
-                            {/* Show placeholder until hydration completes, then onboarding or main app */}
-                            {!mounted ? (
-                              <div className="flex flex-col h-screen bg-[#f5f5f6] dark:bg-gray-900" />
-                            ) : showOnboarding ? (
-                              <OnboardingFlow onComplete={handleOnboardingComplete} />
-                            ) : (
-                              <div className="flex flex-col h-screen">
-                                {/* Offline indicator at the top */}
-                                <OfflineIndicator />
-                                <div className="flex flex-1 overflow-hidden">
-                                  <Sidebar />
-                                  <MainContent>{children}</MainContent>
-                                </div>
-                              </div>
-                            )}
-                          </RecordingPostProcessingProvider>
-                        </TooltipProvider>
-                      </SidebarProvider>
-                    </UpdateCheckProvider>
-                  </OnboardingProvider>
-
-                </OllamaDownloadProvider>
-              </ConfigProvider>
-            </TranscriptProvider>
-          </RecordingStateProvider>
-        </AnalyticsProvider>
+          <AnalyticsProvider>
+            <AuthProvider>
+              <AuthGate>
+                <AppContent>{children}</AppContent>
+              </AuthGate>
+            </AuthProvider>
+          </AnalyticsProvider>
         </ErrorBoundary>
         <Toaster position="bottom-center" richColors closeButton />
       </body>

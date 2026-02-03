@@ -38,6 +38,7 @@ pub(crate) use perf_trace;
 pub mod analytics;
 pub mod api;
 pub mod audio;
+pub mod auth_server;
 pub mod console_utils;
 pub mod database;
 pub mod logging;
@@ -57,7 +58,7 @@ use audio::{list_audio_devices, AudioDevice, trigger_audio_permission};
 use log::{error as log_error, info as log_info};
 use notifications::commands::NotificationManagerState;
 use std::sync::Arc;
-use tauri::{AppHandle, Manager, Runtime};
+use tauri::{AppHandle, Emitter, Manager, Runtime};
 use tokio::sync::RwLock;
 
 static RECORDING_FLAG: AtomicBool = AtomicBool::new(false);
@@ -410,6 +411,17 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_deep_link::init())
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            // On Windows/Linux, deep-link URLs arrive as CLI args on a new instance.
+            // The single-instance plugin (with deep-link feature) forwards them here.
+            log::info!("Single instance callback: argv={:?}", argv);
+            // Forward deep-link URLs as a Tauri event so the frontend can handle them
+            if let Some(url) = argv.iter().find(|arg| arg.starts_with("maity://")) {
+                log::info!("Deep link received via single-instance: {}", url);
+                let _ = app.emit("deep-link-received", url.clone());
+            }
+        }))
         .manage(whisper_engine::parallel_commands::ParallelProcessorState::new())
         .manage(Arc::new(RwLock::new(
             None::<notifications::manager::NotificationManager<tauri::Wry>>,
@@ -419,6 +431,17 @@ pub fn run() {
         .manage(Arc::new(RwLock::new(meeting_detector::MeetingDetector::new())) as meeting_detector::commands::MeetingDetectorState)
         .setup(|_app| {
             log::info!("Application setup complete");
+
+            // Register deep-link scheme for OAuth callbacks
+            #[cfg(desktop)]
+            {
+                use tauri_plugin_deep_link::DeepLinkExt;
+                if let Err(e) = _app.deep_link().register("maity") {
+                    log::error!("Failed to register deep link scheme 'maity': {}", e);
+                } else {
+                    log::info!("Deep link scheme 'maity' registered successfully");
+                }
+            }
 
             // Initialize system tray
             if let Err(e) = tray::create_tray(_app.handle()) {
@@ -807,6 +830,8 @@ pub fn run() {
             logging::commands::clear_old_logs,
             // Health check
             health_check,
+            // OAuth localhost server
+            auth_server::start_oauth_server,
             // System settings commands
             #[cfg(target_os = "macos")]
             utils::open_system_settings,
