@@ -357,6 +357,16 @@ $env:RUST_LOG="debug"; ./clean_run_windows.bat
 - Toggle de Consola: Integrado en la UI de la app (ícono de consola)
 - Ver logs de Rust: Revisar salida del terminal
 
+**ChunkLoadError Recovery** (modo desarrollo):
+- Un script inline en `layout.tsx` se ejecuta **antes** de que React cargue
+- Detecta `ChunkLoadError`, `Loading chunk failed`, y errores de dynamic imports
+- Recarga automáticamente la página después de 2 segundos
+- Máximo 3 intentos de recarga antes de detener (evita loops infinitos)
+- Los logs en consola muestran `[ChunkErrorRecovery]` con el estado de recuperación
+- Si persiste después de 3 intentos, reiniciar el servidor dev: `pnpm run tauri:dev`
+- Implementación: Script inline con `next/script` strategy `beforeInteractive` en `layout.tsx`
+- Componente backup: `frontend/src/components/shared/ChunkErrorRecovery.tsx`
+
 ### Depuración del Backend
 
 **Ver Logs de API**:
@@ -544,6 +554,7 @@ El sistema de transcripción en la nube usa Deepgram como proveedor. **Los usuar
 **Componentes UI**:
 - [frontend/src/app/page.tsx](frontend/src/app/page.tsx) - Interfaz principal de grabación
 - [frontend/src/components/Sidebar/SidebarProvider.tsx](frontend/src/components/Sidebar/SidebarProvider.tsx) - Gestión de estado global
+- [frontend/src/components/shared/ChunkErrorRecovery.tsx](frontend/src/components/shared/ChunkErrorRecovery.tsx) - Recuperación automática de ChunkLoadError en desarrollo
 
 **Feature: Gamificación** (Volcán de progreso):
 - [frontend/src/features/gamification/components/GamifiedDashboard.tsx](frontend/src/features/gamification/components/GamifiedDashboard.tsx) - Dashboard principal gamificado

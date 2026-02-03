@@ -10,7 +10,7 @@ const nextConfig = {
   assetPrefix: '/',
 
   // Add webpack configuration for Tauri
-  webpack: (config, { isServer }) => {
+  webpack: (config, { isServer, dev }) => {
     if (!isServer) {
       config.resolve.fallback = {
         ...config.resolve.fallback,
@@ -19,6 +19,16 @@ const nextConfig = {
         os: false,
       };
     }
+
+    // Increase chunk loading timeout in development to prevent ChunkLoadError
+    // when Tauri webview opens before Next.js finishes compiling
+    if (dev && !isServer) {
+      config.output = {
+        ...config.output,
+        chunkLoadTimeout: 60000, // 60 seconds (default is ~120s but can timeout earlier)
+      };
+    }
+
     return config;
   },
 }

@@ -21,12 +21,14 @@ import { DownloadProgressToastProvider } from '@/components/shared/DownloadProgr
 import { UpdateCheckProvider } from '@/components/updates/UpdateCheckProvider'
 import { RecordingPostProcessingProvider } from '@/contexts/RecordingPostProcessingProvider'
 import { ErrorBoundary } from '@/components/shared/ErrorBoundary'
+import { ChunkErrorRecovery } from '@/components/shared/ChunkErrorRecovery'
 import { MeetingDetectionDialog } from '@/components/meeting-detection/MeetingDetectionDialog'
 import { OfflineIndicator } from '@/components/shared/OfflineIndicator'
 import { AuthProvider, useAuth } from '@/contexts/AuthContext'
 import { LoginScreen } from '@/components/Auth'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ThemeProvider } from '@/contexts/ThemeContext'
+import Script from 'next/script'
 
 // Create a client outside the component to avoid re-creating it on every render
 const queryClient = new QueryClient({
@@ -184,6 +186,65 @@ function AppContent({ children }: { children: React.ReactNode }) {
   )
 }
 
+// Inline script to handle ChunkLoadError before React loads
+const chunkErrorRecoveryScript = `
+(function() {
+  if (typeof window === 'undefined') return;
+
+  var MAX_RETRIES = 3;
+  var RETRY_DELAY = 2000;
+  var STORAGE_KEY = 'chunkErrorRetryCount';
+  var CLEAR_DELAY = 30000;
+
+  // Get current retry count
+  var retryCount = parseInt(sessionStorage.getItem(STORAGE_KEY) || '0', 10);
+
+  // Clear retry count after successful load
+  setTimeout(function() {
+    sessionStorage.removeItem(STORAGE_KEY);
+  }, CLEAR_DELAY);
+
+  function handleChunkError(message) {
+    if (retryCount >= MAX_RETRIES) {
+      console.error('[ChunkErrorRecovery] Max retries (' + MAX_RETRIES + ') reached. Please restart dev server.');
+      sessionStorage.removeItem(STORAGE_KEY);
+      return;
+    }
+
+    console.warn('[ChunkErrorRecovery] Chunk load error detected: ' + message);
+    console.log('[ChunkErrorRecovery] Reloading in ' + RETRY_DELAY + 'ms... (attempt ' + (retryCount + 1) + '/' + MAX_RETRIES + ')');
+
+    sessionStorage.setItem(STORAGE_KEY, String(retryCount + 1));
+
+    setTimeout(function() {
+      window.location.reload();
+    }, RETRY_DELAY);
+  }
+
+  // Catch errors
+  window.addEventListener('error', function(e) {
+    var msg = e.message || '';
+    if (msg.indexOf('ChunkLoadError') !== -1 ||
+        msg.indexOf('Loading chunk') !== -1 ||
+        msg.indexOf('Failed to fetch') !== -1 ||
+        (msg.indexOf('chunk') !== -1 && msg.indexOf('failed') !== -1)) {
+      handleChunkError(msg);
+    }
+  });
+
+  // Catch unhandled promise rejections (dynamic imports)
+  window.addEventListener('unhandledrejection', function(e) {
+    var reason = e.reason || {};
+    var msg = reason.message || String(reason) || '';
+    if (msg.indexOf('ChunkLoadError') !== -1 ||
+        msg.indexOf('Loading chunk') !== -1 ||
+        msg.indexOf('Failed to fetch dynamically imported module') !== -1) {
+      handleChunkError(msg);
+    }
+  });
+})();
+`;
+
 export default function RootLayout({
   children,
 }: {
@@ -192,6 +253,12 @@ export default function RootLayout({
   return (
     <html lang="en" className="dark">
       <body className={`${sourceSans3.variable} font-sans antialiased`}>
+        <Script
+          id="chunk-error-recovery"
+          strategy="beforeInteractive"
+          dangerouslySetInnerHTML={{ __html: chunkErrorRecoveryScript }}
+        />
+        <ChunkErrorRecovery />
         <ErrorBoundary>
           <QueryClientProvider client={queryClient}>
             <ThemeProvider>

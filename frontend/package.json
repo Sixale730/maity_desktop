@@ -4,7 +4,6 @@
     "private": true,
     "main": "electron/main.js",
     "scripts": {
-        "predev": "node scripts/clean-next.js",
         "dev": "next dev -p 3118",
         "build": "next build",
         "export": "next export",
