@@ -360,16 +360,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const { error } = await supabase.auth.signOut()
       if (error) {
         console.error('[Auth] Supabase signOut error:', error)
-        // Fallback: limpiar estado manualmente si Supabase falla
-        setSession(null)
-        setUser(null)
-        setMaityUser(null)
-      } else {
-        console.log('[Auth] Signed out successfully, waiting for listener to update state')
       }
+
+      // Siempre limpiar estado local (no depender del listener onAuthStateChange)
+      // ya que puede no dispararse si la sesión ya era inválida
+      console.log('[Auth] Clearing local auth state')
+      setSession(null)
+      setUser(null)
+      setMaityUser(null)
     } catch (err) {
       console.error('[Auth] Error signing out:', err)
-      // Fallback: limpiar estado manualmente en caso de excepción
+      // Limpiar estado manualmente en caso de excepción
       setSession(null)
       setUser(null)
       setMaityUser(null)

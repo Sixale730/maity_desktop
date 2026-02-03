@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect } from 'react';
+import React, { useEffect, useRef } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { useRecordingStop } from '@/hooks/useRecordingStop';
 
@@ -27,6 +27,12 @@ export function RecordingPostProcessingProvider({ children }: { children: React.
     handleRecordingStop,
   } = useRecordingStop(setIsRecording, setIsRecordingDisabled);
 
+  // Mantener ref estable al callback para evitar re-subscripciones innecesarias
+  const handleRecordingStopRef = useRef(handleRecordingStop);
+  useEffect(() => {
+    handleRecordingStopRef.current = handleRecordingStop;
+  });
+
   useEffect(() => {
     let unlistenFn: (() => void) | undefined;
 
@@ -36,9 +42,9 @@ export function RecordingPostProcessingProvider({ children }: { children: React.
         unlistenFn = await listen<boolean>('recording-stop-complete', (event) => {
           console.log('[RecordingPostProcessing] Received recording-stop-complete event:', event.payload);
 
-          // Call the post-processing handler
+          // Call the post-processing handler via ref (estable)
           // event.payload is the callApi boolean (true for normal stops)
-          handleRecordingStop(event.payload);
+          handleRecordingStopRef.current(event.payload);
         });
 
         console.log('[RecordingPostProcessing] Event listener set up successfully');
@@ -55,7 +61,7 @@ export function RecordingPostProcessingProvider({ children }: { children: React.
         unlistenFn();
       }
     };
-  }, [handleRecordingStop]);
+  }, []); // Sin dependencias - solo se ejecuta una vez al montar
 
   return <>{children}</>;
 }
