@@ -77,8 +77,8 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
     systemDevice: null
   });
 
-  // Language preference state
-  const [selectedLanguage, setSelectedLanguage] = useState('auto-translate');
+  // Language preference state (default to Spanish for Latin American market)
+  const [selectedLanguage, setSelectedLanguage] = useState('es');
 
   // UI preferences state
   const [showConfidenceIndicator, setShowConfidenceIndicator] = useState<boolean>(() => {
@@ -278,9 +278,9 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
           console.log('Loaded language preference:', language);
         }
       } catch (error) {
-        console.log('No language preference found or failed to load, using default (auto-translate):', error);
-        // Default to 'auto-translate' (Auto Detect with English translation) if no preference is saved
-        setSelectedLanguage('auto-translate');
+        console.log('No language preference found or failed to load, using default (es):', error);
+        // Default to 'es' (Spanish) for Latin American market
+        setSelectedLanguage('es');
       }
     };
     loadLanguagePreference();
