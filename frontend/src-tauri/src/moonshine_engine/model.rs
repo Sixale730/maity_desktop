@@ -181,21 +181,45 @@ impl MoonshineModel {
 
     /// Extract tensor data to a properly aligned ArrayD.
     ///
-    /// Uses `try_extract_tensor()` which returns raw `(&Shape, &[T])` instead of
-    /// `try_extract_array()` which creates an `ArrayViewD` directly over ORT memory.
-    /// ORT may return memory that is not aligned according to ndarray's requirements
-    /// (typically 8 or 16 bytes), causing panics in `ndarray-0.16.1\src\impl_raw_views.rs:100`.
+    /// Uses downcast to `Tensor<f32>`, then `data_ptr()` and `shape()` to get raw pointer
+    /// and dimensions, then copies data using unaligned reads. This avoids the alignment
+    /// panics that occur with `try_extract_array()` and `try_extract_tensor()`, which
+    /// internally use `slice::from_raw_parts` that requires aligned memory.
     ///
-    /// By copying the data into a new Vec, we guarantee proper alignment.
+    /// ORT may return memory that is not aligned according to Rust's requirements
+    /// (typically 4 bytes for f32), causing panics in `slice::from_raw_parts` at
+    /// `ort-2.0.0-rc.10\src\value\impl_tensor\extract.rs:158`.
+    ///
+    /// By using `data_ptr()` + `read_unaligned()`, we safely handle misaligned pointers.
     fn extract_to_aligned_array(value: &DynValue) -> Result<ArrayD<f32>, MoonshineError> {
-        let (shape, data) = value.try_extract_tensor::<f32>()?;
+        // Downcast DynValue to Tensor<f32> to access data_ptr() method
+        // This doesn't copy data or create slices, just validates the type
+        let tensor: ort::value::TensorRef<'_, f32> = value.downcast_ref()?;
+
+        // Get shape from tensor - returns &Shape (Vec<i64>), no slice creation
+        let shape = tensor.shape();
+
+        // Get raw data pointer from tensor - returns *const c_void, no slice creation
+        let ptr = tensor.data_ptr() as *const f32;
+
+        // Calculate total number of elements from shape dimensions
+        let total_elements: usize = shape.iter().map(|&d| d as usize).product();
 
         // Convert ORT Shape (Vec<i64>) to ndarray IxDyn (Vec<usize>)
         let shape_vec: Vec<usize> = shape.iter().map(|&d| d as usize).collect();
         let ix_dyn = ndarray::IxDyn(&shape_vec);
 
-        // Create a new array by copying data - this guarantees proper alignment
-        let array = ArrayD::from_shape_vec(ix_dyn, data.to_vec())?;
+        // Copy data element by element using unaligned reads
+        // This is the key: read_unaligned handles misaligned pointers safely
+        let mut data = Vec::with_capacity(total_elements);
+        for i in 0..total_elements {
+            // SAFETY: i is in bounds [0, total_elements), read_unaligned handles misalignment
+            let val = unsafe { std::ptr::read_unaligned(ptr.add(i)) };
+            data.push(val);
+        }
+
+        // Create array from copied data - now in properly aligned Rust memory
+        let array = ArrayD::from_shape_vec(ix_dyn, data)?;
 
         Ok(array)
     }
