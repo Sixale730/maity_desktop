@@ -23,7 +23,7 @@ const BOS_TOKEN_ID: i64 = 1; // Beginning of sequence token
 // Moonshine-base decoder configuration (from config.json)
 const DECODER_NUM_LAYERS: usize = 8;
 const NUM_KEY_VALUE_HEADS: usize = 8;
-const HEAD_DIM: usize = 56; // 416/8 = 52, padded to multiple of 8 for efficiency
+const HEAD_DIM: usize = 52; // 416 / 8 = 52 (hidden_size / num_key_value_heads)
 
 #[derive(thiserror::Error, Debug)]
 pub enum MoonshineError {
