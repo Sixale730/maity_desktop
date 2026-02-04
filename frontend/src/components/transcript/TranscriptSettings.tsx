@@ -27,6 +27,7 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
     const [selectedWhisperModel, setSelectedWhisperModel] = useState<string>(transcriptModelConfig.provider === 'localWhisper' ? transcriptModelConfig.model : 'small');
     const [selectedParakeetModel, setSelectedParakeetModel] = useState<string>(transcriptModelConfig.provider === 'parakeet' ? transcriptModelConfig.model : 'parakeet-tdt-0.6b-v3-int8');
     const [selectedMoonshineModel, setSelectedMoonshineModel] = useState<string>(transcriptModelConfig.provider === 'moonshine' ? transcriptModelConfig.model : 'moonshine-base');
+    const [selectedLanguage, setSelectedLanguage] = useState<string>(transcriptModelConfig.language || 'es-419');
     const [isSaving, setIsSaving] = useState<boolean>(false);
     const [saveSuccess, setSaveSuccess] = useState<boolean>(false);
 
@@ -39,13 +40,15 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
                 provider: transcriptModelConfig.provider,
                 model: transcriptModelConfig.model,
                 apiKey: apiKey || null,
+                language: transcriptModelConfig.provider === 'deepgram' ? selectedLanguage : null,
             });
 
-            // CRITICAL: Update the global ConfigContext state with the new apiKey
-            // This ensures useRecordingStart sees the updated apiKey immediately
+            // CRITICAL: Update the global ConfigContext state with the new apiKey and language
+            // This ensures useRecordingStart sees the updated values immediately
             setTranscriptModelConfig({
                 ...transcriptModelConfig,
                 apiKey: apiKey || null,
+                language: transcriptModelConfig.provider === 'deepgram' ? selectedLanguage : undefined,
             });
 
             setSaveSuccess(true);
@@ -70,6 +73,13 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
         }
     }, [transcriptModelConfig.provider]);
 
+    // Sync language state when config changes (e.g., on initial load)
+    useEffect(() => {
+        if (transcriptModelConfig.language) {
+            setSelectedLanguage(transcriptModelConfig.language);
+        }
+    }, [transcriptModelConfig.language]);
+
     const fetchApiKey = async (provider: string) => {
         try {
 
@@ -85,11 +95,18 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
         localWhisper: [selectedWhisperModel],
         parakeet: [selectedParakeetModel],
         moonshine: [selectedMoonshineModel],
-        deepgram: ['nova-2', 'nova-2-phonecall', 'nova-2-meeting'],
+        deepgram: ['nova-3', 'nova-2', 'nova-2-phonecall', 'nova-2-meeting'],
         elevenLabs: ['eleven_multilingual_v2'],
         groq: ['llama-3.3-70b-versatile'],
         openai: ['gpt-4o'],
     };
+
+    const deepgramLanguageOptions = [
+        { value: 'es-419', label: 'Español Latinoamericano (Recomendado)' },
+        { value: 'es', label: 'Español (España)' },
+        { value: 'en', label: 'Inglés' },
+        { value: 'multi', label: 'Multilingüe (auto-detect)' },
+    ];
     const requiresApiKey = transcriptModelConfig.provider === 'elevenLabs' || transcriptModelConfig.provider === 'openai' || transcriptModelConfig.provider === 'groq';
 
     const handleInputClick = () => {
@@ -201,6 +218,41 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
                             </p>
                         )}
                     </div>
+
+                    {/* Language selector for Deepgram */}
+                    {transcriptModelConfig.provider === 'deepgram' && (
+                        <div>
+                            <Label className="block text-sm font-medium text-[#3a3a3c] dark:text-gray-200 mb-1">
+                                Idioma de Transcripción
+                            </Label>
+                            <div className="mx-1">
+                                <Select
+                                    value={selectedLanguage}
+                                    onValueChange={(value) => {
+                                        setSelectedLanguage(value);
+                                        setTranscriptModelConfig({
+                                            ...transcriptModelConfig,
+                                            language: value
+                                        });
+                                    }}
+                                >
+                                    <SelectTrigger className='focus:ring-1 focus:ring-[#485df4] focus:border-[#485df4]'>
+                                        <SelectValue placeholder="Seleccionar idioma" />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        {deepgramLanguageOptions.map((lang) => (
+                                            <SelectItem key={lang.value} value={lang.value}>
+                                                {lang.label}
+                                            </SelectItem>
+                                        ))}
+                                    </SelectContent>
+                                </Select>
+                            </div>
+                            <p className="text-xs text-[#6a6a6d] dark:text-gray-400 mt-2 mx-1">
+                                Nova-3 soporta español latinoamericano (es-419) con alta precision.
+                            </p>
+                        </div>
+                    )}
 
                     {transcriptModelConfig.provider === 'localWhisper' && (
                         <div className="mt-6">

@@ -310,9 +310,10 @@ pub async fn api_get_transcript_config<R: Runtime>(
     match SettingsRepository::get_transcript_config(pool).await {
         Ok(Some(config)) => {
             log_info!(
-                "Found transcript config: provider={}, model={}",
+                "Found transcript config: provider={}, model={}, language={:?}",
                 &config.provider,
-                &config.model
+                &config.model,
+                &config.language
             );
             match SettingsRepository::get_transcript_api_key(pool, &config.provider).await {
                 Ok(api_key) => {
@@ -321,6 +322,7 @@ pub async fn api_get_transcript_config<R: Runtime>(
                         provider: config.provider,
                         model: config.model,
                         api_key,
+                        language: config.language,
                     }))
                 }
                 Err(e) => {
@@ -339,6 +341,7 @@ pub async fn api_get_transcript_config<R: Runtime>(
                 provider: "parakeet".to_string(),
                 model: "parakeet-tdt-0.6b-v3-int8".to_string(),
                 api_key: None,
+                language: Some("es-419".to_string()),
             }))
         }
         Err(e) => {
@@ -355,15 +358,17 @@ pub async fn api_save_transcript_config<R: Runtime>(
     provider: String,
     model: String,
     api_key: Option<String>,
+    language: Option<String>,
     _auth_token: Option<String>,
 ) -> Result<serde_json::Value, String> {
     log_info!(
-        "api_save_transcript_config called (native) for provider '{}'",
-        &provider
+        "api_save_transcript_config called (native) for provider '{}', language '{:?}'",
+        &provider,
+        &language
     );
     let pool = state.db_manager.pool();
 
-    if let Err(e) = SettingsRepository::save_transcript_config(pool, &provider, &model).await {
+    if let Err(e) = SettingsRepository::save_transcript_config(pool, &provider, &model, language.as_deref()).await {
         log_error!("Failed to save transcript config: {}", e);
         return Err(e.to_string());
     }

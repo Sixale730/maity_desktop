@@ -82,6 +82,8 @@ pub struct TranscriptConfig {
     pub model: String,
     #[serde(rename = "apiKey")]
     pub api_key: Option<String>,
+    /// Language for cloud transcription (e.g., "es-419", "es", "en", "multi")
+    pub language: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

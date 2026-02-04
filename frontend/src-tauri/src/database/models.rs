@@ -129,4 +129,6 @@ pub struct TranscriptSetting {
     #[sqlx(rename = "openaiApiKey")]
     #[serde(rename = "openaiApiKey")]
     pub openai_api_key: Option<String>,
+    /// Language for cloud transcription (e.g., "es-419", "es", "en", "multi")
+    pub language: Option<String>,
 }

@@ -64,4 +64,6 @@ export interface TranscriptModelProps {
   provider: 'localWhisper' | 'parakeet' | 'moonshine' | 'deepgram' | 'elevenLabs' | 'groq' | 'openai';
   model: string;
   apiKey?: string | null;
+  /** Language for cloud transcription (e.g., "es-419", "es", "en", "multi") */
+  language?: string;
 }

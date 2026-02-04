@@ -78,6 +78,7 @@ pub async fn validate_transcription_model_ready<R: Runtime>(app: &AppHandle<R>) 
                 provider: "parakeet".to_string(),
                 model: "parakeet-tdt-0.6b-v3-int8".to_string(),
                 api_key: None,
+                language: Some("es-419".to_string()),
             }
         }
         Err(e) => {
@@ -86,6 +87,7 @@ pub async fn validate_transcription_model_ready<R: Runtime>(app: &AppHandle<R>) 
                 provider: "parakeet".to_string(),
                 model: "parakeet-tdt-0.6b-v3-int8".to_string(),
                 api_key: None,
+                language: Some("es-419".to_string()),
             }
         }
     };
@@ -213,6 +215,7 @@ pub async fn get_or_init_transcription_engine<R: Runtime>(
                 provider: "parakeet".to_string(),
                 model: "parakeet-tdt-0.6b-v3-int8".to_string(),
                 api_key: None,
+                language: Some("es-419".to_string()),
             }
         }
         Err(e) => {
@@ -221,6 +224,7 @@ pub async fn get_or_init_transcription_engine<R: Runtime>(
                 provider: "parakeet".to_string(),
                 model: "parakeet-tdt-0.6b-v3-int8".to_string(),
                 api_key: None,
+                language: Some("es-419".to_string()),
             }
         }
     };
@@ -299,17 +303,17 @@ pub async fn get_or_init_transcription_engine<R: Runtime>(
                     println!("🔧 [ENGINE] Creando DeepgramRealtimeTranscriber con cloud token...");
                     let mut deepgram = super::deepgram_provider::DeepgramRealtimeTranscriber::with_cloud_token(token);
 
-                    // Apply model from config if specified, otherwise use nova-2
+                    // Apply model from config if specified, otherwise use nova-3
                     if !config.model.is_empty() && config.model != "deepgram" {
                         info!("🎯 Setting Deepgram model to: {}", config.model);
                         deepgram.set_model(config.model.clone());
                     }
 
-                    // Apply language from environment if set, default to multi (auto-detect)
-                    let language = std::env::var("DEEPGRAM_LANGUAGE")
-                        .ok()
+                    // Apply language from config, default to es-419 (Latin American Spanish)
+                    let language = config.language
+                        .clone()
                         .filter(|l| !l.is_empty())
-                        .unwrap_or_else(|| "multi".to_string());
+                        .unwrap_or_else(|| "es-419".to_string());
 
                     info!("🌍 Setting Deepgram language to: {}", language);
                     deepgram.set_language(language);

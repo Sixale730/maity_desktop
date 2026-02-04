@@ -205,7 +205,8 @@ pub async fn initialize_fresh_database(app: AppHandle) -> Result<(), String> {
     if let Err(e) = crate::database::repositories::setting::SettingsRepository::save_transcript_config(
         pool,
         "deepgram",       // Changed from "parakeet" for cloud-only mode
-        "nova-2",         // Deepgram's best model
+        "nova-3",         // Deepgram's best model with Spanish support
+        Some("es-419"),   // Latin American Spanish
     ).await {
         error!("Failed to set default transcription model config: {}", e);
     }

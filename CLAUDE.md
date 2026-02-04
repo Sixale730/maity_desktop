@@ -479,6 +479,24 @@ El sistema de transcripción en la nube usa Deepgram como proveedor. **Los usuar
 
 > **Nota**: El endpoint `/v1/auth/grant` de Deepgram para generar tokens temporales requiere un plan de pago. En el plan gratuito, la Edge Function retorna la API key directamente (igual que hace OMI).
 
+### Modelos y Idiomas Soportados
+
+**Modelos Deepgram disponibles**:
+- `nova-3` (Recomendado) - Modelo más reciente con soporte mejorado para español latinoamericano
+- `nova-2` - Modelo estable de propósito general
+- `nova-2-phonecall` - Optimizado para audio de llamadas telefónicas
+- `nova-2-meeting` - Optimizado para transcripción de reuniones
+
+**Idiomas soportados**:
+- `es-419` - Español Latinoamericano (Recomendado para usuarios en LATAM)
+- `es` - Español (España)
+- `en` - Inglés
+- `multi` - Multilingüe (detección automática)
+
+**Configuración por defecto**: Nova-3 con idioma `es-419` (español latinoamericano).
+
+La configuración de modelo e idioma se guarda en la tabla `transcript_settings` de SQLite y persiste entre sesiones.
+
 ### Arquitectura
 
 ```

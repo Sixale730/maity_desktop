@@ -190,16 +190,17 @@ pub async fn complete_onboarding<R: Runtime>(
     }
     info!("Saved summary model config: provider=openai, model=gpt-4o-2024-11-20");
 
-    // Save transcription config - use Deepgram (cloud API)
+    // Save transcription config - use Deepgram (cloud API) with Nova-3 and Spanish
     if let Err(e) = SettingsRepository::save_transcript_config(
         pool,
         "deepgram",
-        "nova-2",
+        "nova-3",
+        Some("es-419"),
     ).await {
         error!("Failed to save transcription model config: {}", e);
         return Err(format!("Failed to save transcription model config: {}", e));
     }
-    info!("Saved transcription model config: provider=deepgram, model=nova-2");
+    info!("Saved transcription model config: provider=deepgram, model=nova-3, language=es-419");
 
     // Step 2: Only NOW mark onboarding as complete (after DB operations succeed)
     let mut status = load_onboarding_status(&app)

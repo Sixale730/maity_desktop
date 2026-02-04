@@ -154,18 +154,21 @@ impl SettingsRepository {
         pool: &SqlitePool,
         provider: &str,
         model: &str,
+        language: Option<&str>,
     ) -> std::result::Result<(), sqlx::Error> {
         sqlx::query(
             r#"
-            INSERT INTO transcript_settings (id, provider, model)
-            VALUES ('1', $1, $2)
+            INSERT INTO transcript_settings (id, provider, model, language)
+            VALUES ('1', $1, $2, $3)
             ON CONFLICT(id) DO UPDATE SET
                 provider = excluded.provider,
-                model = excluded.model
+                model = excluded.model,
+                language = excluded.language
             "#,
         )
         .bind(provider)
         .bind(model)
+        .bind(language)
         .execute(pool)
         .await?;
 

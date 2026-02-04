@@ -73,8 +73,8 @@ impl Default for DeepgramConfig {
             api_key: String::new(),
             cloud_token: None,
             use_cloud_proxy: false,
-            model: "nova-2".to_string(),
-            language: "en".to_string(), // English by default
+            model: "nova-3".to_string(),
+            language: "es-419".to_string(), // Latin American Spanish by default
             encoding: "linear16".to_string(),
             sample_rate: 16000,
             channels: 1,
@@ -516,8 +516,8 @@ mod tests {
     #[test]
     fn test_config_default() {
         let config = DeepgramConfig::default();
-        assert_eq!(config.model, "nova-2");
-        assert_eq!(config.language, "en");
+        assert_eq!(config.model, "nova-3");
+        assert_eq!(config.language, "es-419");
         assert_eq!(config.sample_rate, 16000);
     }
 
@@ -554,8 +554,8 @@ mod tests {
         let transcriber = DeepgramRealtimeTranscriber::new("test_api_key".to_string());
         let url = transcriber.build_websocket_url(None);
 
-        assert!(url.contains("model=nova-2"));
-        assert!(url.contains("language=en"));
+        assert!(url.contains("model=nova-3"));
+        assert!(url.contains("language=es-419"));
         assert!(url.contains("sample_rate=16000"));
         assert!(url.contains("encoding=linear16"));
     }
