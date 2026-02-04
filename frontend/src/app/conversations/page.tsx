@@ -8,7 +8,7 @@ export default function ConversationsPage() {
 
   if (selectedConversation) {
     return (
-      <div className="h-full bg-white dark:bg-gray-900">
+      <div className="h-full bg-background">
         <ConversationDetail
           conversation={selectedConversation}
           onClose={() => setSelectedConversation(null)}
@@ -18,7 +18,7 @@ export default function ConversationsPage() {
   }
 
   return (
-    <div className="h-full bg-gray-50 dark:bg-gray-900">
+    <div className="h-full bg-muted">
       <ConversationsList
         onSelect={setSelectedConversation}
         selectedId={null}

@@ -96,20 +96,20 @@ export function LogExporter() {
   }
 
   return (
-    <div className="bg-[#f5f5f6] dark:bg-gray-800 rounded-lg p-4 space-y-3">
+    <div className="bg-secondary rounded-lg p-4 space-y-3">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <HardDrive className="h-4 w-4 text-[#4a4a4c] dark:text-gray-300" />
-          <h3 className="font-semibold text-sm text-[#1a1a1a] dark:text-gray-100">Diagnóstico y Soporte</h3>
+          <HardDrive className="h-4 w-4 text-muted-foreground" />
+          <h3 className="font-semibold text-sm text-foreground">Diagnóstico y Soporte</h3>
         </div>
         {logInfo && (
-          <span className="text-xs text-[#6a6a6d] dark:text-gray-400">
+          <span className="text-xs text-muted-foreground">
             {logInfo.file_count} archivo(s) - {logInfo.total_size_human}
           </span>
         )}
       </div>
 
-      <p className="text-xs text-[#4a4a4c] dark:text-gray-300">
+      <p className="text-xs text-muted-foreground">
         Exporta los logs de la aplicación para compartir con soporte técnico o para diagnóstico.
       </p>
 
@@ -167,7 +167,7 @@ export function LogExporter() {
       </div>
 
       {logInfo?.log_directory && (
-        <p className="text-xs text-[#8a8a8d] dark:text-gray-500 truncate" title={logInfo.log_directory}>
+        <p className="text-xs text-muted-foreground truncate" title={logInfo.log_directory}>
           Ubicación: {logInfo.log_directory}
         </p>
       )}

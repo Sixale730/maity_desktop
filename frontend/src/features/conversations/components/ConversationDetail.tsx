@@ -17,12 +17,12 @@ interface ConversationDetailProps {
 // Componente para mostrar una tarjeta de insight
 function InsightCard({ icon: Icon, title, content }: { icon: React.ComponentType<{ className?: string }>; title: string; content: string }) {
   return (
-    <div className="p-3 bg-gray-50 dark:bg-gray-800/50 rounded-lg border border-gray-200/50 dark:border-gray-700/50">
+    <div className="p-3 bg-secondary rounded-lg border border-border">
       <div className="flex items-center gap-2 mb-2">
-        <Icon className="h-4 w-4 text-[#485df4]" />
-        <h5 className="text-sm font-medium text-gray-900 dark:text-white">{title}</h5>
+        <Icon className="h-4 w-4 text-primary" />
+        <h5 className="text-sm font-medium text-foreground">{title}</h5>
       </div>
-      <p className="text-sm text-gray-500 dark:text-gray-400">{content}</p>
+      <p className="text-sm text-muted-foreground">{content}</p>
     </div>
   );
 }
@@ -54,7 +54,7 @@ export function ConversationDetail({ conversation, onClose }: ConversationDetail
   const feedback = conversation.communication_feedback;
 
   return (
-    <div className="flex-1 overflow-y-auto p-4 bg-white dark:bg-gray-900">
+    <div className="flex-1 overflow-y-auto p-4 bg-background">
       {/* Close button */}
       <div className="flex items-center justify-between mb-6">
         <Button
@@ -81,10 +81,10 @@ export function ConversationDetail({ conversation, onClose }: ConversationDetail
           {conversation.emoji && (
             <span className="text-3xl">{conversation.emoji}</span>
           )}
-          <h1 className="text-2xl font-bold text-gray-900 dark:text-white">{conversation.title}</h1>
+          <h1 className="text-2xl font-bold text-foreground">{conversation.title}</h1>
         </div>
-        <p className="text-gray-500 dark:text-gray-400 mb-4">{conversation.overview}</p>
-        <div className="flex flex-wrap items-center gap-4 text-sm text-gray-500 dark:text-gray-400">
+        <p className="text-muted-foreground mb-4">{conversation.overview}</p>
+        <div className="flex flex-wrap items-center gap-4 text-sm text-muted-foreground">
           <span className="flex items-center gap-1">
             <Calendar className="h-4 w-4" />
             {formatDate(conversation.created_at)}
@@ -109,7 +109,7 @@ export function ConversationDetail({ conversation, onClose }: ConversationDetail
           <Card className="lg:col-span-2">
             <CardHeader>
               <CardTitle className="flex items-center gap-2 text-lg">
-                <Sparkles className="h-5 w-5 text-[#485df4]" />
+                <Sparkles className="h-5 w-5 text-primary" />
                 Análisis de Comunicación
               </CardTitle>
             </CardHeader>
@@ -118,8 +118,8 @@ export function ConversationDetail({ conversation, onClose }: ConversationDetail
               {feedback.overall_score !== undefined && (
                 <div>
                   <div className="flex justify-between text-sm mb-1">
-                    <span className="text-gray-700 dark:text-gray-300">Puntuación General</span>
-                    <span className="font-medium text-gray-900 dark:text-white">{feedback.overall_score}/10</span>
+                    <span className="text-muted-foreground">Puntuación General</span>
+                    <span className="font-medium text-foreground">{feedback.overall_score}/10</span>
                   </div>
                   <Progress value={feedback.overall_score * 10} className="h-2" />
                 </div>
@@ -128,28 +128,28 @@ export function ConversationDetail({ conversation, onClose }: ConversationDetail
               {/* Individual Scores */}
               <div className="grid gap-3 sm:grid-cols-3">
                 {feedback.clarity !== undefined && (
-                  <div className="p-3 bg-gray-50 dark:bg-gray-800/50 rounded-lg">
-                    <div className="text-xs text-gray-500 dark:text-gray-400 mb-1">Claridad</div>
-                    <div className="text-xl font-bold text-gray-900 dark:text-white">{feedback.clarity}/10</div>
+                  <div className="p-3 bg-secondary rounded-lg">
+                    <div className="text-xs text-muted-foreground mb-1">Claridad</div>
+                    <div className="text-xl font-bold text-foreground">{feedback.clarity}/10</div>
                   </div>
                 )}
                 {feedback.engagement !== undefined && (
-                  <div className="p-3 bg-gray-50 dark:bg-gray-800/50 rounded-lg">
-                    <div className="text-xs text-gray-500 dark:text-gray-400 mb-1">Engagement</div>
-                    <div className="text-xl font-bold text-gray-900 dark:text-white">{feedback.engagement}/10</div>
+                  <div className="p-3 bg-secondary rounded-lg">
+                    <div className="text-xs text-muted-foreground mb-1">Engagement</div>
+                    <div className="text-xl font-bold text-foreground">{feedback.engagement}/10</div>
                   </div>
                 )}
                 {feedback.structure !== undefined && (
-                  <div className="p-3 bg-gray-50 dark:bg-gray-800/50 rounded-lg">
-                    <div className="text-xs text-gray-500 dark:text-gray-400 mb-1">Estructura</div>
-                    <div className="text-xl font-bold text-gray-900 dark:text-white">{feedback.structure}/10</div>
+                  <div className="p-3 bg-secondary rounded-lg">
+                    <div className="text-xs text-muted-foreground mb-1">Estructura</div>
+                    <div className="text-xl font-bold text-foreground">{feedback.structure}/10</div>
                   </div>
                 )}
               </div>
 
               {/* Feedback Text (usa summary como fallback) */}
               {(feedback.feedback || feedback.summary) && (
-                <p className="text-sm text-gray-500 dark:text-gray-400">{feedback.feedback || feedback.summary}</p>
+                <p className="text-sm text-muted-foreground">{feedback.feedback || feedback.summary}</p>
               )}
 
               {/* Strengths & Areas to Improve */}
@@ -161,7 +161,7 @@ export function ConversationDetail({ conversation, onClose }: ConversationDetail
                       {feedback.strengths.map((s, i) => (
                         <li key={i} className="text-sm flex items-start gap-2">
                           <CheckCircle2 className="h-4 w-4 text-green-500 mt-0.5 flex-shrink-0" />
-                          <span className="text-gray-700 dark:text-gray-300">{s}</span>
+                          <span className="text-muted-foreground">{s}</span>
                         </li>
                       ))}
                     </ul>
@@ -172,7 +172,7 @@ export function ConversationDetail({ conversation, onClose }: ConversationDetail
                     <h4 className="text-sm font-medium mb-2 text-amber-600">Áreas de Mejora</h4>
                     <ul className="space-y-1">
                       {feedback.areas_to_improve.map((a, i) => (
-                        <li key={i} className="text-sm text-gray-500 dark:text-gray-400">• {a}</li>
+                        <li key={i} className="text-sm text-muted-foreground">• {a}</li>
                       ))}
                     </ul>
                   </div>
@@ -181,8 +181,8 @@ export function ConversationDetail({ conversation, onClose }: ConversationDetail
 
               {/* Insights/Observations */}
               {feedback.observations && (
-                <div className="space-y-3 pt-4 border-t border-gray-200 dark:border-gray-700">
-                  <h4 className="text-sm font-medium flex items-center gap-2 text-gray-900 dark:text-white">
+                <div className="space-y-3 pt-4 border-t border-border">
+                  <h4 className="text-sm font-medium flex items-center gap-2 text-foreground">
                     <Lightbulb className="h-4 w-4 text-amber-500" />
                     Insights
                   </h4>
@@ -232,8 +232,8 @@ export function ConversationDetail({ conversation, onClose }: ConversationDetail
               <ul className="space-y-2">
                 {conversation.action_items.map((item, i) => (
                   <li key={i} className="flex items-start gap-2 text-sm">
-                    <CheckCircle2 className={`h-4 w-4 mt-0.5 flex-shrink-0 ${item.completed ? 'text-green-500' : 'text-gray-400'}`} />
-                    <span className={item.completed ? 'line-through text-gray-400' : 'text-gray-700 dark:text-gray-300'}>
+                    <CheckCircle2 className={`h-4 w-4 mt-0.5 flex-shrink-0 ${item.completed ? 'text-green-500' : 'text-muted-foreground'}`} />
+                    <span className={item.completed ? 'line-through text-muted-foreground' : 'text-muted-foreground'}>
                       {item.description}
                     </span>
                   </li>
@@ -252,10 +252,10 @@ export function ConversationDetail({ conversation, onClose }: ConversationDetail
             <CardContent>
               <ul className="space-y-3">
                 {conversation.events.map((event, i) => (
-                  <li key={i} className="border-l-2 border-[#485df4]/30 pl-3">
-                    <div className="font-medium text-sm text-gray-900 dark:text-white">{event.title}</div>
+                  <li key={i} className="border-l-2 border-primary/30 pl-3">
+                    <div className="font-medium text-sm text-foreground">{event.title}</div>
                     {event.description && (
-                      <div className="text-xs text-gray-500 dark:text-gray-400">{event.description}</div>
+                      <div className="text-xs text-muted-foreground">{event.description}</div>
                     )}
                   </li>
                 ))}
@@ -287,31 +287,31 @@ export function ConversationDetail({ conversation, onClose }: ConversationDetail
             <div className="space-y-4">
               {segments.map((segment) => (
                 <div key={segment.id} className="flex gap-3">
-                  <div className={`flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center ${segment.is_user ? 'bg-[#485df4]/10' : 'bg-gray-100 dark:bg-gray-800'}`}>
+                  <div className={`flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center ${segment.is_user ? 'bg-primary/10' : 'bg-secondary'}`}>
                     {segment.is_user ? (
-                      <User className="h-4 w-4 text-[#485df4]" />
+                      <User className="h-4 w-4 text-primary" />
                     ) : (
-                      <Bot className="h-4 w-4 text-gray-500" />
+                      <Bot className="h-4 w-4 text-muted-foreground" />
                     )}
                   </div>
                   <div className="flex-1">
                     <div className="flex items-center gap-2 mb-1">
-                      <span className="text-xs font-medium text-gray-900 dark:text-white">
+                      <span className="text-xs font-medium text-foreground">
                         {segment.speaker || (segment.is_user ? 'Tú' : 'Otro')}
                       </span>
-                      <span className="text-xs text-gray-500 dark:text-gray-400">
+                      <span className="text-xs text-muted-foreground">
                         {Math.floor(segment.start_time / 60)}:{Math.floor(segment.start_time % 60).toString().padStart(2, '0')}
                       </span>
                     </div>
-                    <p className="text-sm text-gray-700 dark:text-gray-300">{segment.text}</p>
+                    <p className="text-sm text-muted-foreground">{segment.text}</p>
                   </div>
                 </div>
               ))}
             </div>
           ) : conversation.transcript_text ? (
-            <p className="text-sm whitespace-pre-wrap text-gray-700 dark:text-gray-300">{conversation.transcript_text}</p>
+            <p className="text-sm whitespace-pre-wrap text-muted-foreground">{conversation.transcript_text}</p>
           ) : (
-            <p className="text-sm text-gray-500 dark:text-gray-400 text-center py-4">
+            <p className="text-sm text-muted-foreground text-center py-4">
               Sin transcripción disponible
             </p>
           )}

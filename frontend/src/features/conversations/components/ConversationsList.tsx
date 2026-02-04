@@ -42,12 +42,12 @@ export function ConversationsList({ onSelect, selectedId }: ConversationsListPro
     <div className="flex-1 overflow-y-auto p-4">
       {/* Header */}
       <div className="flex items-center gap-3 mb-6">
-        <div className="flex items-center justify-center w-12 h-12 rounded-xl bg-[#485df4]/10">
-          <AudioLines className="h-6 w-6 text-[#485df4]" />
+        <div className="flex items-center justify-center w-12 h-12 rounded-xl bg-primary/10">
+          <AudioLines className="h-6 w-6 text-primary" />
         </div>
         <div>
-          <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Conversaciones</h1>
-          <p className="text-gray-500 dark:text-gray-400">Tu historial de conversaciones con OMI</p>
+          <h1 className="text-2xl font-bold text-foreground">Conversaciones</h1>
+          <p className="text-muted-foreground">Tu historial de conversaciones con OMI</p>
         </div>
       </div>
 
@@ -68,8 +68,8 @@ export function ConversationsList({ onSelect, selectedId }: ConversationsListPro
 
       {/* Error state */}
       {error && (
-        <Card className="border-red-300 dark:border-red-700">
-          <CardContent className="p-6 text-center text-red-600 dark:text-red-400">
+        <Card className="border-destructive">
+          <CardContent className="p-6 text-center text-destructive">
             Error al cargar las conversaciones
           </CardContent>
         </Card>
@@ -79,9 +79,9 @@ export function ConversationsList({ onSelect, selectedId }: ConversationsListPro
       {!isLoading && !error && conversations?.length === 0 && (
         <Card>
           <CardContent className="p-12 text-center">
-            <AudioLines className="h-12 w-12 mx-auto text-gray-400 mb-4" />
-            <h3 className="text-lg font-medium mb-2 text-gray-900 dark:text-white">No hay conversaciones</h3>
-            <p className="text-gray-500 dark:text-gray-400">Tus conversaciones con OMI aparecerán aquí</p>
+            <AudioLines className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
+            <h3 className="text-lg font-medium mb-2 text-foreground">No hay conversaciones</h3>
+            <p className="text-muted-foreground">Tus conversaciones con OMI aparecerán aquí</p>
           </CardContent>
         </Card>
       )}
@@ -94,8 +94,8 @@ export function ConversationsList({ onSelect, selectedId }: ConversationsListPro
               key={conversation.id}
               className={`cursor-pointer hover:shadow-md transition-all ${
                 selectedId === conversation.id
-                  ? 'border-[#485df4] ring-1 ring-[#485df4]'
-                  : 'hover:border-[#485df4]/30'
+                  ? 'border-primary ring-1 ring-primary'
+                  : 'hover:border-primary/30'
               }`}
               onClick={() => onSelect(conversation)}
             >
@@ -106,12 +106,12 @@ export function ConversationsList({ onSelect, selectedId }: ConversationsListPro
                       {conversation.emoji && (
                         <span className="text-lg">{conversation.emoji}</span>
                       )}
-                      <h3 className="font-medium truncate text-gray-900 dark:text-white">{conversation.title}</h3>
+                      <h3 className="font-medium truncate text-foreground">{conversation.title}</h3>
                     </div>
-                    <p className="text-sm text-gray-500 dark:text-gray-400 line-clamp-2 mb-2">
+                    <p className="text-sm text-muted-foreground line-clamp-2 mb-2">
                       {conversation.overview}
                     </p>
-                    <div className="flex items-center gap-4 text-xs text-gray-500 dark:text-gray-400">
+                    <div className="flex items-center gap-4 text-xs text-muted-foreground">
                       <span className="flex items-center gap-1">
                         <Clock className="h-3 w-3" />
                         {formatDuration(conversation.duration_seconds)}
@@ -135,7 +135,7 @@ export function ConversationsList({ onSelect, selectedId }: ConversationsListPro
                         Análisis
                       </Badge>
                     )}
-                    <ChevronRight className="h-5 w-5 text-gray-400" />
+                    <ChevronRight className="h-5 w-5 text-muted-foreground" />
                   </div>
                 </div>
               </CardContent>
