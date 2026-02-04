@@ -386,30 +386,57 @@ impl MoonshineModel {
         let mut tokens: Vec<i64> = vec![BOS_TOKEN_ID];
         let batch_size = 1;
 
-        // Initialize empty past_key_values for all layers
+        // Get encoder sequence length for cross-attention cache initialization
+        let encoder_seq_len = encoder_output.shape()[1];
+
+        // Initialize past_key_values for all layers
         // Shape: [batch, num_heads, seq_len, head_dim]
-        // Initial seq_len is 0 (empty cache)
+        //
+        // IMPORTANT: The "decoder" module (self-attention) starts with empty cache (seq_len=0)
+        // because it grows as we generate tokens. But the "encoder" module (cross-attention)
+        // must have seq_len matching the encoder output length, because the K/V projections
+        // are computed from encoder_hidden_states which has that sequence length.
+        //
+        // Without this fix, the cross-attention MatMul fails with:
+        // "right operand cannot broadcast on dim 0" because Query=[1,8,1,52] but Key=[1,8,0,52]
         let mut past_key_values: HashMap<String, ArrayD<f32>> = HashMap::new();
         for layer in 0..DECODER_NUM_LAYERS {
-            for module in ["decoder", "encoder"] {
-                for kv in ["key", "value"] {
-                    let name = format!("past_key_values.{}.{}.{}", layer, module, kv);
-                    let empty_cache = Array4::<f32>::zeros((
-                        batch_size,
-                        NUM_KEY_VALUE_HEADS,
-                        0, // Empty sequence initially
-                        HEAD_DIM,
-                    ))
-                    .into_dyn();
-                    past_key_values.insert(name, empty_cache);
-                }
+            // DECODER self-attention cache: starts empty, grows with generated tokens
+            for kv in ["key", "value"] {
+                let name = format!("past_key_values.{}.decoder.{}", layer, kv);
+                let empty_cache = Array4::<f32>::zeros((
+                    batch_size,
+                    NUM_KEY_VALUE_HEADS,
+                    0, // Empty sequence initially - grows as we decode
+                    HEAD_DIM,
+                ))
+                .into_dyn();
+                past_key_values.insert(name, empty_cache);
+            }
+
+            // ENCODER cross-attention cache: must match encoder output sequence length
+            // The merged ONNX model will compute the K/V projections from encoder_hidden_states
+            // on the first step (use_cache_branch=false), but needs correctly shaped tensors
+            for kv in ["key", "value"] {
+                let name = format!("past_key_values.{}.encoder.{}", layer, kv);
+                let encoder_cache = Array4::<f32>::zeros((
+                    batch_size,
+                    NUM_KEY_VALUE_HEADS,
+                    encoder_seq_len, // Must match encoder output length, NOT 0
+                    HEAD_DIM,
+                ))
+                .into_dyn();
+                past_key_values.insert(name, encoder_cache);
             }
         }
 
         log::debug!(
-            "Initialized {} past_key_values tensors with shape [1, {}, 0, {}]",
+            "Initialized {} past_key_values tensors: decoder=[1,{},0,{}], encoder=[1,{},{},{}]",
             past_key_values.len(),
             NUM_KEY_VALUE_HEADS,
+            HEAD_DIM,
+            NUM_KEY_VALUE_HEADS,
+            encoder_seq_len,
             HEAD_DIM
         );
 
