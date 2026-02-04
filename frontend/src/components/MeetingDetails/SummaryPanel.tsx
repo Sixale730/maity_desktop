@@ -88,9 +88,9 @@ export function SummaryPanel({
   const isSummaryLoading = summaryStatus === 'processing' || summaryStatus === 'summarizing' || summaryStatus === 'regenerating';
 
   return (
-    <div className="flex-1 min-w-0 flex flex-col bg-white dark:bg-gray-900 overflow-hidden">
+    <div className="flex-1 min-w-0 flex flex-col bg-background overflow-hidden">
       {/* Title area */}
-      <div className="p-4 border-b border-[#e7e7e9] dark:border-gray-700">
+      <div className="p-4 border-b border-border">
         {/* <EditableTitle
           title={meetingTitle}
           isEditing={isEditingTitle}
@@ -164,7 +164,7 @@ export function SummaryPanel({
           <div className="flex items-center justify-center flex-1">
             <div className="text-center">
               <div className="inline-block animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-[#485df4] mb-4"></div>
-              <p className="text-[#4a4a4c] dark:text-gray-300">Generando Resumen con IA...</p>
+              <p className="text-muted-foreground">Generando Resumen con IA...</p>
             </div>
           </div>
         </div>
@@ -198,10 +198,10 @@ export function SummaryPanel({
       ) : transcripts?.length > 0 && (
         <div className="flex-1 overflow-y-auto min-h-0">
           {summaryResponse && (
-            <div className="fixed bottom-0 left-0 right-0 bg-white dark:bg-gray-900 shadow-lg p-4 max-h-1/3 overflow-y-auto">
+            <div className="fixed bottom-0 left-0 right-0 bg-background shadow-lg p-4 max-h-1/3 overflow-y-auto">
               <h3 className="text-lg font-semibold mb-2">Resumen de la Reunión</h3>
               <div className="grid grid-cols-2 gap-4">
-                <div className="bg-white dark:bg-gray-800 p-4 rounded-lg shadow-sm">
+                <div className="bg-card p-4 rounded-lg shadow-sm">
                   <h4 className="font-medium mb-1">Puntos Clave</h4>
                   <ul className="list-disc pl-4">
                     {summaryResponse.summary.key_points.blocks.map((block, i) => (
@@ -209,7 +209,7 @@ export function SummaryPanel({
                     ))}
                   </ul>
                 </div>
-                <div className="bg-white dark:bg-gray-800 p-4 rounded-lg shadow-sm mt-4">
+                <div className="bg-card p-4 rounded-lg shadow-sm mt-4">
                   <h4 className="font-medium mb-1">Acciones Pendientes</h4>
                   <ul className="list-disc pl-4">
                     {summaryResponse.summary.action_items.blocks.map((block, i) => (
@@ -217,7 +217,7 @@ export function SummaryPanel({
                     ))}
                   </ul>
                 </div>
-                <div className="bg-white dark:bg-gray-800 p-4 rounded-lg shadow-sm mt-4">
+                <div className="bg-card p-4 rounded-lg shadow-sm mt-4">
                   <h4 className="font-medium mb-1">Decisiones</h4>
                   <ul className="list-disc pl-4">
                     {summaryResponse.summary.decisions.blocks.map((block, i) => (
@@ -225,7 +225,7 @@ export function SummaryPanel({
                     ))}
                   </ul>
                 </div>
-                <div className="bg-white dark:bg-gray-800 p-4 rounded-lg shadow-sm mt-4">
+                <div className="bg-card p-4 rounded-lg shadow-sm mt-4">
                   <h4 className="font-medium mb-1">Temas Principales</h4>
                   <ul className="list-disc pl-4">
                     {summaryResponse.summary.main_topics.blocks.map((block, i) => (
@@ -263,9 +263,9 @@ export function SummaryPanel({
             />
           </div>
           {summaryStatus !== 'idle' && (
-            <div className={`mt-4 p-4 rounded-lg ${summaryStatus === 'error' ? 'bg-[#ffe0eb] dark:bg-red-900/30 text-[#990030] dark:text-red-400' :
-              summaryStatus === 'completed' ? 'bg-[#c5fceb] dark:bg-green-900/30 text-[#108c5c] dark:text-green-400' :
-                'bg-[#e0e5fd] dark:bg-blue-900/30 text-[#2b3892] dark:text-blue-300'
+            <div className={`mt-4 p-4 rounded-lg ${summaryStatus === 'error' ? 'bg-destructive/10 text-destructive' :
+              summaryStatus === 'completed' ? 'bg-green-900/30 text-green-400' :
+                'bg-primary/10 text-primary'
               }`}>
               <p className="text-sm font-medium">{getSummaryStatusMessage(summaryStatus)}</p>
             </div>
