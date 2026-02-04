@@ -48,6 +48,7 @@ pub mod ollama;
 pub mod onboarding;
 pub mod openrouter;
 pub mod parakeet_engine;
+pub mod moonshine_engine;
 pub mod state;
 pub mod summary;
 pub mod tray;
@@ -484,6 +485,7 @@ pub fn run() {
             // Set models directories (always set, even if engines won't be initialized)
             whisper_engine::commands::set_models_directory(&_app.handle());
             parakeet_engine::commands::set_models_directory(&_app.handle());
+            moonshine_engine::commands::set_models_directory(&_app.handle());
 
             // === CONDITIONAL ENGINE INITIALIZATION ===
             // Only initialize local AI engines if configured to use them
@@ -549,6 +551,16 @@ pub fn run() {
                     }
                 } else {
                     log::info!("Skipping Parakeet init - using cloud provider: {}", transcript_provider);
+                }
+
+                // Initialize Moonshine only if using moonshine
+                if transcript_provider == "moonshine" {
+                    log::info!("Initializing Moonshine engine (local provider configured)");
+                    if let Err(e) = moonshine_engine::commands::moonshine_init().await {
+                        log::error!("Failed to initialize Moonshine engine: {}", e);
+                    }
+                } else {
+                    log::info!("Skipping Moonshine init - using provider: {}", transcript_provider);
                 }
 
                 // Initialize ModelManager only if using builtin-ai
@@ -663,6 +675,21 @@ pub fn run() {
             parakeet_engine::commands::parakeet_cancel_download,
             parakeet_engine::commands::parakeet_delete_corrupted_model,
             parakeet_engine::commands::open_parakeet_models_folder,
+            // Moonshine engine commands
+            moonshine_engine::commands::moonshine_init,
+            moonshine_engine::commands::moonshine_get_available_models,
+            moonshine_engine::commands::moonshine_load_model,
+            moonshine_engine::commands::moonshine_get_current_model,
+            moonshine_engine::commands::moonshine_is_model_loaded,
+            moonshine_engine::commands::moonshine_has_available_models,
+            moonshine_engine::commands::moonshine_validate_model_ready,
+            moonshine_engine::commands::moonshine_transcribe_audio,
+            moonshine_engine::commands::moonshine_get_models_directory,
+            moonshine_engine::commands::moonshine_download_model,
+            moonshine_engine::commands::moonshine_retry_download,
+            moonshine_engine::commands::moonshine_cancel_download,
+            moonshine_engine::commands::moonshine_delete_corrupted_model,
+            moonshine_engine::commands::open_moonshine_models_folder,
             // Parallel processing commands
             whisper_engine::parallel_commands::initialize_parallel_processor,
             whisper_engine::parallel_commands::start_parallel_processing,

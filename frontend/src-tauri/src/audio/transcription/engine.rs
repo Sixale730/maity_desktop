@@ -15,6 +15,7 @@ use tauri::{AppHandle, Manager, Runtime};
 pub enum TranscriptionEngine {
     Whisper(Arc<crate::whisper_engine::WhisperEngine>),  // Direct access (backward compat)
     Parakeet(Arc<crate::parakeet_engine::ParakeetEngine>), // Direct access (backward compat)
+    Moonshine(Arc<crate::moonshine_engine::MoonshineEngine>), // Moonshine edge-optimized
     Provider(Arc<dyn TranscriptionProvider>),  // Trait-based (preferred for new code)
 }
 
@@ -24,6 +25,7 @@ impl TranscriptionEngine {
         match self {
             Self::Whisper(engine) => engine.is_model_loaded().await,
             Self::Parakeet(engine) => engine.is_model_loaded().await,
+            Self::Moonshine(engine) => engine.is_model_loaded().await,
             Self::Provider(provider) => provider.is_model_loaded().await,
         }
     }
@@ -33,6 +35,7 @@ impl TranscriptionEngine {
         match self {
             Self::Whisper(engine) => engine.get_current_model().await,
             Self::Parakeet(engine) => engine.get_current_model().await,
+            Self::Moonshine(engine) => engine.get_current_model().await,
             Self::Provider(provider) => provider.get_current_model().await,
         }
     }
@@ -42,6 +45,7 @@ impl TranscriptionEngine {
         match self {
             Self::Whisper(_) => "Whisper (direct)",
             Self::Parakeet(_) => "Parakeet (direct)",
+            Self::Moonshine(_) => "Moonshine (direct)",
             Self::Provider(provider) => provider.provider_name(),
         }
     }
@@ -135,6 +139,29 @@ pub async fn validate_transcription_model_ready<R: Runtime>(app: &AppHandle<R>) 
                 }
             }
         }
+        "moonshine" => {
+            info!("🌙 Validating Moonshine model...");
+            // Ensure moonshine engine is initialized first
+            if let Err(init_error) = crate::moonshine_engine::commands::moonshine_init().await {
+                warn!("❌ Failed to initialize Moonshine engine: {}", init_error);
+                return Err(format!(
+                    "Failed to initialize Moonshine speech recognition: {}",
+                    init_error
+                ));
+            }
+
+            // Use the validation command that includes auto-discovery and loading
+            match crate::moonshine_engine::commands::moonshine_validate_model_ready_with_config(app).await {
+                Ok(model_name) => {
+                    info!("✅ Moonshine model validation successful: {} is ready", model_name);
+                    Ok(())
+                }
+                Err(e) => {
+                    warn!("❌ Moonshine model validation failed: {}", e);
+                    Err(e)
+                }
+            }
+        }
         "deepgram" => {
             info!("🔍 Validating Deepgram cloud provider...");
 
@@ -154,7 +181,7 @@ pub async fn validate_transcription_model_ready<R: Runtime>(app: &AppHandle<R>) 
         other => {
             warn!("❌ Unsupported transcription provider: {}", other);
             Err(format!(
-                "El proveedor '{}' no es compatible. Por favor selecciona 'deepgram', 'localWhisper', o 'parakeet'.",
+                "El proveedor '{}' no es compatible. Por favor selecciona 'deepgram', 'localWhisper', 'parakeet', o 'moonshine'.",
                 other
             ))
         }
@@ -225,6 +252,34 @@ pub async fn get_or_init_transcription_engine<R: Runtime>(
                 }
                 None => {
                     Err("Parakeet engine not initialized. This should not happen after validation.".to_string())
+                }
+            }
+        }
+        "moonshine" => {
+            info!("🌙 Initializing Moonshine transcription engine");
+
+            // Get Moonshine engine
+            let engine = {
+                let guard = crate::moonshine_engine::commands::MOONSHINE_ENGINE
+                    .lock()
+                    .map_err(|e| format!("Moonshine engine mutex poisoned: {}", e))?;
+                guard.as_ref().cloned()
+            };
+
+            match engine {
+                Some(engine) => {
+                    // Check if model is loaded
+                    if engine.is_model_loaded().await {
+                        let model_name = engine.get_current_model().await
+                            .unwrap_or_else(|| "unknown".to_string());
+                        info!("✅ Moonshine model '{}' already loaded", model_name);
+                        Ok(TranscriptionEngine::Moonshine(engine))
+                    } else {
+                        Err("Moonshine engine initialized but no model loaded. This should not happen after validation.".to_string())
+                    }
+                }
+                None => {
+                    Err("Moonshine engine not initialized. This should not happen after validation.".to_string())
                 }
             }
         }

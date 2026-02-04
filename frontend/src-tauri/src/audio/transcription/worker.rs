@@ -94,6 +94,7 @@ pub fn start_transcription_task<R: Runtime>(
             let engine_clone = match &transcription_engine {
                 TranscriptionEngine::Whisper(e) => TranscriptionEngine::Whisper(e.clone()),
                 TranscriptionEngine::Parakeet(e) => TranscriptionEngine::Parakeet(e.clone()),
+                TranscriptionEngine::Moonshine(e) => TranscriptionEngine::Moonshine(e.clone()),
                 TranscriptionEngine::Provider(p) => TranscriptionEngine::Provider(p.clone()),
             };
             let app_clone = app.clone();
@@ -174,7 +175,7 @@ pub fn start_transcription_task<R: Runtime>(
                                     // Provider-aware confidence threshold
                                     let confidence_threshold = match &engine_clone {
                                         TranscriptionEngine::Whisper(_) | TranscriptionEngine::Provider(_) => 0.3,
-                                        TranscriptionEngine::Parakeet(_) => 0.0, // Parakeet has no confidence, accept all
+                                        TranscriptionEngine::Parakeet(_) | TranscriptionEngine::Moonshine(_) => 0.0, // Parakeet/Moonshine have no confidence, accept all
                                     };
 
                                     let confidence_str = match confidence_opt {
@@ -578,6 +579,42 @@ async fn transcribe_chunk_with_provider<R: Runtime>(
                 Err(e) => {
                     error!(
                         "Parakeet transcription failed for chunk {}: {}",
+                        chunk.chunk_id, e
+                    );
+
+                    let transcription_error = TranscriptionError::EngineFailed(e.to_string());
+                    let _ = app.emit(
+                        "transcription-error",
+                        &serde_json::json!({
+                            "error": transcription_error.to_string(),
+                            "userMessage": format!("Transcription failed: {}", transcription_error),
+                            "actionable": false
+                        }),
+                    );
+
+                    Err(transcription_error)
+                }
+            }
+        }
+        TranscriptionEngine::Moonshine(moonshine_engine) => {
+            match moonshine_engine.transcribe_audio(speech_samples).await {
+                Ok(text) => {
+                    let cleaned_text = text.trim().to_string();
+                    if cleaned_text.is_empty() {
+                        return Ok((String::new(), None, false));
+                    }
+
+                    info!(
+                        "Moonshine transcription complete for chunk {}: '{}'",
+                        chunk.chunk_id, cleaned_text
+                    );
+
+                    // Moonshine doesn't provide confidence or partial results
+                    Ok((cleaned_text, None, false))
+                }
+                Err(e) => {
+                    error!(
+                        "Moonshine transcription failed for chunk {}: {}",
                         chunk.chunk_id, e
                     );
 
