@@ -10,3 +10,4 @@ export type { SummaryFormat, BlockNoteBlock, SummaryDataResponse } from './block
 export type { Block, Section, Summary, ApiResponse, SummaryResponse } from './api';
 export type { ProcessedSummary, ProcessSummaryResponse, ProcessRequest } from './summary';
 export type { OnboardingStep, PermissionStatus, OnboardingPermissions, OnboardingContainerProps, PermissionRowProps, StatusIndicatorProps } from './onboarding';
+export type { CommunicationFeedback, CommunicationObservations } from './communication';

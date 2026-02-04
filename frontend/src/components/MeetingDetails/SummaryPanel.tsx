@@ -1,9 +1,11 @@
 "use client";
 
 import { Summary, SummaryResponse, Transcript } from '@/types';
+import { CommunicationFeedback } from '@/types/communication';
 import { EditableTitle } from '@/components/shared/EditableTitle';
 import { BlockNoteSummaryView, BlockNoteSummaryViewRef } from '@/components/AISummary/BlockNoteSummaryView';
 import { EmptyStateSummary } from '@/components/shared/EmptyStateSummary';
+import { CommunicationFeedbackPanel } from './CommunicationFeedbackPanel';
 import type { ModelConfig } from '@/types/models';
 import { SummaryGeneratorButtonGroup } from './SummaryGeneratorButtonGroup';
 import { SummaryUpdaterButtonGroup } from './SummaryUpdaterButtonGroup';
@@ -28,6 +30,7 @@ interface SummaryPanelProps {
   onCopySummary: () => Promise<void>;
   onOpenFolder: () => Promise<void>;
   aiSummary: Summary | null;
+  communicationFeedback?: CommunicationFeedback | null;
   summaryStatus: 'idle' | 'processing' | 'summarizing' | 'regenerating' | 'completed' | 'error';
   transcripts: Transcript[];
   modelConfig: ModelConfig;
@@ -64,6 +67,7 @@ export function SummaryPanel({
   onCopySummary,
   onOpenFolder,
   aiSummary,
+  communicationFeedback,
   summaryStatus,
   transcripts,
   modelConfig,
@@ -243,6 +247,10 @@ export function SummaryPanel({
             </div>
           )}
           <div className="p-6 w-full">
+            {/* Communication Feedback Panel - shown when feedback is available */}
+            {communicationFeedback && (
+              <CommunicationFeedbackPanel feedback={communicationFeedback} />
+            )}
             <BlockNoteSummaryView
               ref={summaryRef}
               summaryData={aiSummary}

@@ -589,6 +589,22 @@ La configuración de modelo e idioma se guarda en la tabla `transcript_settings`
 - [frontend/src/features/conversations/services/conversations.service.ts](frontend/src/features/conversations/services/conversations.service.ts) - Servicio para CRUD de conversaciones OMI desde Supabase
 - [frontend/src/app/conversations/page.tsx](frontend/src/app/conversations/page.tsx) - Página /conversations
 
+**Sistema de Evaluación de Comunicación** (análisis de habilidades de comunicación post-reunión):
+- [frontend/src-tauri/src/summary/communication_types.rs](frontend/src-tauri/src/summary/communication_types.rs) - Tipos Rust para CommunicationFeedback
+- [frontend/src-tauri/src/summary/communication_evaluator.rs](frontend/src-tauri/src/summary/communication_evaluator.rs) - Evaluador que genera puntuaciones vía LLM
+- [frontend/src-tauri/src/summary/service.rs](frontend/src-tauri/src/summary/service.rs) - Integración en el flujo de generación de resumen (líneas 267-301)
+- [frontend/src/types/communication.ts](frontend/src/types/communication.ts) - Tipos TypeScript para CommunicationFeedback
+- [frontend/src/components/MeetingDetails/CommunicationFeedbackPanel.tsx](frontend/src/components/MeetingDetails/CommunicationFeedbackPanel.tsx) - Panel UI de evaluación
+
+**Flujo de Evaluación de Comunicación**:
+1. Usuario genera resumen de reunión via `api_process_transcript`
+2. `SummaryService::process_transcript_background` genera primero el markdown del resumen
+3. Después llama a `evaluate_communication` con la transcripción completa
+4. El LLM evalúa claridad, engagement, estructura (0-10) + fortalezas/áreas de mejora
+5. El resultado se guarda en `summary_processes.result` como JSON con `markdown` + `communication_feedback`
+6. El frontend extrae `communication_feedback` en `page.tsx` y lo pasa a `CommunicationFeedbackPanel`
+7. El panel muestra puntuaciones, fortalezas, áreas de mejora e insights
+
 **Integración Whisper**:
 - [frontend/src-tauri/src/whisper_engine/whisper_engine.rs](frontend/src-tauri/src/whisper_engine/whisper_engine.rs) - Gestión de modelos Whisper y transcripción
 

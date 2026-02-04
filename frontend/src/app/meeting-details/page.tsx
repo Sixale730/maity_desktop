@@ -2,6 +2,7 @@
 import { useSidebar } from "@/components/Sidebar/SidebarProvider";
 import { useState, useEffect, useCallback, Suspense } from "react";
 import { Transcript, Summary } from "@/types";
+import { CommunicationFeedback } from "@/types/communication";
 import PageContent from "./page-content";
 import { useRouter, useSearchParams } from "next/navigation";
 import Analytics from "@/lib/analytics";
@@ -27,6 +28,7 @@ function MeetingDetailsContent() {
   const router = useRouter();
   const [meetingDetails, setMeetingDetails] = useState<MeetingDetailsResponse | null>(null);
   const [meetingSummary, setMeetingSummary] = useState<Summary | null>(null);
+  const [communicationFeedback, setCommunicationFeedback] = useState<CommunicationFeedback | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [shouldAutoGenerate, setShouldAutoGenerate] = useState<boolean>(false);
@@ -161,6 +163,7 @@ function MeetingDetailsContent() {
   useEffect(() => {
     setMeetingDetails(null);
     setMeetingSummary(null);
+    setCommunicationFeedback(null);
     setError(null);
     setIsLoading(true);
     // Reset auto-generation state to allow new meeting to be checked
@@ -225,6 +228,14 @@ function MeetingDetailsContent() {
         }
 
         console.log('🔍 FETCH SUMMARY: Parsed data:', parsedData);
+
+        // Extract communication feedback if present
+        if (parsedData.communication_feedback) {
+          console.log('🔍 FETCH SUMMARY: Found communication feedback:', parsedData.communication_feedback);
+          setCommunicationFeedback(parsedData.communication_feedback);
+        } else {
+          setCommunicationFeedback(null);
+        }
 
         // Priority 1: BlockNote JSON format
         if (parsedData.summary_json) {
@@ -358,6 +369,7 @@ function MeetingDetailsContent() {
   return <PageContent
     meeting={meetingDetails}
     summaryData={meetingSummary}
+    communicationFeedback={communicationFeedback}
     shouldAutoGenerate={shouldAutoGenerate}
     onAutoGenerateComplete={() => setShouldAutoGenerate(false)}
     onMeetingUpdated={async () => {

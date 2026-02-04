@@ -1,6 +1,8 @@
 use crate::database::repositories::{
     meeting::MeetingsRepository, setting::SettingsRepository, summary::SummaryProcessesRepository,
 };
+use crate::summary::communication_evaluator::evaluate_communication;
+use crate::summary::communication_types::CommunicationFeedback;
 use crate::summary::llm_client::LLMProvider;
 use crate::summary::processor::{extract_meeting_name_from_markdown, generate_meeting_summary};
 use crate::ollama::metadata::ModelMetadataCache;
@@ -295,10 +297,50 @@ impl SummaryService {
                     }
                 }
 
-                // Create result JSON with markdown only (summary_json will be added on first edit)
-                let result_json = serde_json::json!({
-                    "markdown": final_markdown,
-                });
+                // Generate communication evaluation (non-blocking - if it fails, continue without it)
+                info!("Starting communication evaluation for meeting_id: {}", meeting_id);
+                let communication_feedback: Option<CommunicationFeedback> = match evaluate_communication(
+                    &client,
+                    &provider,
+                    &model_name,
+                    &final_api_key,
+                    &text,
+                    ollama_endpoint.as_deref(),
+                    custom_openai_endpoint.as_deref(),
+                    custom_openai_max_tokens,
+                    custom_openai_temperature,
+                    custom_openai_top_p,
+                    app_data_dir.as_ref(),
+                )
+                .await
+                {
+                    Ok(feedback) => {
+                        info!(
+                            "✓ Communication evaluation completed for meeting_id: {}. Score: {:?}",
+                            meeting_id, feedback.overall_score
+                        );
+                        Some(feedback)
+                    }
+                    Err(e) => {
+                        warn!(
+                            "Communication evaluation failed for meeting_id: {}. Error: {}. Continuing without evaluation.",
+                            meeting_id, e
+                        );
+                        None
+                    }
+                };
+
+                // Create result JSON with markdown and optional communication feedback
+                let result_json = if let Some(ref feedback) = communication_feedback {
+                    serde_json::json!({
+                        "markdown": final_markdown,
+                        "communication_feedback": feedback,
+                    })
+                } else {
+                    serde_json::json!({
+                        "markdown": final_markdown,
+                    })
+                };
 
                 // Update database with completed status
                 if let Err(e) = SummaryProcessesRepository::update_process_completed(

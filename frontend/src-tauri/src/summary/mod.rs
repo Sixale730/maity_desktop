@@ -31,6 +31,8 @@ pub struct CustomOpenAIConfig {
 }
 
 pub mod commands;
+pub mod communication_evaluator;
+pub mod communication_types;
 pub mod llm_client;
 pub mod processor;
 pub mod service;

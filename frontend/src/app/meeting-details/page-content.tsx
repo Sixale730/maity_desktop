@@ -2,6 +2,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { motion } from 'framer-motion';
 import { Summary, SummaryResponse } from '@/types';
+import { CommunicationFeedback } from '@/types/communication';
 import { useSidebar } from '@/components/Sidebar/SidebarProvider';
 import Analytics from '@/lib/analytics';
 import { TranscriptPanel } from '@/components/MeetingDetails/TranscriptPanel';
@@ -18,6 +19,7 @@ import { useConfig } from '@/contexts/ConfigContext';
 export default function PageContent({
   meeting,
   summaryData,
+  communicationFeedback,
   shouldAutoGenerate = false,
   onAutoGenerateComplete,
   onMeetingUpdated,
@@ -31,6 +33,7 @@ export default function PageContent({
 }: {
   meeting: any;
   summaryData: Summary | null;
+  communicationFeedback?: CommunicationFeedback | null;
   shouldAutoGenerate?: boolean;
   onAutoGenerateComplete?: () => void;
   onMeetingUpdated?: () => Promise<void>;
@@ -181,6 +184,7 @@ export default function PageContent({
           onCopySummary={copyOperations.handleCopySummary}
           onOpenFolder={meetingOperations.handleOpenMeetingFolder}
           aiSummary={meetingData.aiSummary}
+          communicationFeedback={communicationFeedback}
           summaryStatus={summaryGeneration.summaryStatus}
           transcripts={meetingData.transcripts}
           modelConfig={modelConfig}
