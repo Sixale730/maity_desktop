@@ -271,7 +271,7 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
             {/* Recording Status Bar - Sticky at top, always visible when recording */}
             <AnimatePresence>
                 {isRecording && (
-                    <div className="sticky top-0 z-10 bg-white dark:bg-gray-900 pb-2">
+                    <div className="sticky top-0 z-10 bg-background pb-2">
                         <RecordingStatusBar isPaused={isPaused} />
                     </div>
                 )}
@@ -284,17 +284,17 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                 <motion.div
                     initial={{ opacity: 0 }}
                     animate={{ opacity: 1 }}
-                    className="text-center text-[#6a6a6d] mt-8"
+                    className="text-center text-muted-foreground mt-8"
                 >
                     {isRecording ? (
                         <>
                             <div className="flex items-center justify-center mb-3">
                                 <div className={`w-3 h-3 rounded-full ${isPaused ? 'bg-[#ff4080]' : 'bg-[#485df4] animate-pulse'}`}></div>
                             </div>
-                            <p className="text-sm text-[#4a4a4c]">
+                            <p className="text-sm text-muted-foreground">
                                 {isPaused ? 'Grabación pausada' : 'Escuchando...'}
                             </p>
-                            <p className="text-xs mt-1 text-[#8a8a8d]">
+                            <p className="text-xs mt-1 text-muted-foreground/70">
                                 {isPaused ? 'Haz clic en reanudar para continuar' : 'Habla para ver la transcripción en vivo'}
                             </p>
                         </>

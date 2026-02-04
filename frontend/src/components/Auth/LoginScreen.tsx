@@ -46,7 +46,7 @@ export function LoginScreen() {
   }
 
   return (
-    <div className="fixed inset-0 bg-[#f5f5f6] dark:bg-gray-900 flex items-center justify-center z-50 overflow-hidden">
+    <div className="fixed inset-0 bg-background flex items-center justify-center z-50 overflow-hidden">
       <div className="w-full max-w-md flex flex-col items-center px-6 py-6 space-y-10">
         {/* Logo / Brand */}
         <div className="flex flex-col items-center space-y-4">

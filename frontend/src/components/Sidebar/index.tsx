@@ -458,11 +458,11 @@ const Sidebar: React.FC = () => {
             <TooltipTrigger asChild>
               <button
                 onClick={() => router.push('/')}
-                className={`p-2 rounded-lg transition-colors duration-150 ${isHomePage ? 'bg-[#e7e7e9] dark:bg-gray-700' : 'hover:bg-[#e7e7e9] dark:hover:bg-gray-700'
+                className={`p-2 rounded-lg transition-colors duration-150 ${isHomePage ? 'bg-secondary' : 'hover:bg-secondary'
                   }`}
                 aria-label="Ir al inicio"
               >
-                <Home className="w-5 h-5 text-[#4a4a4c] dark:text-gray-300" />
+                <Home className="w-5 h-5 text-muted-foreground" />
               </button>
             </TooltipTrigger>
             <TooltipContent side="right">
@@ -474,7 +474,7 @@ const Sidebar: React.FC = () => {
             <TooltipTrigger asChild>
               <button
                 onClick={() => router.push('/gamification')}
-                className={`p-2 rounded-lg transition-colors duration-150 ${isGamificationPage ? 'bg-[#e7e7e9] dark:bg-gray-700' : 'hover:bg-[#e7e7e9] dark:hover:bg-gray-700'
+                className={`p-2 rounded-lg transition-colors duration-150 ${isGamificationPage ? 'bg-secondary' : 'hover:bg-secondary'
                   }`}
                 aria-label="Gamificación"
               >
@@ -490,7 +490,7 @@ const Sidebar: React.FC = () => {
             <TooltipTrigger asChild>
               <button
                 onClick={() => router.push('/conversations')}
-                className={`p-2 rounded-lg transition-colors duration-150 ${isConversationsPage ? 'bg-[#e7e7e9] dark:bg-gray-700' : 'hover:bg-[#e7e7e9] dark:hover:bg-gray-700'
+                className={`p-2 rounded-lg transition-colors duration-150 ${isConversationsPage ? 'bg-secondary' : 'hover:bg-secondary'
                   }`}
                 aria-label="Conversaciones"
               >
@@ -526,11 +526,11 @@ const Sidebar: React.FC = () => {
             <TooltipTrigger asChild>
               <button
                 onClick={() => router.push('/settings')}
-                className={`p-2 rounded-lg transition-colors duration-150 ${isSettingsPage ? 'bg-[#e7e7e9] dark:bg-gray-700' : 'hover:bg-[#e7e7e9] dark:hover:bg-gray-700'
+                className={`p-2 rounded-lg transition-colors duration-150 ${isSettingsPage ? 'bg-secondary' : 'hover:bg-secondary'
                   }`}
                 aria-label="Abrir configuración"
               >
-                <Settings className="w-5 h-5 text-[#4a4a4c] dark:text-gray-300" />
+                <Settings className="w-5 h-5 text-muted-foreground" />
               </button>
             </TooltipTrigger>
             <TooltipContent side="right">
@@ -567,9 +567,9 @@ const Sidebar: React.FC = () => {
         <div
           className={`flex items-center transition-all duration-150 group ${item.type === 'folder' && depth === 0
             ? 'p-3 text-lg font-semibold h-10 mx-3 mt-3 rounded-lg'
-            : `px-3 py-2 my-0.5 rounded-md text-sm ${isActive ? 'bg-[#e0e5fd] dark:bg-gray-700 text-[#2b3892] dark:text-blue-300 font-medium' :
-              hasTranscriptMatch ? 'bg-[#f0f2fe] dark:bg-gray-800' : 'hover:bg-[#f5f5f6] dark:hover:bg-gray-800'
-            } cursor-pointer dark:text-gray-200`
+            : `px-3 py-2 my-0.5 rounded-md text-sm ${isActive ? 'bg-primary/10 text-primary font-medium' :
+              hasTranscriptMatch ? 'bg-muted/50' : 'hover:bg-muted'
+            } cursor-pointer text-foreground`
             }`}
           style={item.type === 'folder' && depth === 0 ? {} : { paddingLeft }}
           onClick={() => {
@@ -593,9 +593,9 @@ const Sidebar: React.FC = () => {
               <span className={depth === 0 ? "" : "font-medium"}>{item.title}</span>
               <div className="ml-auto">
                 {isExpanded ? (
-                  <ChevronDown className="w-4 h-4 text-[#6a6a6d]" />
+                  <ChevronDown className="w-4 h-4 text-muted-foreground" />
                 ) : (
-                  <ChevronRight className="w-4 h-4 text-[#6a6a6d]" />
+                  <ChevronRight className="w-4 h-4 text-muted-foreground" />
                 )}
               </div>
               {searchQuery && item.id === 'meetings' && isSearching && (
@@ -606,12 +606,12 @@ const Sidebar: React.FC = () => {
             <div className="flex flex-col w-full">
               <div className="flex items-center w-full">
                 {isMeetingItem ? (
-                  <div className="flex-shrink-0 flex items-center justify-center w-6 h-6 rounded-full mr-2 bg-[#e7e7e9] dark:bg-gray-700">
-                    <File className="w-3.5 h-3.5 text-[#4a4a4c] dark:text-gray-300" />
+                  <div className="flex-shrink-0 flex items-center justify-center w-6 h-6 rounded-full mr-2 bg-secondary">
+                    <File className="w-3.5 h-3.5 text-muted-foreground" />
                   </div>
                 ) : (
-                  <div className="flex-shrink-0 flex items-center justify-center w-6 h-6 rounded-full mr-2 bg-[#e0e5fd] dark:bg-blue-900">
-                    <Plus className="w-3.5 h-3.5 text-[#3a4ac3] dark:text-blue-300" />
+                  <div className="flex-shrink-0 flex items-center justify-center w-6 h-6 rounded-full mr-2 bg-primary/10">
+                    <Plus className="w-3.5 h-3.5 text-primary" />
                   </div>
                 )}
                 <span className="flex-1 break-words">{item.title}</span>
@@ -622,7 +622,7 @@ const Sidebar: React.FC = () => {
                         e.stopPropagation();
                         handleEditStart(item.id, item.title);
                       }}
-                      className="hover:text-[#3a4ac3] dark:hover:text-blue-300 p-1 rounded-md hover:bg-[#f0f2fe] dark:hover:bg-gray-700 flex-shrink-0"
+                      className="hover:text-primary p-1 rounded-md hover:bg-muted flex-shrink-0"
                       aria-label="Edit meeting title"
                     >
                       <Pencil className="w-4 h-4" />
@@ -632,7 +632,7 @@ const Sidebar: React.FC = () => {
                         e.stopPropagation();
                         setDeleteModalState({ isOpen: true, itemId: item.id });
                       }}
-                      className="hover:text-[#cc0040] dark:hover:text-red-400 p-1 rounded-md hover:bg-[#fff0f5] dark:hover:bg-red-900/30 flex-shrink-0"
+                      className="hover:text-destructive p-1 rounded-md hover:bg-destructive/10 flex-shrink-0"
                       aria-label="Delete meeting"
                     >
                       <Trash2 className="w-4 h-4" />
@@ -643,8 +643,8 @@ const Sidebar: React.FC = () => {
 
               {/* Show transcript match snippet if available */}
               {hasTranscriptMatch && (
-                <div className="mt-1 ml-8 text-xs text-[#6a6a6d] dark:text-gray-400 bg-[#f0f2fe] dark:bg-gray-800 p-1.5 rounded border border-[#e0e5fd] dark:border-gray-600 line-clamp-2">
-                  <span className="font-medium text-[#3a4ac3] dark:text-blue-300">Match:</span> {matchingResult.matchContext}
+                <div className="mt-1 ml-8 text-xs text-muted-foreground bg-muted/50 p-1.5 rounded border border-border line-clamp-2">
+                  <span className="font-medium text-primary">Match:</span> {matchingResult.matchContext}
                 </div>
               )}
             </div>
@@ -664,7 +664,7 @@ const Sidebar: React.FC = () => {
       {/* Floating collapse button */}
       <button
         onClick={toggleCollapse}
-        className="absolute -right-6 top-20 z-50 p-1 bg-white dark:bg-gray-800 hover:bg-[#e7e7e9] dark:hover:bg-gray-700 rounded-full shadow-lg border dark:border-gray-700"
+        className="absolute -right-6 top-20 z-50 p-1 bg-background hover:bg-secondary rounded-full shadow-lg border border-border"
         style={{ transform: 'translateX(50%)' }}
         aria-label={isCollapsed ? 'Expandir barra lateral' : 'Contraer barra lateral'}
       >
@@ -676,7 +676,7 @@ const Sidebar: React.FC = () => {
       </button>
 
       <div
-        className={`h-screen bg-white dark:bg-gray-900 border-r dark:border-gray-700 shadow-sm flex flex-col transition-all duration-300 ${isCollapsed ? 'w-16' : 'w-64'
+        className={`h-screen bg-background border-r border-border shadow-sm flex flex-col transition-all duration-300 ${isCollapsed ? 'w-16' : 'w-64'
           }`}
       >
         {/*  Header with traffic light spacing */}
@@ -726,21 +726,21 @@ const Sidebar: React.FC = () => {
               <>
                 <div
                   onClick={() => router.push('/')}
-                  className={`p-3 text-lg font-semibold items-center hover:bg-[#e7e7e9] dark:hover:bg-gray-800 h-10 flex mx-3 mt-3 rounded-lg cursor-pointer dark:text-gray-100 ${pathname === '/' ? 'bg-[#e7e7e9] dark:bg-gray-700' : ''}`}
+                  className={`p-3 text-lg font-semibold items-center hover:bg-secondary h-10 flex mx-3 mt-3 rounded-lg cursor-pointer text-foreground ${pathname === '/' ? 'bg-secondary' : ''}`}
                 >
                   <Home className="w-4 h-4 mr-2" />
                   <span>Inicio</span>
                 </div>
                 <div
                   onClick={() => router.push('/gamification')}
-                  className={`p-3 text-lg font-semibold items-center hover:bg-[#e7e7e9] dark:hover:bg-gray-800 h-10 flex mx-3 mt-2 rounded-lg cursor-pointer dark:text-gray-100 ${pathname === '/gamification' ? 'bg-[#e7e7e9] dark:bg-gray-700' : ''}`}
+                  className={`p-3 text-lg font-semibold items-center hover:bg-secondary h-10 flex mx-3 mt-2 rounded-lg cursor-pointer text-foreground ${pathname === '/gamification' ? 'bg-secondary' : ''}`}
                 >
                   <Trophy className="w-4 h-4 mr-2 text-[#ffd93d]" />
                   <span>Gamificación</span>
                 </div>
                 <div
                   onClick={() => router.push('/conversations')}
-                  className={`p-3 text-lg font-semibold items-center hover:bg-[#e7e7e9] dark:hover:bg-gray-800 h-10 flex mx-3 mt-2 rounded-lg cursor-pointer dark:text-gray-100 ${pathname === '/conversations' ? 'bg-[#e7e7e9] dark:bg-gray-700' : ''}`}
+                  className={`p-3 text-lg font-semibold items-center hover:bg-secondary h-10 flex mx-3 mt-2 rounded-lg cursor-pointer text-foreground ${pathname === '/conversations' ? 'bg-secondary' : ''}`}
                 >
                   <MessageSquare className="w-4 h-4 mr-2 text-[#00f5d4]" />
                   <span>Conversaciones</span>
@@ -760,8 +760,8 @@ const Sidebar: React.FC = () => {
                     <div
                       className="flex items-center transition-all duration-150 p-3 text-lg font-semibold h-10 mx-3 mt-3 rounded-lg"
                     >
-                      <NotebookPen className="w-4 h-4 mr-2 text-[#4a4a4c] dark:text-gray-400" />
-                      <span className="text-[#3a3a3c] dark:text-gray-200">{item.title}</span>
+                      <NotebookPen className="w-4 h-4 mr-2 text-muted-foreground" />
+                      <span className="text-foreground">{item.title}</span>
                       {searchQuery && item.id === 'meetings' && isSearching && (
                         <span className="ml-2 text-xs text-[#485df4] animate-pulse">Buscando...</span>
                       )}
@@ -814,7 +814,7 @@ const Sidebar: React.FC = () => {
             <h3 className="text-lg font-semibold mb-4">Editar Título de Reunión</h3>
             <div className="space-y-4">
               <div>
-                <label htmlFor="meeting-title" className="block text-sm font-medium text-[#3a3a3c] dark:text-gray-200 mb-2">
+                <label htmlFor="meeting-title" className="block text-sm font-medium text-foreground mb-2">
                   Título de la Reunión
                 </label>
                 <input
@@ -829,7 +829,7 @@ const Sidebar: React.FC = () => {
                       handleEditCancel();
                     }
                   }}
-                  className="w-full px-3 py-2 border border-[#d0d0d3] dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100 rounded-md focus:outline-none focus:ring-2 focus:ring-[#485df4] focus:border-transparent"
+                  className="w-full px-3 py-2 border border-border bg-background text-foreground rounded-md focus:outline-none focus:ring-2 focus:ring-ring focus:border-transparent"
                   placeholder="Ingresa el título de la reunión"
                   autoFocus
                 />
@@ -839,13 +839,13 @@ const Sidebar: React.FC = () => {
           <DialogFooter>
             <button
               onClick={handleEditCancel}
-              className="px-4 py-2 text-sm font-medium text-[#3a3a3c] dark:text-gray-200 bg-[#e7e7e9] dark:bg-gray-700 hover:bg-[#d0d0d3] dark:hover:bg-gray-600 rounded-md transition-colors"
+              className="px-4 py-2 text-sm font-medium text-foreground bg-secondary hover:bg-muted rounded-md transition-colors"
             >
               Cancelar
             </button>
             <button
               onClick={handleEditConfirm}
-              className="px-4 py-2 text-sm font-medium text-white bg-[#3a4ac3] dark:bg-blue-600 hover:bg-[#2b3892] dark:hover:bg-blue-700 rounded-md transition-colors"
+              className="px-4 py-2 text-sm font-medium text-primary-foreground bg-primary hover:bg-primary/90 rounded-md transition-colors"
             >
               Guardar
             </button>

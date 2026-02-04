@@ -51,9 +51,9 @@ export function TranscriptPanel({
   );
 
   return (
-    <div ref={transcriptContainerRef} className="w-full border-r border-[#e7e7e9] dark:border-gray-700 bg-white dark:bg-gray-900 flex flex-col overflow-y-auto">
+    <div ref={transcriptContainerRef} className="w-full border-r border-border bg-background flex flex-col overflow-y-auto">
       {/* Title area - Sticky header */}
-      <div className="sticky top-0 z-10 bg-white dark:bg-gray-900 p-4 border-[#e7e7e9] dark:border-gray-700">
+      <div className="sticky top-0 z-10 bg-background p-4 border-border">
         <div className="flex flex-col space-y-3">
           <div className="flex  flex-col space-y-2">
             <div className="flex justify-center  items-center space-x-2">
