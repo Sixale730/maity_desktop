@@ -1,19 +1,33 @@
-use ndarray::{Array2, ArrayD};
+use ndarray::{Array2, Array4, ArrayD};
 use ort::execution_providers::CPUExecutionProvider;
 use ort::inputs;
 use ort::session::builder::GraphOptimizationLevel;
 use ort::session::Session;
-use ort::value::TensorRef;
+use ort::value::{Tensor, TensorRef};
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
+/// Output from a single decoder step
+struct DecoderStepOutput {
+    /// Logits tensor for next token prediction
+    logits: ArrayD<f32>,
+    /// Updated past_key_values for next step
+    new_cache: HashMap<String, ArrayD<f32>>,
+}
+
 const MAX_TOKENS: usize = 1024;
 const EOS_TOKEN_ID: i64 = 2; // End of sequence token
+const BOS_TOKEN_ID: i64 = 1; // Beginning of sequence token
+
+// Moonshine-base decoder configuration (from config.json)
+const DECODER_NUM_LAYERS: usize = 8;
+const NUM_KEY_VALUE_HEADS: usize = 8;
+const HEAD_DIM: usize = 56; // 416/8 = 52, padded to multiple of 8 for efficiency
 
 #[derive(thiserror::Error, Debug)]
 pub enum MoonshineError {
-    #[error("ORT error")]
+    #[error("ORT error: {0}")]
     Ort(#[from] ort::Error),
     #[error("I/O error")]
     Io(#[from] std::io::Error),
@@ -180,13 +194,55 @@ impl MoonshineModel {
             .with_parallel_execution(true)?
             .commit_from_file(model_dir.as_ref().join(&model_filename))?;
 
+        // Log all inputs and outputs for debugging
+        let input_names: Vec<&str> = session.inputs.iter().map(|i| i.name.as_str()).collect();
+        let output_names: Vec<&str> = session.outputs.iter().map(|o| o.name.as_str()).collect();
+
+        log::info!(
+            "Moonshine '{}' loaded: inputs={:?}, outputs={:?}",
+            model_filename, input_names, output_names
+        );
+
         for input in &session.inputs {
             log::info!(
-                "Moonshine Model '{}' input: name={}, type={:?}",
-                model_filename,
+                "  Input '{}': type={:?}",
                 input.name,
                 input.input_type
             );
+        }
+
+        for output in &session.outputs {
+            log::info!(
+                "  Output '{}': type={:?}",
+                output.name,
+                output.output_type
+            );
+        }
+
+        // Validate expected inputs based on model type
+        if model_name == "encoder_model" {
+            // Encoder uses positional input (first input) so any single input name is valid
+            if input_names.is_empty() {
+                log::warn!(
+                    "⚠️ Encoder model has no inputs. This will cause transcription to fail."
+                );
+            } else {
+                log::info!(
+                    "✅ Encoder model has {} input(s): {:?} (using positional input)",
+                    input_names.len(), input_names
+                );
+            }
+        } else if model_name == "decoder_model_merged" {
+            let expected_decoder_inputs = ["input_ids", "encoder_hidden_states"];
+            for expected in expected_decoder_inputs {
+                if !input_names.contains(&expected) {
+                    log::warn!(
+                        "⚠️ Decoder model missing expected input '{}'. Available inputs: {:?}. \
+                        This may cause transcription to fail.",
+                        expected, input_names
+                    );
+                }
+            }
         }
 
         Ok(session)
@@ -202,21 +258,54 @@ impl MoonshineModel {
 
     /// Encode audio samples to hidden states
     fn encode(&mut self, audio_samples: &[f32]) -> Result<ArrayD<f32>, MoonshineError> {
-        log::trace!("Running Moonshine encoder inference...");
+        log::info!(
+            "Running Moonshine encoder with {} samples ({:.2}s at 16kHz)",
+            audio_samples.len(),
+            audio_samples.len() as f64 / 16000.0
+        );
 
         // Moonshine expects audio as [batch_size, sequence_length]
         let batch_size = 1;
         let seq_len = audio_samples.len();
 
+        // Log audio statistics for debugging
+        let (min_val, max_val, mean_val) = if !audio_samples.is_empty() {
+            let min = audio_samples.iter().cloned().fold(f32::INFINITY, f32::min);
+            let max = audio_samples.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+            let sum: f32 = audio_samples.iter().sum();
+            let mean = sum / audio_samples.len() as f32;
+            (min, max, mean)
+        } else {
+            (0.0, 0.0, 0.0)
+        };
+        log::debug!(
+            "Audio stats: min={:.4}, max={:.4}, mean={:.6}, shape=[{}, {}]",
+            min_val, max_val, mean_val, batch_size, seq_len
+        );
+
+        // Log the encoder input name for debugging (different Moonshine exports use different names)
+        if let Some(input_info) = self.encoder.inputs.first() {
+            log::debug!("Encoder input name: '{}', using positional input", input_info.name);
+        }
+
         // Create input array
         let audio_array = Array2::from_shape_vec((batch_size, seq_len), audio_samples.to_vec())?
             .into_dyn();
 
+        // Use positional input (first input) instead of named input to support
+        // different Moonshine model exports that may use different input names
+        // (e.g., "args_0", "audio", "input", etc.)
         let inputs = inputs![
-            "args_0" => TensorRef::from_array_view(audio_array.view())?,
+            TensorRef::from_array_view(audio_array.view())?,
         ];
 
-        let outputs = self.encoder.run(inputs)?;
+        let outputs = self.encoder.run(inputs).map_err(|e| {
+            log::error!(
+                "Moonshine encoder ORT error: {:?} | Input shape: [{}, {}] | Audio range: [{:.4}, {:.4}]",
+                e, batch_size, seq_len, min_val, max_val
+            );
+            e
+        })?;
 
         // Get encoder output (hidden states)
         // Try different output names that Moonshine models might use
@@ -236,48 +325,77 @@ impl MoonshineModel {
         Ok(hidden_states)
     }
 
-    /// Decode hidden states to text tokens
+    /// Decode hidden states to text tokens using the merged decoder model.
+    ///
+    /// The merged decoder model combines initial decoding (without cache) and
+    /// cached decoding (with KV cache) into a single model. It requires:
+    /// - `use_cache_branch`: Boolean to select which branch to use
+    /// - `past_key_values.*`: 32 cache tensors (8 layers × 2 modules × 2 key/value)
     fn decode(&mut self, encoder_output: &ArrayD<f32>) -> Result<Vec<i64>, MoonshineError> {
-        log::trace!("Running Moonshine decoder inference...");
+        log::info!(
+            "Running Moonshine decoder with encoder_output shape: {:?}",
+            encoder_output.shape()
+        );
 
-        let mut tokens: Vec<i64> = vec![1]; // Start with BOS token (usually 1)
+        let mut tokens: Vec<i64> = vec![BOS_TOKEN_ID];
         let batch_size = 1;
 
-        // Moonshine decoder expects:
-        // - encoder_hidden_states: [batch, seq_len, hidden_dim]
-        // - input_ids: [batch, token_seq_len]
+        // Initialize empty past_key_values for all layers
+        // Shape: [batch, num_heads, seq_len, head_dim]
+        // Initial seq_len is 0 (empty cache)
+        let mut past_key_values: HashMap<String, ArrayD<f32>> = HashMap::new();
+        for layer in 0..DECODER_NUM_LAYERS {
+            for module in ["decoder", "encoder"] {
+                for kv in ["key", "value"] {
+                    let name = format!("past_key_values.{}.{}.{}", layer, module, kv);
+                    let empty_cache = Array4::<f32>::zeros((
+                        batch_size,
+                        NUM_KEY_VALUE_HEADS,
+                        0, // Empty sequence initially
+                        HEAD_DIM,
+                    ))
+                    .into_dyn();
+                    past_key_values.insert(name, empty_cache);
+                }
+            }
+        }
+
+        log::debug!(
+            "Initialized {} past_key_values tensors with shape [1, {}, 0, {}]",
+            past_key_values.len(),
+            NUM_KEY_VALUE_HEADS,
+            HEAD_DIM
+        );
 
         for step in 0..MAX_TOKENS {
-            // Prepare input_ids tensor
-            let token_seq_len = tokens.len();
-            let input_ids = Array2::from_shape_vec((batch_size, token_seq_len), tokens.clone())?
-                .into_dyn();
+            let use_cache_branch = step > 0;
 
-            let inputs = inputs![
-                "input_ids" => TensorRef::from_array_view(input_ids.view())?,
-                "encoder_hidden_states" => TensorRef::from_array_view(encoder_output.view())?,
-            ];
-
-            let outputs = self.decoder.run(inputs)?;
-
-            // Get logits output
-            let logits = if let Some(v) = outputs.get("logits") {
-                v.try_extract_array::<f32>()?.to_owned()
+            // For first step: use full input_ids
+            // For subsequent steps: use only the last token (previous tokens are in cache)
+            let input_ids_data: Vec<i64> = if use_cache_branch {
+                vec![*tokens.last().unwrap()]
             } else {
-                // Fallback to first output
-                let first_output = outputs.values().next()
-                    .ok_or_else(|| MoonshineError::OutputNotFound("logits".to_string()))?;
-                first_output.try_extract_array::<f32>()?.to_owned()
+                tokens.clone()
             };
 
-            log::trace!("Decoder logits shape: {:?}", logits.shape());
+            let token_seq_len = input_ids_data.len();
+            let input_ids =
+                Array2::from_shape_vec((batch_size, token_seq_len), input_ids_data)?.into_dyn();
 
-            // Get last token logits and find argmax
-            let logits_slice = logits.as_slice().ok_or_else(|| {
-                MoonshineError::Shape(ndarray::ShapeError::from_kind(
-                    ndarray::ErrorKind::IncompatibleShape,
-                ))
-            })?;
+            // Build inputs dynamically to handle all 35 inputs required by the merged decoder
+            let step_output = self.run_decoder_with_cache(
+                &input_ids,
+                encoder_output,
+                use_cache_branch,
+                &past_key_values,
+                step,
+            )?;
+
+            // Update past_key_values with new cache values
+            past_key_values = step_output.new_cache;
+
+            let logits = step_output.logits;
+            log::trace!("Decoder step {} logits shape: {:?}", step, logits.shape());
 
             // Get vocabulary size from logits shape
             let vocab_size = if logits.shape().len() >= 3 {
@@ -291,6 +409,11 @@ impl MoonshineModel {
             };
 
             // Get the logits for the last token position
+            let logits_slice = logits.as_slice().ok_or_else(|| {
+                MoonshineError::Shape(ndarray::ShapeError::from_kind(
+                    ndarray::ErrorKind::IncompatibleShape,
+                ))
+            })?;
             let last_token_start = logits_slice.len() - vocab_size;
             let last_logits = &logits_slice[last_token_start..];
 
@@ -314,11 +437,110 @@ impl MoonshineModel {
         }
 
         // Remove BOS token from output
-        if !tokens.is_empty() && tokens[0] == 1 {
+        if !tokens.is_empty() && tokens[0] == BOS_TOKEN_ID {
             tokens.remove(0);
         }
 
         Ok(tokens)
+    }
+
+    /// Run the decoder with cache support using IoBinding.
+    /// IoBinding is ideal for models with many inputs (35 in this case).
+    /// Returns extracted logits and new cache values to avoid lifetime issues.
+    fn run_decoder_with_cache(
+        &mut self,
+        input_ids: &ArrayD<i64>,
+        encoder_output: &ArrayD<f32>,
+        use_cache_branch: bool,
+        past_key_values: &HashMap<String, ArrayD<f32>>,
+        step: usize,
+    ) -> Result<DecoderStepOutput, MoonshineError> {
+        log::trace!(
+            "Running decoder step {} with use_cache_branch={}",
+            step,
+            use_cache_branch
+        );
+
+        // Create owned tensors that live long enough for the IoBinding run
+        let input_ids_tensor = Tensor::from_array(input_ids.clone())?;
+        let encoder_tensor = Tensor::from_array(encoder_output.clone())?;
+        // use_cache_branch must be rank 1 (shape [1]), not rank 0 (scalar)
+        // The ONNX model expects: "Invalid rank for input: use_cache_branch Got: 0 Expected: 1"
+        let use_cache_array = ndarray::Array1::from_vec(vec![use_cache_branch]);
+        let use_cache_tensor = Tensor::from_array(use_cache_array)?;
+
+        // Create all 32 past_key_values tensors (8 layers × 2 modules × 2 kv)
+        let mut cache_tensors: Vec<Tensor<f32>> = Vec::with_capacity(32);
+        for layer in 0..DECODER_NUM_LAYERS {
+            for module in ["decoder", "encoder"] {
+                for kv in ["key", "value"] {
+                    let name = format!("past_key_values.{}.{}.{}", layer, module, kv);
+                    let cache = past_key_values
+                        .get(&name)
+                        .ok_or_else(|| MoonshineError::InputNotFound(name.clone()))?;
+                    cache_tensors.push(Tensor::from_array(cache.clone())?);
+                }
+            }
+        }
+
+        // Create IoBinding for efficient input binding
+        let mut binding = self.decoder.create_binding()?;
+
+        // Bind the main inputs
+        binding.bind_input("input_ids", &input_ids_tensor)?;
+        binding.bind_input("encoder_hidden_states", &encoder_tensor)?;
+        binding.bind_input("use_cache_branch", &use_cache_tensor)?;
+
+        // Bind all 32 past_key_values
+        let mut cache_idx = 0;
+        for layer in 0..DECODER_NUM_LAYERS {
+            for module in ["decoder", "encoder"] {
+                for kv in ["key", "value"] {
+                    let name = format!("past_key_values.{}.{}.{}", layer, module, kv);
+                    binding.bind_input(&name, &cache_tensors[cache_idx])?;
+                    cache_idx += 1;
+                }
+            }
+        }
+
+        // Run the decoder with the binding
+        let outputs = self.decoder.run_binding(&binding)?;
+
+        // Extract logits
+        let logits = if let Some(v) = outputs.get("logits") {
+            v.try_extract_array::<f32>()?.to_owned()
+        } else {
+            // Fallback to first output
+            let first_output = outputs
+                .values()
+                .next()
+                .ok_or_else(|| MoonshineError::OutputNotFound("logits".to_string()))?;
+            first_output.try_extract_array::<f32>()?.to_owned()
+        };
+
+        // Extract new cache values from present.* outputs
+        let mut new_cache: HashMap<String, ArrayD<f32>> = HashMap::new();
+        for layer in 0..DECODER_NUM_LAYERS {
+            for module in ["decoder", "encoder"] {
+                for kv in ["key", "value"] {
+                    let present_name = format!("present.{}.{}.{}", layer, module, kv);
+                    let cache_name = format!("past_key_values.{}.{}.{}", layer, module, kv);
+
+                    if let Some(present) = outputs.get(&present_name) {
+                        let present_array: ArrayD<f32> =
+                            present.try_extract_array::<f32>()?.to_owned();
+                        new_cache.insert(cache_name, present_array);
+                    } else {
+                        // If no new cache value, keep the old one
+                        if let Some(old_cache) = past_key_values.get(&cache_name) {
+                            new_cache.insert(cache_name, old_cache.clone());
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(DecoderStepOutput { logits, new_cache })
     }
 
     /// Decode token IDs to text
