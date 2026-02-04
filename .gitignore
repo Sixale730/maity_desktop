@@ -88,3 +88,6 @@ Cargo.lock
 # Windows artifact
 nul
 .claude/settings.local.json
+
+# Supabase CLI temp files
+supabase/.temp/
