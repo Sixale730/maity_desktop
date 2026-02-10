@@ -1,31 +1,58 @@
-import React from 'react';
-import { Lock, Sparkles, Cpu } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { ShieldCheck, Mic, Sparkles } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { OnboardingContainer } from '../OnboardingContainer';
 import { useOnboarding } from '@/contexts/OnboardingContext';
 
 export function WelcomeStep() {
-  const { goNext } = useOnboarding();
+  const { goNext, completeOnboarding } = useOnboarding();
+  const [isMac, setIsMac] = useState(false);
+
+  useEffect(() => {
+    const checkPlatform = async () => {
+      try {
+        const { platform } = await import('@tauri-apps/plugin-os');
+        setIsMac(platform() === 'macos');
+      } catch {
+        setIsMac(navigator.userAgent.includes('Mac'));
+      }
+    };
+    checkPlatform();
+  }, []);
+
+  const handleStart = async () => {
+    if (isMac) {
+      // macOS needs permissions step
+      goNext();
+    } else {
+      // Windows: complete onboarding directly
+      try {
+        await completeOnboarding();
+      } catch (error) {
+        console.error('Failed to complete onboarding:', error);
+      }
+    }
+  };
 
   const features = [
     {
-      icon: Lock,
-      title: 'Tus datos nunca salen de tu dispositivo',
+      icon: ShieldCheck,
+      title: 'Tus datos están seguros y protegidos',
+    },
+    {
+      icon: Mic,
+      title: 'Transcripción en tiempo real con IA',
     },
     {
       icon: Sparkles,
       title: 'Resúmenes e insights inteligentes',
-    },
-    {
-      icon: Cpu,
-      title: 'Funciona sin conexión, sin necesidad de la nube',
     },
   ];
 
   return (
     <OnboardingContainer
       title="Bienvenido a Maity"
-      description="Graba. Transcribe. Resume. Todo en tu dispositivo."
+      description="Graba. Transcribe. Resume. Tu asistente de reuniones con IA."
       step={1}
       hideProgress={true}
     >
@@ -34,7 +61,7 @@ export function WelcomeStep() {
         <div className="w-16 h-px bg-[#b0b0b3] dark:bg-gray-600" />
 
         {/* Features Card */}
-        <div className="w-full max-w-md bg-white dark:bg-gray-800 rounded-lg border border-[#e7e7e9] dark:border-gray-700 shadow-sm p-6 space-y-4">
+        <div className="w-full max-w-md bg-white dark:bg-gray-800/50 rounded-lg border border-[#e7e7e9] dark:border-gray-700 shadow-sm p-6 space-y-4">
           {features.map((feature, index) => {
             const Icon = feature.icon;
             return (
@@ -51,14 +78,13 @@ export function WelcomeStep() {
         </div>
 
         {/* CTA Section */}
-        <div className="w-full max-w-xs space-y-3">
+        <div className="w-full max-w-xs">
           <Button
-            onClick={goNext}
-            className="w-full h-11 bg-[#000000] hover:bg-[#1a1a1a] text-white"
+            onClick={handleStart}
+            className="w-full h-11 bg-[#1bea9a] hover:bg-[#17d48b] text-gray-900 font-medium"
           >
             Comenzar
           </Button>
-          <p className="text-xs text-center text-[#6a6a6d] dark:text-gray-400">Toma menos de 3 minutos</p>
         </div>
       </div>
     </OnboardingContainer>
