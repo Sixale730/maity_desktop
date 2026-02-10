@@ -234,12 +234,12 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
         }
       }
 
-      // Sort both stale and recent transcripts by chunk_start_time, then by sequence_id
+      // Sort by sequence_id (primary), then audio_start_time (tiebreaker)
       const sortTranscripts = (transcripts: Transcript[]) => {
         return transcripts.sort((a, b) => {
-          const chunkTimeDiff = (a.chunk_start_time || 0) - (b.chunk_start_time || 0);
-          if (chunkTimeDiff !== 0) return chunkTimeDiff;
-          return (a.sequence_id || 0) - (b.sequence_id || 0);
+          const seqDiff = (a.sequence_id || 0) - (b.sequence_id || 0);
+          if (seqDiff !== 0) return seqDiff;
+          return (a.audio_start_time ?? 0) - (b.audio_start_time ?? 0);
         });
       };
 
@@ -270,11 +270,11 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
           // Merge with existing transcripts, maintaining chronological order
           const combined = [...prev, ...uniqueNewTranscripts];
 
-          // Sort by chunk_start_time first, then by sequence_id
+          // Sort by sequence_id (primary), then audio_start_time (tiebreaker)
           return combined.sort((a, b) => {
-            const chunkTimeDiff = (a.chunk_start_time || 0) - (b.chunk_start_time || 0);
-            if (chunkTimeDiff !== 0) return chunkTimeDiff;
-            return (a.sequence_id || 0) - (b.sequence_id || 0);
+            const seqDiff = (a.sequence_id || 0) - (b.sequence_id || 0);
+            if (seqDiff !== 0) return seqDiff;
+            return (a.audio_start_time ?? 0) - (b.audio_start_time ?? 0);
           });
         });
 
@@ -456,9 +456,9 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
       // audio_start_time provides accurate chronological ordering
       const updated = [...prev, newTranscript];
       const sorted = updated.sort((a, b) => {
-        const timeDiff = (a.audio_start_time ?? 0) - (b.audio_start_time ?? 0);
-        if (timeDiff !== 0) return timeDiff;
-        return (a.sequence_id || 0) - (b.sequence_id || 0);
+        const seqDiff = (a.sequence_id || 0) - (b.sequence_id || 0);
+        if (seqDiff !== 0) return seqDiff;
+        return (a.audio_start_time ?? 0) - (b.audio_start_time ?? 0);
       });
 
       console.log('✅ Added new transcript. New count:', sorted.length);
