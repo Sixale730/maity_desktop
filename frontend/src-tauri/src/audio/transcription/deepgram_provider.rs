@@ -1,23 +1,28 @@
 // audio/transcription/deepgram_provider.rs
 //
-// Deepgram Realtime transcription provider using WebSocket streaming.
-// Implements TranscriptionProvider trait for seamless integration.
+// Deepgram Realtime transcription provider using persistent WebSocket streaming.
+// Maintains a single WebSocket connection for the entire recording session,
+// sending audio chunks as binary messages and receiving transcription results
+// via a background reader task.
 
 use super::provider::{TranscriptionError, TranscriptionProvider, TranscriptResult};
+use super::worker::{TranscriptUpdate, SEQUENCE_COUNTER};
 use async_trait::async_trait;
 use futures::{SinkExt, StreamExt};
+use futures::stream::SplitSink;
 use log::{debug, error, info, warn};
 use serde::Deserialize;
+use std::collections::VecDeque;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use tokio::sync::Mutex;
+use tokio::task::JoinHandle;
 use tokio_tungstenite::{
     connect_async,
     tungstenite::{http::Request, Message},
     MaybeTlsStream, WebSocketStream,
 };
 
-// Type alias kept for potential future use with WebSocket streaming
-#[allow(dead_code)]
 type WsStream = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 
 // ============================================================================
@@ -85,7 +90,21 @@ impl Default for DeepgramConfig {
 }
 
 // ============================================================================
-// DEEPGRAM REALTIME TRANSCRIBER
+// CHUNK METADATA FOR SPEAKER ATTRIBUTION
+// ============================================================================
+
+/// Metadata about an audio chunk, queued before sending to Deepgram.
+/// The reader task dequeues this when it receives a final transcript.
+#[derive(Debug, Clone)]
+struct ChunkInfo {
+    source_type: Option<String>, // "user" or "interlocutor"
+    audio_start_time: f64,       // Seconds from recording start
+    audio_end_time: f64,         // Seconds from recording start
+    duration: f64,               // Chunk duration in seconds
+}
+
+// ============================================================================
+// DEEPGRAM REALTIME TRANSCRIBER (PERSISTENT STREAMING)
 // ============================================================================
 
 /// Maximum number of reconnection attempts before failing
@@ -97,6 +116,15 @@ const RECONNECT_DELAY_MS: u64 = 1000;
 pub struct DeepgramRealtimeTranscriber {
     config: DeepgramConfig,
     is_connected: Arc<Mutex<bool>>,
+    // Persistent streaming fields
+    persistent_ws: Arc<Mutex<Option<SplitSink<WsStream, Message>>>>,
+    reader_handle: Arc<Mutex<Option<JoinHandle<()>>>>,
+    /// Event emitter function: called by reader task to emit transcript-update events
+    event_emitter: Arc<Mutex<Option<Arc<dyn Fn(TranscriptUpdate) + Send + Sync>>>>,
+    /// Queue of chunk metadata, dequeued by reader task when final results arrive
+    chunk_info_queue: Arc<Mutex<VecDeque<ChunkInfo>>>,
+    /// Accumulated text from interim results for the current utterance
+    interim_text: Arc<Mutex<String>>,
 }
 
 impl DeepgramRealtimeTranscriber {
@@ -104,24 +132,15 @@ impl DeepgramRealtimeTranscriber {
     pub fn new(api_key: String) -> Self {
         let mut config = DeepgramConfig::default();
         config.api_key = api_key;
-
-        Self {
-            config,
-            is_connected: Arc::new(Mutex::new(false)),
-        }
+        Self::with_config(config)
     }
 
     /// Create a new Deepgram transcriber using cloud proxy token
-    /// This is used when the user doesn't have their own API key
     pub fn with_cloud_token(token: String) -> Self {
         let mut config = DeepgramConfig::default();
         config.cloud_token = Some(token);
         config.use_cloud_proxy = true;
-
-        Self {
-            config,
-            is_connected: Arc::new(Mutex::new(false)),
-        }
+        Self::with_config(config)
     }
 
     /// Create with full configuration
@@ -129,6 +148,11 @@ impl DeepgramRealtimeTranscriber {
         Self {
             config,
             is_connected: Arc::new(Mutex::new(false)),
+            persistent_ws: Arc::new(Mutex::new(None)),
+            reader_handle: Arc::new(Mutex::new(None)),
+            event_emitter: Arc::new(Mutex::new(None)),
+            chunk_info_queue: Arc::new(Mutex::new(VecDeque::new())),
+            interim_text: Arc::new(Mutex::new(String::new())),
         }
     }
 
@@ -153,6 +177,78 @@ impl DeepgramRealtimeTranscriber {
         self.config.use_cloud_proxy
     }
 
+    /// Set the event emitter function for streaming mode.
+    /// The reader task calls this function to emit transcript-update events to the frontend.
+    pub fn set_event_emitter<F>(&self, emitter: F)
+    where
+        F: Fn(TranscriptUpdate) + Send + Sync + 'static,
+    {
+        // Block on getting the lock since this is called during setup (not in hot path)
+        let mut guard = self.event_emitter.blocking_lock();
+        *guard = Some(Arc::new(emitter));
+    }
+
+    /// Queue chunk metadata before calling transcribe().
+    /// The reader task will dequeue this when it receives the corresponding final result.
+    pub fn queue_chunk_info(
+        &self,
+        source_type: Option<String>,
+        audio_start_time: f64,
+        audio_end_time: f64,
+        duration: f64,
+    ) {
+        let mut queue = self.chunk_info_queue.blocking_lock();
+        queue.push_back(ChunkInfo {
+            source_type,
+            audio_start_time,
+            audio_end_time,
+            duration,
+        });
+    }
+
+    /// Close the persistent WebSocket stream gracefully.
+    /// Sends CloseStream message and waits for the reader task to finish.
+    pub async fn close_persistent_stream(&self) {
+        info!("Closing Deepgram persistent WebSocket stream");
+
+        // Send CloseStream to Deepgram
+        {
+            let mut ws_guard = self.persistent_ws.lock().await;
+            if let Some(ref mut ws) = *ws_guard {
+                if let Err(e) = ws.send(Message::Text(r#"{"type": "CloseStream"}"#.to_string())).await {
+                    warn!("Failed to send CloseStream to Deepgram: {}", e);
+                }
+                // Close the WebSocket
+                if let Err(e) = ws.close().await {
+                    warn!("Failed to close Deepgram WebSocket: {}", e);
+                }
+            }
+            *ws_guard = None;
+        }
+
+        // Wait for reader task to finish (with timeout)
+        let reader_handle = {
+            let mut handle_guard = self.reader_handle.lock().await;
+            handle_guard.take()
+        };
+
+        if let Some(handle) = reader_handle {
+            match tokio::time::timeout(tokio::time::Duration::from_secs(10), handle).await {
+                Ok(Ok(())) => info!("Deepgram reader task completed"),
+                Ok(Err(e)) => error!("Deepgram reader task panicked: {:?}", e),
+                Err(_) => warn!("Deepgram reader task timed out after 10s, aborting"),
+            }
+        }
+
+        *self.is_connected.lock().await = false;
+
+        // Clear any remaining chunk info
+        self.chunk_info_queue.lock().await.clear();
+        self.interim_text.lock().await.clear();
+
+        info!("Deepgram persistent stream closed");
+    }
+
     /// Get the effective authentication token (cloud token or API key)
     fn get_auth_token(&self) -> Option<&str> {
         if self.config.use_cloud_proxy {
@@ -167,9 +263,6 @@ impl DeepgramRealtimeTranscriber {
     /// Get the authorization header format based on token type
     fn get_auth_header(&self) -> Option<String> {
         self.get_auth_token().map(|token| {
-            // Both cloud proxy and user API keys use "Token" format
-            // Note: Cloud proxy now returns the API key directly (not JWT)
-            // because /v1/auth/grant requires a paid Deepgram plan
             format!("Token {}", token)
         })
     }
@@ -178,18 +271,13 @@ impl DeepgramRealtimeTranscriber {
     fn build_websocket_url(&self, language_override: Option<&str>) -> String {
         let language = language_override.unwrap_or(&self.config.language);
 
-        // Handle special language values
-        // "auto-translate" or "auto" should omit language param (Deepgram defaults to English)
-        // or we can try to use a valid language code
         let language_param = match language {
             "auto-translate" | "auto" | "detect" => {
-                // Nova-2 doesn't support detect_language, so we default to Spanish
-                // since all users speak Spanish
-                println!("🌐 [DEEPGRAM] auto-translate detectado, usando idioma por defecto (es)");
+                println!("[DEEPGRAM] auto-translate detected, using default language (es)");
                 "language=es".to_string()
             }
             lang => {
-                println!("🌐 [DEEPGRAM] Usando idioma específico: {}", lang);
+                println!("[DEEPGRAM] Using language: {}", lang);
                 format!("language={}", lang)
             }
         };
@@ -202,7 +290,9 @@ impl DeepgramRealtimeTranscriber {
             sample_rate={}&\
             channels={}&\
             punctuate={}&\
-            interim_results={}",
+            interim_results={}&\
+            endpointing=300&\
+            vad_events=true",
             self.config.model,
             language_param,
             self.config.encoding,
@@ -214,37 +304,67 @@ impl DeepgramRealtimeTranscriber {
     }
 
     /// Convert f32 audio samples to 16-bit PCM bytes
-    fn convert_to_pcm16(&self, audio: &[f32]) -> Vec<u8> {
+    fn convert_to_pcm16(audio: &[f32]) -> Vec<u8> {
         let mut bytes = Vec::with_capacity(audio.len() * 2);
-
         for &sample in audio {
-            // Clamp to valid range and convert to i16
             let clamped = sample.clamp(-1.0, 1.0);
             let pcm_sample = (clamped * 32767.0) as i16;
             bytes.extend_from_slice(&pcm_sample.to_le_bytes());
         }
-
         bytes
     }
 
-    /// Connect to Deepgram WebSocket and transcribe audio
-    async fn transcribe_via_websocket(
-        &self,
-        audio: Vec<f32>,
-        language: Option<String>,
-    ) -> Result<TranscriptResult, TranscriptionError> {
-        // Get authentication header (works for both cloud proxy and user API key)
+    /// Establish the persistent WebSocket connection and spawn the reader task.
+    /// Called automatically on the first `transcribe()` call.
+    async fn ensure_connected(&self, language: Option<&str>) -> Result<(), TranscriptionError> {
+        // Check if already connected
+        {
+            let ws_guard = self.persistent_ws.lock().await;
+            if ws_guard.is_some() {
+                return Ok(());
+            }
+        }
+
+        // Not connected - establish connection with retries
+        let mut last_error = None;
+        for attempt in 1..=MAX_RECONNECT_ATTEMPTS {
+            match self.connect_websocket(language).await {
+                Ok(()) => return Ok(()),
+                Err(e) => {
+                    let safe_msg = e.to_string();
+                    if attempt < MAX_RECONNECT_ATTEMPTS {
+                        warn!(
+                            "Deepgram connection attempt {}/{} failed: {}. Retrying in {}ms...",
+                            attempt, MAX_RECONNECT_ATTEMPTS, safe_msg, RECONNECT_DELAY_MS
+                        );
+                        tokio::time::sleep(tokio::time::Duration::from_millis(RECONNECT_DELAY_MS)).await;
+                    } else {
+                        error!(
+                            "Deepgram connection failed after {} attempts: {}",
+                            MAX_RECONNECT_ATTEMPTS, safe_msg
+                        );
+                    }
+                    last_error = Some(e);
+                }
+            }
+        }
+
+        Err(last_error.unwrap_or_else(|| {
+            TranscriptionError::EngineFailed("Unknown connection error".to_string())
+        }))
+    }
+
+    /// Internal: create WebSocket connection and spawn reader task
+    async fn connect_websocket(&self, language: Option<&str>) -> Result<(), TranscriptionError> {
         let auth_header = self.get_auth_header().ok_or_else(|| {
             TranscriptionError::EngineFailed(
                 "Deepgram authentication not configured (no API key or cloud token)".to_string(),
             )
         })?;
 
-        // Build URL with language override if provided
-        let url = self.build_websocket_url(language.as_deref());
+        let url = self.build_websocket_url(language);
         debug!("Deepgram WebSocket URL: {}", url.split('?').next().unwrap_or(&url));
 
-        // Create WebSocket request with authorization header
         let request = Request::builder()
             .uri(&url)
             .header("Authorization", &auth_header)
@@ -256,134 +376,190 @@ impl DeepgramRealtimeTranscriber {
             .body(())
             .map_err(|e| TranscriptionError::EngineFailed(format!("Failed to build request: {}", e)))?;
 
-        // Connect to WebSocket
-        println!("🔗 [DEEPGRAM] Conectando a WebSocket...");
+        println!("[DEEPGRAM] Connecting persistent WebSocket...");
         let (ws_stream, _response) = connect_async(request)
             .await
             .map_err(|e| {
-                println!("❌ [DEEPGRAM] Error de conexión WebSocket: {}", e);
+                println!("[DEEPGRAM] WebSocket connection error: {}", e);
                 TranscriptionError::EngineFailed(format!("WebSocket connection failed: {}", e))
             })?;
 
-        println!("🟢 [DEEPGRAM] WebSocket conectado exitosamente");
-        info!("Connected to Deepgram WebSocket");
+        println!("[DEEPGRAM] Persistent WebSocket connected successfully");
+        info!("Connected to Deepgram persistent WebSocket");
+
+        let (write, read) = ws_stream.split();
+
+        // Store the write half
+        *self.persistent_ws.lock().await = Some(write);
         *self.is_connected.lock().await = true;
 
-        let (mut write, mut read) = ws_stream.split();
+        // Spawn the reader task
+        let chunk_info_queue = self.chunk_info_queue.clone();
+        let event_emitter = self.event_emitter.clone();
+        let is_connected = self.is_connected.clone();
+        let interim_text = self.interim_text.clone();
 
-        // Convert audio to PCM16 bytes
-        let audio_bytes = self.convert_to_pcm16(&audio);
-        println!("🔵 [DEEPGRAM] Enviando {} bytes de audio ({} muestras)", audio_bytes.len(), audio.len());
-        debug!("Sending {} bytes of audio to Deepgram", audio_bytes.len());
+        let reader_handle = tokio::spawn(async move {
+            Self::reader_task(read, chunk_info_queue, event_emitter, is_connected, interim_text).await;
+        });
 
-        // Send audio data
-        write
-            .send(Message::Binary(audio_bytes))
-            .await
-            .map_err(|e| {
-                println!("❌ [DEEPGRAM] Error al enviar audio: {}", e);
-                TranscriptionError::EngineFailed(format!("Failed to send audio: {}", e))
-            })?;
+        *self.reader_handle.lock().await = Some(reader_handle);
 
-        println!("✅ [DEEPGRAM] Audio enviado correctamente");
+        Ok(())
+    }
 
-        // Send close frame to signal end of audio
-        write
-            .send(Message::Text(r#"{"type": "CloseStream"}"#.to_string()))
-            .await
-            .map_err(|e| TranscriptionError::EngineFailed(format!("Failed to send close: {}", e)))?;
+    /// Background reader task that receives Deepgram responses and emits transcript events.
+    async fn reader_task(
+        mut read: futures::stream::SplitStream<WsStream>,
+        chunk_info_queue: Arc<Mutex<VecDeque<ChunkInfo>>>,
+        event_emitter: Arc<Mutex<Option<Arc<dyn Fn(TranscriptUpdate) + Send + Sync>>>>,
+        is_connected: Arc<Mutex<bool>>,
+        interim_text: Arc<Mutex<String>>,
+    ) {
+        info!("Deepgram reader task started");
 
-        // Collect transcription results
-        let mut final_text = String::new();
-        let mut final_confidence: f32 = 0.0;
-        let mut confidence_count: u32 = 0;
-        let mut is_partial = true;
+        while let Some(msg) = read.next().await {
+            match msg {
+                Ok(Message::Text(text)) => {
+                    // Parse the Deepgram response
+                    let response: DeepgramResponse = match serde_json::from_str(&text) {
+                        Ok(r) => r,
+                        Err(e) => {
+                            debug!("Failed to parse Deepgram response: {} (text: {})", e, &text[..text.len().min(200)]);
+                            continue;
+                        }
+                    };
 
-        // Set timeout for receiving responses
-        // FIX: Increased from 30s to 60s for long conversations and slow network conditions
-        let timeout = tokio::time::Duration::from_secs(60);
-        let result = tokio::time::timeout(timeout, async {
-            while let Some(msg) = read.next().await {
-                match msg {
-                    Ok(Message::Text(text)) => {
-                        println!("📨 [DEEPGRAM] Mensaje recibido: {} chars", text.len());
-                        if let Ok(response) = serde_json::from_str::<DeepgramResponse>(&text) {
-                            // Check if this is a transcript result
-                            if let Some(channel) = response.channel {
-                                if let Some(alt) = channel.alternatives.first() {
-                                    if !alt.transcript.is_empty() {
-                                        println!(
-                                            "🟣 [DEEPGRAM] Transcripción recibida: '{}' (confianza: {:.2}, is_final: {:?})",
-                                            alt.transcript, alt.confidence, response.is_final
-                                        );
-                                        debug!(
-                                            "Deepgram transcript: '{}' (confidence: {:.2}, is_final: {:?})",
-                                            alt.transcript, alt.confidence, response.is_final
-                                        );
+                    // Extract transcript from response
+                    let channel = match response.channel {
+                        Some(ch) => ch,
+                        None => continue,
+                    };
 
-                                        // Append transcript
-                                        if !final_text.is_empty() {
-                                            final_text.push(' ');
-                                        }
-                                        final_text.push_str(&alt.transcript);
+                    let alt = match channel.alternatives.first() {
+                        Some(a) => a,
+                        None => continue,
+                    };
 
-                                        // Update confidence
-                                        final_confidence += alt.confidence;
-                                        confidence_count += 1;
+                    let is_final = response.is_final.unwrap_or(false);
 
-                                        // Check if this is the final result
-                                        if response.is_final.unwrap_or(false) {
-                                            is_partial = false;
-                                        }
-                                    }
-                                }
+                    if alt.transcript.is_empty() {
+                        continue;
+                    }
+
+                    if is_final {
+                        // Final result - emit transcript-update event
+                        let transcript = alt.transcript.clone();
+                        let confidence = alt.confidence;
+
+                        // Clear interim text since we got the final version
+                        *interim_text.lock().await = String::new();
+
+                        // Dequeue chunk info for metadata
+                        let chunk_info = {
+                            let mut queue = chunk_info_queue.lock().await;
+                            queue.pop_front()
+                        };
+
+                        let (source_type, audio_start_time, audio_end_time, duration) = match chunk_info {
+                            Some(info) => (
+                                info.source_type,
+                                info.audio_start_time,
+                                info.audio_end_time,
+                                info.duration,
+                            ),
+                            None => {
+                                // No chunk info available, use defaults
+                                (None, 0.0, 0.0, 0.0)
                             }
+                        };
+
+                        let sequence_id = SEQUENCE_COUNTER.fetch_add(1, Ordering::SeqCst);
+
+                        let update = TranscriptUpdate {
+                            text: transcript.clone(),
+                            timestamp: chrono::Local::now().format("%H:%M:%S").to_string(),
+                            source: "Audio".to_string(),
+                            sequence_id,
+                            chunk_start_time: audio_start_time,
+                            is_partial: false,
+                            confidence,
+                            audio_start_time,
+                            audio_end_time,
+                            duration,
+                            source_type,
+                        };
+
+                        println!(
+                            "[DEEPGRAM-STREAM] Final transcript: '{}' (seq: {}, confidence: {:.2})",
+                            if transcript.len() > 80 { format!("{}...", &transcript[..80]) } else { transcript },
+                            sequence_id,
+                            confidence
+                        );
+
+                        // Emit via the stored emitter
+                        let emitter_guard = event_emitter.lock().await;
+                        if let Some(ref emitter) = *emitter_guard {
+                            emitter(update);
+                        } else {
+                            warn!("Deepgram reader: no event emitter set, dropping transcript");
+                        }
+                    } else {
+                        // Interim result - update interim text for display
+                        *interim_text.lock().await = alt.transcript.clone();
+
+                        // Also emit interim results so the UI can show live transcription
+                        let chunk_info = {
+                            let queue = chunk_info_queue.lock().await;
+                            queue.front().cloned()
+                        };
+
+                        let (source_type, audio_start_time, audio_end_time, duration) = match chunk_info {
+                            Some(ref info) => (
+                                info.source_type.clone(),
+                                info.audio_start_time,
+                                info.audio_end_time,
+                                info.duration,
+                            ),
+                            None => (None, 0.0, 0.0, 0.0),
+                        };
+
+                        let sequence_id = SEQUENCE_COUNTER.fetch_add(1, Ordering::SeqCst);
+
+                        let update = TranscriptUpdate {
+                            text: alt.transcript.clone(),
+                            timestamp: chrono::Local::now().format("%H:%M:%S").to_string(),
+                            source: "Audio".to_string(),
+                            sequence_id,
+                            chunk_start_time: audio_start_time,
+                            is_partial: true,
+                            confidence: alt.confidence,
+                            audio_start_time,
+                            audio_end_time,
+                            duration,
+                            source_type,
+                        };
+
+                        let emitter_guard = event_emitter.lock().await;
+                        if let Some(ref emitter) = *emitter_guard {
+                            emitter(update);
                         }
                     }
-                    Ok(Message::Close(_)) => {
-                        debug!("Deepgram WebSocket closed");
-                        break;
-                    }
-                    Err(e) => {
-                        warn!("WebSocket error: {}", e);
-                        break;
-                    }
-                    _ => {}
                 }
+                Ok(Message::Close(_)) => {
+                    info!("Deepgram WebSocket closed by server");
+                    break;
+                }
+                Err(e) => {
+                    error!("Deepgram WebSocket error: {}", e);
+                    break;
+                }
+                _ => {}
             }
-            Ok::<(), TranscriptionError>(())
-        })
-        .await;
-
-        *self.is_connected.lock().await = false;
-
-        // Handle timeout
-        if result.is_err() {
-            return Err(TranscriptionError::EngineFailed(
-                "Deepgram response timeout after 60 seconds".to_string(),
-            ));
         }
 
-        // Calculate average confidence
-        let avg_confidence = if confidence_count > 0 {
-            final_confidence / confidence_count as f32
-        } else {
-            0.0
-        };
-
-        let result_text = final_text.trim().to_string();
-        println!(
-            "✅ [DEEPGRAM] Transcripción completa: '{}' (confianza: {:.2}, parcial: {})",
-            if result_text.chars().count() > 50 { format!("{}...", result_text.chars().take(50).collect::<String>()) } else { result_text.clone() },
-            avg_confidence,
-            is_partial
-        );
-
-        Ok(TranscriptResult {
-            text: result_text,
-            confidence: Some(avg_confidence),
-            is_partial,
-        })
+        *is_connected.lock().await = false;
+        info!("Deepgram reader task finished");
     }
 }
 
@@ -403,52 +579,38 @@ impl TranscriptionProvider for DeepgramRealtimeTranscriber {
             });
         }
 
-        println!(
-            "🎤 [DEEPGRAM] Iniciando transcripción: {} muestras (~{:.2}s), idioma: {:?}",
-            audio.len(),
-            audio.len() as f64 / 16000.0,
-            language
-        );
-        info!(
-            "Deepgram transcribing {} samples (~{:.2}s)",
-            audio.len(),
-            audio.len() as f64 / 16000.0
-        );
+        // Ensure persistent connection is established
+        self.ensure_connected(language.as_deref()).await?;
 
-        // Retry logic for network resilience
-        let mut last_error = None;
-        for attempt in 1..=MAX_RECONNECT_ATTEMPTS {
-            match self.transcribe_via_websocket(audio.clone(), language.clone()).await {
-                Ok(result) => return Ok(result),
-                Err(e) => {
-                    // Log error without exposing sensitive data
-                    let error_msg = e.to_string();
-                    let safe_msg = if error_msg.contains("api_key") || error_msg.contains("Token") {
-                        "Authentication or connection error (details redacted)".to_string()
-                    } else {
-                        error_msg
-                    };
+        // Convert audio to PCM16 and send over persistent WebSocket
+        let audio_bytes = Self::convert_to_pcm16(&audio);
 
-                    if attempt < MAX_RECONNECT_ATTEMPTS {
-                        warn!(
-                            "Deepgram attempt {}/{} failed: {}. Retrying in {}ms...",
-                            attempt, MAX_RECONNECT_ATTEMPTS, safe_msg, RECONNECT_DELAY_MS
-                        );
-                        tokio::time::sleep(tokio::time::Duration::from_millis(RECONNECT_DELAY_MS)).await;
-                    } else {
-                        error!(
-                            "Deepgram failed after {} attempts: {}",
-                            MAX_RECONNECT_ATTEMPTS, safe_msg
-                        );
-                    }
-                    last_error = Some(e);
+        {
+            let mut ws_guard = self.persistent_ws.lock().await;
+            match ws_guard.as_mut() {
+                Some(ws) => {
+                    ws.send(Message::Binary(audio_bytes))
+                        .await
+                        .map_err(|e| {
+                            error!("Failed to send audio to Deepgram persistent WS: {}", e);
+                            TranscriptionError::EngineFailed(format!("Failed to send audio: {}", e))
+                        })?;
+                }
+                None => {
+                    return Err(TranscriptionError::EngineFailed(
+                        "Persistent WebSocket not available".to_string(),
+                    ));
                 }
             }
         }
 
-        Err(last_error.unwrap_or_else(|| {
-            TranscriptionError::EngineFailed("Unknown error after retry attempts".to_string())
-        }))
+        // Return empty result - the reader task handles response emission directly
+        // The worker will see empty text and skip its own event emission
+        Ok(TranscriptResult {
+            text: String::new(),
+            confidence: None,
+            is_partial: false,
+        })
     }
 
     async fn is_model_loaded(&self) -> bool {
@@ -523,11 +685,9 @@ mod tests {
 
     #[test]
     fn test_pcm_conversion() {
-        let transcriber = DeepgramRealtimeTranscriber::new("test_key".to_string());
-
         // Test conversion of silence
         let silence = vec![0.0f32; 100];
-        let pcm = transcriber.convert_to_pcm16(&silence);
+        let pcm = DeepgramRealtimeTranscriber::convert_to_pcm16(&silence);
         assert_eq!(pcm.len(), 200); // 100 samples * 2 bytes
 
         // All values should be 0
@@ -537,7 +697,7 @@ mod tests {
 
         // Test conversion of max values
         let max_signal = vec![1.0f32, -1.0f32];
-        let pcm = transcriber.convert_to_pcm16(&max_signal);
+        let pcm = DeepgramRealtimeTranscriber::convert_to_pcm16(&max_signal);
         assert_eq!(pcm.len(), 4);
 
         // +1.0 should become 32767 (0x7FFF)
@@ -593,5 +753,17 @@ mod tests {
 
         let result = transcriber.transcribe(short_audio, None).await;
         assert!(matches!(result, Err(TranscriptionError::AudioTooShort { .. })));
+    }
+
+    #[test]
+    fn test_chunk_info_queue() {
+        let transcriber = DeepgramRealtimeTranscriber::new("test_key".to_string());
+        transcriber.queue_chunk_info(Some("user".to_string()), 0.0, 3.0, 3.0);
+        transcriber.queue_chunk_info(Some("interlocutor".to_string()), 3.0, 6.0, 3.0);
+
+        let queue = transcriber.chunk_info_queue.blocking_lock();
+        assert_eq!(queue.len(), 2);
+        assert_eq!(queue[0].source_type, Some("user".to_string()));
+        assert_eq!(queue[1].source_type, Some("interlocutor".to_string()));
     }
 }

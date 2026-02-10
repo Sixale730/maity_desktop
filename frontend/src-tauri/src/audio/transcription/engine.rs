@@ -2,6 +2,7 @@
 //
 // TranscriptionEngine enum and model initialization/validation logic.
 
+use super::deepgram_provider::DeepgramRealtimeTranscriber;
 use super::provider::TranscriptionProvider;
 use log::{info, warn, error};
 use std::sync::Arc;
@@ -16,6 +17,7 @@ pub enum TranscriptionEngine {
     Whisper(Arc<crate::whisper_engine::WhisperEngine>),  // Direct access (backward compat)
     Parakeet(Arc<crate::parakeet_engine::ParakeetEngine>), // Direct access (backward compat)
     Moonshine(Arc<crate::moonshine_engine::MoonshineEngine>), // Moonshine edge-optimized
+    Deepgram(Arc<DeepgramRealtimeTranscriber>), // Deepgram persistent streaming
     Provider(Arc<dyn TranscriptionProvider>),  // Trait-based (preferred for new code)
 }
 
@@ -26,6 +28,7 @@ impl TranscriptionEngine {
             Self::Whisper(engine) => engine.is_model_loaded().await,
             Self::Parakeet(engine) => engine.is_model_loaded().await,
             Self::Moonshine(engine) => engine.is_model_loaded().await,
+            Self::Deepgram(dg) => dg.is_model_loaded().await,
             Self::Provider(provider) => provider.is_model_loaded().await,
         }
     }
@@ -36,6 +39,7 @@ impl TranscriptionEngine {
             Self::Whisper(engine) => engine.get_current_model().await,
             Self::Parakeet(engine) => engine.get_current_model().await,
             Self::Moonshine(engine) => engine.get_current_model().await,
+            Self::Deepgram(dg) => dg.get_current_model().await,
             Self::Provider(provider) => provider.get_current_model().await,
         }
     }
@@ -46,7 +50,37 @@ impl TranscriptionEngine {
             Self::Whisper(_) => "Whisper (direct)",
             Self::Parakeet(_) => "Parakeet (direct)",
             Self::Moonshine(_) => "Moonshine (direct)",
+            Self::Deepgram(_) => "Deepgram (streaming)",
             Self::Provider(provider) => provider.provider_name(),
+        }
+    }
+
+    /// Check if this engine uses persistent streaming (e.g., Deepgram).
+    /// When true, the worker should not emit transcript-update events itself
+    /// because the engine's reader task handles emission directly.
+    pub fn is_streaming_provider(&self) -> bool {
+        matches!(self, Self::Deepgram(_))
+    }
+
+    /// Queue chunk metadata for the Deepgram streaming provider.
+    /// No-op for non-streaming engines.
+    pub fn queue_chunk_info(
+        &self,
+        source_type: Option<String>,
+        audio_start_time: f64,
+        audio_end_time: f64,
+        duration: f64,
+    ) {
+        if let Self::Deepgram(dg) = self {
+            dg.queue_chunk_info(source_type, audio_start_time, audio_end_time, duration);
+        }
+    }
+
+    /// Close persistent stream for streaming providers (e.g., Deepgram).
+    /// No-op for non-streaming engines.
+    pub async fn close_stream(&self) {
+        if let Self::Deepgram(dg) = self {
+            dg.close_persistent_stream().await;
         }
     }
 }
@@ -288,24 +322,22 @@ pub async fn get_or_init_transcription_engine<R: Runtime>(
             }
         }
         "deepgram" => {
-            info!("🌐 Initializing Deepgram cloud transcription engine");
-            println!("🔷 [ENGINE] Inicializando Deepgram cloud transcription engine");
+            info!("Initializing Deepgram cloud transcription engine (persistent streaming)");
+            println!("[ENGINE] Initializing Deepgram persistent streaming engine");
 
             // Get cloud token from cache (should have been set by frontend before starting recording)
             let cloud_token = super::deepgram_commands::get_cached_cloud_token();
 
             match cloud_token {
                 Some(token) => {
-                    info!("✅ Deepgram cloud token found");
-                    println!("🔑 [ENGINE] Cloud token encontrado");
+                    info!("Deepgram cloud token found");
 
                     // Create Deepgram provider with cloud token
-                    println!("🔧 [ENGINE] Creando DeepgramRealtimeTranscriber con cloud token...");
-                    let mut deepgram = super::deepgram_provider::DeepgramRealtimeTranscriber::with_cloud_token(token);
+                    let mut deepgram = DeepgramRealtimeTranscriber::with_cloud_token(token);
 
                     // Apply model from config if specified, otherwise use nova-3
                     if !config.model.is_empty() && config.model != "deepgram" {
-                        info!("🎯 Setting Deepgram model to: {}", config.model);
+                        info!("Setting Deepgram model to: {}", config.model);
                         deepgram.set_model(config.model.clone());
                     }
 
@@ -315,20 +347,44 @@ pub async fn get_or_init_transcription_engine<R: Runtime>(
                         .filter(|l| !l.is_empty())
                         .unwrap_or_else(|| "es-419".to_string());
 
-                    info!("🌍 Setting Deepgram language to: {}", language);
+                    info!("Setting Deepgram language to: {}", language);
                     deepgram.set_language(language);
 
-                    info!("✅ Deepgram provider initialized successfully with model: {}",
-                          deepgram.get_current_model().await.unwrap_or_else(|| "nova-2".to_string()));
-                    println!("✅ [ENGINE] Deepgram provider inicializado correctamente con modelo: {}",
-                          deepgram.get_current_model().await.unwrap_or_else(|| "nova-2".to_string()));
+                    let deepgram_arc = Arc::new(deepgram);
 
-                    Ok(TranscriptionEngine::Provider(Arc::new(deepgram)))
+                    // Set up event emitter that uses the AppHandle to emit transcript-update events
+                    let app_for_emitter = app.clone();
+                    deepgram_arc.set_event_emitter(move |update: super::worker::TranscriptUpdate| {
+                        use tauri::Emitter;
+                        // Emit speech-detected on first transcript
+                        let speech_flag = &super::worker::SPEECH_DETECTED_EMITTED;
+                        if !speech_flag.load(std::sync::atomic::Ordering::SeqCst) {
+                            speech_flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                            let _ = app_for_emitter.emit("speech-detected", serde_json::json!({
+                                "message": "Speech activity detected"
+                            }));
+                        }
+
+                        // Emit the transcript update
+                        match app_for_emitter.emit("transcript-update", &update) {
+                            Ok(_) => {
+                                println!("[DEEPGRAM-EMIT] transcript-update emitted: seq={}, partial={}", update.sequence_id, update.is_partial);
+                            }
+                            Err(e) => {
+                                log::error!("Failed to emit transcript-update from Deepgram reader: {}", e);
+                            }
+                        }
+                    });
+
+                    let model_name = deepgram_arc.get_current_model().await
+                        .unwrap_or_else(|| "nova-3".to_string());
+                    info!("Deepgram persistent streaming provider initialized with model: {}", model_name);
+                    println!("[ENGINE] Deepgram streaming ready with model: {}", model_name);
+
+                    Ok(TranscriptionEngine::Deepgram(deepgram_arc))
                 }
                 None => {
-                    // No cloud token available - user needs to be authenticated
-                    error!("❌ No hay token de Deepgram disponible!");
-                    error!("   El frontend debe obtener un token del cloud proxy antes de iniciar la grabación");
+                    error!("No Deepgram token available");
                     Err(
                         "Token de Deepgram no disponible. Por favor asegúrate de estar autenticado con tu cuenta de Google.".to_string()
                     )

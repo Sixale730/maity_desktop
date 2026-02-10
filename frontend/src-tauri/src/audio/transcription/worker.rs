@@ -3,7 +3,7 @@
 // Parallel transcription worker pool and chunk processing logic.
 
 use super::engine::TranscriptionEngine;
-use super::provider::TranscriptionError;
+use super::provider::{TranscriptionError, TranscriptionProvider};
 use crate::audio::AudioChunk;
 use log::{error, info, warn};
 use serde::{Deserialize, Serialize};
@@ -11,11 +11,11 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Runtime};
 
-// Sequence counter for transcript updates
-static SEQUENCE_COUNTER: AtomicU64 = AtomicU64::new(0);
+// Sequence counter for transcript updates (pub for use by streaming providers like Deepgram)
+pub static SEQUENCE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-// Speech detection flag - reset per recording session
-static SPEECH_DETECTED_EMITTED: AtomicBool = AtomicBool::new(false);
+// Speech detection flag - reset per recording session (pub for use by streaming providers)
+pub static SPEECH_DETECTED_EMITTED: AtomicBool = AtomicBool::new(false);
 
 /// Reset the speech detected flag for a new recording session
 pub fn reset_speech_detected_flag() {
@@ -88,6 +88,12 @@ pub fn start_transcription_task<R: Runtime>(
 
         info!("📊 Starting {} transcription worker{} (serial mode for ordered emission)", NUM_WORKERS, if NUM_WORKERS == 1 { "" } else { "s" });
 
+        // Check if this is a streaming provider (Deepgram persistent WS)
+        let is_streaming = transcription_engine.is_streaming_provider();
+        if is_streaming {
+            info!("Streaming provider detected - reader task handles event emission");
+        }
+
         // Spawn worker tasks
         let mut worker_handles = Vec::new();
         for worker_id in 0..NUM_WORKERS {
@@ -95,6 +101,7 @@ pub fn start_transcription_task<R: Runtime>(
                 TranscriptionEngine::Whisper(e) => TranscriptionEngine::Whisper(e.clone()),
                 TranscriptionEngine::Parakeet(e) => TranscriptionEngine::Parakeet(e.clone()),
                 TranscriptionEngine::Moonshine(e) => TranscriptionEngine::Moonshine(e.clone()),
+                TranscriptionEngine::Deepgram(e) => TranscriptionEngine::Deepgram(e.clone()),
                 TranscriptionEngine::Provider(p) => TranscriptionEngine::Provider(p.clone()),
             };
             let app_clone = app.clone();
@@ -102,6 +109,7 @@ pub fn start_transcription_task<R: Runtime>(
             let chunks_completed_clone = chunks_completed.clone();
             let input_finished_clone = input_finished.clone();
             let chunks_queued_clone = chunks_queued.clone();
+            let is_streaming_worker = is_streaming;
 
             let worker_handle = tokio::spawn(async move {
                 info!("👷 Worker {} started", worker_id);
@@ -163,6 +171,19 @@ pub fn start_transcription_task<R: Runtime>(
                                 crate::audio::recording_state::DeviceType::Mixed => None, // Mixed audio should not be transcribed
                             };
 
+                            // For streaming providers (Deepgram), queue chunk metadata
+                            // so the reader task can associate transcripts with correct speaker/timestamps
+                            if is_streaming_worker {
+                                let audio_start_time = chunk_timestamp;
+                                let audio_end_time = chunk_timestamp + chunk_duration;
+                                engine_clone.queue_chunk_info(
+                                    chunk_source_type.clone(),
+                                    audio_start_time,
+                                    audio_end_time,
+                                    chunk_duration,
+                                );
+                            }
+
                             // Transcribe with provider-agnostic approach
                             match transcribe_chunk_with_provider(
                                 &engine_clone,
@@ -175,6 +196,7 @@ pub fn start_transcription_task<R: Runtime>(
                                     // Provider-aware confidence threshold
                                     let confidence_threshold = match &engine_clone {
                                         TranscriptionEngine::Whisper(_) | TranscriptionEngine::Provider(_) => 0.3,
+                                        TranscriptionEngine::Deepgram(_) => 0.3,
                                         TranscriptionEngine::Parakeet(_) | TranscriptionEngine::Moonshine(_) => 0.0, // Parakeet/Moonshine have no confidence, accept all
                                     };
 
@@ -400,10 +422,17 @@ pub fn start_transcription_task<R: Runtime>(
         // Wait for all workers to complete
         for (worker_id, handle) in worker_handles.into_iter().enumerate() {
             if let Err(e) = handle.await {
-                error!("❌ Worker {} panicked: {:?}", worker_id, e);
+                error!("Worker {} panicked: {:?}", worker_id, e);
             } else {
-                info!("✅ Worker {} completed successfully", worker_id);
+                info!("Worker {} completed successfully", worker_id);
             }
+        }
+
+        // Close persistent stream for streaming providers (e.g., Deepgram)
+        // This sends CloseStream and waits for the reader task to process remaining responses
+        if is_streaming {
+            info!("Closing persistent stream after all workers completed");
+            transcription_engine.close_stream().await;
         }
 
         // Final verification with retry logic to catch any stragglers
@@ -632,19 +661,42 @@ async fn transcribe_chunk_with_provider<R: Runtime>(
                 }
             }
         }
-        TranscriptionEngine::Provider(provider) => {
-            // NEW: Trait-based provider (clean, unified interface)
+        TranscriptionEngine::Deepgram(deepgram) => {
+            // Deepgram persistent streaming: send audio and return empty
+            // The reader task handles transcript emission directly
             let language = crate::get_language_preference_internal();
-            println!("🎯 [WORKER] Usando provider: {} (idioma: {:?}, {} muestras)",
+
+            match deepgram.transcribe(speech_samples, language).await {
+                Ok(result) => {
+                    // Result is always empty text for streaming mode
+                    // Reader task emits transcript-update events directly
+                    Ok((result.text, result.confidence, result.is_partial))
+                }
+                Err(e) => {
+                    let err_msg = e.to_string();
+                    error!("Deepgram streaming send failed for chunk {}: {}", chunk.chunk_id, err_msg);
+                    let _ = app.emit(
+                        "transcription-error",
+                        &serde_json::json!({
+                            "error": err_msg,
+                            "userMessage": format!("Transcription failed: {}", err_msg),
+                            "actionable": false
+                        }),
+                    );
+                    Err(e)
+                }
+            }
+        }
+        TranscriptionEngine::Provider(provider) => {
+            // Trait-based provider (clean, unified interface)
+            let language = crate::get_language_preference_internal();
+            println!("[WORKER] Using provider: {} (language: {:?}, {} samples)",
                      provider.provider_name(), language, speech_samples.len());
 
             match provider.transcribe(speech_samples, language).await {
                 Ok(result) => {
-                    println!("📨 [WORKER] Provider {} retornó: '{}' (confianza: {:?}, parcial: {})",
-                             provider.provider_name(), result.text, result.confidence, result.is_partial);
                     let cleaned_text = result.text.trim().to_string();
                     if cleaned_text.is_empty() {
-                        println!("⚠️ [WORKER] Texto vacío después de limpiar, omitiendo...");
                         return Ok((String::new(), result.confidence, result.is_partial));
                     }
 
