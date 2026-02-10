@@ -16,6 +16,18 @@ Este archivo proporciona orientación a Claude Code (claude.ai/code) al trabajar
 - **Backend API**: FastAPI + SQLite (aiosqlite)
 - **Integración LLM**: Ollama (local), Claude, Groq, OpenRouter
 
+## Skills (Slash Commands)
+
+### `/build [patch|minor|major]`
+Build firmado de producción con bump automático de versión semver. Lee signing keys de `frontend/.env`, actualiza la versión en 3 archivos (`tauri.conf.json`, `package.json`, `Cargo.toml`), y ejecuta `pnpm run tauri:build` con las credenciales de firma.
+
+- `/build patch` → 0.2.5 → 0.2.6
+- `/build minor` → 0.2.5 → 0.3.0
+- `/build major` → 0.2.5 → 1.0.0
+- `/build` (sin argumento) → pregunta tipo de bump
+
+**Definición**: `.claude/skills/build/SKILL.md`
+
 ## Comandos Esenciales de Desarrollo
 
 ### Desarrollo Frontend (App de Escritorio Tauri)
