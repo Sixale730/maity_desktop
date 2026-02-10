@@ -8,6 +8,8 @@ import type { ModelConfig } from '@/types/models';
 import type { OllamaModel } from '@/types/models';
 import type { StorageLocations, NotificationSettings } from '@/types/config';
 import { invoke } from '@tauri-apps/api/core';
+import { useAuth } from '@/contexts/AuthContext';
+import { getUserRole, isDeveloper as checkIsDeveloper } from '@/lib/roles';
 
 export type { OllamaModel, StorageLocations, NotificationSettings };
 
@@ -53,6 +55,7 @@ const ConfigContext = createContext<ConfigContextType | undefined>(undefined);
 
 
 export function ConfigProvider({ children }: { children: ReactNode }) {
+  const { user, maityUser } = useAuth();
   // Model configuration state
   const [modelConfig, setModelConfig] = useState<ModelConfig>({
     provider: 'ollama',
@@ -179,6 +182,23 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
     };
     loadTranscriptConfig();
   }, []);
+
+  // Force Deepgram for regular (non-developer) users
+  useEffect(() => {
+    const email = user?.email ?? maityUser?.email ?? null;
+    const role = getUserRole(email);
+    if (!checkIsDeveloper(role) && email && transcriptModelConfig.provider !== 'deepgram') {
+      console.log('[ConfigContext] Forcing Deepgram for non-developer user:', email);
+      const deepgramConfig: TranscriptModelProps = { provider: 'deepgram', model: 'nova-3', language: 'es-419' };
+      setTranscriptModelConfig(deepgramConfig);
+      invoke('api_save_transcript_config', {
+        provider: 'deepgram',
+        model: 'nova-3',
+        apiKey: null,
+        language: 'es-419',
+      }).catch(err => console.error('[ConfigContext] Failed to persist Deepgram config:', err));
+    }
+  }, [user?.email, maityUser?.email, transcriptModelConfig.provider]);
 
   // Load model configuration on mount
   useEffect(() => {

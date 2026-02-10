@@ -14,6 +14,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { toast } from 'sonner';
 import { useRecordingState } from '@/contexts/RecordingStateContext';
+import { useUserRole } from '@/hooks/useUserRole';
 
 import {
   Dialog,
@@ -58,6 +59,7 @@ const Sidebar: React.FC = () => {
 
   // Get recording state from RecordingStateContext (single source of truth)
   const { isRecording } = useRecordingState();
+  const { isDeveloper } = useUserRole();
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set(['meetings']));
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [showModelSettings, setShowModelSettings] = useState(false);
@@ -470,37 +472,41 @@ const Sidebar: React.FC = () => {
             </TooltipContent>
           </Tooltip>
 
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                onClick={() => router.push('/gamification')}
-                className={`p-2 rounded-lg transition-colors duration-150 ${isGamificationPage ? 'bg-secondary' : 'hover:bg-secondary'
-                  }`}
-                aria-label="Gamificación"
-              >
-                <Trophy className="w-5 h-5 text-[#ffd93d]" />
-              </button>
-            </TooltipTrigger>
-            <TooltipContent side="right">
-              <p>Gamificación</p>
-            </TooltipContent>
-          </Tooltip>
+          {isDeveloper && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  onClick={() => router.push('/gamification')}
+                  className={`p-2 rounded-lg transition-colors duration-150 ${isGamificationPage ? 'bg-secondary' : 'hover:bg-secondary'
+                    }`}
+                  aria-label="Gamificación"
+                >
+                  <Trophy className="w-5 h-5 text-[#ffd93d]" />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="right">
+                <p>Gamificación</p>
+              </TooltipContent>
+            </Tooltip>
+          )}
 
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                onClick={() => router.push('/conversations')}
-                className={`p-2 rounded-lg transition-colors duration-150 ${isConversationsPage ? 'bg-secondary' : 'hover:bg-secondary'
-                  }`}
-                aria-label="Conversaciones"
-              >
-                <MessageSquare className="w-5 h-5 text-[#00f5d4]" />
-              </button>
-            </TooltipTrigger>
-            <TooltipContent side="right">
-              <p>Conversaciones</p>
-            </TooltipContent>
-          </Tooltip>
+          {isDeveloper && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  onClick={() => router.push('/conversations')}
+                  className={`p-2 rounded-lg transition-colors duration-150 ${isConversationsPage ? 'bg-secondary' : 'hover:bg-secondary'
+                    }`}
+                  aria-label="Conversaciones"
+                >
+                  <MessageSquare className="w-5 h-5 text-[#00f5d4]" />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="right">
+                <p>Conversaciones</p>
+              </TooltipContent>
+            </Tooltip>
+          )}
 
           <Tooltip>
             <TooltipTrigger asChild>
@@ -731,20 +737,24 @@ const Sidebar: React.FC = () => {
                   <Home className="w-4 h-4 mr-2" />
                   <span>Inicio</span>
                 </div>
-                <div
-                  onClick={() => router.push('/gamification')}
-                  className={`p-3 text-lg font-semibold items-center hover:bg-secondary h-10 flex mx-3 mt-2 rounded-lg cursor-pointer text-foreground ${pathname === '/gamification' ? 'bg-secondary' : ''}`}
-                >
-                  <Trophy className="w-4 h-4 mr-2 text-[#ffd93d]" />
-                  <span>Gamificación</span>
-                </div>
-                <div
-                  onClick={() => router.push('/conversations')}
-                  className={`p-3 text-lg font-semibold items-center hover:bg-secondary h-10 flex mx-3 mt-2 rounded-lg cursor-pointer text-foreground ${pathname === '/conversations' ? 'bg-secondary' : ''}`}
-                >
-                  <MessageSquare className="w-4 h-4 mr-2 text-[#00f5d4]" />
-                  <span>Conversaciones</span>
-                </div>
+                {isDeveloper && (
+                  <div
+                    onClick={() => router.push('/gamification')}
+                    className={`p-3 text-lg font-semibold items-center hover:bg-secondary h-10 flex mx-3 mt-2 rounded-lg cursor-pointer text-foreground ${pathname === '/gamification' ? 'bg-secondary' : ''}`}
+                  >
+                    <Trophy className="w-4 h-4 mr-2 text-[#ffd93d]" />
+                    <span>Gamificación</span>
+                  </div>
+                )}
+                {isDeveloper && (
+                  <div
+                    onClick={() => router.push('/conversations')}
+                    className={`p-3 text-lg font-semibold items-center hover:bg-secondary h-10 flex mx-3 mt-2 rounded-lg cursor-pointer text-foreground ${pathname === '/conversations' ? 'bg-secondary' : ''}`}
+                  >
+                    <MessageSquare className="w-4 h-4 mr-2 text-[#00f5d4]" />
+                    <span>Conversaciones</span>
+                  </div>
+                )}
               </>
             )}
           </div>

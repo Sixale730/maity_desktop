@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useLayoutEffect, useRef } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useRef, useMemo } from 'react';
 import { ArrowLeft, Settings2, Mic, Database as DatabaseIcon, SparkleIcon } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { invoke } from '@tauri-apps/api/core';
@@ -12,6 +12,7 @@ import { PreferenceSettings } from '@/components/settings/PreferenceSettings';
 import { SummaryModelSettings } from '@/components/models/SummaryModelSettings';
 import { useConfig } from '@/contexts/ConfigContext';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
+import { useUserRole } from '@/hooks/useUserRole';
 
 // Tabs configuration (constant)
 const TABS = [
@@ -24,6 +25,12 @@ const TABS = [
 export default function SettingsPage() {
   const router = useRouter();
   const { transcriptModelConfig, setTranscriptModelConfig } = useConfig();
+  const { isDeveloper } = useUserRole();
+
+  const visibleTabs = useMemo(() =>
+    isDeveloper ? TABS : TABS.filter(t => t.value === 'general' || t.value === 'recording'),
+    [isDeveloper]
+  );
 
   // Animation state for tabs
   const [activeTab, setActiveTab] = useState('general');
@@ -50,16 +57,23 @@ export default function SettingsPage() {
     loadTranscriptConfig();
   }, [setTranscriptModelConfig]);
 
+  // Reset activeTab if it's not in visibleTabs
+  useEffect(() => {
+    if (!visibleTabs.some(t => t.value === activeTab)) {
+      setActiveTab('general');
+    }
+  }, [visibleTabs, activeTab]);
+
   // Update underline position when active tab changes
   useLayoutEffect(() => {
-    const activeIndex = TABS.findIndex(tab => tab.value === activeTab);
+    const activeIndex = visibleTabs.findIndex(tab => tab.value === activeTab);
     const activeTabElement = tabRefs.current[activeIndex];
 
     if (activeTabElement) {
       const { offsetLeft, offsetWidth } = activeTabElement;
       setUnderlineStyle({ left: offsetLeft, width: offsetWidth });
     }
-  }, [activeTab]);
+  }, [activeTab, visibleTabs]);
 
   return (
     <div className="h-screen bg-background flex flex-col">
@@ -85,7 +99,7 @@ export default function SettingsPage() {
           {/* Tabs */}
           <Tabs value={activeTab} onValueChange={setActiveTab}>
             <TabsList className="bg-transparent relative rounded-none border-b border-border p-0 h-auto">
-              {TABS.map((tab, index) => {
+              {visibleTabs.map((tab, index) => {
                 const Icon = tab.icon;
                 return (
                   <TabsTrigger

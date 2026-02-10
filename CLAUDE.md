@@ -625,6 +625,19 @@ Este enfoque es el recomendado por HuggingFace para modelos encoder-decoder ONNX
 - [scripts/requirements_moonshine.txt](scripts/requirements_moonshine.txt) - Dependencias Python para pruebas de Moonshine
 - [scripts/moonshine_evaluation_results.md](scripts/moonshine_evaluation_results.md) - Plantilla para documentar resultados de evaluación
 
+**Sistema de Roles (Developer vs Usuario Regular)**:
+- [frontend/src/lib/roles.ts](frontend/src/lib/roles.ts) - Utilidad pura para determinar rol por email (`getUserRole`, `isDeveloper`, `DEVELOPER_DOMAINS`)
+- [frontend/src/hooks/useUserRole.ts](frontend/src/hooks/useUserRole.ts) - Hook React que combina `useAuth()` con roles
+
+**Lógica de Roles**:
+- **Developers**: Emails con dominio `@asertio.mx` o `@maity.cloud` → ven toda la interfaz
+- **Usuarios regulares**: Cualquier otro dominio → interfaz restringida:
+  - Sidebar oculta "Gamificación" y "Conversaciones"
+  - Settings solo muestra tabs "General" y "Grabaciones" (no "Transcripción" ni "Resumen")
+  - Navegar a `/gamification` o `/conversations` redirige a `/`
+  - Provider de transcripción forzado a Deepgram (nova-3, es-419) via `ConfigContext`
+- Archivos modificados: `Sidebar/index.tsx`, `settings/page.tsx`, `ConfigContext.tsx`, `gamification/page.tsx`, `conversations/page.tsx`
+
 ---
 
 ## Protocolo Guardian - Modo Protegido
