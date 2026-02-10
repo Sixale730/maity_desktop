@@ -241,7 +241,7 @@ export function useRecordingStop(
       // Save to SQLite
       // NOTE: enabled to save COMPLETE transcripts after frontend receives all updates
       // This ensures user sees all transcripts streaming in before database save
-      if (isCallApi && transcriptionComplete == true) {
+      if (isCallApi && transcriptsRef.current.length > 0) {
 
         setStatus(RecordingStatus.SAVING, 'Saving meeting to database...');
 
@@ -277,11 +277,12 @@ export function useRecordingStop(
           console.log('   Transcripts:', freshTranscripts.length);
           console.log('   folder_path:', folderPath);
 
-          // --- Save to Supabase (non-blocking) ---
+          // --- Save to Supabase with user feedback ---
           if (maityUser?.id && freshTranscripts.length > 0) {
             (async () => {
+              const cloudToastId = toast.loading('Guardando en la nube...');
               try {
-                console.log('☁️ Saving conversation to Supabase for user:', maityUser.id);
+                console.log('Saving conversation to Supabase for user:', maityUser.id);
 
                 // Build transcript text with speaker labels
                 const transcriptText = freshTranscripts.map(t => {
@@ -319,7 +320,7 @@ export function useRecordingStop(
                   words_count: wordsCount,
                   duration_seconds: durationSec,
                 });
-                console.log('☁️ Conversation saved to Supabase:', conversationId);
+                console.log('Conversation saved to Supabase:', conversationId);
 
                 // 2. Save transcript segments
                 const segments = freshTranscripts.map((t, i) => ({
@@ -332,40 +333,62 @@ export function useRecordingStop(
                   end_time: t.audio_end_time || 0,
                 }));
                 await saveTranscriptSegments(conversationId, maityUser.id, segments);
-                console.log('☁️ Transcript segments saved:', segments.length);
+                console.log('Transcript segments saved:', segments.length);
 
-                // 3. Call DeepSeek evaluation (async, non-blocking)
-                try {
-                  console.log('🤖 Calling DeepSeek evaluation...');
-                  const { data: evalData, error: evalError } = await supabase.functions.invoke(
-                    'deepseek-evaluate',
-                    {
-                      body: {
-                        transcript_text: transcriptText,
-                        language: transcriptModelConfig?.language || 'es',
-                      },
+                // 3. Call DeepSeek evaluation with 1 retry
+                toast.loading('Analizando comunicacion con IA...', { id: cloudToastId });
+                let evalSuccess = false;
+                for (let attempt = 1; attempt <= 2; attempt++) {
+                  try {
+                    console.log(`DeepSeek evaluation attempt ${attempt}...`);
+                    const { data: evalData, error: evalError } = await supabase.functions.invoke(
+                      'deepseek-evaluate',
+                      {
+                        body: {
+                          transcript_text: transcriptText,
+                          language: transcriptModelConfig?.language || 'es',
+                        },
+                      }
+                    );
+
+                    if (evalError) {
+                      console.warn(`DeepSeek attempt ${attempt} error:`, evalError);
+                      if (attempt === 2) throw evalError;
+                      continue;
                     }
-                  );
 
-                  if (evalError) {
-                    console.warn('🤖 DeepSeek evaluation edge function error:', evalError);
-                  } else if (evalData) {
-                    console.log('🤖 DeepSeek evaluation received, updating conversation...');
-                    await updateConversationEvaluation(conversationId, {
-                      title: evalData.title,
-                      overview: evalData.overview,
-                      emoji: evalData.emoji,
-                      category: evalData.category,
-                      action_items: evalData.action_items,
-                      communication_feedback: evalData.communication_feedback,
-                    });
-                    console.log('✅ Conversation updated with DeepSeek evaluation');
+                    if (evalData) {
+                      console.log('DeepSeek evaluation received, updating conversation...');
+                      await updateConversationEvaluation(conversationId, {
+                        title: evalData.title,
+                        overview: evalData.overview,
+                        emoji: evalData.emoji,
+                        category: evalData.category,
+                        action_items: evalData.action_items,
+                        communication_feedback: evalData.communication_feedback,
+                      });
+                      evalSuccess = true;
+                      console.log('Conversation updated with DeepSeek evaluation');
+                      break;
+                    }
+                  } catch (err) {
+                    console.warn(`DeepSeek attempt ${attempt} failed:`, err);
+                    if (attempt === 2) throw err;
                   }
-                } catch (evalErr) {
-                  console.warn('🤖 DeepSeek evaluation failed (non-blocking):', evalErr);
                 }
-              } catch (supabaseErr) {
-                console.warn('☁️ Supabase save failed (non-blocking):', supabaseErr);
+
+                if (evalSuccess) {
+                  toast.success('Analisis de comunicacion completado', { id: cloudToastId, duration: 5000 });
+                } else {
+                  toast.success('Guardado en la nube (sin analisis)', { id: cloudToastId, duration: 5000 });
+                }
+              } catch (err) {
+                console.error('Cloud save/eval error:', err);
+                toast.error('Error en analisis de comunicacion', {
+                  id: cloudToastId,
+                  duration: 10000,
+                  description: 'Los datos de la reunion se guardaron localmente.',
+                });
               }
             })();
           }
