@@ -26,7 +26,7 @@ export function About() {
 
     const handleContactClick = async () => {
         try {
-            await invoke('open_external_url', { url: 'https://maity.zackriya.com/#about' });
+            await invoke('open_external_url', { url: 'https://maity.com.mx' });
         } catch (error) {
             console.error('Failed to open link:', error);
         }
@@ -115,20 +115,6 @@ export function About() {
                 </div>
             </div>
 
-            {/* CTA Section - Compact */}
-            <div className="text-center space-y-2">
-                <h3 className="text-medium font-semibold text-foreground">¿Listo para llevar tu negocio más lejos?</h3>
-                <p className="text-s text-muted-foreground">
-                    Si planeas construir agentes de IA personalizados con privacidad primero o un producto totalmente adaptado para tu <span className="font-bold">negocio</span>, podemos ayudarte a construirlo.
-                </p>
-                <button
-                    onClick={handleContactClick}
-                    className="inline-flex items-center px-4 py-2 bg-primary hover:bg-primary/90 text-primary-foreground text-sm font-medium rounded transition-colors duration-200 shadow-sm hover:shadow-md"
-                >
-                    Habla con el equipo de Zackriya
-                </button>
-            </div>
-
             {/* Account & Language Info */}
             {user?.email && (
                 <div className="bg-secondary rounded p-3 space-y-1">
@@ -151,7 +137,7 @@ export function About() {
             {/* Footer - Compact */}
             <div className="pt-2 border-t border-border text-center">
                 <p className="text-xs text-muted-foreground">
-                    Creado por Zackriya Solutions
+                    Creado por Maity
                 </p>
             </div>
             {/* Log Export Section */}
