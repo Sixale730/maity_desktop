@@ -21,6 +21,7 @@ function getSupabaseClient(): SupabaseClient {
       persistSession: true,
       autoRefreshToken: true,
       detectSessionInUrl: false, // Desktop app — no URL-based session detection
+      flowType: 'pkce', // Use PKCE: redirects with ?code= in query params instead of tokens in hash fragment
     },
     db: { schema: 'maity' },
   })

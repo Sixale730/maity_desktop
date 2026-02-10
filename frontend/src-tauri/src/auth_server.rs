@@ -167,13 +167,68 @@ async fn handle_connection<R: Runtime>(
     mut stream: tokio::net::TcpStream,
     app: AppHandle<R>,
 ) -> bool {
-    let mut buf = vec![0u8; 8192];
-    let n = match stream.read(&mut buf).await {
-        Ok(n) if n > 0 => n,
-        _ => return false,
-    };
+    // Read HTTP request in a loop to handle TCP segmentation.
+    // The first read gets the request line + headers (and possibly partial body).
+    // For POST requests we continue reading until Content-Length is satisfied.
+    let mut buf = Vec::with_capacity(16384);
+    let read_timeout = std::time::Duration::from_secs(5);
 
-    let request = String::from_utf8_lossy(&buf[..n]);
+    // First read — must get at least the request line
+    {
+        let mut tmp = vec![0u8; 8192];
+        let n = match tokio::time::timeout(read_timeout, stream.read(&mut tmp)).await {
+            Ok(Ok(n)) if n > 0 => n,
+            _ => return false,
+        };
+        buf.extend_from_slice(&tmp[..n]);
+    }
+
+    // If we have a POST, keep reading until we have the full body
+    {
+        let preview = String::from_utf8_lossy(&buf);
+        if preview.starts_with("POST") {
+            // Read remaining chunks until we have headers + full body
+            loop {
+                let so_far = String::from_utf8_lossy(&buf);
+                if let Some(header_end) = so_far.find("\r\n\r\n") {
+                    let headers_part = &so_far[..header_end];
+                    // Parse Content-Length
+                    let content_length: usize = headers_part
+                        .lines()
+                        .find_map(|line| {
+                            let lower = line.to_lowercase();
+                            if lower.starts_with("content-length:") {
+                                line.split(':').nth(1)?.trim().parse().ok()
+                            } else {
+                                None
+                            }
+                        })
+                        .unwrap_or(0);
+
+                    let body_start = header_end + 4;
+                    let body_received = buf.len().saturating_sub(body_start);
+                    if body_received >= content_length {
+                        break; // We have the full body
+                    }
+                }
+
+                // Read another chunk
+                let mut tmp = vec![0u8; 4096];
+                match tokio::time::timeout(read_timeout, stream.read(&mut tmp)).await {
+                    Ok(Ok(n)) if n > 0 => buf.extend_from_slice(&tmp[..n]),
+                    _ => break, // Timeout or EOF — process what we have
+                }
+
+                // Safety limit: 64 KB should be more than enough for auth tokens
+                if buf.len() > 65536 {
+                    log::warn!("[AuthServer] Request too large ({}), truncating", buf.len());
+                    break;
+                }
+            }
+        }
+    }
+
+    let request = String::from_utf8_lossy(&buf);
 
     // Parse the first line to get method and path
     let first_line = match request.lines().next() {
