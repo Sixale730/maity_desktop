@@ -5,6 +5,9 @@
 # Claude Code local settings
 .claude/settings.local.json
 
+# Tauri signing keys
+**/.tauri/
+
 # dependencies
 /node_modules
 **/models/*.bin
