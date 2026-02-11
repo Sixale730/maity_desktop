@@ -53,7 +53,7 @@ const sourceSans3 = Source_Sans_3({
  * Must be used inside AuthProvider.
  */
 function AuthGate({ children }: { children: React.ReactNode }) {
-  const { isAuthenticated, isLoading } = useAuth()
+  const { isAuthenticated, isLoading, maityUser } = useAuth()
   const [mounted, setMounted] = useState(false)
 
   useEffect(() => {
@@ -75,7 +75,12 @@ function AuthGate({ children }: { children: React.ReactNode }) {
     return <LoginScreen />
   }
 
-  // Authenticated — render app content
+  // Wait for maityUser to be populated (brief gap after fresh OAuth login)
+  if (!maityUser) {
+    return <div className="flex flex-col h-screen bg-background" />
+  }
+
+  // Authenticated with maityUser ready — render app content
   return <>{children}</>
 }
 
