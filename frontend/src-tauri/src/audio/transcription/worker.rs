@@ -682,15 +682,12 @@ async fn transcribe_chunk_with_provider<R: Runtime>(
                 }
                 Err(e) => {
                     let err_msg = e.to_string();
-                    error!("Deepgram streaming send failed for chunk {}: {}", chunk.chunk_id, err_msg);
-                    let _ = app.emit(
-                        "transcription-error",
-                        &serde_json::json!({
-                            "error": err_msg,
-                            "userMessage": format!("Transcription failed: {}", err_msg),
-                            "actionable": false
-                        }),
-                    );
+                    // Emit WARNING instead of ERROR — individual Deepgram chunk failures are
+                    // recoverable (reconnection in transcribe()). Emitting transcription-error
+                    // would cause RecordingControls to call onRecordingStop(false) and kill the
+                    // entire recording session, which is too aggressive for a single chunk fail.
+                    warn!("Deepgram chunk {} send failed ({:?}): {}", chunk.chunk_id, device_type, err_msg);
+                    let _ = app.emit("transcription-warning", &err_msg);
                     Err(e)
                 }
             }

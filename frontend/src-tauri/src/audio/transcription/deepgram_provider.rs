@@ -362,6 +362,10 @@ impl DeepgramRealtimeTranscriber {
 
     /// Internal: create WebSocket connection and spawn reader task
     async fn connect_websocket(&self, language: Option<&str>) -> Result<(), TranscriptionError> {
+        let label = self.source_label.lock().await.clone()
+            .unwrap_or_else(|| "unknown".to_string())
+            .to_uppercase();
+
         let auth_header = self.get_auth_header().ok_or_else(|| {
             TranscriptionError::EngineFailed(
                 "Deepgram authentication not configured (no API key or cloud token)".to_string(),
@@ -382,16 +386,16 @@ impl DeepgramRealtimeTranscriber {
             .body(())
             .map_err(|e| TranscriptionError::EngineFailed(format!("Failed to build request: {}", e)))?;
 
-        println!("[DEEPGRAM] Connecting persistent WebSocket...");
+        println!("[DEEPGRAM-{}] Connecting persistent WebSocket...", label);
         let (ws_stream, _response) = connect_async(request)
             .await
             .map_err(|e| {
-                println!("[DEEPGRAM] WebSocket connection error: {}", e);
+                println!("[DEEPGRAM-{}] WebSocket connection error: {}", label, e);
                 TranscriptionError::EngineFailed(format!("WebSocket connection failed: {}", e))
             })?;
 
-        println!("[DEEPGRAM] Persistent WebSocket connected successfully");
-        info!("Connected to Deepgram persistent WebSocket");
+        println!("[DEEPGRAM-{}] Persistent WebSocket connected successfully", label);
+        info!("[DEEPGRAM-{}] Connected to Deepgram persistent WebSocket", label);
 
         let (write, read) = ws_stream.split();
 
@@ -447,7 +451,10 @@ impl DeepgramRealtimeTranscriber {
         interim_text: Arc<Mutex<String>>,
         source_label: Arc<Mutex<Option<String>>>,
     ) {
-        info!("Deepgram reader task started");
+        let label = source_label.lock().await.clone()
+            .unwrap_or_else(|| "unknown".to_string())
+            .to_uppercase();
+        info!("[DEEPGRAM-{}] Reader task started", label);
 
         while let Some(msg) = read.next().await {
             match msg {
@@ -581,11 +588,11 @@ impl DeepgramRealtimeTranscriber {
                     }
                 }
                 Ok(Message::Close(_)) => {
-                    info!("Deepgram WebSocket closed by server");
+                    info!("[DEEPGRAM-{}] WebSocket closed by server", label);
                     break;
                 }
                 Err(e) => {
-                    error!("Deepgram WebSocket error: {}", e);
+                    error!("[DEEPGRAM-{}] WebSocket error: {}", label, e);
                     break;
                 }
                 _ => {}
@@ -593,7 +600,7 @@ impl DeepgramRealtimeTranscriber {
         }
 
         *is_connected.lock().await = false;
-        info!("Deepgram reader task finished");
+        info!("[DEEPGRAM-{}] Reader task finished", label);
     }
 }
 
@@ -619,20 +626,38 @@ impl TranscriptionProvider for DeepgramRealtimeTranscriber {
         // Convert audio to PCM16 and send over persistent WebSocket
         let audio_bytes = Self::convert_to_pcm16(&audio);
 
-        {
+        // Try sending; if it fails, attempt ONE reconnect before giving up
+        let send_result = {
+            let mut ws_guard = self.persistent_ws.lock().await;
+            match ws_guard.as_mut() {
+                Some(ws) => ws.send(Message::Binary(audio_bytes.clone())).await,
+                None => Err(tokio_tungstenite::tungstenite::Error::ConnectionClosed),
+            }
+        };
+
+        if let Err(e) = send_result {
+            let label = self.source_label.lock().await.clone().unwrap_or_else(|| "unknown".to_string());
+            warn!("[DEEPGRAM-{}] Send failed, attempting reconnect: {}", label.to_uppercase(), e);
+
+            // Clear old connection state
+            *self.persistent_ws.lock().await = None;
+            *self.is_connected.lock().await = false;
+
+            // Reconnect
+            self.ensure_connected(language.as_deref()).await?;
+
+            // Retry send once after reconnect
             let mut ws_guard = self.persistent_ws.lock().await;
             match ws_guard.as_mut() {
                 Some(ws) => {
-                    ws.send(Message::Binary(audio_bytes))
-                        .await
-                        .map_err(|e| {
-                            error!("Failed to send audio to Deepgram persistent WS: {}", e);
-                            TranscriptionError::EngineFailed(format!("Failed to send audio: {}", e))
-                        })?;
+                    ws.send(Message::Binary(audio_bytes)).await.map_err(|e| {
+                        error!("[DEEPGRAM-{}] Send failed after reconnect: {}", label.to_uppercase(), e);
+                        TranscriptionError::EngineFailed(format!("Reconnect send failed: {}", e))
+                    })?;
                 }
                 None => {
                     return Err(TranscriptionError::EngineFailed(
-                        "Persistent WebSocket not available".to_string(),
+                        "WebSocket unavailable after reconnect".to_string(),
                     ));
                 }
             }
