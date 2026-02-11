@@ -101,7 +101,7 @@ pub fn start_transcription_task<R: Runtime>(
                 TranscriptionEngine::Whisper(e) => TranscriptionEngine::Whisper(e.clone()),
                 TranscriptionEngine::Parakeet(e) => TranscriptionEngine::Parakeet(e.clone()),
                 TranscriptionEngine::Moonshine(e) => TranscriptionEngine::Moonshine(e.clone()),
-                TranscriptionEngine::Deepgram(e) => TranscriptionEngine::Deepgram(e.clone()),
+                TranscriptionEngine::Deepgram { mic, sys } => TranscriptionEngine::Deepgram { mic: mic.clone(), sys: sys.clone() },
                 TranscriptionEngine::Provider(p) => TranscriptionEngine::Provider(p.clone()),
             };
             let app_clone = app.clone();
@@ -164,8 +164,9 @@ pub fn start_transcription_task<R: Runtime>(
 
                             let chunk_timestamp = chunk.timestamp;
                             let chunk_duration = chunk.data.len() as f64 / chunk.sample_rate as f64;
-                            // Capture device_type before chunk is moved (for speaker identification)
-                            let chunk_source_type = match chunk.device_type {
+                            // Capture device_type before chunk is moved (for speaker identification and routing)
+                            let chunk_device_type = chunk.device_type.clone();
+                            let chunk_source_type = match chunk_device_type {
                                 crate::audio::recording_state::DeviceType::Microphone => Some("user".to_string()),
                                 crate::audio::recording_state::DeviceType::System => Some("interlocutor".to_string()),
                                 crate::audio::recording_state::DeviceType::Mixed => None, // Mixed audio should not be transcribed
@@ -177,7 +178,7 @@ pub fn start_transcription_task<R: Runtime>(
                                 let audio_start_time = chunk_timestamp;
                                 let audio_end_time = chunk_timestamp + chunk_duration;
                                 engine_clone.queue_chunk_info(
-                                    chunk_source_type.clone(),
+                                    &chunk_device_type,
                                     audio_start_time,
                                     audio_end_time,
                                     chunk_duration,
@@ -188,6 +189,7 @@ pub fn start_transcription_task<R: Runtime>(
                             match transcribe_chunk_with_provider(
                                 &engine_clone,
                                 chunk,
+                                &chunk_device_type,
                                 &app_clone,
                             )
                             .await
@@ -196,7 +198,7 @@ pub fn start_transcription_task<R: Runtime>(
                                     // Provider-aware confidence threshold
                                     let confidence_threshold = match &engine_clone {
                                         TranscriptionEngine::Whisper(_) | TranscriptionEngine::Provider(_) => 0.3,
-                                        TranscriptionEngine::Deepgram(_) => 0.3,
+                                        TranscriptionEngine::Deepgram { .. } => 0.3,
                                         TranscriptionEngine::Parakeet(_) | TranscriptionEngine::Moonshine(_) => 0.0, // Parakeet/Moonshine have no confidence, accept all
                                     };
 
@@ -512,6 +514,7 @@ pub fn start_transcription_task<R: Runtime>(
 async fn transcribe_chunk_with_provider<R: Runtime>(
     engine: &TranscriptionEngine,
     chunk: AudioChunk,
+    device_type: &crate::audio::recording_state::DeviceType,
     app: &AppHandle<R>,
 ) -> std::result::Result<(String, Option<f32>, bool), TranscriptionError> {
     // Convert to 16kHz mono for transcription
@@ -661,12 +664,17 @@ async fn transcribe_chunk_with_provider<R: Runtime>(
                 }
             }
         }
-        TranscriptionEngine::Deepgram(deepgram) => {
-            // Deepgram persistent streaming: send audio and return empty
+        TranscriptionEngine::Deepgram { mic, sys } => {
+            // Deepgram dual persistent streaming: route audio to correct instance by device_type
             // The reader task handles transcript emission directly
+            let dg = match device_type {
+                crate::audio::recording_state::DeviceType::Microphone
+                | crate::audio::recording_state::DeviceType::Mixed => mic,
+                crate::audio::recording_state::DeviceType::System => sys,
+            };
             let language = crate::get_language_preference_internal();
 
-            match deepgram.transcribe(speech_samples, language).await {
+            match dg.transcribe(speech_samples, language).await {
                 Ok(result) => {
                     // Result is always empty text for streaming mode
                     // Reader task emits transcript-update events directly

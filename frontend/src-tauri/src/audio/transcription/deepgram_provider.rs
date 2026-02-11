@@ -97,7 +97,6 @@ impl Default for DeepgramConfig {
 /// The reader task dequeues this when it receives a final transcript.
 #[derive(Debug, Clone)]
 struct ChunkInfo {
-    source_type: Option<String>, // "user" or "interlocutor"
     audio_start_time: f64,       // Seconds from recording start
     audio_end_time: f64,         // Seconds from recording start
     duration: f64,               // Chunk duration in seconds
@@ -125,6 +124,9 @@ pub struct DeepgramRealtimeTranscriber {
     chunk_info_queue: Arc<Mutex<VecDeque<ChunkInfo>>>,
     /// Accumulated text from interim results for the current utterance
     interim_text: Arc<Mutex<String>>,
+    /// Fixed source label for this transcriber instance ("user" or "interlocutor").
+    /// Set once at creation; the reader task uses this instead of per-chunk metadata.
+    source_label: Arc<Mutex<Option<String>>>,
 }
 
 impl DeepgramRealtimeTranscriber {
@@ -153,7 +155,14 @@ impl DeepgramRealtimeTranscriber {
             event_emitter: Arc::new(Mutex::new(None)),
             chunk_info_queue: Arc::new(Mutex::new(VecDeque::new())),
             interim_text: Arc::new(Mutex::new(String::new())),
+            source_label: Arc::new(Mutex::new(None)),
         }
+    }
+
+    /// Set the fixed source label for this transcriber instance.
+    /// "user" for mic audio, "interlocutor" for system audio.
+    pub fn set_source_label(&mut self, label: String) {
+        self.source_label = Arc::new(Mutex::new(Some(label)));
     }
 
     /// Set the transcription model (e.g., "nova-2", "nova-2-general")
@@ -191,14 +200,12 @@ impl DeepgramRealtimeTranscriber {
     /// The reader task will dequeue this when it receives the corresponding final result.
     pub async fn queue_chunk_info(
         &self,
-        source_type: Option<String>,
         audio_start_time: f64,
         audio_end_time: f64,
         duration: f64,
     ) {
         let mut queue = self.chunk_info_queue.lock().await;
         queue.push_back(ChunkInfo {
-            source_type,
             audio_start_time,
             audio_end_time,
             duration,
@@ -397,9 +404,10 @@ impl DeepgramRealtimeTranscriber {
         let event_emitter = self.event_emitter.clone();
         let is_connected = self.is_connected.clone();
         let interim_text = self.interim_text.clone();
+        let source_label = self.source_label.clone();
 
         let reader_handle = tokio::spawn(async move {
-            Self::reader_task(read, chunk_info_queue, event_emitter, is_connected, interim_text).await;
+            Self::reader_task(read, chunk_info_queue, event_emitter, is_connected, interim_text, source_label).await;
         });
 
         *self.reader_handle.lock().await = Some(reader_handle);
@@ -437,6 +445,7 @@ impl DeepgramRealtimeTranscriber {
         event_emitter: Arc<Mutex<Option<Arc<dyn Fn(TranscriptUpdate) + Send + Sync>>>>,
         is_connected: Arc<Mutex<bool>>,
         interim_text: Arc<Mutex<String>>,
+        source_label: Arc<Mutex<Option<String>>>,
     ) {
         info!("Deepgram reader task started");
 
@@ -469,6 +478,10 @@ impl DeepgramRealtimeTranscriber {
                         continue;
                     }
 
+                    // Use the fixed source_label for speaker attribution
+                    // (each transcriber instance handles only one audio source)
+                    let source_type = source_label.lock().await.clone();
+
                     if is_final {
                         // Final result - emit transcript-update event
                         let transcript = alt.transcript.clone();
@@ -477,22 +490,21 @@ impl DeepgramRealtimeTranscriber {
                         // Clear interim text since we got the final version
                         *interim_text.lock().await = String::new();
 
-                        // Dequeue chunk info for metadata
+                        // Dequeue chunk info for timestamp metadata
                         let chunk_info = {
                             let mut queue = chunk_info_queue.lock().await;
                             queue.pop_front()
                         };
 
-                        let (source_type, audio_start_time, audio_end_time, duration) = match chunk_info {
+                        let (audio_start_time, audio_end_time, duration) = match chunk_info {
                             Some(info) => (
-                                info.source_type,
                                 info.audio_start_time,
                                 info.audio_end_time,
                                 info.duration,
                             ),
                             None => {
                                 // No chunk info available, use defaults
-                                (None, 0.0, 0.0, 0.0)
+                                (0.0, 0.0, 0.0)
                             }
                         };
 
@@ -509,11 +521,12 @@ impl DeepgramRealtimeTranscriber {
                             audio_start_time,
                             audio_end_time,
                             duration,
-                            source_type,
+                            source_type: source_type.clone(),
                         };
 
                         println!(
-                            "[DEEPGRAM-STREAM] Final transcript: '{}' (seq: {}, confidence: {:.2})",
+                            "[DEEPGRAM-STREAM] Final transcript ({}): '{}' (seq: {}, confidence: {:.2})",
+                            source_type.as_deref().unwrap_or("unknown"),
                             if transcript.len() > 80 { format!("{}...", &transcript[..80]) } else { transcript },
                             sequence_id,
                             confidence
@@ -536,14 +549,13 @@ impl DeepgramRealtimeTranscriber {
                             queue.front().cloned()
                         };
 
-                        let (source_type, audio_start_time, audio_end_time, duration) = match chunk_info {
+                        let (audio_start_time, audio_end_time, duration) = match chunk_info {
                             Some(ref info) => (
-                                info.source_type.clone(),
                                 info.audio_start_time,
                                 info.audio_end_time,
                                 info.duration,
                             ),
-                            None => (None, 0.0, 0.0, 0.0),
+                            None => (0.0, 0.0, 0.0),
                         };
 
                         let sequence_id = SEQUENCE_COUNTER.fetch_add(1, Ordering::SeqCst);
@@ -559,7 +571,7 @@ impl DeepgramRealtimeTranscriber {
                             audio_start_time,
                             audio_end_time,
                             duration,
-                            source_type,
+                            source_type: source_type.clone(),
                         };
 
                         let emitter_guard = event_emitter.lock().await;
@@ -780,12 +792,12 @@ mod tests {
     #[tokio::test]
     async fn test_chunk_info_queue() {
         let transcriber = DeepgramRealtimeTranscriber::new("test_key".to_string());
-        transcriber.queue_chunk_info(Some("user".to_string()), 0.0, 3.0, 3.0).await;
-        transcriber.queue_chunk_info(Some("interlocutor".to_string()), 3.0, 6.0, 3.0).await;
+        transcriber.queue_chunk_info(0.0, 3.0, 3.0).await;
+        transcriber.queue_chunk_info(3.0, 6.0, 3.0).await;
 
         let queue = transcriber.chunk_info_queue.lock().await;
         assert_eq!(queue.len(), 2);
-        assert_eq!(queue[0].source_type, Some("user".to_string()));
-        assert_eq!(queue[1].source_type, Some("interlocutor".to_string()));
+        assert_eq!(queue[0].audio_start_time, 0.0);
+        assert_eq!(queue[1].audio_start_time, 3.0);
     }
 }
