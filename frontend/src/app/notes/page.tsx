@@ -64,7 +64,7 @@ export default function NotesPage() {
       <div className="flex-1 overflow-y-auto p-4">
         {/* Header */}
         <div className="flex items-center gap-3 mb-6">
-          <div className="flex items-center justify-center w-12 h-12 rounded-xl bg-purple-500/10">
+          <div className="flex items-center justify-center w-12 h-12 rounded-xl bg-primary/10">
             <FileText className="h-6 w-6 text-[#a78bfa]" />
           </div>
           <div>
@@ -120,7 +120,7 @@ export default function NotesPage() {
               return (
                 <Card
                   key={conversation.id}
-                  className="cursor-pointer hover:shadow-md transition-all hover:border-purple-400/30"
+                  className="cursor-pointer hover:shadow-md transition-all hover:border-primary/30"
                   onClick={() => setSelectedConversation(conversation)}
                 >
                   <CardContent className="p-4">
