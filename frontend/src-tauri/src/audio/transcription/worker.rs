@@ -181,7 +181,7 @@ pub fn start_transcription_task<R: Runtime>(
                                     audio_start_time,
                                     audio_end_time,
                                     chunk_duration,
-                                );
+                                ).await;
                             }
 
                             // Transcribe with provider-agnostic approach

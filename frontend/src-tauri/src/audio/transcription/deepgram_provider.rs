@@ -179,25 +179,24 @@ impl DeepgramRealtimeTranscriber {
 
     /// Set the event emitter function for streaming mode.
     /// The reader task calls this function to emit transcript-update events to the frontend.
-    pub fn set_event_emitter<F>(&self, emitter: F)
+    pub async fn set_event_emitter<F>(&self, emitter: F)
     where
         F: Fn(TranscriptUpdate) + Send + Sync + 'static,
     {
-        // Block on getting the lock since this is called during setup (not in hot path)
-        let mut guard = self.event_emitter.blocking_lock();
+        let mut guard = self.event_emitter.lock().await;
         *guard = Some(Arc::new(emitter));
     }
 
     /// Queue chunk metadata before calling transcribe().
     /// The reader task will dequeue this when it receives the corresponding final result.
-    pub fn queue_chunk_info(
+    pub async fn queue_chunk_info(
         &self,
         source_type: Option<String>,
         audio_start_time: f64,
         audio_end_time: f64,
         duration: f64,
     ) {
-        let mut queue = self.chunk_info_queue.blocking_lock();
+        let mut queue = self.chunk_info_queue.lock().await;
         queue.push_back(ChunkInfo {
             source_type,
             audio_start_time,
@@ -404,6 +403,29 @@ impl DeepgramRealtimeTranscriber {
         });
 
         *self.reader_handle.lock().await = Some(reader_handle);
+
+        // Spawn keep-alive task (Deepgram closes idle connections after ~10s of inactivity)
+        let ws_for_keepalive = self.persistent_ws.clone();
+        let is_connected_keepalive = self.is_connected.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(8));
+            loop {
+                interval.tick().await;
+                let connected = *is_connected_keepalive.lock().await;
+                if !connected {
+                    break;
+                }
+                let mut ws_guard = ws_for_keepalive.lock().await;
+                if let Some(ref mut ws) = *ws_guard {
+                    let msg = Message::Text(r#"{"type":"KeepAlive"}"#.to_string());
+                    if ws.send(msg).await.is_err() {
+                        break;
+                    }
+                } else {
+                    break;
+                }
+            }
+        });
 
         Ok(())
     }
@@ -755,13 +777,13 @@ mod tests {
         assert!(matches!(result, Err(TranscriptionError::AudioTooShort { .. })));
     }
 
-    #[test]
-    fn test_chunk_info_queue() {
+    #[tokio::test]
+    async fn test_chunk_info_queue() {
         let transcriber = DeepgramRealtimeTranscriber::new("test_key".to_string());
-        transcriber.queue_chunk_info(Some("user".to_string()), 0.0, 3.0, 3.0);
-        transcriber.queue_chunk_info(Some("interlocutor".to_string()), 3.0, 6.0, 3.0);
+        transcriber.queue_chunk_info(Some("user".to_string()), 0.0, 3.0, 3.0).await;
+        transcriber.queue_chunk_info(Some("interlocutor".to_string()), 3.0, 6.0, 3.0).await;
 
-        let queue = transcriber.chunk_info_queue.blocking_lock();
+        let queue = transcriber.chunk_info_queue.lock().await;
         assert_eq!(queue.len(), 2);
         assert_eq!(queue[0].source_type, Some("user".to_string()));
         assert_eq!(queue[1].source_type, Some("interlocutor".to_string()));

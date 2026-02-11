@@ -64,7 +64,7 @@ impl TranscriptionEngine {
 
     /// Queue chunk metadata for the Deepgram streaming provider.
     /// No-op for non-streaming engines.
-    pub fn queue_chunk_info(
+    pub async fn queue_chunk_info(
         &self,
         source_type: Option<String>,
         audio_start_time: f64,
@@ -72,7 +72,7 @@ impl TranscriptionEngine {
         duration: f64,
     ) {
         if let Self::Deepgram(dg) = self {
-            dg.queue_chunk_info(source_type, audio_start_time, audio_end_time, duration);
+            dg.queue_chunk_info(source_type, audio_start_time, audio_end_time, duration).await;
         }
     }
 
@@ -374,7 +374,7 @@ pub async fn get_or_init_transcription_engine<R: Runtime>(
                                 log::error!("Failed to emit transcript-update from Deepgram reader: {}", e);
                             }
                         }
-                    });
+                    }).await;
 
                     let model_name = deepgram_arc.get_current_model().await
                         .unwrap_or_else(|| "nova-3".to_string());
