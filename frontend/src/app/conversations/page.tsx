@@ -24,6 +24,7 @@ export default function ConversationsPage() {
         <ConversationDetail
           conversation={selectedConversation}
           onClose={() => setSelectedConversation(null)}
+          onConversationUpdate={setSelectedConversation}
         />
       </div>
     );

@@ -325,6 +325,49 @@ export async function saveTranscriptSegments(
   }
 }
 
+export async function reanalyzeConversation(
+  conversationId: string,
+  transcriptText: string,
+  language: string = 'es'
+): Promise<OmiConversation> {
+  // 1. Call DeepSeek evaluation edge function
+  const { data: evalData, error: evalError } = await supabase.functions.invoke(
+    'deepseek-evaluate',
+    {
+      body: {
+        transcript_text: transcriptText,
+        language,
+      },
+    }
+  );
+
+  if (evalError) {
+    throw new Error(`Error en evaluación DeepSeek: ${evalError.message || evalError}`);
+  }
+
+  if (!evalData) {
+    throw new Error('La evaluación no retornó datos');
+  }
+
+  // 2. Update conversation with evaluation data
+  await updateConversationEvaluation(conversationId, {
+    title: evalData.title,
+    overview: evalData.overview,
+    emoji: evalData.emoji,
+    category: evalData.category,
+    action_items: evalData.action_items,
+    communication_feedback: evalData.communication_feedback,
+  });
+
+  // 3. Re-fetch and return updated conversation
+  const updated = await getOmiConversation(conversationId);
+  if (!updated) {
+    throw new Error('No se pudo obtener la conversación actualizada');
+  }
+
+  return updated;
+}
+
 export async function updateConversationEvaluation(
   conversationId: string,
   data: UpdateEvaluationData
