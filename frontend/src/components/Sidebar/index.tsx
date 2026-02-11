@@ -729,37 +729,6 @@ const Sidebar: React.FC = () => {
           {/* Content area */}
           <div className="flex-1 flex flex-col min-h-0">
             {renderCollapsedIcons()}
-            {/* Meeting Notes folder header - fixed */}
-            {!isCollapsed && (
-              <div className="flex-shrink-0">
-                {filteredSidebarItems.filter(item => item.type === 'folder').map(item => (
-                  <div key={item.id}>
-                    <div
-                      className="flex items-center transition-all duration-150 p-3 text-lg font-semibold h-10 mx-3 mt-3 rounded-lg"
-                    >
-                      <NotebookPen className="w-4 h-4 mr-2 text-muted-foreground" />
-                      <span className="text-foreground">{item.title}</span>
-                      {searchQuery && item.id === 'meetings' && isSearching && (
-                        <span className="ml-2 text-xs text-[#485df4] animate-pulse">Buscando...</span>
-                      )}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {/* Scrollable meeting items */}
-            {!isCollapsed && (
-              <div className="flex-1 overflow-y-auto custom-scrollbar min-h-0">
-                {filteredSidebarItems
-                  .filter(item => item.type === 'folder' && expandedFolders.has(item.id) && item.children)
-                  .map(item => (
-                    <div key={`${item.id}-children`} className="mx-3">
-                      {item.children!.map(child => renderItem(child, 1))}
-                    </div>
-                  ))}
-              </div>
-            )}
           </div>
         </div>
 
@@ -771,64 +740,6 @@ const Sidebar: React.FC = () => {
         />
       </div>
 
-      {/* Modal de Confirmación para Eliminar */}
-      <ConfirmationModal
-        isOpen={deleteModalState.isOpen}
-        text="¿Estás seguro de que deseas eliminar esta reunión? Esta acción no se puede deshacer."
-        onConfirm={handleDeleteConfirm}
-        onCancel={() => setDeleteModalState({ isOpen: false, itemId: null })}
-      />
-
-      {/* Modal para Editar Título de Reunión */}
-      <Dialog open={editModalState.isOpen} onOpenChange={(open) => {
-        if (!open) handleEditCancel();
-      }}>
-        <DialogContent className="sm:max-w-[425px]">
-          <VisuallyHidden>
-            <DialogTitle>Editar Título de Reunión</DialogTitle>
-          </VisuallyHidden>
-          <div className="py-4">
-            <h3 className="text-lg font-semibold mb-4">Editar Título de Reunión</h3>
-            <div className="space-y-4">
-              <div>
-                <label htmlFor="meeting-title" className="block text-sm font-medium text-foreground mb-2">
-                  Título de la Reunión
-                </label>
-                <input
-                  id="meeting-title"
-                  type="text"
-                  value={editingTitle}
-                  onChange={(e) => setEditingTitle(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      handleEditConfirm();
-                    } else if (e.key === 'Escape') {
-                      handleEditCancel();
-                    }
-                  }}
-                  className="w-full px-3 py-2 border border-border bg-background text-foreground rounded-md focus:outline-none focus:ring-2 focus:ring-ring focus:border-transparent"
-                  placeholder="Ingresa el título de la reunión"
-                  autoFocus
-                />
-              </div>
-            </div>
-          </div>
-          <DialogFooter>
-            <button
-              onClick={handleEditCancel}
-              className="px-4 py-2 text-sm font-medium text-foreground bg-secondary hover:bg-muted rounded-md transition-colors"
-            >
-              Cancelar
-            </button>
-            <button
-              onClick={handleEditConfirm}
-              className="px-4 py-2 text-sm font-medium text-primary-foreground bg-primary hover:bg-primary/90 rounded-md transition-colors"
-            >
-              Guardar
-            </button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 };
