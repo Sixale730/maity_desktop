@@ -156,20 +156,20 @@
     --ring: 341 100% 50%;
   }
 
-  /* === PALETA GRIS FRÍO (tinte azul) === */
+  /* === PALETA GRIS FRÍO (tinte azul sutil) === */
   .dark.theme-cool {
-    --background: 240 20% 6%;           /* #0f0f14 */
-    --foreground: 220 15% 95%;          /* #f0f2f5 */
-    --card: 240 15% 9%;                 /* #16161e */
-    --card-foreground: 220 15% 95%;
-    --popover: 240 15% 9%;
-    --popover-foreground: 220 15% 95%;
-    --secondary: 240 12% 15%;           /* #1e1e2e */
-    --secondary-foreground: 220 15% 95%;
-    --muted: 240 10% 18%;               /* #252536 */
-    --muted-foreground: 230 10% 60%;    /* #9498b0 */
-    --border: 240 12% 20%;              /* #2a2a3d */
-    --input: 240 12% 20%;
+    --background: 240 5% 7%;            /* gris oscuro con tinte azul apenas perceptible */
+    --foreground: 220 5% 95%;
+    --card: 240 4% 10%;
+    --card-foreground: 220 5% 95%;
+    --popover: 240 4% 10%;
+    --popover-foreground: 220 5% 95%;
+    --secondary: 240 4% 13%;
+    --secondary-foreground: 220 5% 95%;
+    --muted: 240 3% 16%;
+    --muted-foreground: 230 3% 60%;
+    --border: 240 3% 18%;
+    --input: 240 3% 18%;
     /* Mantener rosa como acento */
     --primary: 341 100% 50%;
     --accent: 341 100% 50%;
