@@ -39,9 +39,9 @@ function extractText(item: unknown): string {
 }
 
 const priorityColors: Record<string, string> = {
-  high: 'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400',
-  medium: 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-400',
-  low: 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400',
+  high: 'bg-destructive/10 text-destructive',
+  medium: 'bg-muted text-muted-foreground',
+  low: 'bg-primary/10 text-primary',
 };
 
 // Componente para mostrar una tarjeta de insight
@@ -209,7 +209,7 @@ export function ConversationDetail({ conversation: initialConversation, onClose,
       </div>
 
       {/* Tabs */}
-      <Tabs defaultValue="minuta" className="mb-6">
+      <Tabs defaultValue="minuta">
         <TabsList className="w-full">
           <TabsTrigger value="minuta" className="flex-1 gap-2">
             <FileText className="h-4 w-4" />
@@ -218,6 +218,10 @@ export function ConversationDetail({ conversation: initialConversation, onClose,
           <TabsTrigger value="analisis" className="flex-1 gap-2">
             <Sparkles className="h-4 w-4" />
             Analisis
+          </TabsTrigger>
+          <TabsTrigger value="transcripcion" className="flex-1 gap-2">
+            <MessageSquare className="h-4 w-4" />
+            Transcripcion
           </TabsTrigger>
         </TabsList>
 
@@ -230,7 +234,7 @@ export function ConversationDetail({ conversation: initialConversation, onClose,
                 <Card>
                   <CardHeader>
                     <CardTitle className="flex items-center gap-2 text-lg">
-                      <FileText className="h-5 w-5 text-[#a78bfa]" />
+                      <FileText className="h-5 w-5 text-primary" />
                       Minuta de Reunion
                     </CardTitle>
                   </CardHeader>
@@ -259,7 +263,7 @@ export function ConversationDetail({ conversation: initialConversation, onClose,
                 <Card>
                   <CardHeader>
                     <CardTitle className="flex items-center gap-2 text-lg">
-                      <BookOpen className="h-5 w-5 text-[#a78bfa]" />
+                      <BookOpen className="h-5 w-5 text-primary" />
                       Temas
                     </CardTitle>
                   </CardHeader>
@@ -289,7 +293,7 @@ export function ConversationDetail({ conversation: initialConversation, onClose,
                     )}
                     {feedback.temas.temas_sin_cerrar && feedback.temas.temas_sin_cerrar.length > 0 && (
                       <div>
-                        <h5 className="text-sm font-medium text-amber-600 mb-2">Temas sin cerrar</h5>
+                        <h5 className="text-sm text-muted-foreground font-medium mb-2">Temas sin cerrar</h5>
                         <ul className="space-y-1">
                           {feedback.temas.temas_sin_cerrar.map((tema, i) => (
                             <li key={i} className="text-sm text-muted-foreground">{extractText(tema)}</li>
@@ -306,7 +310,7 @@ export function ConversationDetail({ conversation: initialConversation, onClose,
                 <Card>
                   <CardHeader>
                     <CardTitle className="flex items-center gap-2 text-lg">
-                      <ListChecks className="h-5 w-5 text-[#a78bfa]" />
+                      <ListChecks className="h-5 w-5 text-primary" />
                       Tareas
                     </CardTitle>
                   </CardHeader>
@@ -456,11 +460,11 @@ export function ConversationDetail({ conversation: initialConversation, onClose,
                     <div className="grid gap-4 sm:grid-cols-2">
                       {feedback.strengths && feedback.strengths.length > 0 && (
                         <div>
-                          <h4 className="text-sm font-medium mb-2 text-green-600">Fortalezas</h4>
+                          <h4 className="text-sm font-medium mb-2 text-primary">Fortalezas</h4>
                           <ul className="space-y-1">
                             {feedback.strengths.map((s, i) => (
                               <li key={i} className="text-sm flex items-start gap-2">
-                                <CheckCircle2 className="h-4 w-4 text-green-500 mt-0.5 flex-shrink-0" />
+                                <CheckCircle2 className="h-4 w-4 text-primary mt-0.5 flex-shrink-0" />
                                 <span className="text-muted-foreground">{s}</span>
                               </li>
                             ))}
@@ -469,7 +473,7 @@ export function ConversationDetail({ conversation: initialConversation, onClose,
                       )}
                       {feedback.areas_to_improve && feedback.areas_to_improve.length > 0 && (
                         <div>
-                          <h4 className="text-sm font-medium mb-2 text-amber-600">Areas de Mejora</h4>
+                          <h4 className="text-sm font-medium mb-2 text-muted-foreground">Areas de Mejora</h4>
                           <ul className="space-y-1">
                             {feedback.areas_to_improve.map((a, i) => (
                               <li key={i} className="text-sm text-muted-foreground">• {a}</li>
@@ -483,7 +487,7 @@ export function ConversationDetail({ conversation: initialConversation, onClose,
                     {feedback.observations && (
                       <div className="space-y-3 pt-4 border-t border-border">
                         <h4 className="text-sm font-medium flex items-center gap-2 text-foreground">
-                          <Lightbulb className="h-4 w-4 text-amber-500" />
+                          <Lightbulb className="h-4 w-4 text-muted-foreground" />
                           Insights
                         </h4>
                         <div className="grid gap-3 sm:grid-cols-2">
@@ -666,60 +670,62 @@ export function ConversationDetail({ conversation: initialConversation, onClose,
             </Card>
           )}
         </TabsContent>
-      </Tabs>
 
-      {/* Transcript - always visible below tabs */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-lg">Transcripcion</CardTitle>
-        </CardHeader>
-        <CardContent>
-          {loadingSegments ? (
-            <div className="space-y-3">
-              {[1, 2, 3, 4].map((i) => (
-                <div key={i} className="flex gap-3">
-                  <Skeleton className="h-8 w-8 rounded-full" />
-                  <div className="flex-1">
-                    <Skeleton className="h-4 w-20 mb-1" />
-                    <Skeleton className="h-4 w-full" />
-                  </div>
-                </div>
-              ))}
-            </div>
-          ) : segments && segments.length > 0 ? (
-            <div className="space-y-4">
-              {segments.map((segment) => (
-                <div key={segment.id} className="flex gap-3">
-                  <div className={`flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center ${segment.is_user ? 'bg-primary/10' : 'bg-secondary'}`}>
-                    {segment.is_user ? (
-                      <User className="h-4 w-4 text-primary" />
-                    ) : (
-                      <Bot className="h-4 w-4 text-muted-foreground" />
-                    )}
-                  </div>
-                  <div className="flex-1">
-                    <div className="flex items-center gap-2 mb-1">
-                      <span className="text-xs font-medium text-foreground">
-                        {segment.speaker || (segment.is_user ? 'Tu' : 'Otro')}
-                      </span>
-                      <span className="text-xs text-muted-foreground">
-                        {Math.floor(segment.start_time / 60)}:{Math.floor(segment.start_time % 60).toString().padStart(2, '0')}
-                      </span>
+        {/* Tab: Transcripcion */}
+        <TabsContent value="transcripcion">
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-lg">Transcripcion</CardTitle>
+            </CardHeader>
+            <CardContent>
+              {loadingSegments ? (
+                <div className="space-y-3">
+                  {[1, 2, 3, 4].map((i) => (
+                    <div key={i} className="flex gap-3">
+                      <Skeleton className="h-8 w-8 rounded-full" />
+                      <div className="flex-1">
+                        <Skeleton className="h-4 w-20 mb-1" />
+                        <Skeleton className="h-4 w-full" />
+                      </div>
                     </div>
-                    <p className="text-sm text-muted-foreground">{segment.text}</p>
-                  </div>
+                  ))}
                 </div>
-              ))}
-            </div>
-          ) : conversation.transcript_text ? (
-            <p className="text-sm whitespace-pre-wrap text-muted-foreground">{conversation.transcript_text}</p>
-          ) : (
-            <p className="text-sm text-muted-foreground text-center py-4">
-              Sin transcripcion disponible
-            </p>
-          )}
-        </CardContent>
-      </Card>
+              ) : segments && segments.length > 0 ? (
+                <div className="space-y-4">
+                  {segments.map((segment) => (
+                    <div key={segment.id} className="flex gap-3">
+                      <div className={`flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center ${segment.is_user ? 'bg-primary/10' : 'bg-secondary'}`}>
+                        {segment.is_user ? (
+                          <User className="h-4 w-4 text-primary" />
+                        ) : (
+                          <Bot className="h-4 w-4 text-muted-foreground" />
+                        )}
+                      </div>
+                      <div className="flex-1">
+                        <div className="flex items-center gap-2 mb-1">
+                          <span className="text-xs font-medium text-foreground">
+                            {segment.speaker || (segment.is_user ? 'Tu' : 'Otro')}
+                          </span>
+                          <span className="text-xs text-muted-foreground">
+                            {Math.floor(segment.start_time / 60)}:{Math.floor(segment.start_time % 60).toString().padStart(2, '0')}
+                          </span>
+                        </div>
+                        <p className="text-sm text-muted-foreground">{segment.text}</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : conversation.transcript_text ? (
+                <p className="text-sm whitespace-pre-wrap text-muted-foreground">{conversation.transcript_text}</p>
+              ) : (
+                <p className="text-sm text-muted-foreground text-center py-4">
+                  Sin transcripcion disponible
+                </p>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }
