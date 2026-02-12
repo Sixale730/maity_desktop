@@ -157,7 +157,7 @@ export function ConversationDetail({ conversation: initialConversation, onClose,
     ((segments && segments.length > 0) || !!conversation.transcript_text);
 
   return (
-    <div className="flex-1 overflow-y-auto p-4 bg-background">
+    <div className="flex-1 min-h-0 overflow-y-auto p-4 bg-background">
       {/* Close button */}
       <div className="flex items-center justify-between mb-6">
         <Button

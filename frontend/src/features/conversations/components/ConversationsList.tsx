@@ -39,7 +39,7 @@ export function ConversationsList({ onSelect, selectedId }: ConversationsListPro
   };
 
   return (
-    <div className="flex-1 overflow-y-auto p-4">
+    <div className="h-full overflow-y-auto p-4">
       {/* Header */}
       <div className="flex items-center gap-3 mb-6">
         <div className="flex items-center justify-center w-12 h-12 rounded-xl bg-primary/10">
