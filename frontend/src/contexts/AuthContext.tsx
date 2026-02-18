@@ -15,8 +15,10 @@ interface AuthContextType {
   isLoading: boolean
   isAuthenticated: boolean
   error: string | null
+  maityUserError: string | null
   signInWithGoogle: () => Promise<void>
   signOut: () => Promise<void>
+  retryFetchMaityUser: () => void
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined)
@@ -51,12 +53,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [maityUser, setMaityUser] = useState<MaityUser | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [maityUserError, setMaityUserError] = useState<string | null>(null)
   const isHandlingCallback = useRef(false)
 
   const isAuthenticated = !!session && !!user
 
   // Fetch or create the maity.users record for the authenticated user
   const fetchOrCreateMaityUser = useCallback(async (authUser: User) => {
+    setMaityUserError(null)
     try {
       // Try to fetch existing maity.users record
       const { data, error: fetchError } = await supabase
@@ -96,6 +100,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
         if (createError) {
           console.error('[Auth] Failed to create maity user:', createError)
+          setMaityUserError('No se pudo crear tu cuenta. Verifica tu conexión e intenta de nuevo.')
           return
         }
 
@@ -105,9 +110,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
       if (fetchError) {
         console.error('[Auth] Failed to fetch maity user:', fetchError)
+        setMaityUserError('No se pudo cargar tu cuenta. Verifica tu conexión e intenta de nuevo.')
       }
     } catch (err) {
       console.error('[Auth] Error in fetchOrCreateMaityUser:', err)
+      setMaityUserError('Error inesperado al cargar tu cuenta. Verifica tu conexión e intenta de nuevo.')
     }
   }, [])
 
@@ -116,6 +123,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     fetchOrCreateMaityUserRef.current = fetchOrCreateMaityUser
   }, [fetchOrCreateMaityUser])
+
+  // Retry fetching maityUser with the current authenticated user
+  const retryFetchMaityUser = useCallback(() => {
+    if (user) {
+      fetchOrCreateMaityUserRef.current(user)
+    }
+  }, [user])
 
   // Handle a deep-link callback URL containing OAuth tokens
   const handleDeepLinkCallback = useCallback(async (url: string) => {
@@ -361,6 +375,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       // Reset flags BEFORE calling signOut to ensure clean state
       isHandlingCallback.current = false
       setError(null)
+      setMaityUserError(null)
 
       const { error } = await supabase.auth.signOut()
       if (error) {
@@ -391,8 +406,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         isLoading,
         isAuthenticated,
         error,
+        maityUserError,
         signInWithGoogle,
         signOut,
+        retryFetchMaityUser,
       }}
     >
       {children}
