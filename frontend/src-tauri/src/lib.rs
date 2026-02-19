@@ -863,6 +863,7 @@ pub fn run() {
             // Health check
             health_check,
             // Deepgram proxy config commands
+            audio::transcription::deepgram_commands::fetch_deepgram_proxy_config,
             audio::transcription::deepgram_commands::set_deepgram_proxy_config,
             audio::transcription::deepgram_commands::get_deepgram_proxy_config,
             audio::transcription::deepgram_commands::has_valid_deepgram_proxy_config,

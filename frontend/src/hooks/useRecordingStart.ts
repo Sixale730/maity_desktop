@@ -11,6 +11,7 @@ import { toast } from 'sonner';
 import { getDeepgramProxyConfig, hasValidCachedProxyConfig, DeepgramError } from '@/lib/deepgram';
 import type { DeepgramErrorType } from '@/lib/deepgram';
 
+
 interface UseRecordingStartReturn {
   handleRecordingStart: () => Promise<void>;
   isAutoStarting: boolean;
@@ -77,24 +78,21 @@ export function useRecordingStart(
     try {
       switch (provider) {
         case 'deepgram': {
-          // For Deepgram (cloud), get proxy config from Vercel API
+          // For Deepgram (cloud), get proxy config via Rust backend (no CORS issues)
           // This requires the user to be authenticated with Supabase
           try {
             console.log('[recording] Deepgram: checking auth status and proxy config...');
 
-            // Check if we already have a valid cached proxy config
-            if (hasValidCachedProxyConfig()) {
+            // Check if we already have a valid cached proxy config (in Rust)
+            if (await hasValidCachedProxyConfig()) {
               console.log('✅ Deepgram proxy config already cached, ready to record');
               return { ready: true, isDownloading: false };
             }
 
-            // Fetch proxy config from the Vercel API
+            // Fetch proxy config (Rust handles HTTP + caching)
             console.log('🔄 Fetching Deepgram proxy config...');
-            const { proxyBaseUrl, jwt, expiresIn } = await getDeepgramProxyConfig();
-
-            // Pass the proxy config to the Rust backend
-            await invoke('set_deepgram_proxy_config', { proxyBaseUrl, jwt, expiresIn });
-            console.log('✅ Deepgram proxy config obtained and set, ready to record');
+            await getDeepgramProxyConfig();
+            console.log('✅ Deepgram proxy config obtained and cached, ready to record');
 
             return { ready: true, isDownloading: false };
           } catch (error) {
