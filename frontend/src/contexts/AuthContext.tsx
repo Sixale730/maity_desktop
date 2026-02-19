@@ -55,66 +55,107 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [error, setError] = useState<string | null>(null)
   const [maityUserError, setMaityUserError] = useState<string | null>(null)
   const isHandlingCallback = useRef(false)
+  const fetchMaityUserPromise = useRef<Promise<void> | null>(null)
 
   const isAuthenticated = !!session && !!user
 
   // Fetch or create the maity.users record for the authenticated user
   const fetchOrCreateMaityUser = useCallback(async (authUser: User) => {
-    setMaityUserError(null)
-    try {
-      // Try to fetch existing maity.users record
-      const { data, error: fetchError } = await supabase
-        .from('users')
-        .select('id, auth_id, name, email, status, created_at, updated_at')
-        .eq('auth_id', authUser.id)
-        .single()
+    // Promise dedup: if a fetch is already in progress, wait for it instead of running another
+    if (fetchMaityUserPromise.current) {
+      console.log('[Auth] fetchOrCreateMaityUser already in progress, awaiting existing promise')
+      await fetchMaityUserPromise.current
+      return
+    }
 
-      if (data) {
-        setMaityUser(data as MaityUser)
-        return
-      }
-
-      // If not found (PGRST116 = no rows), create a new record
-      if (fetchError && fetchError.code === 'PGRST116') {
-        const userName =
-          authUser.user_metadata?.full_name ||
-          authUser.user_metadata?.name ||
-          authUser.email?.split('@')[0] ||
-          ''
-
-        const email = authUser.email || ''
-        const domain = email.split('@')[1]?.toLowerCase() || ''
-        const TRUSTED_DOMAINS = ['asertio.mx', 'maity.cloud']
-        const initialStatus = TRUSTED_DOMAINS.includes(domain) ? 'ACTIVE' : 'PENDING_APPROVAL'
-
-        const { data: newUser, error: createError } = await supabase
+    const doFetch = async () => {
+      setMaityUserError(null)
+      try {
+        // Try to fetch existing maity.users record
+        const { data, error: fetchError } = await supabase
           .from('users')
-          .insert({
-            auth_id: authUser.id,
-            name: userName,
-            email: authUser.email || null,
-            status: initialStatus,
-          })
           .select('id, auth_id, name, email, status, created_at, updated_at')
+          .eq('auth_id', authUser.id)
           .single()
 
-        if (createError) {
-          console.error('[Auth] Failed to create maity user:', createError)
-          setMaityUserError('No se pudo crear tu cuenta. Verifica tu conexión e intenta de nuevo.')
+        if (data) {
+          setMaityUser(data as MaityUser)
           return
         }
 
-        setMaityUser(newUser as MaityUser)
-        return
-      }
+        // If not found (PGRST116 = no rows), create a new record
+        if (fetchError && fetchError.code === 'PGRST116') {
+          const userName =
+            authUser.user_metadata?.full_name ||
+            authUser.user_metadata?.name ||
+            authUser.email?.split('@')[0] ||
+            ''
 
-      if (fetchError) {
-        console.error('[Auth] Failed to fetch maity user:', fetchError)
-        setMaityUserError('No se pudo cargar tu cuenta. Verifica tu conexión e intenta de nuevo.')
+          const email = authUser.email || ''
+          const domain = email.split('@')[1]?.toLowerCase() || ''
+          const TRUSTED_DOMAINS = ['asertio.mx', 'maity.cloud']
+          const initialStatus = TRUSTED_DOMAINS.includes(domain) ? 'ACTIVE' : 'PENDING_APPROVAL'
+
+          const { data: newUser, error: createError } = await supabase
+            .from('users')
+            .insert({
+              auth_id: authUser.id,
+              name: userName,
+              email: authUser.email || null,
+              status: initialStatus,
+            })
+            .select('id, auth_id, name, email, status, created_at, updated_at')
+            .single()
+
+          if (createError) {
+            // Handle unique constraint violation (concurrent insert race)
+            if (createError.code === '23505') {
+              console.log('[Auth] Unique constraint hit (concurrent insert), re-fetching user')
+              const { data: existingUser, error: refetchError } = await supabase
+                .from('users')
+                .select('id, auth_id, name, email, status, created_at, updated_at')
+                .eq('auth_id', authUser.id)
+                .single()
+
+              if (existingUser) {
+                setMaityUser(existingUser as MaityUser)
+                return
+              }
+              if (refetchError) {
+                console.error('[Auth] Failed to re-fetch after unique constraint:', refetchError)
+                setMaityUserError('No se pudo cargar tu cuenta. Verifica tu conexión e intenta de nuevo.')
+                return
+              }
+            }
+
+            console.error('[Auth] Failed to create maity user:', createError)
+            setMaityUserError('No se pudo crear tu cuenta. Verifica tu conexión e intenta de nuevo.')
+            return
+          }
+
+          setMaityUser(newUser as MaityUser)
+          return
+        }
+
+        if (fetchError) {
+          console.error('[Auth] Failed to fetch maity user:', fetchError)
+          setMaityUserError('No se pudo cargar tu cuenta. Verifica tu conexión e intenta de nuevo.')
+        }
+      } catch (err) {
+        console.error('[Auth] Error in fetchOrCreateMaityUser:', err)
+        setMaityUserError('Error inesperado al cargar tu cuenta. Verifica tu conexión e intenta de nuevo.')
       }
-    } catch (err) {
-      console.error('[Auth] Error in fetchOrCreateMaityUser:', err)
-      setMaityUserError('Error inesperado al cargar tu cuenta. Verifica tu conexión e intenta de nuevo.')
+    }
+
+    const promise = doFetch()
+    fetchMaityUserPromise.current = promise
+    try {
+      await promise
+    } finally {
+      // Only clear if it's still our promise (not replaced by another call)
+      if (fetchMaityUserPromise.current === promise) {
+        fetchMaityUserPromise.current = null
+      }
     }
   }, [])
 
@@ -204,7 +245,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setUser(newSession?.user ?? null)
 
         if (newSession?.user) {
-          await fetchOrCreateMaityUserRef.current(newSession.user)
+          // Skip if a callback handler (processAuthCode/processAuthTokens/handleDeepLinkCallback)
+          // is already active — it will call fetchOrCreateMaityUser after establishing the session
+          if (isHandlingCallback.current) {
+            console.log('[Auth] Skipping fetchOrCreateMaityUser in onAuthStateChange (callback handler active)')
+          } else {
+            await fetchOrCreateMaityUserRef.current(newSession.user)
+          }
         } else {
           setMaityUser(null)
         }
@@ -219,44 +266,89 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, []) // Sin dependencias - solo se ejecuta una vez al montar
 
+  // Helper: process tokens received from OAuth server (shared by listener and polling fallback)
+  const processAuthTokens = useCallback(async (access_token: string, refresh_token: string) => {
+    if (isHandlingCallback.current) return
+    isHandlingCallback.current = true
+
+    console.log('[Auth] Processing auth tokens')
+    setError(null)
+
+    try {
+      const { data, error: sessionError } = await supabase.auth.setSession({
+        access_token,
+        refresh_token,
+      })
+
+      if (sessionError) {
+        console.error('[Auth] Failed to set session from tokens:', sessionError)
+        setError('Failed to complete sign-in. Please try again.')
+      } else if (data.session) {
+        console.log('[Auth] Session established from tokens')
+        setSession(data.session)
+        setUser(data.session.user)
+        await fetchOrCreateMaityUserRef.current(data.session.user)
+      }
+    } catch (err) {
+      console.error('[Auth] Error setting session from tokens:', err)
+      setError('An unexpected error occurred during sign-in.')
+    } finally {
+      isHandlingCallback.current = false
+    }
+  }, [])
+
   // Listen for auth tokens from the localhost OAuth server (primary on Windows)
   useEffect(() => {
     const unlistenTokens = listen<{ access_token: string; refresh_token: string }>(
       'auth-tokens-received',
       async (event) => {
-        if (isHandlingCallback.current) return
-        isHandlingCallback.current = true
-
-        console.log('[Auth] Received tokens from localhost OAuth server')
-        setError(null)
-
-        try {
-          const { access_token, refresh_token } = event.payload
-          const { data, error: sessionError } = await supabase.auth.setSession({
-            access_token,
-            refresh_token,
-          })
-
-          if (sessionError) {
-            console.error('[Auth] Failed to set session from localhost tokens:', sessionError)
-            setError('Failed to complete sign-in. Please try again.')
-          } else if (data.session) {
-            console.log('[Auth] Session established via localhost OAuth server')
-            setSession(data.session)
-            setUser(data.session.user)
-            await fetchOrCreateMaityUserRef.current(data.session.user)
-          }
-        } catch (err) {
-          console.error('[Auth] Error setting session from localhost tokens:', err)
-          setError('An unexpected error occurred during sign-in.')
-        } finally {
-          isHandlingCallback.current = false
-        }
+        const { access_token, refresh_token } = event.payload
+        await processAuthTokens(access_token, refresh_token)
       }
     )
 
+    // Polling fallback: check if tokens arrived before listener was ready
+    invoke<{ access_token: string; refresh_token: string } | null>('get_pending_auth_tokens')
+      .then(async (pending) => {
+        if (pending) {
+          console.log('[Auth] Found pending auth tokens via polling fallback')
+          await processAuthTokens(pending.access_token, pending.refresh_token)
+        }
+      })
+      .catch((err) => {
+        console.log('[Auth] get_pending_auth_tokens not available:', err)
+      })
+
     return () => {
       unlistenTokens.then((fn) => fn())
+    }
+  }, [processAuthTokens])
+
+  // Helper: process PKCE auth code (shared by listener and polling fallback)
+  const processAuthCode = useCallback(async (code: string) => {
+    if (isHandlingCallback.current) return
+    isHandlingCallback.current = true
+
+    console.log('[Auth] Processing PKCE code')
+    setError(null)
+
+    try {
+      const { data, error: sessionError } = await supabase.auth.exchangeCodeForSession(code)
+
+      if (sessionError) {
+        console.error('[Auth] Failed to exchange PKCE code for session:', sessionError)
+        setError('Failed to complete sign-in. Please try again.')
+      } else if (data.session) {
+        console.log('[Auth] Session established via PKCE code exchange')
+        setSession(data.session)
+        setUser(data.session.user)
+        await fetchOrCreateMaityUserRef.current(data.session.user)
+      }
+    } catch (err) {
+      console.error('[Auth] Error exchanging PKCE code:', err)
+      setError('An unexpected error occurred during sign-in.')
+    } finally {
+      isHandlingCallback.current = false
     }
   }, [])
 
@@ -265,38 +357,26 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const unlistenCode = listen<{ code: string }>(
       'auth-code-received',
       async (event) => {
-        if (isHandlingCallback.current) return
-        isHandlingCallback.current = true
-
-        console.log('[Auth] Received PKCE code from localhost OAuth server')
-        setError(null)
-
-        try {
-          const { code } = event.payload
-          const { data, error: sessionError } = await supabase.auth.exchangeCodeForSession(code)
-
-          if (sessionError) {
-            console.error('[Auth] Failed to exchange PKCE code for session:', sessionError)
-            setError('Failed to complete sign-in. Please try again.')
-          } else if (data.session) {
-            console.log('[Auth] Session established via PKCE code exchange')
-            setSession(data.session)
-            setUser(data.session.user)
-            await fetchOrCreateMaityUserRef.current(data.session.user)
-          }
-        } catch (err) {
-          console.error('[Auth] Error exchanging PKCE code:', err)
-          setError('An unexpected error occurred during sign-in.')
-        } finally {
-          isHandlingCallback.current = false
-        }
+        await processAuthCode(event.payload.code)
       }
     )
+
+    // Polling fallback: check if a code arrived before listener was ready
+    invoke<string | null>('get_pending_auth_code')
+      .then(async (pendingCode) => {
+        if (pendingCode) {
+          console.log('[Auth] Found pending PKCE code via polling fallback')
+          await processAuthCode(pendingCode)
+        }
+      })
+      .catch((err) => {
+        console.log('[Auth] get_pending_auth_code not available:', err)
+      })
 
     return () => {
       unlistenCode.then((fn) => fn())
     }
-  }, [])
+  }, [processAuthCode])
 
   // Listen for deep-link events as fallback (macOS: onOpenUrl, Windows: single-instance event)
   useEffect(() => {

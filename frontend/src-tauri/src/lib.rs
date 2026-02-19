@@ -422,6 +422,11 @@ pub fn run() {
                 log::info!("Deep link received via single-instance: {}", url);
                 let _ = app.emit("deep-link-received", url.clone());
             }
+            // Bring main window to front when single-instance callback fires
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.set_focus();
+                let _ = window.show();
+            }
         }))
         .manage(whisper_engine::parallel_commands::ParallelProcessorState::new())
         .manage(Arc::new(RwLock::new(
@@ -864,6 +869,8 @@ pub fn run() {
             audio::transcription::deepgram_commands::clear_deepgram_proxy_config,
             // OAuth localhost server
             auth_server::start_oauth_server,
+            auth_server::get_pending_auth_code,
+            auth_server::get_pending_auth_tokens,
             // System settings commands
             #[cfg(target_os = "macos")]
             utils::open_system_settings,

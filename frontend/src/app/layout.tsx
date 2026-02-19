@@ -61,16 +61,29 @@ function AuthGate({ children }: { children: React.ReactNode }) {
     setMounted(true)
   }, [])
 
-  // Timeout: if authenticated but maityUser hasn't loaded after 10s, show error state
+  // Auto-retry + timeout: if authenticated but maityUser hasn't loaded, retry at 3s and 7s, timeout at 12s
   useEffect(() => {
     if (!isAuthenticated || maityUser || maityUserError) {
       setTimedOut(false)
       return
     }
 
-    const timer = setTimeout(() => setTimedOut(true), 10000)
-    return () => clearTimeout(timer)
-  }, [isAuthenticated, maityUser, maityUserError])
+    const retry1 = setTimeout(() => {
+      console.log('[AuthGate] Auto-retry #1 for maityUser (3s)')
+      retryFetchMaityUser()
+    }, 3000)
+    const retry2 = setTimeout(() => {
+      console.log('[AuthGate] Auto-retry #2 for maityUser (7s)')
+      retryFetchMaityUser()
+    }, 7000)
+    const timeout = setTimeout(() => setTimedOut(true), 12000)
+
+    return () => {
+      clearTimeout(retry1)
+      clearTimeout(retry2)
+      clearTimeout(timeout)
+    }
+  }, [isAuthenticated, maityUser, maityUserError, retryFetchMaityUser])
 
   // SSG hydration placeholder
   if (!mounted) {

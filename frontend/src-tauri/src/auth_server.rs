@@ -1,5 +1,6 @@
 use std::sync::atomic::{AtomicBool, Ordering};
-use tauri::{AppHandle, Emitter, Runtime};
+use std::sync::Mutex;
+use tauri::{AppHandle, Emitter, Manager, Runtime};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
@@ -7,6 +8,12 @@ const OAUTH_CALLBACK_PORT: u16 = 17823;
 const SERVER_TIMEOUT_SECS: u64 = 300; // 5 minutes
 
 static SERVER_RUNNING: AtomicBool = AtomicBool::new(false);
+
+// Global storage for pending auth data (survives event race conditions)
+static PENDING_AUTH_CODE: std::sync::LazyLock<Mutex<Option<String>>> =
+    std::sync::LazyLock::new(|| Mutex::new(None));
+static PENDING_AUTH_TOKENS: std::sync::LazyLock<Mutex<Option<AuthTokens>>> =
+    std::sync::LazyLock::new(|| Mutex::new(None));
 
 /// HTML page served at GET /auth/callback.
 /// JavaScript extracts tokens from the URL fragment and POSTs them back.
@@ -86,9 +93,9 @@ const CALLBACK_HTML: &str = r#"<!DOCTYPE html>
 </html>"#;
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
-struct AuthTokens {
-    access_token: String,
-    refresh_token: String,
+pub struct AuthTokens {
+    pub access_token: String,
+    pub refresh_token: String,
 }
 
 #[derive(serde::Serialize, Clone, Debug)]
@@ -263,11 +270,19 @@ async fn handle_connection<R: Runtime>(
 
                 if let Some(code_value) = code {
                     if !code_value.is_empty() {
-                        log::info!("[AuthServer] PKCE code received, emitting auth-code-received event");
+                        log::info!("[AuthServer] PKCE code received, storing and emitting auth-code-received event");
+
+                        // Store code in global state so frontend can poll if event is missed
+                        if let Ok(mut guard) = PENDING_AUTH_CODE.lock() {
+                            *guard = Some(code_value.to_string());
+                        }
 
                         if let Err(e) = app.emit("auth-code-received", AuthCode { code: code_value.to_string() }) {
                             log::error!("[AuthServer] Failed to emit auth-code-received: {}", e);
                         }
+
+                        // Bring app window to front
+                        focus_main_window(&app);
 
                         // Serve success page immediately for PKCE flow
                         let success_html = r#"<!DOCTYPE html>
@@ -330,7 +345,12 @@ async fn handle_connection<R: Runtime>(
                 }
             };
 
-            log::info!("[AuthServer] Received auth tokens, emitting event");
+            log::info!("[AuthServer] Received auth tokens, storing and emitting event");
+
+            // Store tokens in global state so frontend can poll if event is missed
+            if let Ok(mut guard) = PENDING_AUTH_TOKENS.lock() {
+                *guard = Some(tokens.clone());
+            }
 
             // Emit event to the frontend
             if let Err(e) = app.emit("auth-tokens-received", tokens.clone()) {
@@ -338,6 +358,9 @@ async fn handle_connection<R: Runtime>(
                 send_response(&mut stream, 500, "Internal error").await;
                 return false;
             }
+
+            // Bring app window to front
+            focus_main_window(&app);
 
             send_response(&mut stream, 200, r#"{"ok":true}"#).await;
             true // Signal to shut down
@@ -383,4 +406,33 @@ async fn send_response(stream: &mut tokio::net::TcpStream, status: u16, body: &s
         body
     );
     let _ = stream.write_all(response.as_bytes()).await;
+}
+
+/// Bring the main window to front after OAuth completes
+fn focus_main_window<R: Runtime>(app: &AppHandle<R>) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.set_focus();
+        let _ = window.show();
+        log::info!("[AuthServer] Brought main window to front after OAuth");
+    }
+}
+
+/// Get and clear the pending auth code (for frontend polling fallback).
+/// Returns the code if one was received before the frontend listener was ready.
+#[tauri::command]
+pub fn get_pending_auth_code() -> Option<String> {
+    PENDING_AUTH_CODE
+        .lock()
+        .ok()
+        .and_then(|mut guard| guard.take())
+}
+
+/// Get and clear the pending auth tokens (for frontend polling fallback).
+/// Returns the tokens if they were received before the frontend listener was ready.
+#[tauri::command]
+pub fn get_pending_auth_tokens() -> Option<AuthTokens> {
+    PENDING_AUTH_TOKENS
+        .lock()
+        .ok()
+        .and_then(|mut guard| guard.take())
 }
