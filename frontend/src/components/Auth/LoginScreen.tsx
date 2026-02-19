@@ -28,8 +28,27 @@ function GoogleIcon({ className }: { className?: string }) {
   )
 }
 
+function AppleIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="currentColor">
+      <path d="M17.05 20.28c-.98.95-2.05.88-3.08.4-1.09-.5-2.08-.48-3.24 0-1.44.62-2.2.44-3.06-.4C2.79 15.25 3.51 7.59 9.05 7.31c1.35.07 2.29.74 3.08.8 1.18-.24 2.31-.93 3.57-.84 1.51.12 2.65.72 3.4 1.8-3.12 1.87-2.38 5.98.48 7.13-.57 1.5-1.31 2.99-2.54 4.09zM12.03 7.25c-.15-2.23 1.66-4.07 3.74-4.25.29 2.58-2.34 4.5-3.74 4.25z" />
+    </svg>
+  )
+}
+
+function MicrosoftIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 21 21" fill="none">
+      <rect x="1" y="1" width="9" height="9" fill="#F25022" />
+      <rect x="11" y="1" width="9" height="9" fill="#7FBA00" />
+      <rect x="1" y="11" width="9" height="9" fill="#00A4EF" />
+      <rect x="11" y="11" width="9" height="9" fill="#FFB900" />
+    </svg>
+  )
+}
+
 export function LoginScreen() {
-  const { signInWithGoogle, error, isLoading } = useAuth()
+  const { signInWithGoogle, signInWithApple, signInWithAzure, error, isLoading } = useAuth()
   const [isSigningIn, setIsSigningIn] = useState(false)
 
   // Reset spinner when AuthContext reports an error
@@ -62,6 +81,24 @@ export function LoginScreen() {
     }
   }
 
+  const handleAppleSignIn = async () => {
+    setIsSigningIn(true)
+    try {
+      await signInWithApple()
+    } catch {
+      setIsSigningIn(false)
+    }
+  }
+
+  const handleAzureSignIn = async () => {
+    setIsSigningIn(true)
+    try {
+      await signInWithAzure()
+    } catch {
+      setIsSigningIn(false)
+    }
+  }
+
   const handleCancel = () => {
     setIsSigningIn(false)
   }
@@ -88,31 +125,15 @@ export function LoginScreen() {
         <div className="w-16 h-px bg-[#b0b0b3] dark:bg-gray-600" />
 
         {/* Sign-in Section */}
-        <div className="w-full max-w-xs space-y-4">
-          <button
-            onClick={handleGoogleSignIn}
-            disabled={isSigningIn || isLoading}
-            className="w-full h-12 flex items-center justify-center gap-3 bg-white dark:bg-gray-800 border border-[#e7e7e9] dark:border-gray-700 rounded-lg shadow-sm hover:shadow-md hover:bg-[#f5f5f6] dark:hover:bg-gray-700 transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {isSigningIn ? (
-              <>
+        <div className="w-full max-w-xs space-y-3">
+          {isSigningIn ? (
+            <div className="flex flex-col items-center space-y-4">
+              <div className="w-full h-12 flex items-center justify-center gap-3 bg-white dark:bg-gray-800 border border-[#e7e7e9] dark:border-gray-700 rounded-lg">
                 <Loader2 className="w-5 h-5 text-[#4a4a4c] dark:text-gray-300 animate-spin" />
                 <span className="text-sm font-medium text-[#4a4a4c] dark:text-gray-300">
                   Esperando autenticacion...
                 </span>
-              </>
-            ) : (
-              <>
-                <GoogleIcon className="w-5 h-5" />
-                <span className="text-sm font-medium text-[#3a3a3c] dark:text-gray-200">
-                  Continuar con Google
-                </span>
-              </>
-            )}
-          </button>
-
-          {isSigningIn && (
-            <div className="flex flex-col items-center space-y-3">
+              </div>
               <p className="text-xs text-center text-[#6a6a6d] dark:text-gray-400">
                 Completa el inicio de sesion en tu navegador
               </p>
@@ -124,6 +145,44 @@ export function LoginScreen() {
                 <span>Cancelar</span>
               </button>
             </div>
+          ) : (
+            <>
+              {/* Google */}
+              <button
+                onClick={handleGoogleSignIn}
+                disabled={isLoading}
+                className="w-full h-12 flex items-center justify-center gap-3 bg-white dark:bg-gray-800 border border-[#e7e7e9] dark:border-gray-700 rounded-lg shadow-sm hover:shadow-md hover:bg-[#f5f5f6] dark:hover:bg-gray-700 transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                <GoogleIcon className="w-5 h-5" />
+                <span className="text-sm font-medium text-[#3a3a3c] dark:text-gray-200">
+                  Continuar con Google
+                </span>
+              </button>
+
+              {/* Apple */}
+              <button
+                onClick={handleAppleSignIn}
+                disabled={isLoading}
+                className="w-full h-12 flex items-center justify-center gap-3 bg-black dark:bg-white border border-black dark:border-white rounded-lg shadow-sm hover:shadow-md hover:bg-gray-900 dark:hover:bg-gray-100 transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                <AppleIcon className="w-5 h-5 text-white dark:text-black" />
+                <span className="text-sm font-medium text-white dark:text-black">
+                  Continuar con Apple
+                </span>
+              </button>
+
+              {/* Microsoft */}
+              <button
+                onClick={handleAzureSignIn}
+                disabled={isLoading}
+                className="w-full h-12 flex items-center justify-center gap-3 bg-white dark:bg-gray-800 border border-[#e7e7e9] dark:border-gray-700 rounded-lg shadow-sm hover:shadow-md hover:bg-[#f5f5f6] dark:hover:bg-gray-700 transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                <MicrosoftIcon className="w-5 h-5" />
+                <span className="text-sm font-medium text-[#3a3a3c] dark:text-gray-200">
+                  Continuar con Microsoft
+                </span>
+              </button>
+            </>
           )}
         </div>
 

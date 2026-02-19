@@ -17,6 +17,8 @@ interface AuthContextType {
   error: string | null
   maityUserError: string | null
   signInWithGoogle: () => Promise<void>
+  signInWithApple: () => Promise<void>
+  signInWithAzure: () => Promise<void>
   signOut: () => Promise<void>
   retryFetchMaityUser: () => void
 }
@@ -449,6 +451,77 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, [])
 
+  const signInWithApple = useCallback(async () => {
+    setError(null)
+    try {
+      let redirectTo = 'maity://auth/callback'
+      try {
+        const port = await invoke<number>('start_oauth_server')
+        redirectTo = `http://127.0.0.1:${port}/auth/callback`
+        console.log('[Auth] Localhost OAuth server started on port', port)
+      } catch (serverErr) {
+        console.warn('[Auth] Failed to start OAuth server, falling back to deep-link:', serverErr)
+      }
+
+      const { data, error: oauthError } = await supabase.auth.signInWithOAuth({
+        provider: 'apple',
+        options: {
+          skipBrowserRedirect: true,
+          redirectTo,
+        },
+      })
+
+      if (oauthError) {
+        console.error('[Auth] OAuth error:', oauthError)
+        setError('No se pudo iniciar el inicio de sesión con Apple. Intenta de nuevo.')
+        return
+      }
+      if (data.url) {
+        console.log('[Auth] Opening Apple OAuth URL in system browser')
+        await invoke('open_external_url', { url: data.url })
+      }
+    } catch (err) {
+      console.error('[Auth] Error starting Apple sign-in:', err)
+      setError('No se pudo iniciar el inicio de sesión con Apple. Verifica tu conexión.')
+    }
+  }, [])
+
+  const signInWithAzure = useCallback(async () => {
+    setError(null)
+    try {
+      let redirectTo = 'maity://auth/callback'
+      try {
+        const port = await invoke<number>('start_oauth_server')
+        redirectTo = `http://127.0.0.1:${port}/auth/callback`
+        console.log('[Auth] Localhost OAuth server started on port', port)
+      } catch (serverErr) {
+        console.warn('[Auth] Failed to start OAuth server, falling back to deep-link:', serverErr)
+      }
+
+      const { data, error: oauthError } = await supabase.auth.signInWithOAuth({
+        provider: 'azure',
+        options: {
+          skipBrowserRedirect: true,
+          redirectTo,
+          scopes: 'email',
+        },
+      })
+
+      if (oauthError) {
+        console.error('[Auth] OAuth error:', oauthError)
+        setError('No se pudo iniciar el inicio de sesión con Microsoft. Intenta de nuevo.')
+        return
+      }
+      if (data.url) {
+        console.log('[Auth] Opening Azure OAuth URL in system browser')
+        await invoke('open_external_url', { url: data.url })
+      }
+    } catch (err) {
+      console.error('[Auth] Error starting Azure sign-in:', err)
+      setError('No se pudo iniciar el inicio de sesión con Microsoft. Verifica tu conexión.')
+    }
+  }, [])
+
   const signOut = useCallback(async () => {
     console.log('[Auth] signOut called')
     try {
@@ -488,6 +561,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         error,
         maityUserError,
         signInWithGoogle,
+        signInWithApple,
+        signInWithAzure,
         signOut,
         retryFetchMaityUser,
       }}
