@@ -221,33 +221,31 @@ function AppContent({ children }: { children: React.ReactNode }) {
         <ConfigProvider>
           <OllamaDownloadProvider>
             <OnboardingProvider>
-              <UpdateCheckProvider>
-                <SidebarProvider>
-                  <TooltipProvider>
-                    <RecordingPostProcessingProvider>
-                      {/* Download progress toast provider - listens for background downloads */}
-                      <DownloadProgressToastProvider />
+              <SidebarProvider>
+                <TooltipProvider>
+                  <RecordingPostProcessingProvider>
+                    {/* Download progress toast provider - listens for background downloads */}
+                    <DownloadProgressToastProvider />
 
-                      {/* Meeting detection dialog - listens for meeting-detected events */}
-                      <MeetingDetectionDialog />
+                    {/* Meeting detection dialog - listens for meeting-detected events */}
+                    <MeetingDetectionDialog />
 
-                      {/* Show onboarding or main app */}
-                      {showOnboarding ? (
-                        <OnboardingFlow onComplete={handleOnboardingComplete} />
-                      ) : (
-                        <div className="flex flex-col h-screen">
-                          {/* Offline indicator at the top */}
-                          <OfflineIndicator />
-                          <div className="flex flex-1 overflow-hidden">
-                            <Sidebar />
-                            <MainContent>{children}</MainContent>
-                          </div>
+                    {/* Show onboarding or main app */}
+                    {showOnboarding ? (
+                      <OnboardingFlow onComplete={handleOnboardingComplete} />
+                    ) : (
+                      <div className="flex flex-col h-screen">
+                        {/* Offline indicator at the top */}
+                        <OfflineIndicator />
+                        <div className="flex flex-1 overflow-hidden">
+                          <Sidebar />
+                          <MainContent>{children}</MainContent>
                         </div>
-                      )}
-                    </RecordingPostProcessingProvider>
-                  </TooltipProvider>
-                </SidebarProvider>
-              </UpdateCheckProvider>
+                      </div>
+                    )}
+                  </RecordingPostProcessingProvider>
+                </TooltipProvider>
+              </SidebarProvider>
             </OnboardingProvider>
           </OllamaDownloadProvider>
         </ConfigProvider>
@@ -334,9 +332,11 @@ export default function RootLayout({
             <ThemeProvider>
               <AnalyticsProvider>
                 <AuthProvider>
-                  <AuthGate>
-                    <AppContent>{children}</AppContent>
-                  </AuthGate>
+                  <UpdateCheckProvider>
+                    <AuthGate>
+                      <AppContent>{children}</AppContent>
+                    </AuthGate>
+                  </UpdateCheckProvider>
                 </AuthProvider>
               </AnalyticsProvider>
             </ThemeProvider>
