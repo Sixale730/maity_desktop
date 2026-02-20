@@ -52,9 +52,10 @@ export interface CommunicationFeedback {
   empatia?: number;
   vocabulario?: number;
   objetivo?: number;
+  adaptacion?: number;
   // Textos
   feedback?: string;
-  summary?: string;  // Resumen del análisis (alternativo a feedback)
+  summary?: string;
   strengths?: string[];
   areas_to_improve?: string[];
   // Insights detallados por categoría
@@ -78,13 +79,26 @@ export interface CommunicationFeedback {
   preguntas?: {
     total_usuario?: number;
     total_otros?: number;
+    preguntas_usuario?: string[];
+    preguntas_otros?: string[];
   };
   temas?: {
     temas_tratados?: string[];
-    acciones_usuario?: string[];
-    temas_sin_cerrar?: string[];
+    acciones_usuario?: (string | { descripcion: string; tiene_fecha: boolean })[];
+    temas_sin_cerrar?: (string | { tema: string; razon: string })[];
   };
   meeting_minutes?: string;
+  patron?: {
+    actual: string;
+    evolucion: string;
+    senales: string[];
+    que_cambiaria: string;
+  };
+  insights?: Array<{
+    dato: string;
+    por_que: string;
+    sugerencia: string;
+  }>;
 }
 
 export interface OmiTranscriptSegment {

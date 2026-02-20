@@ -1,0 +1,10 @@
+export { ResumenHero } from './ResumenHero';
+export { KPIGrid } from './KPIGrid';
+export { ScoreBars } from './ScoreBars';
+export { MuletillasSection } from './MuletillasSection';
+export { PreguntasSection } from './PreguntasSection';
+export { TemasSection } from './TemasSection';
+export { PatronSection } from './PatronSection';
+export { InsightsSection } from './InsightsSection';
+export { FortalezasAreasSection } from './FortalezasAreasSection';
+export { TranscriptSection } from './TranscriptSection';
