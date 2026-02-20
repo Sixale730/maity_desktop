@@ -329,39 +329,35 @@ export async function saveTranscriptSegments(
 
 export async function reanalyzeConversation(
   conversationId: string,
-  transcriptText: string,
-  language: string = 'es'
+  _transcriptText: string, // No longer used — finalize reads segments from Supabase
+  _language: string = 'es'
 ): Promise<OmiConversation> {
-  // 1. Call DeepSeek evaluation edge function
-  const { data: evalData, error: evalError } = await supabase.functions.invoke(
-    'deepseek-evaluate',
-    {
-      body: {
-        transcript_text: transcriptText,
-        language,
-      },
-    }
-  );
+  const { invoke } = await import('@tauri-apps/api/core');
 
-  if (evalError) {
-    throw new Error(`Error en evaluación DeepSeek: ${evalError.message || evalError}`);
+  // 1. Get current session JWT
+  const { data: { session } } = await supabase.auth.getSession();
+  if (!session?.access_token) {
+    throw new Error('No hay sesión activa. Por favor inicia sesión de nuevo.');
   }
 
-  if (!evalData) {
-    throw new Error('La evaluación no retornó datos');
+  // 2. Get conversation to read duration_seconds
+  const conversation = await getOmiConversation(conversationId);
+  if (!conversation) {
+    throw new Error('Conversación no encontrada');
   }
 
-  // 2. Update conversation with evaluation data
-  await updateConversationEvaluation(conversationId, {
-    title: evalData.title,
-    overview: evalData.overview,
-    emoji: evalData.emoji,
-    category: evalData.category,
-    action_items: evalData.action_items,
-    communication_feedback: evalData.communication_feedback,
+  // 3. Call finalize endpoint via Rust (no CORS)
+  const result = await invoke<{ ok: boolean; error?: string }>('finalize_conversation_cloud', {
+    conversationId,
+    durationSeconds: conversation.duration_seconds || 0,
+    accessToken: session.access_token,
   });
 
-  // 3. Re-fetch and return updated conversation
+  if (!result.ok) {
+    throw new Error(result.error || 'Error al analizar la conversación');
+  }
+
+  // 4. Re-fetch and return updated conversation (finalize already wrote to Supabase)
   const updated = await getOmiConversation(conversationId);
   if (!updated) {
     throw new Error('No se pudo obtener la conversación actualizada');

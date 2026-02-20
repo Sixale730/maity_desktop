@@ -124,7 +124,7 @@ pub async fn fetch_deepgram_proxy_config(access_token: String) -> Result<Deepgra
     // Make the HTTP request from Rust (no CORS restrictions)
     let client = reqwest::Client::new();
     let response = client
-        .get("https://www.maity.com.mx/api/deepgram-token")
+        .get("https://www.maity.cloud/api/deepgram-token")
         .header("Authorization", format!("Bearer {}", access_token))
         .send()
         .await

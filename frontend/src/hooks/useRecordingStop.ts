@@ -10,10 +10,10 @@ import { transcriptService } from '@/services/transcriptService';
 import Analytics from '@/lib/analytics';
 import { useAuth } from '@/contexts/AuthContext';
 import { useConfig } from '@/contexts/ConfigContext';
+import { invoke } from '@tauri-apps/api/core';
 import {
   saveConversationToSupabase,
   saveTranscriptSegments,
-  updateConversationEvaluation,
 } from '@/features/conversations/services/conversations.service';
 import { supabase } from '@/lib/supabase';
 
@@ -339,57 +339,53 @@ export function useRecordingStop(
               console.log('Transcript segments saved:', segments.length);
               toast.success('Guardado en la nube', { id: cloudToastId, duration: 3000 });
 
-              // 3. DeepSeek evaluation ASYNC (fire-and-forget) — results will be polled by ConversationDetail
+              // 3. Finalize conversation via Vercel API ASYNC (fire-and-forget)
+              // The endpoint evaluates with LLM, generates embeddings, memories, and daily scores.
+              // All results are written directly to Supabase server-side.
               (async () => {
                 const evalToastId = toast.loading('Analizando comunicacion con IA...');
                 try {
+                  const { data: { session } } = await supabase.auth.getSession();
+                  const accessToken = session?.access_token;
+                  if (!accessToken) {
+                    throw new Error('No hay sesión activa para analizar la conversación');
+                  }
+
                   let evalSuccess = false;
                   for (let attempt = 1; attempt <= 2; attempt++) {
                     try {
-                      console.log(`DeepSeek evaluation attempt ${attempt}...`);
-                      const { data: evalData, error: evalError } = await supabase.functions.invoke(
-                        'deepseek-evaluate',
-                        {
-                          body: {
-                            transcript_text: transcriptText,
-                            language: transcriptModelConfig?.language || 'es',
-                          },
-                        }
-                      );
+                      console.log(`Finalize conversation attempt ${attempt}...`);
+                      const result = await invoke<{ ok: boolean; error?: string }>('finalize_conversation_cloud', {
+                        conversationId,
+                        durationSeconds: durationSec,
+                        accessToken,
+                      });
 
-                      if (evalError) {
-                        console.warn(`DeepSeek attempt ${attempt} error:`, evalError);
-                        if (attempt === 2) throw evalError;
-                        continue;
-                      }
-
-                      if (evalData && conversationId) {
-                        console.log('DeepSeek evaluation received, updating conversation...');
-                        await updateConversationEvaluation(conversationId, {
-                          title: evalData.title,
-                          overview: evalData.overview,
-                          emoji: evalData.emoji,
-                          category: evalData.category,
-                          action_items: evalData.action_items,
-                          communication_feedback: evalData.communication_feedback,
-                        });
+                      if (result.ok) {
                         evalSuccess = true;
-                        console.log('Conversation updated with DeepSeek evaluation');
+                        console.log('Conversation finalized successfully');
                         break;
+                      } else {
+                        console.warn(`Finalize attempt ${attempt} returned ok=false:`, result.error);
+                        if (attempt === 2) throw new Error(result.error || 'Finalize returned ok=false');
                       }
                     } catch (err) {
-                      console.warn(`DeepSeek attempt ${attempt} failed:`, err);
+                      console.warn(`Finalize attempt ${attempt} failed:`, err);
                       if (attempt === 2) throw err;
                     }
                   }
 
                   if (evalSuccess) {
                     toast.success('Analisis de comunicacion completado', { id: evalToastId, duration: 5000 });
+                    // Notify ConversationDetail (already mounted) to refetch
+                    window.dispatchEvent(new CustomEvent('finalize-completed', {
+                      detail: { conversationId },
+                    }));
                   } else {
                     toast.dismiss(evalToastId);
                   }
                 } catch (err) {
-                  console.error('DeepSeek eval error:', err);
+                  console.error('Finalize conversation error:', err);
                   toast.error('Error en analisis de comunicacion', {
                     id: evalToastId,
                     duration: 10000,

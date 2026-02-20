@@ -864,6 +864,8 @@ pub fn run() {
             audio::transcription::deepgram_commands::get_deepgram_proxy_config,
             audio::transcription::deepgram_commands::has_valid_deepgram_proxy_config,
             audio::transcription::deepgram_commands::clear_deepgram_proxy_config,
+            // Conversations finalize (cloud evaluation)
+            api::finalize::finalize_conversation_cloud,
             // OAuth localhost server
             auth_server::start_oauth_server,
             auth_server::get_pending_auth_code,
