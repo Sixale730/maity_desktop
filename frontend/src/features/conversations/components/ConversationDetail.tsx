@@ -87,6 +87,28 @@ export function ConversationDetail({ conversation: initialConversation, onClose,
     return () => { clearInterval(interval); clearTimeout(timeout); };
   }, [isWaitingForAnalysis, conversation.id, onConversationUpdate, queryClient]);
 
+  // Listen for finalize-completed event from useRecordingStop fire-and-forget
+  useEffect(() => {
+    const handler = async (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      if (detail?.conversationId === conversation.id) {
+        try {
+          const updated = await getOmiConversation(conversation.id);
+          if (updated) {
+            setConversation(updated);
+            onConversationUpdate?.(updated);
+            setIsWaitingForAnalysis(false);
+            queryClient.invalidateQueries({ queryKey: ['omi-conversations'] });
+          }
+        } catch (err) {
+          console.warn('Error refetching after finalize-completed:', err);
+        }
+      }
+    };
+    window.addEventListener('finalize-completed', handler);
+    return () => window.removeEventListener('finalize-completed', handler);
+  }, [conversation.id, onConversationUpdate, queryClient]);
+
   const { data: segments, isLoading: loadingSegments } = useQuery({
     queryKey: ['omi-segments', conversation.id],
     queryFn: () => getOmiTranscriptSegments(conversation.id),

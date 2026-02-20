@@ -17,18 +17,24 @@ function ConversationsContent() {
   useEffect(() => {
     if (!idParam) return;
     setIsLoadingFromParam(true);
-    getOmiConversation(idParam)
-      .then((conv) => {
-        if (conv) {
-          setSelectedConversation(conv);
-        } else {
-          console.warn('Conversation not found:', idParam);
+
+    const fetchWithRetry = async () => {
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          const conv = await getOmiConversation(idParam);
+          if (conv) {
+            setSelectedConversation(conv);
+            return;
+          }
+          console.warn(`Conversation not found (attempt ${attempt + 1}):`, idParam);
+        } catch (err) {
+          console.warn(`Error loading conversation (attempt ${attempt + 1}):`, err);
         }
-      })
-      .catch((err) => {
-        console.error('Error loading conversation:', err);
-      })
-      .finally(() => setIsLoadingFromParam(false));
+        if (attempt === 0) await new Promise(r => setTimeout(r, 2000));
+      }
+    };
+
+    fetchWithRetry().finally(() => setIsLoadingFromParam(false));
   }, [idParam]);
 
   const handleClose = () => {
