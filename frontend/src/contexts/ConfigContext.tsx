@@ -65,8 +65,8 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
 
   // Transcript model configuration state
   const [transcriptModelConfig, setTranscriptModelConfig] = useState<TranscriptModelProps>({
-    provider: 'deepgram',
-    model: 'nova-3',
+    provider: 'parakeet',
+    model: 'parakeet-tdt-0.6b-v3-int8',
     language: 'es-419',
     apiKey: null
   });
@@ -175,8 +175,8 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
         if (config) {
           console.log('[ConfigContext] Loaded saved transcript config:', config);
           setTranscriptModelConfig({
-            provider: config.provider || 'deepgram',
-            model: config.model || 'nova-3',
+            provider: config.provider || 'parakeet',
+            model: config.model || 'parakeet-tdt-0.6b-v3-int8',
             apiKey: config.apiKey || null,
             language: config.language || 'es-419'
           });
@@ -190,44 +190,42 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
     loadTranscriptConfig();
   }, []);
 
-  // Force Deepgram for all users at startup; non-devs always, devs only once (they can change after)
-  const forcedForDev = useRef(false);
-
+  // One-time migration: set parakeet as default for ALL users (including devs with deepgram saved)
+  // After migration, non-devs are always forced to parakeet; devs can change back freely
   useEffect(() => {
     if (!dbConfigLoaded) return; // Wait for DB config to load first
     const email = user?.email ?? maityUser?.email ?? null;
     if (!email) return;
 
     const role = getUserRole(email);
+    const migrationKey = 'parakeet-default-migrated-v1';
+    const alreadyMigrated = typeof window !== 'undefined' && localStorage.getItem(migrationKey) === 'true';
 
-    if (!checkIsDeveloper(role)) {
-      // Non-developer: always force Deepgram
-      if (transcriptModelConfig.provider !== 'deepgram') {
-        console.log('[ConfigContext] Forcing Deepgram for non-developer user:', email);
-        const deepgramConfig: TranscriptModelProps = { provider: 'deepgram', model: 'nova-3', language: 'es-419' };
-        setTranscriptModelConfig(deepgramConfig);
+    const forceParakeet = () => {
+      if (transcriptModelConfig.provider !== 'parakeet') {
+        console.log('[ConfigContext] Migrating to Parakeet for user:', email);
+        const parakeetConfig: TranscriptModelProps = { provider: 'parakeet', model: 'parakeet-tdt-0.6b-v3-int8', language: 'es-419' };
+        setTranscriptModelConfig(parakeetConfig);
         invoke('api_save_transcript_config', {
-          provider: 'deepgram',
-          model: 'nova-3',
+          provider: 'parakeet',
+          model: 'parakeet-tdt-0.6b-v3-int8',
           apiKey: null,
           language: 'es-419',
-        }).catch(err => console.error('[ConfigContext] Failed to persist Deepgram config:', err));
+        }).catch(err => console.error('[ConfigContext] Failed to persist Parakeet config:', err));
       }
-    } else if (!forcedForDev.current) {
-      // Developer: force once at startup (after DB load), then allow changes
-      forcedForDev.current = true;
-      if (transcriptModelConfig.provider !== 'deepgram') {
-        console.log('[ConfigContext] Defaulting to Deepgram for developer:', email);
-        const deepgramConfig: TranscriptModelProps = { provider: 'deepgram', model: 'nova-3', language: 'es-419' };
-        setTranscriptModelConfig(deepgramConfig);
-        invoke('api_save_transcript_config', {
-          provider: 'deepgram',
-          model: 'nova-3',
-          apiKey: null,
-          language: 'es-419',
-        }).catch(err => console.error('[ConfigContext] Failed to persist Deepgram config:', err));
+    };
+
+    if (!alreadyMigrated) {
+      // First time after update: force parakeet for everyone (dev and non-dev)
+      forceParakeet();
+      if (typeof window !== 'undefined') {
+        localStorage.setItem(migrationKey, 'true');
       }
+    } else if (!checkIsDeveloper(role)) {
+      // Already migrated, but non-developer: always force Parakeet
+      forceParakeet();
     }
+    // Already migrated + developer: keep their saved config (can use deepgram, whisper, parakeet, etc.)
   }, [dbConfigLoaded, user?.email, maityUser?.email, transcriptModelConfig.provider]);
 
   // Load model configuration on mount

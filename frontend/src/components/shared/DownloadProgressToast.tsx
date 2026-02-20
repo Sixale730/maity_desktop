@@ -58,26 +58,26 @@ function DownloadToastContent({
   const isCancelled = download.status === 'cancelled';
 
   return (
-    <div className="flex items-center gap-3 w-full max-w-sm bg-white dark:bg-gray-800 rounded-lg shadow-lg border border-[#e7e7e9] dark:border-gray-700 p-3 relative">
+    <div className="flex items-center gap-3 w-full max-w-sm bg-zinc-900 rounded-lg shadow-lg border border-zinc-700 p-3 relative">
 
       {/* Icon */}
-      <div className={`flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center ${isComplete ? 'bg-[#c5fceb]' : hasError ? 'bg-[#ffe0eb]' : isCancelled ? 'bg-[#e7e7e9]' : 'bg-[#e7e7e9]'
+      <div className={`flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center ${isComplete ? 'bg-emerald-900/30' : hasError ? 'bg-red-900/30' : 'bg-zinc-800'
         }`}>
         {isComplete ? (
           <Check className="w-4 h-4 text-[#16bb7b]" />
         ) : hasError ? (
           <X className="w-4 h-4 text-[#cc0040]" />
         ) : isCancelled ? (
-          <X className="w-4 h-4 text-[#4a4a4c]" />
+          <X className="w-4 h-4 text-zinc-400" />
         ) : (
-          <ArrowBigDownDash className="size-5 text-[#4a4a4c] " />
+          <ArrowBigDownDash className="size-5 text-zinc-400" />
         )}
       </div>
 
       {/* Content */}
       <div className="flex-1 min-w-0">
         <div className="flex items-center justify-between gap-2 mb-1">
-          <p className="text-sm font-medium text-[#000000] truncate">
+          <p className="text-sm font-medium text-white truncate">
             {download.displayName}
           </p>
         </div>
@@ -87,19 +87,19 @@ function DownloadToastContent({
         ) : isComplete ? (
           <p className="text-xs text-[#16bb7b]">Download complete</p>
         ) : isCancelled ? (
-          <p className="text-xs text-[#4a4a4c]">Download cancelled</p>
+          <p className="text-xs text-zinc-400">Download cancelled</p>
         ) : (
           <>
             {/* Progress bar */}
-            <div className="w-full h-1.5 bg-[#d0d0d3] rounded-full overflow-hidden mb-1.5">
+            <div className="w-full h-1.5 bg-zinc-700 rounded-full overflow-hidden mb-1.5">
               <div
-                className="h-full bg-[#000000] rounded-full transition-all duration-300"
+                className="h-full bg-violet-500 rounded-full transition-all duration-300"
                 style={{ width: `${download.progress}%` }}
               />
             </div>
 
             {/* Progress text */}
-            <div className="flex items-center justify-between text-xs text-[#6a6a6d]">
+            <div className="flex items-center justify-between text-xs text-zinc-400">
               <span>
                 {download.downloadedMb.toFixed(1)} / {download.totalMb.toFixed(1)} MB
               </span>
@@ -107,7 +107,7 @@ function DownloadToastContent({
                 {download.speedMbps > 0 && (
                   <span>{download.speedMbps.toFixed(1)} MB/s</span>
                 )}
-                <span className="text-[#000000] font-medium">
+                <span className="text-white font-medium">
                   {Math.round(download.progress)}%
                 </span>
               </span>

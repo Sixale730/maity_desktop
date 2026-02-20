@@ -21,6 +21,7 @@ import { TranscriptRecovery } from '@/components/transcript/TranscriptRecovery';
 import { indexedDBService } from '@/services/indexedDBService';
 import { toast } from 'sonner';
 import { useRouter } from 'next/navigation';
+import { useParakeetAutoDownloadContext } from '@/contexts/ParakeetAutoDownloadContext';
 
 export default function Home() {
   // Local page state (not moved to contexts)
@@ -37,6 +38,7 @@ export default function Home() {
   const { status, isStopping, isProcessing, isSaving } = recordingState;
 
   // Hooks
+  const { isModelReady: isParakeetModelReady, isDownloading: isParakeetDownloading } = useParakeetAutoDownloadContext();
   const { hasMicrophone } = usePermissionCheck();
   const { setIsMeetingActive, isCollapsed: sidebarCollapsed, refetchMeetings } = useSidebar();
   const { modals, messages, showModal, hideModal } = useModalState(transcriptModelConfig);
@@ -242,7 +244,7 @@ export default function Home() {
                       onTranscriptionError={(message) => {
                         showModal('errorAlert', message);
                       }}
-                      isRecordingDisabled={isRecordingDisabled}
+                      isRecordingDisabled={isRecordingDisabled || (isParakeetDownloading && !isParakeetModelReady)}
                       isParentProcessing={isProcessingStop}
                       selectedDevices={selectedDevices}
                       meetingName={meetingTitle}
