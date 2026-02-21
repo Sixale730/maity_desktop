@@ -59,6 +59,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const isHandlingCallback = useRef(false)
   const isSigningOut = useRef(false)
   const fetchMaityUserPromise = useRef<Promise<void> | null>(null)
+  const signOutPromise = useRef<Promise<void> | null>(null)
 
   const isAuthenticated = !!session && !!user
 
@@ -421,8 +422,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, [handleDeepLinkCallback])
 
+  const waitForSignOut = useCallback(async () => {
+    if (signOutPromise.current) {
+      console.log('[Auth] Waiting for pending sign-out to complete before sign-in')
+      await signOutPromise.current
+    }
+  }, [])
+
   const signInWithGoogle = useCallback(async () => {
     setError(null)
+    await waitForSignOut()
 
     try {
       // Start localhost OAuth server for reliable callback (especially on Windows)
@@ -458,10 +467,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       console.error('[Auth] Error starting Google sign-in:', err)
       setError('Failed to start Google sign-in. Please check your internet connection.')
     }
-  }, [])
+  }, [waitForSignOut])
 
   const signInWithApple = useCallback(async () => {
     setError(null)
+    await waitForSignOut()
     try {
       let redirectTo = 'maity://auth/callback'
       try {
@@ -493,10 +503,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       console.error('[Auth] Error starting Apple sign-in:', err)
       setError('No se pudo iniciar el inicio de sesión con Apple. Verifica tu conexión.')
     }
-  }, [])
+  }, [waitForSignOut])
 
   const signInWithAzure = useCallback(async () => {
     setError(null)
+    await waitForSignOut()
     try {
       let redirectTo = 'maity://auth/callback'
       try {
@@ -529,32 +540,40 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       console.error('[Auth] Error starting Azure sign-in:', err)
       setError('No se pudo iniciar el inicio de sesión con Microsoft. Verifica tu conexión.')
     }
-  }, [])
+  }, [waitForSignOut])
 
   const signOut = useCallback(async () => {
     console.log('[Auth] signOut called')
     isSigningOut.current = true
-    try {
-      isHandlingCallback.current = false
-      setError(null)
-      setMaityUserError(null)
 
-      // Limpiar estado local PRIMERO (inmediatamente, antes del async signOut)
-      setSession(null)
-      setUser(null)
-      setMaityUser(null)
+    const doSignOut = async () => {
+      try {
+        isHandlingCallback.current = false
+        setError(null)
+        setMaityUserError(null)
 
-      // Luego hacer el signOut en Supabase (puede fallar si ya no hay sesión válida)
-      const { error } = await supabase.auth.signOut()
-      if (error) {
-        console.error('[Auth] Supabase signOut error:', error)
+        // Limpiar estado local PRIMERO (inmediatamente, antes del async signOut)
+        setSession(null)
+        setUser(null)
+        setMaityUser(null)
+
+        // Luego hacer el signOut en Supabase (puede fallar si ya no hay sesión válida)
+        const { error } = await supabase.auth.signOut()
+        if (error) {
+          console.error('[Auth] Supabase signOut error:', error)
+        }
+        console.log('[Auth] Signed out successfully')
+      } catch (err) {
+        console.error('[Auth] Error signing out:', err)
+      } finally {
+        isSigningOut.current = false
       }
-      console.log('[Auth] Signed out successfully')
-    } catch (err) {
-      console.error('[Auth] Error signing out:', err)
-    } finally {
-      isSigningOut.current = false
     }
+
+    const promise = doSignOut()
+    signOutPromise.current = promise
+    await promise
+    signOutPromise.current = null
   }, [])
 
   return (
