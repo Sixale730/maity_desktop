@@ -13,6 +13,15 @@ use super::recording_state::{AudioChunk, AudioError, RecordingState, DeviceType}
 use super::audio_processing::{audio_to_mono, LoudnessNormalizer, NoiseSuppressionProcessor, HighPassFilter};
 use super::vad::{ContinuousVadProcessor};
 
+// --- Cross-channel echo suppression constants ---
+/// Maximum time overlap to consider echo (seconds)
+const ECHO_TIME_OVERLAP_WINDOW: f64 = 0.5;
+/// Energy ratio threshold - below this, the weaker channel is considered echo
+/// 0.3 means: if mic RMS is less than 30% of system RMS, it's likely echo
+const ECHO_ENERGY_RATIO_THRESHOLD: f32 = 0.3;
+/// Absolute RMS threshold - segments below this are too weak to be direct speech
+const ECHO_ABSOLUTE_RMS_THRESHOLD: f32 = 0.02;
+
 /// Ring buffer for synchronized audio mixing
 /// Accumulates samples from mic and system streams until we have aligned windows
 struct AudioMixerRingBuffer {
@@ -731,6 +740,15 @@ pub struct AudioPipeline {
     mixer: ProfessionalAudioMixer,
     // Recording sender for stereo interleaved audio
     recording_sender_for_mixed: Option<mpsc::UnboundedSender<AudioChunk>>,
+    // Cross-channel echo suppression state
+    mic_recent_rms: f32,
+    sys_recent_rms: f32,
+    mic_last_speech_time: f64,
+    sys_last_speech_time: f64,
+    current_timestamp: f64,
+    echo_suppressed_mic: u64,
+    echo_suppressed_sys: u64,
+    last_echo_report_time: std::time::Instant,
 }
 
 impl AudioPipeline {
@@ -806,6 +824,15 @@ impl AudioPipeline {
             ring_buffer,
             mixer,
             recording_sender_for_mixed: None,  // Will be set by manager
+            // Cross-channel echo suppression
+            mic_recent_rms: 0.0,
+            sys_recent_rms: 0.0,
+            mic_last_speech_time: -1.0,
+            sys_last_speech_time: -1.0,
+            current_timestamp: 0.0,
+            echo_suppressed_mic: 0,
+            echo_suppressed_sys: 0,
+            last_echo_report_time: std::time::Instant::now(),
         })
     }
 
@@ -867,6 +894,7 @@ impl AudioPipeline {
                     // - System audio → sys_vad → transcription with DeviceType::System → "interlocutor"
 
                     let chunk_timestamp = chunk.timestamp;
+                    self.current_timestamp = chunk_timestamp;
                     let chunk_device_type = chunk.device_type.clone();
 
                     // STEP 1: Per-channel VAD for transcription (BEFORE mixing)
@@ -877,8 +905,21 @@ impl AudioPipeline {
                                     for segment in speech_segments {
                                         let duration_ms = segment.end_timestamp_ms - segment.start_timestamp_ms;
                                         if segment.samples.len() >= 400 {  // Minimum 25ms at 16kHz
-                                            info!("🎤 Mic VAD segment: {:.1}ms, {} samples",
-                                                  duration_ms, segment.samples.len());
+                                            // Calculate RMS for echo detection
+                                            let segment_rms = (segment.samples.iter().map(|&x| x * x).sum::<f32>()
+                                                              / segment.samples.len() as f32).sqrt();
+                                            self.mic_recent_rms = segment_rms;
+                                            self.mic_last_speech_time = self.current_timestamp;
+
+                                            // Check if this is echo from system audio
+                                            if self.is_likely_echo(DeviceType::Microphone, segment_rms) {
+                                                self.echo_suppressed_mic += 1;
+                                                debug!("Suppressing mic echo segment: {:.1}ms (RMS={:.4})", duration_ms, segment_rms);
+                                                continue;
+                                            }
+
+                                            info!("🎤 Mic VAD segment: {:.1}ms, {} samples (RMS={:.4})",
+                                                  duration_ms, segment.samples.len(), segment_rms);
                                             let transcription_chunk = AudioChunk {
                                                 data: segment.samples,
                                                 sample_rate: 16000,
@@ -908,8 +949,21 @@ impl AudioPipeline {
                                     for segment in speech_segments {
                                         let duration_ms = segment.end_timestamp_ms - segment.start_timestamp_ms;
                                         if segment.samples.len() >= 400 {  // Minimum 25ms at 16kHz
-                                            info!("🔊 System VAD segment: {:.1}ms, {} samples",
-                                                  duration_ms, segment.samples.len());
+                                            // Calculate RMS for echo detection
+                                            let segment_rms = (segment.samples.iter().map(|&x| x * x).sum::<f32>()
+                                                              / segment.samples.len() as f32).sqrt();
+                                            self.sys_recent_rms = segment_rms;
+                                            self.sys_last_speech_time = self.current_timestamp;
+
+                                            // Check if this is echo from microphone audio
+                                            if self.is_likely_echo(DeviceType::System, segment_rms) {
+                                                self.echo_suppressed_sys += 1;
+                                                debug!("Suppressing system echo segment: {:.1}ms (RMS={:.4})", duration_ms, segment_rms);
+                                                continue;
+                                            }
+
+                                            info!("🔊 System VAD segment: {:.1}ms, {} samples (RMS={:.4})",
+                                                  duration_ms, segment.samples.len(), segment_rms);
                                             let transcription_chunk = AudioChunk {
                                                 data: segment.samples,
                                                 sample_rate: 16000,
@@ -937,6 +991,14 @@ impl AudioPipeline {
                             // Mixed chunks should not arrive here, but handle gracefully
                             debug!("⚠️ Unexpected Mixed chunk in pipeline, skipping VAD");
                         }
+                    }
+
+                    // Periodic echo suppression stats (every 30 seconds)
+                    if self.last_echo_report_time.elapsed().as_secs() >= 30 {
+                        info!("Echo suppression stats: mic_suppressed={}, sys_suppressed={}, mic_rms={:.4}, sys_rms={:.4}",
+                              self.echo_suppressed_mic, self.echo_suppressed_sys,
+                              self.mic_recent_rms, self.sys_recent_rms);
+                        self.last_echo_report_time = std::time::Instant::now();
                     }
 
                     // STEP 2: Add to ring buffer and create STEREO recording (L=mic, R=system)
@@ -978,6 +1040,33 @@ impl AudioPipeline {
 
         info!("VAD-driven audio pipeline ended");
         Ok(())
+    }
+
+    /// Check if a VAD segment from `source_channel` is likely echo from the other channel.
+    /// Returns true if the segment should be SUPPRESSED (it's echo).
+    fn is_likely_echo(&self, source_channel: DeviceType, segment_rms: f32) -> bool {
+        let (other_rms, other_last_speech) = match source_channel {
+            DeviceType::Microphone => (self.sys_recent_rms, self.sys_last_speech_time),
+            DeviceType::System => (self.mic_recent_rms, self.mic_last_speech_time),
+            DeviceType::Mixed => return false,
+        };
+
+        // Echo conditions:
+        // 1. The other channel is ACTIVELY producing speech (within ECHO_TIME_OVERLAP_WINDOW)
+        // 2. This channel's energy is significantly lower than the other channel
+        // 3. This channel's energy is below an absolute threshold (not direct speech)
+        let time_overlap = (self.current_timestamp - other_last_speech).abs() < ECHO_TIME_OVERLAP_WINDOW;
+        let energy_ratio = if other_rms > 0.0001 { segment_rms / other_rms } else { 1.0 };
+        let is_weak = segment_rms < ECHO_ABSOLUTE_RMS_THRESHOLD;
+
+        let is_echo = time_overlap && energy_ratio < ECHO_ENERGY_RATIO_THRESHOLD && is_weak;
+
+        if is_echo {
+            info!("Echo suppressed: {:?} segment (RMS={:.4}) likely echo of other channel (RMS={:.4}, ratio={:.2})",
+                  source_channel, segment_rms, other_rms, energy_ratio);
+        }
+
+        is_echo
     }
 
     fn flush_remaining_audio(&mut self) -> Result<()> {
