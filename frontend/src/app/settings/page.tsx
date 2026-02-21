@@ -25,11 +25,11 @@ const TABS = [
 export default function SettingsPage() {
   const router = useRouter();
   const { transcriptModelConfig, setTranscriptModelConfig } = useConfig();
-  const { isDeveloper } = useUserRole();
+  const { isAdmin } = useUserRole();
 
   const visibleTabs = useMemo(() =>
-    isDeveloper ? TABS : TABS.filter(t => t.value === 'general' || t.value === 'recording'),
-    [isDeveloper]
+    isAdmin ? TABS : TABS.filter(t => t.value === 'general' || t.value === 'recording'),
+    [isAdmin]
   );
 
   // Animation state for tabs

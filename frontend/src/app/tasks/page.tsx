@@ -10,15 +10,15 @@ import { getOmiConversations } from '@/features/conversations';
 import { TasksList } from '@/features/tasks';
 
 export default function TasksPage() {
-  const { isRegularUser } = useUserRole();
+  const { isAdmin } = useUserRole();
   const { maityUser } = useAuth();
   const router = useRouter();
 
   useEffect(() => {
-    if (isRegularUser) {
+    if (!isAdmin) {
       router.replace('/');
     }
-  }, [isRegularUser, router]);
+  }, [isAdmin, router]);
 
   const { data: conversations, isLoading } = useQuery({
     queryKey: ['omi-conversations', maityUser?.id],
@@ -26,7 +26,7 @@ export default function TasksPage() {
     enabled: !!maityUser?.id,
   });
 
-  if (isRegularUser) return null;
+  if (!isAdmin) return null;
 
   return (
     <div className="h-full flex flex-col bg-muted">

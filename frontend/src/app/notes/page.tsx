@@ -13,16 +13,16 @@ import { getOmiConversations, OmiConversation } from '@/features/conversations';
 import { NoteDetail } from '@/features/notes';
 
 export default function NotesPage() {
-  const { isRegularUser } = useUserRole();
+  const { isAdmin } = useUserRole();
   const router = useRouter();
   const { maityUser } = useAuth();
   const [selectedConversation, setSelectedConversation] = useState<OmiConversation | null>(null);
 
   useEffect(() => {
-    if (isRegularUser) {
+    if (!isAdmin) {
       router.replace('/');
     }
-  }, [isRegularUser, router]);
+  }, [isAdmin, router]);
 
   const { data: conversations, isLoading, error } = useQuery({
     queryKey: ['omi-conversations', maityUser?.id],
@@ -30,7 +30,7 @@ export default function NotesPage() {
     enabled: !!maityUser?.id,
   });
 
-  if (isRegularUser) return null;
+  if (!isAdmin) return null;
 
   const formatDuration = (seconds: number | null) => {
     if (!seconds) return '--';

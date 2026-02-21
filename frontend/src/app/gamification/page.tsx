@@ -6,16 +6,16 @@ import { GamifiedDashboard } from '@/features/gamification';
 import { useUserRole } from '@/hooks/useUserRole';
 
 export default function GamificationPage() {
-  const { isRegularUser } = useUserRole();
+  const { isAdmin } = useUserRole();
   const router = useRouter();
 
   useEffect(() => {
-    if (isRegularUser) {
+    if (!isAdmin) {
       router.replace('/');
     }
-  }, [isRegularUser, router]);
+  }, [isAdmin, router]);
 
-  if (isRegularUser) return null;
+  if (!isAdmin) return null;
 
   return <GamifiedDashboard />;
 }

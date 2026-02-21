@@ -9,7 +9,7 @@ import type { OllamaModel } from '@/types/models';
 import type { StorageLocations, NotificationSettings } from '@/types/config';
 import { invoke } from '@tauri-apps/api/core';
 import { useAuth } from '@/contexts/AuthContext';
-import { getUserRole, isDeveloper as checkIsDeveloper } from '@/lib/roles';
+import { getUserRoleFromEmail, isAdmin as checkIsAdmin } from '@/lib/roles';
 
 export type { OllamaModel, StorageLocations, NotificationSettings };
 
@@ -197,7 +197,7 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
     const email = user?.email ?? maityUser?.email ?? null;
     if (!email) return;
 
-    const role = getUserRole(email);
+    const role = getUserRoleFromEmail(email);
     const migrationKey = 'parakeet-default-migrated-v1';
     const alreadyMigrated = typeof window !== 'undefined' && localStorage.getItem(migrationKey) === 'true';
 
@@ -216,16 +216,16 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
     };
 
     if (!alreadyMigrated) {
-      // First time after update: force parakeet for everyone (dev and non-dev)
+      // First time after update: force parakeet for everyone (admin and non-admin)
       forceParakeet();
       if (typeof window !== 'undefined') {
         localStorage.setItem(migrationKey, 'true');
       }
-    } else if (!checkIsDeveloper(role)) {
-      // Already migrated, but non-developer: always force Parakeet
+    } else if (!checkIsAdmin(role)) {
+      // Already migrated, but non-admin: always force Parakeet
       forceParakeet();
     }
-    // Already migrated + developer: keep their saved config (can use deepgram, whisper, parakeet, etc.)
+    // Already migrated + admin: keep their saved config (can use deepgram, whisper, parakeet, etc.)
   }, [dbConfigLoaded, user?.email, maityUser?.email, transcriptModelConfig.provider]);
 
   // Load model configuration on mount
