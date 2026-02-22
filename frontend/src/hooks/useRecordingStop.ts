@@ -343,7 +343,7 @@ export function useRecordingStop(
               // The endpoint evaluates with LLM, generates embeddings, memories, and daily scores.
               // All results are written directly to Supabase server-side.
               (async () => {
-                const evalToastId = toast.loading('Analizando comunicacion con IA...');
+                const evalToastId = toast.loading('Analizando comunicación con Maity...');
                 try {
                   const { data: { session } } = await supabase.auth.getSession();
                   const accessToken = session?.access_token;
