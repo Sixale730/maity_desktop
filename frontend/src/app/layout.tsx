@@ -107,9 +107,9 @@ function AuthGate({ children }: { children: React.ReactNode }) {
 
     return (
       <div className="flex flex-col items-center justify-center h-screen bg-background gap-6">
-        {/* Logo "M" */}
-        <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-violet-500 to-purple-700 flex items-center justify-center shadow-lg">
-          <span className="text-white text-3xl font-bold">M</span>
+        {/* Logo Maity */}
+        <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-[#ff0050]/10 to-[#485df4]/10 dark:from-[#ff0050]/20 dark:to-[#485df4]/20 flex items-center justify-center shadow-lg">
+          <img src="icon_128x128.png" alt="Maity" className="w-12 h-12" />
         </div>
 
         {showError ? (

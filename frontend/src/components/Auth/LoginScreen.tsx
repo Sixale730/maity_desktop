@@ -108,8 +108,8 @@ export function LoginScreen() {
       <div className="w-full max-w-md flex flex-col items-center px-6 py-6 space-y-10">
         {/* Logo / Brand */}
         <div className="flex flex-col items-center space-y-4">
-          <div className="w-20 h-20 rounded-2xl bg-black dark:bg-white flex items-center justify-center shadow-lg">
-            <span className="text-3xl font-bold text-white dark:text-black">M</span>
+          <div className="w-20 h-20 rounded-2xl bg-gradient-to-br from-[#ff0050]/10 to-[#485df4]/10 dark:from-[#ff0050]/20 dark:to-[#485df4]/20 flex items-center justify-center shadow-lg">
+            <img src="icon_128x128.png" alt="Maity" className="w-14 h-14" />
           </div>
           <div className="text-center space-y-2">
             <h1 className="text-4xl font-semibold text-[#000000] dark:text-white">
