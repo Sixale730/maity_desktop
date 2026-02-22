@@ -23,9 +23,10 @@ pub struct FinalizeResponse {
     pub error: Option<String>,
 }
 
-/// Request body for the conversations-finalize endpoint
+/// Request body for the consolidated conversations endpoint
 #[derive(Debug, Serialize)]
 struct FinalizeRequest {
+    action: String,
     conversation_id: String,
     duration_seconds: f64,
 }
@@ -57,9 +58,10 @@ pub async fn finalize_conversation_cloud(
 
     let client = reqwest::Client::new();
     let response = client
-        .post("https://www.maity.cloud/api/conversations/conversations-finalize")
+        .post("https://www.maity.cloud/api/conversations")
         .header("Authorization", format!("Bearer {}", access_token))
         .json(&FinalizeRequest {
+            action: "finalize".to_string(),
             conversation_id: conversation_id.clone(),
             duration_seconds,
         })
