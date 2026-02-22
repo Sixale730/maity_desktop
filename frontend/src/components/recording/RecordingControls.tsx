@@ -11,9 +11,17 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/comp
 import Analytics from '@/lib/analytics';
 import { useRecordingState } from '@/contexts/RecordingStateContext';
 
+interface AudioLevels {
+  micRms: number;
+  micPeak: number;
+  sysRms: number;
+  sysPeak: number;
+}
+
 interface RecordingControlsProps {
   isRecording: boolean;
   barHeights: string[];
+  audioLevels?: AudioLevels;
   onRecordingStop: (callApi?: boolean) => void;
   onRecordingStart: () => void;
   onTranscriptReceived: (summary: ProcessSummaryResponse) => void;
@@ -31,6 +39,7 @@ interface RecordingControlsProps {
 export const RecordingControls: React.FC<RecordingControlsProps> = ({
   isRecording,
   barHeights,
+  audioLevels,
   onRecordingStop,
   onRecordingStart,
   onTranscriptReceived,
@@ -476,19 +485,51 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
                     </>
                   )}
 
-                  <div className="flex items-center space-x-1 mx-4">
-                    {barHeights.map((height, index) => (
-                      <div
-                        key={index}
-                        className={`w-1 rounded-full transition-all duration-200 ${isPaused ? 'bg-[#ff4080]' : 'bg-[#ff0050]'
-                          }`}
-                        style={{
-                          height: isRecording && !isPaused ? height : '4px',
-                          opacity: isPaused ? 0.6 : 1,
-                        }}
-                      />
-                    ))}
-                  </div>
+                  {/* Dual-channel audio level bars — only visible while recording */}
+                  {isRecording && (
+                    <div className="flex items-center gap-3 mx-4">
+                      {/* Mic (user) levels */}
+                      <div className="flex items-center gap-1">
+                        <span className="text-[10px] text-[#485df4]" title="Tú (micrófono)">🎤</span>
+                        <div className="flex items-end space-x-[2px] h-6">
+                          {[0, 1, 2].map((i) => {
+                            const rms = audioLevels?.micRms ?? 0;
+                            const scale = [0.7, 1.0, 0.8][i];
+                            const h = !isPaused
+                              ? Math.max(3, Math.min(24, rms * 200 * scale))
+                              : 3;
+                            return (
+                              <div
+                                key={`mic-${i}`}
+                                className="w-[3px] rounded-full transition-all duration-100 bg-[#485df4]"
+                                style={{ height: `${h}px`, opacity: isPaused ? 0.4 : 1 }}
+                              />
+                            );
+                          })}
+                        </div>
+                      </div>
+                      {/* System (interlocutor) levels */}
+                      <div className="flex items-center gap-1">
+                        <span className="text-[10px] text-[#10b981]" title="Interlocutor (bocina)">🔊</span>
+                        <div className="flex items-end space-x-[2px] h-6">
+                          {[0, 1, 2].map((i) => {
+                            const rms = audioLevels?.sysRms ?? 0;
+                            const scale = [0.8, 1.0, 0.7][i];
+                            const h = !isPaused
+                              ? Math.max(3, Math.min(24, rms * 200 * scale))
+                              : 3;
+                            return (
+                              <div
+                                key={`sys-${i}`}
+                                className="w-[3px] rounded-full transition-all duration-100 bg-[#10b981]"
+                                style={{ height: `${h}px`, opacity: isPaused ? 0.4 : 1 }}
+                              />
+                            );
+                          })}
+                        </div>
+                      </div>
+                    </div>
+                  )}
                 </>
               )}
             </>

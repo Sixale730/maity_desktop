@@ -345,7 +345,7 @@ export default function RootLayout({
             </ThemeProvider>
           </QueryClientProvider>
         </ErrorBoundary>
-        <Toaster position="bottom-center" richColors closeButton />
+        <Toaster position="bottom-right" richColors closeButton />
       </body>
     </html>
   )

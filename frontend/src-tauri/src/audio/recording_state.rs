@@ -126,6 +126,12 @@ pub struct RecordingState {
     // Pause time tracking
     pause_start: Mutex<Option<Instant>>,
     total_pause_duration: Mutex<std::time::Duration>,
+
+    // Real-time audio levels (f32 bits stored as u32 for atomic access)
+    mic_rms_level: AtomicU32,
+    sys_rms_level: AtomicU32,
+    mic_peak_level: AtomicU32,
+    sys_peak_level: AtomicU32,
 }
 
 impl RecordingState {
@@ -147,6 +153,10 @@ impl RecordingState {
             recording_start: Mutex::new(None),
             pause_start: Mutex::new(None),
             total_pause_duration: Mutex::new(std::time::Duration::ZERO),
+            mic_rms_level: AtomicU32::new(0),
+            sys_rms_level: AtomicU32::new(0),
+            mic_peak_level: AtomicU32::new(0),
+            sys_peak_level: AtomicU32::new(0),
         })
     }
 
@@ -219,6 +229,30 @@ impl RecordingState {
 
     pub fn is_active(&self) -> bool {
         self.is_recording() && !self.is_paused()
+    }
+
+    // Real-time audio level methods
+    pub fn set_audio_level(&self, device_type: DeviceType, rms: f32, peak: f32) {
+        match device_type {
+            DeviceType::Microphone => {
+                self.mic_rms_level.store(rms.to_bits(), Ordering::Relaxed);
+                self.mic_peak_level.store(peak.to_bits(), Ordering::Relaxed);
+            }
+            DeviceType::System => {
+                self.sys_rms_level.store(rms.to_bits(), Ordering::Relaxed);
+                self.sys_peak_level.store(peak.to_bits(), Ordering::Relaxed);
+            }
+            DeviceType::Mixed => {} // Ignore mixed chunks
+        }
+    }
+
+    pub fn get_audio_levels(&self) -> (f32, f32, f32, f32) {
+        (
+            f32::from_bits(self.mic_rms_level.load(Ordering::Relaxed)),
+            f32::from_bits(self.mic_peak_level.load(Ordering::Relaxed)),
+            f32::from_bits(self.sys_rms_level.load(Ordering::Relaxed)),
+            f32::from_bits(self.sys_peak_level.load(Ordering::Relaxed)),
+        )
     }
 
     // Reconnection state management
@@ -457,6 +491,10 @@ impl Default for RecordingState {
             recording_start: Mutex::new(None),
             pause_start: Mutex::new(None),
             total_pause_duration: Mutex::new(std::time::Duration::ZERO),
+            mic_rms_level: AtomicU32::new(0),
+            sys_rms_level: AtomicU32::new(0),
+            mic_peak_level: AtomicU32::new(0),
+            sys_peak_level: AtomicU32::new(0),
         }
     }
 }

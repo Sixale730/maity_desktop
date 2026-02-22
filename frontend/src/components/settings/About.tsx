@@ -66,7 +66,7 @@ export function About() {
                 {/* <h1 className="text-xl font-bold text-[#000000] dark:text-white">Maity</h1> */}
                 <span className="text-sm text-muted-foreground"> v{currentVersion}</span>
                 <p className="text-medium text-muted-foreground mt-1">
-                    Tu coach de comunicación con IA para reuniones profesionales.
+                    Maity, tu coach de comunicación.
                 </p>
                 <div className="mt-3">
                     <Button

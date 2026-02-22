@@ -87,7 +87,7 @@ export function TasksList({ conversations }: TasksListProps) {
               {conversation.action_items!.map((item, idx) => (
                 <label
                   key={idx}
-                  className="flex items-start gap-3 px-4 py-3 cursor-pointer hover:bg-muted/50 transition-colors"
+                  className={`flex items-start gap-3 px-4 py-3 cursor-pointer hover:bg-muted/50 transition-all duration-300 ${item.completed ? 'opacity-50' : 'opacity-100'}`}
                 >
                   <input
                     type="checkbox"
@@ -99,11 +99,11 @@ export function TasksList({ conversations }: TasksListProps) {
                         completed: !item.completed,
                       })
                     }
-                    className="mt-0.5 h-4 w-4 rounded border-gray-300 text-orange-500 focus:ring-orange-500 accent-orange-500 flex-shrink-0"
+                    className="mt-0.5 h-5 w-5 rounded border-gray-300 text-orange-500 focus:ring-orange-500 accent-orange-500 flex-shrink-0 cursor-pointer hover:scale-110 transition-transform"
                   />
                   <div className="flex-1 min-w-0">
                     <span
-                      className={`text-sm ${
+                      className={`text-sm transition-all duration-300 ${
                         item.completed
                           ? 'line-through text-muted-foreground'
                           : 'text-foreground'

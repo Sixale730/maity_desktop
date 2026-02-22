@@ -284,7 +284,7 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                 <motion.div
                     initial={{ opacity: 0 }}
                     animate={{ opacity: 1 }}
-                    className="text-center text-muted-foreground mt-8"
+                    className="flex-1 flex items-center justify-center text-muted-foreground"
                 >
                     {isRecording ? (
                         <>
@@ -299,10 +299,32 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                             </p>
                         </>
                     ) : (
-                        <>
-                            <p className="text-lg font-semibold">¡Bienvenido a Maity!</p>
-                            <p className="text-xs mt-1">Inicia una grabación para ver la transcripción en vivo</p>
-                        </>
+                        <div className="flex flex-col items-center justify-center py-12">
+                            <div className="mb-6 relative">
+                                <div className="w-20 h-20 rounded-2xl bg-gradient-to-br from-[#ff0050]/10 to-[#485df4]/10 dark:from-[#ff0050]/20 dark:to-[#485df4]/20 flex items-center justify-center">
+                                    <img src="icon_128x128.png" alt="Maity" className="w-14 h-14" />
+                                </div>
+                                <div className="absolute -bottom-1 -right-1 w-5 h-5 bg-[#485df4] rounded-full flex items-center justify-center">
+                                    <div className="w-2 h-2 bg-white rounded-full" />
+                                </div>
+                            </div>
+                            <h2 className="text-3xl font-bold text-foreground mb-2">¡Bienvenido a Maity!</h2>
+                            <p className="text-base text-muted-foreground mb-6">Tu coach de comunicación</p>
+                            <div className="flex items-center gap-6 mb-6">
+                                <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
+                                    <span>🎤</span><span>Graba</span>
+                                </div>
+                                <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
+                                    <span>📊</span><span>Analiza</span>
+                                </div>
+                                <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
+                                    <span>🚀</span><span>Mejora</span>
+                                </div>
+                            </div>
+                            <p className="text-sm text-muted-foreground/70 max-w-[280px] text-center leading-relaxed">
+                                Inicia una grabación para ver la transcripción en vivo
+                            </p>
+                        </div>
                     )}
                 </motion.div>
             ) : useVirtualization ? (

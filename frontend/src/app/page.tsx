@@ -22,11 +22,12 @@ import { indexedDBService } from '@/services/indexedDBService';
 import { toast } from 'sonner';
 import { useRouter } from 'next/navigation';
 import { useParakeetAutoDownloadContext } from '@/contexts/ParakeetAutoDownloadContext';
+import { useRecordingLevels } from '@/hooks/useRecordingLevels';
 
 export default function Home() {
   // Local page state (not moved to contexts)
   const [isRecording, setIsRecordingState] = useState(false);
-  const [barHeights, setBarHeights] = useState(['58%', '76%', '58%']);
+  const [barHeights] = useState(['58%', '76%', '58%']); // Legacy fallback
   const [showRecoveryDialog, setShowRecoveryDialog] = useState(false);
 
   // Use contexts for state management
@@ -172,21 +173,8 @@ export default function Home() {
     }
   };
 
-  useEffect(() => {
-    if (recordingState.isRecording) {
-      const interval = setInterval(() => {
-        setBarHeights(prev => {
-          const newHeights = [...prev];
-          newHeights[0] = Math.random() * 20 + 10 + 'px';
-          newHeights[1] = Math.random() * 20 + 10 + 'px';
-          newHeights[2] = Math.random() * 20 + 10 + 'px';
-          return newHeights;
-        });
-      }, 300);
-
-      return () => clearInterval(interval);
-    }
-  }, [recordingState.isRecording]);
+  // Real audio levels from Rust pipeline (replaces random bar heights)
+  const audioLevels = useRecordingLevels(recordingState.isRecording);
 
   // Computed values using global status
   const isProcessingStop = status === RecordingStatus.PROCESSING_TRANSCRIPTS || isProcessing;
@@ -241,6 +229,7 @@ export default function Home() {
                       onTranscriptReceived={() => { }} // Not actually used by RecordingControls
                       onStopInitiated={() => setIsStopping(true)}
                       barHeights={barHeights}
+                      audioLevels={audioLevels}
                       onTranscriptionError={(message) => {
                         showModal('errorAlert', message);
                       }}

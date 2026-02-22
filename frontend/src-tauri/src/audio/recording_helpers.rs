@@ -176,6 +176,9 @@ pub async fn initialize_recording<R: Runtime>(
         .await
         .map_err(|e| format!("Failed to start recording: {}", e))?;
 
+    // Get a clone of the recording state for the level emission task
+    let recording_state = manager.get_state().clone();
+
     // Store the manager globally to keep it alive
     {
         let mut global_manager = RECORDING_MANAGER.lock().map_err(|e| format!("Recording manager lock poisoned: {}", e))?;
@@ -186,6 +189,28 @@ pub async fn initialize_recording<R: Runtime>(
     info!("🔍 Setting IS_RECORDING to true and resetting SPEECH_DETECTED_EMITTED");
     set_recording_flag(true);
     reset_speech_detected_flag();
+
+    // Spawn audio level emission task — polls RecordingState atomics every 100ms
+    {
+        let app_for_levels = app.clone();
+        let state_for_levels = recording_state.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(100));
+            loop {
+                interval.tick().await;
+                if !state_for_levels.is_recording() {
+                    break;
+                }
+                let (mic_rms, mic_peak, sys_rms, sys_peak) = state_for_levels.get_audio_levels();
+                let _ = app_for_levels.emit("recording-audio-levels", serde_json::json!({
+                    "micRms": mic_rms,
+                    "micPeak": mic_peak,
+                    "sysRms": sys_rms,
+                    "sysPeak": sys_peak,
+                }));
+            }
+        });
+    }
 
     // Start optimized parallel transcription task and store handle
     let task_handle = transcription::start_transcription_task(app.clone(), transcription_receiver);

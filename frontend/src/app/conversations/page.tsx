@@ -54,7 +54,7 @@ function ConversationsContent() {
       <div className="h-full flex items-center justify-center bg-background">
         <div className="text-center">
           <Loader2 className="h-8 w-8 mx-auto text-primary animate-spin mb-3" />
-          <p className="text-sm text-muted-foreground">Cargando conversacion...</p>
+          <p className="text-sm text-muted-foreground">Cargando conversación...</p>
         </div>
       </div>
     );

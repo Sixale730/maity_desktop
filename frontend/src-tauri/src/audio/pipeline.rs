@@ -865,6 +865,16 @@ impl AudioPipeline {
                     // Logging in hot paths causes severe performance degradation
                     self.processed_chunks += 1;
 
+                    // Update real-time audio levels for frontend visualization
+                    // Uses atomic stores — near zero overhead
+                    {
+                        let rms = if !chunk.data.is_empty() {
+                            (chunk.data.iter().map(|&x| x * x).sum::<f32>() / chunk.data.len() as f32).sqrt()
+                        } else { 0.0 };
+                        let peak = chunk.data.iter().map(|&x| x.abs()).fold(0.0f32, f32::max);
+                        self.state.set_audio_level(chunk.device_type, rms.min(1.0), peak.min(1.0));
+                    }
+
                     // Smart batching: collect metrics instead of logging every chunk
                     if let Some(ref batcher) = self.metrics_batcher {
                         let avg_level = chunk.data.iter().map(|&x| x.abs()).sum::<f32>() / chunk.data.len() as f32;

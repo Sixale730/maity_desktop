@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { ArrowLeft, Clock, MessageSquare, Calendar, Sparkles, X, RefreshCw, Loader2 } from 'lucide-react';
+import { ArrowLeft, Clock, MessageSquare, Calendar, Sparkles, X, RefreshCw, Loader2, FileText } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -185,7 +185,7 @@ export function ConversationDetail({ conversation: initialConversation, onClose,
           ) : (
             <Button size="sm" onClick={handleReanalyze} disabled={!canAnalyze}>
               <Sparkles className="h-4 w-4 mr-2" />
-              Analizar conversacion
+              Analizar conversación
             </Button>
           )}
           <Button variant="ghost" size="icon" onClick={onClose}>
@@ -218,16 +218,20 @@ export function ConversationDetail({ conversation: initialConversation, onClose,
         </div>
       </div>
 
-      {/* 2 Tabs: Análisis + Transcripción */}
+      {/* 3 Tabs: Análisis + Minuta + Transcripción */}
       <Tabs defaultValue="analisis">
         <TabsList className="w-full">
           <TabsTrigger value="analisis" className="flex-1 gap-2">
             <Sparkles className="h-4 w-4" />
-            Analisis
+            Análisis
+          </TabsTrigger>
+          <TabsTrigger value="minuta" className="flex-1 gap-2">
+            <FileText className="h-4 w-4" />
+            Minuta
           </TabsTrigger>
           <TabsTrigger value="transcripcion" className="flex-1 gap-2">
             <MessageSquare className="h-4 w-4" />
-            Transcripcion
+            Transcripción
           </TabsTrigger>
         </TabsList>
 
@@ -262,23 +266,13 @@ export function ConversationDetail({ conversation: initialConversation, onClose,
               {/* 11. Insights (opcional) */}
               <InsightsSection feedback={feedback} />
 
-              {/* Meeting Minutes (if present) */}
-              {feedback.meeting_minutes && (
-                <div className="space-y-2">
-                  <h3 className="text-base font-semibold text-foreground">Minuta de Reunion</h3>
-                  <div className="prose prose-sm dark:prose-invert max-w-none text-muted-foreground whitespace-pre-wrap rounded-lg border border-border bg-card p-4">
-                    {feedback.meeting_minutes}
-                  </div>
-                </div>
-              )}
-
               {/* Action Items (if present) */}
               {conversation.action_items && conversation.action_items.length > 0 && (
                 <div className="space-y-2">
                   <h3 className="text-base font-semibold text-foreground">Tareas</h3>
                   <ul className="space-y-3">
                     {conversation.action_items.map((item, i) => (
-                      <li key={i} className="flex items-start gap-3 rounded-lg border border-border bg-card p-3">
+                      <li key={i} className={`flex items-start gap-3 rounded-lg border border-border bg-card p-3 transition-opacity duration-300 ${item.completed ? 'opacity-50' : 'opacity-100'}`}>
                         <input
                           type="checkbox"
                           checked={item.completed ?? false}
@@ -286,10 +280,10 @@ export function ConversationDetail({ conversation: initialConversation, onClose,
                             toggleMutation.mutate({ index: i, completed: !(item.completed ?? false) })
                           }
                           disabled={toggleMutation.isPending}
-                          className="mt-1 h-4 w-4 rounded border-border accent-primary cursor-pointer"
+                          className="mt-1 h-5 w-5 rounded border-border accent-primary cursor-pointer hover:scale-110 transition-transform"
                         />
                         <div className="flex-1 min-w-0">
-                          <span className={`text-sm ${item.completed ? 'line-through text-muted-foreground' : 'text-foreground'}`}>
+                          <span className={`text-sm transition-all duration-300 ${item.completed ? 'line-through text-muted-foreground' : 'text-foreground'}`}>
                             {item.description}
                           </span>
                           {(item.priority || item.assignee) && (
@@ -318,14 +312,14 @@ export function ConversationDetail({ conversation: initialConversation, onClose,
                 {isWaitingForAnalysis ? (
                   <>
                     <Loader2 className="h-12 w-12 mx-auto text-primary mb-4 animate-spin" />
-                    <h3 className="text-lg font-medium mb-2 text-foreground">Analizando tu conversacion...</h3>
-                    <p className="text-muted-foreground">Las metricas de comunicacion se mostraran automaticamente</p>
+                    <h3 className="text-lg font-medium mb-2 text-foreground">Analizando con Maity...</h3>
+                    <p className="text-muted-foreground">Las métricas se mostrarán automáticamente</p>
                   </>
                 ) : (
                   <>
                     <Sparkles className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
-                    <h3 className="text-lg font-medium mb-2 text-foreground">Sin analisis disponible</h3>
-                    <p className="text-muted-foreground mb-4">Analiza la conversacion para obtener metricas de comunicacion</p>
+                    <h3 className="text-lg font-medium mb-2 text-foreground">Sin análisis disponible</h3>
+                    <p className="text-muted-foreground mb-4">Analiza la conversación para obtener métricas de comunicación</p>
                     {reanalyzeMutation.isPending ? (
                       <Button disabled>
                         <Loader2 className="h-4 w-4 mr-2 animate-spin" />
@@ -334,7 +328,7 @@ export function ConversationDetail({ conversation: initialConversation, onClose,
                     ) : (
                       <Button onClick={handleReanalyze} disabled={!canAnalyze}>
                         <Sparkles className="h-4 w-4 mr-2" />
-                        Analizar conversacion
+                        Analizar conversación
                       </Button>
                     )}
                   </>
@@ -342,6 +336,25 @@ export function ConversationDetail({ conversation: initialConversation, onClose,
               </CardContent>
             </Card>
           )}
+        </TabsContent>
+
+        {/* Tab: Minuta */}
+        <TabsContent value="minuta">
+          <Card>
+            <CardContent className="p-6">
+              {feedback?.meeting_minutes ? (
+                <div className="prose prose-sm dark:prose-invert max-w-none text-muted-foreground whitespace-pre-wrap">
+                  {feedback.meeting_minutes}
+                </div>
+              ) : (
+                <div className="text-center py-12">
+                  <FileText className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
+                  <h3 className="text-lg font-medium mb-2 text-foreground">Sin minuta disponible</h3>
+                  <p className="text-muted-foreground">La minuta se genera automáticamente al analizar la conversación</p>
+                </div>
+              )}
+            </CardContent>
+          </Card>
         </TabsContent>
 
         {/* Tab: Transcripción */}
