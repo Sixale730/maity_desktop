@@ -24,6 +24,10 @@ interface TranscriptContextType {
 
 const TranscriptContext = createContext<TranscriptContextType | undefined>(undefined);
 
+// Maximum number of transcripts kept in React state for rendering.
+// The full list is always preserved in allTranscriptsRef for save/export.
+const DISPLAY_WINDOW_SIZE = 500;
+
 export function TranscriptProvider({ children }: { children: ReactNode }) {
   const [transcripts, setTranscripts] = useState<Transcript[]>([]);
   const [meetingTitle, setMeetingTitle] = useState('+ Nueva Llamada');
@@ -32,15 +36,20 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
   // Recording state context - provides backend-synced state
   const recordingState = useRecordingState();
 
+  // Full transcript list (never trimmed) — used by useRecordingStop for saving
+  const allTranscriptsRef = useRef<Transcript[]>([]);
+
   // Refs for transcript management
-  const transcriptsRef = useRef<Transcript[]>(transcripts);
+  // IMPORTANT: transcriptsRef always points to the FULL list (allTranscriptsRef),
+  // NOT the windowed state. This is critical for useRecordingStop save path.
+  const transcriptsRef = useRef<Transcript[]>([]);
   const isUserAtBottomRef = useRef<boolean>(true);
   const transcriptContainerRef = useRef<HTMLDivElement>(null);
   const finalFlushRef = useRef<(() => void) | null>(null);
 
-  // Keep ref updated with current transcripts
+  // Keep transcriptsRef pointing to the full list (not the windowed state)
   useEffect(() => {
-    transcriptsRef.current = transcripts;
+    transcriptsRef.current = allTranscriptsRef.current;
   }, [transcripts]);
 
   // Smart auto-scroll: Track user scroll position
@@ -206,22 +215,28 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
         return (a.audio_start_time ?? 0) - (b.audio_start_time ?? 0);
       });
 
-      setTranscripts(prev => {
-        const existingSequenceIds = new Set(prev.map(t => t.sequence_id).filter(id => id !== undefined));
-        const uniqueNew = allNew.filter(t =>
-          t.sequence_id !== undefined && !existingSequenceIds.has(t.sequence_id)
-        );
+      // Deduplicate against the full list (ref), not just the windowed state
+      const existingSequenceIds = new Set(
+        allTranscriptsRef.current.map(t => t.sequence_id).filter(id => id !== undefined)
+      );
+      const uniqueNew = allNew.filter(t =>
+        t.sequence_id !== undefined && !existingSequenceIds.has(t.sequence_id)
+      );
 
-        if (uniqueNew.length === 0) return prev;
+      if (uniqueNew.length === 0) return;
 
-        console.log(`Adding ${uniqueNew.length} unique transcripts out of ${allNew.length} received`);
+      console.log(`Adding ${uniqueNew.length} unique transcripts out of ${allNew.length} received`);
 
-        return [...prev, ...uniqueNew].sort((a, b) => {
-          const seqDiff = (a.sequence_id || 0) - (b.sequence_id || 0);
-          if (seqDiff !== 0) return seqDiff;
-          return (a.audio_start_time ?? 0) - (b.audio_start_time ?? 0);
-        });
+      // Append to the full list and sort only the new additions into place
+      const fullList = [...allTranscriptsRef.current, ...uniqueNew].sort((a, b) => {
+        const seqDiff = (a.sequence_id || 0) - (b.sequence_id || 0);
+        if (seqDiff !== 0) return seqDiff;
+        return (a.audio_start_time ?? 0) - (b.audio_start_time ?? 0);
       });
+      allTranscriptsRef.current = fullList;
+
+      // Update display state with only the last DISPLAY_WINDOW_SIZE items
+      setTranscripts(fullList.slice(-DISPLAY_WINDOW_SIZE));
     };
 
     // Assign final flush function to ref for external access
@@ -338,7 +353,8 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
             source_type: segment.source_type, // Preserve speaker identification for reload sync
           }));
 
-          setTranscripts(formattedTranscripts);
+          allTranscriptsRef.current = formattedTranscripts;
+          setTranscripts(formattedTranscripts.slice(-DISPLAY_WINDOW_SIZE));
           console.log('[Reload Sync] ✅ Transcript history synced successfully');
 
           // Fetch meeting name from backend
@@ -381,37 +397,34 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
       source_type: update.source_type,
     };
 
-    setTranscripts(prev => {
-      console.log('📊 Current transcripts count before update:', prev.length);
+    // Check for duplicate against the full list
+    const exists = allTranscriptsRef.current.some(
+      t => t.text === update.text && t.timestamp === update.timestamp
+    );
+    if (exists) {
+      console.log('🚫 Duplicate transcript detected, skipping:', update.text.substring(0, 30) + '...');
+      return;
+    }
 
-      // Check if this transcript already exists
-      const exists = prev.some(
-        t => t.text === update.text && t.timestamp === update.timestamp
-      );
-      if (exists) {
-        console.log('🚫 Duplicate transcript detected, skipping:', update.text.substring(0, 30) + '...');
-        return prev;
-      }
+    console.log('📊 Current transcripts count before update:', allTranscriptsRef.current.length);
 
-      // Add new transcript and sort by audio_start_time for chronological order
-      // With dual-channel transcription, mic and system segments arrive interleaved
-      // audio_start_time provides accurate chronological ordering
-      const updated = [...prev, newTranscript];
-      const sorted = updated.sort((a, b) => {
-        const seqDiff = (a.sequence_id || 0) - (b.sequence_id || 0);
-        if (seqDiff !== 0) return seqDiff;
-        return (a.audio_start_time ?? 0) - (b.audio_start_time ?? 0);
-      });
-
-      console.log('✅ Added new transcript. New count:', sorted.length);
-      console.log('📝 Latest transcript:', {
-        id: newTranscript.id,
-        text: newTranscript.text.substring(0, 30) + '...',
-        sequence_id: newTranscript.sequence_id
-      });
-
-      return sorted;
+    // Append to full list and sort
+    const fullList = [...allTranscriptsRef.current, newTranscript].sort((a, b) => {
+      const seqDiff = (a.sequence_id || 0) - (b.sequence_id || 0);
+      if (seqDiff !== 0) return seqDiff;
+      return (a.audio_start_time ?? 0) - (b.audio_start_time ?? 0);
     });
+    allTranscriptsRef.current = fullList;
+
+    console.log('✅ Added new transcript. New count:', fullList.length);
+    console.log('📝 Latest transcript:', {
+      id: newTranscript.id,
+      text: newTranscript.text.substring(0, 30) + '...',
+      sequence_id: newTranscript.sequence_id
+    });
+
+    // Update display state with windowed view
+    setTranscripts(fullList.slice(-DISPLAY_WINDOW_SIZE));
   }, []);
 
   // Copy transcript to clipboard with recording-relative timestamps
@@ -425,13 +438,14 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
       return `[${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}]`;
     };
 
-    const fullTranscript = transcripts
+    // Use the full transcript list (not the windowed display state)
+    const fullTranscript = allTranscriptsRef.current
       .map(t => `${formatTime(t.audio_start_time)} ${t.text}`)
       .join('\n');
     navigator.clipboard.writeText(fullTranscript);
 
     toast.success("Transcripción copiada al portapapeles");
-  }, [transcripts]);
+  }, []);
 
   // Force flush buffer (for final transcript processing)
   const flushBuffer = useCallback(() => {
@@ -443,6 +457,7 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
 
   // Clear transcripts (used when starting new recording)
   const clearTranscripts = useCallback(() => {
+    allTranscriptsRef.current = [];
     setTranscripts([]);
     // Don't clear currentMeetingId here - it will be set by recording-started event
   }, []);

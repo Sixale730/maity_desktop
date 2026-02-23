@@ -24,6 +24,32 @@ static METADATA_CACHE: Lazy<ModelMetadataCache> = Lazy::new(|| {
 static CANCELLATION_REGISTRY: Lazy<Arc<Mutex<HashMap<String, CancellationToken>>>> =
     Lazy::new(|| Arc::new(Mutex::new(HashMap::new())));
 
+/// Returns the effective context limit (in tokens) for a cloud model, minus 2000 for prompt overhead.
+/// This enables chunked summarization when a transcript exceeds the model's actual context window.
+fn get_cloud_model_context_limit(model_name: &str) -> usize {
+    let model_lower = model_name.to_lowercase();
+    let raw_limit: usize = if model_lower.starts_with("gpt-3.5") {
+        16_384
+    } else if model_lower.starts_with("gpt-4o") || model_lower.starts_with("gpt-4-turbo") {
+        128_000
+    } else if model_lower.starts_with("gpt-4") {
+        8_192
+    } else if model_lower.starts_with("claude") {
+        200_000
+    } else if model_lower.starts_with("llama") {
+        131_072
+    } else if model_lower.contains("mixtral") || model_lower.contains("groq") {
+        32_768
+    } else if model_lower.starts_with("deepseek") {
+        64_000
+    } else {
+        // Conservative default for unknown models
+        14_000
+    };
+    // Reserve 2000 tokens for prompt template overhead
+    raw_limit.saturating_sub(2_000)
+}
+
 /// Summary service - handles all summary generation logic
 pub struct SummaryService;
 
@@ -214,8 +240,13 @@ impl SummaryService {
                 }
             }
         } else {
-            // Cloud providers (OpenAI, Claude, Groq, CustomOpenAI) handle large contexts automatically
-            100000  // Effectively unlimited for single-pass processing
+            // Cloud providers: use model-specific context limits to enable chunking when needed
+            let model_limit = get_cloud_model_context_limit(&model_name);
+            info!(
+                "✓ Using cloud model context limit for '{}': {} tokens (with 2000 overhead reserve)",
+                model_name, model_limit
+            );
+            model_limit
         };
 
         // Get app data directory for BuiltInAI provider

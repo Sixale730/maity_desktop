@@ -190,10 +190,9 @@ pub async fn generate_meeting_summary(
     let content_to_summarize: String;
     let successful_chunk_count: i64;
 
-    // Strategy: Use single-pass for cloud providers or short transcripts
-    // Use multi-level chunking for Ollama/BuiltInAI with long transcripts
-    // Note: CustomOpenAI is treated like cloud providers (unlimited context)
-    if (provider != &LLMProvider::Ollama && provider != &LLMProvider::BuiltInAI) || total_tokens < token_threshold {
+    // Strategy: Use single-pass when transcript fits within the model's context window.
+    // Use multi-level chunking for any provider when the transcript exceeds the threshold.
+    if total_tokens < token_threshold {
         info!(
             "Using single-pass summarization (tokens: {}, threshold: {})",
             total_tokens, token_threshold

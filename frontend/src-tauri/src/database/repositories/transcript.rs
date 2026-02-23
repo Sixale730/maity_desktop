@@ -192,26 +192,39 @@ impl TranscriptsRepository {
     }
 
     /// Helper function to extract a snippet of text around the first match of a query.
+    /// Uses char indices (not byte indices) to safely handle multi-byte UTF-8 characters
+    /// such as Spanish accented letters (á, é, í, ó, ú, ñ, ¿, ¡).
     fn get_match_context(transcript: &str, query: &str) -> String {
         let transcript_lower = transcript.to_lowercase();
         let query_lower = query.to_lowercase();
 
         match transcript_lower.find(&query_lower) {
-            Some(match_index) => {
-                let start_index = match_index.saturating_sub(100);
-                let end_index = (match_index + query.len() + 100).min(transcript.len());
+            Some(match_byte_index) => {
+                // Convert byte offset to char index by counting chars up to that byte position
+                let match_char_index = transcript_lower[..match_byte_index].chars().count();
+                let query_char_len = query_lower.chars().count();
+                let total_chars = transcript.chars().count();
+
+                let context_window = 100; // chars, not bytes
+                let start_char = match_char_index.saturating_sub(context_window);
+                let end_char = (match_char_index + query_char_len + context_window).min(total_chars);
 
                 let mut context = String::new();
-                if start_index > 0 {
+                if start_char > 0 {
                     context.push_str("...");
                 }
-                context.push_str(&transcript[start_index..end_index]);
-                if end_index < transcript.len() {
+                let snippet: String = transcript
+                    .chars()
+                    .skip(start_char)
+                    .take(end_char - start_char)
+                    .collect();
+                context.push_str(&snippet);
+                if end_char < total_chars {
                     context.push_str("...");
                 }
                 context
             }
-            None => transcript.chars().take(200).collect(), // Fallback to the start of the transcript
+            None => transcript.chars().take(200).collect(),
         }
     }
 }
