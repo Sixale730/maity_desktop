@@ -9,6 +9,8 @@ import Analytics from "@/lib/analytics"
 import AnalyticsConsentSwitch from "@/components/analytics/AnalyticsConsentSwitch"
 import { useConfig, NotificationSettings } from "@/contexts/ConfigContext"
 import { useAuth } from "@/contexts/AuthContext"
+import { LogExporter } from "@/components/settings/LogExporter"
+import { RecordingLogsViewer } from "@/components/settings/RecordingLogsViewer"
 
 export function PreferenceSettings() {
   const {
@@ -224,6 +226,13 @@ export function PreferenceSettings() {
           <LogOut className="w-4 h-4" />
           Cerrar sesión
         </button>
+      </div>
+
+      {/* Diagnostics & Support */}
+      <div className="bg-card rounded-lg border border-border p-6 shadow-sm space-y-4">
+        <h3 className="text-lg font-semibold text-foreground">Diagnóstico y Soporte</h3>
+        <RecordingLogsViewer />
+        <LogExporter />
       </div>
     </div>
   )
