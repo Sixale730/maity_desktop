@@ -3,6 +3,7 @@ use crate::database::models::{MeetingModel, Transcript};
 use chrono::Utc;
 use sqlx::{Connection, Error as SqlxError, SqliteConnection, SqlitePool};
 use tracing::{error, info};
+use uuid::Uuid;
 
 pub struct MeetingsRepository;
 
@@ -166,6 +167,29 @@ impl MeetingsRepository {
         Ok((transcripts, total.0))
     }
 
+    /// Create a meeting early (at recording start) with just a title, no transcripts.
+    /// Returns the meeting_id for later association with transcripts.
+    pub async fn create_meeting_early(
+        pool: &SqlitePool,
+        meeting_title: &str,
+    ) -> Result<String, SqlxError> {
+        let meeting_id = format!("meeting-{}", Uuid::new_v4());
+        let now = Utc::now();
+
+        sqlx::query(
+            "INSERT INTO meetings (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)",
+        )
+        .bind(&meeting_id)
+        .bind(meeting_title)
+        .bind(now)
+        .bind(now)
+        .execute(pool)
+        .await?;
+
+        info!("Created early meeting '{}' with id: {}", meeting_title, meeting_id);
+        Ok(meeting_id)
+    }
+
     pub async fn update_meeting_title(
         pool: &SqlitePool,
         meeting_id: &str,
@@ -247,25 +271,31 @@ async fn delete_meeting_with_transaction(
     }
 
     // Delete from related tables in proper order
-    // 1. Delete from transcript_chunks
+    // 1. Delete from recording_logs
+    sqlx::query("DELETE FROM recording_logs WHERE meeting_id = ?")
+        .bind(meeting_id)
+        .execute(&mut *transaction)
+        .await?;
+
+    // 2. Delete from transcript_chunks
     sqlx::query("DELETE FROM transcript_chunks WHERE meeting_id = ?")
         .bind(meeting_id)
         .execute(&mut *transaction)
         .await?;
 
-    // 2. Delete from summary_processes
+    // 3. Delete from summary_processes
     sqlx::query("DELETE FROM summary_processes WHERE meeting_id = ?")
         .bind(meeting_id)
         .execute(&mut *transaction)
         .await?;
 
-    // 3. Delete from transcripts
+    // 4. Delete from transcripts
     sqlx::query("DELETE FROM transcripts WHERE meeting_id = ?")
         .bind(meeting_id)
         .execute(&mut *transaction)
         .await?;
 
-    // 4. Finally, delete the meeting
+    // 5. Finally, delete the meeting
     let result = sqlx::query("DELETE FROM meetings WHERE id = ?")
         .bind(meeting_id)
         .execute(&mut *transaction)

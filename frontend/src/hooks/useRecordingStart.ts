@@ -5,6 +5,7 @@ import { useSidebar } from '@/components/Sidebar/SidebarProvider';
 import { useConfig } from '@/contexts/ConfigContext';
 import { useRecordingState, RecordingStatus } from '@/contexts/RecordingStateContext';
 import { recordingService } from '@/services/recordingService';
+import { recordingLogService } from '@/services/recordingLogService';
 import Analytics from '@/lib/analytics';
 import { showRecordingNotification } from '@/components/recording/recordingNotification';
 import { toast } from 'sonner';
@@ -272,6 +273,30 @@ export function useRecordingStart(
       const randomTitle = generateMeetingTitle();
       setMeetingTitle(randomTitle);
 
+      // Start logging session
+      recordingLogService.startSession();
+      recordingLogService.log('recording_started', {
+        meeting_title: randomTitle,
+        mic_device: selectedDevices?.micDevice || null,
+        system_device: selectedDevices?.systemDevice || null,
+        provider,
+        trigger: 'manual',
+      }, 'success');
+
+      // Create meeting early in SQLite
+      let earlyMeetingId: string | null = null;
+      try {
+        const result = await invoke<{ meeting_id: string }>('api_create_meeting_early', {
+          meetingTitle: randomTitle,
+        });
+        earlyMeetingId = result.meeting_id;
+        recordingLogService.setMeetingId(earlyMeetingId);
+        sessionStorage.setItem('early_meeting_id', earlyMeetingId);
+        recordingLogService.log('meeting_created_early', { meeting_id: earlyMeetingId }, 'success');
+      } catch (err) {
+        recordingLogService.log('meeting_created_early', null, 'error', err instanceof Error ? err.message : String(err));
+      }
+
       // Set STARTING status before initiating backend recording
       setStatus(RecordingStatus.STARTING, 'Initializing recording...');
 
@@ -296,6 +321,7 @@ export function useRecordingStart(
       await showRecordingNotification();
     } catch (error) {
       console.error('Failed to start recording:', error);
+      recordingLogService.log('recording_start_failed', null, 'error', error instanceof Error ? error.message : String(error));
       setStatus(RecordingStatus.ERROR, error instanceof Error ? error.message : 'Failed to start recording');
       setIsRecording(false); // Reset state on error
       Analytics.trackButtonClick('start_recording_error', 'home_page');
@@ -348,6 +374,28 @@ export function useRecordingStart(
             // Generate meeting title
             const generatedMeetingTitle = generateMeetingTitle();
 
+            // Start logging session
+            recordingLogService.startSession();
+            recordingLogService.log('recording_started', {
+              meeting_title: generatedMeetingTitle,
+              mic_device: selectedDevices?.micDevice || null,
+              system_device: selectedDevices?.systemDevice || null,
+              provider: transcriptModelConfig?.provider || 'deepgram',
+              trigger: 'auto_start',
+            }, 'success');
+
+            // Create meeting early
+            try {
+              const earlyResult = await invoke<{ meeting_id: string }>('api_create_meeting_early', {
+                meetingTitle: generatedMeetingTitle,
+              });
+              recordingLogService.setMeetingId(earlyResult.meeting_id);
+              sessionStorage.setItem('early_meeting_id', earlyResult.meeting_id);
+              recordingLogService.log('meeting_created_early', { meeting_id: earlyResult.meeting_id }, 'success');
+            } catch (err) {
+              recordingLogService.log('meeting_created_early', null, 'error', err instanceof Error ? err.message : String(err));
+            }
+
             // Set STARTING status before initiating backend recording
             setStatus(RecordingStatus.STARTING, 'Initializing recording...');
 
@@ -371,6 +419,7 @@ export function useRecordingStart(
             await showRecordingNotification();
           } catch (error) {
             console.error('Failed to auto-start recording:', error);
+            recordingLogService.log('recording_start_failed', null, 'error', error instanceof Error ? error.message : String(error));
             setStatus(RecordingStatus.ERROR, error instanceof Error ? error.message : 'Failed to auto-start recording');
             alert('Failed to start recording. Check console for details.');
             Analytics.trackButtonClick('start_recording_error', 'sidebar_auto');
@@ -430,6 +479,28 @@ export function useRecordingStart(
           }
 
           try {
+            // Start logging session for meeting detector
+            recordingLogService.startSession();
+            recordingLogService.log('recording_started', {
+              meeting_title: meetingName,
+              mic_device: selectedDevices?.micDevice || null,
+              system_device: selectedDevices?.systemDevice || null,
+              provider: transcriptModelConfig?.provider || 'deepgram',
+              trigger: 'meeting_detector',
+            }, 'success');
+
+            // Create meeting early
+            try {
+              const earlyResult = await invoke<{ meeting_id: string }>('api_create_meeting_early', {
+                meetingTitle: meetingName,
+              });
+              recordingLogService.setMeetingId(earlyResult.meeting_id);
+              sessionStorage.setItem('early_meeting_id', earlyResult.meeting_id);
+              recordingLogService.log('meeting_created_early', { meeting_id: earlyResult.meeting_id }, 'success');
+            } catch (err) {
+              recordingLogService.log('meeting_created_early', null, 'error', err instanceof Error ? err.message : String(err));
+            }
+
             setStatus(RecordingStatus.STARTING, 'Iniciando grabación...');
 
             await recordingService.startRecordingWithDevices(
@@ -451,6 +522,7 @@ export function useRecordingStart(
             });
           } catch (error) {
             console.error('Failed to start recording from meeting detector:', error);
+            recordingLogService.log('recording_start_failed', null, 'error', error instanceof Error ? error.message : String(error));
             const errorMsg = error instanceof Error ? error.message : String(error);
             setStatus(RecordingStatus.ERROR, errorMsg);
 
@@ -537,6 +609,28 @@ export function useRecordingStart(
         // Generate meeting title
         const generatedMeetingTitle = generateMeetingTitle();
 
+        // Start logging session
+        recordingLogService.startSession();
+        recordingLogService.log('recording_started', {
+          meeting_title: generatedMeetingTitle,
+          mic_device: selectedDevices?.micDevice || null,
+          system_device: selectedDevices?.systemDevice || null,
+          provider,
+          trigger: 'sidebar_direct',
+        }, 'success');
+
+        // Create meeting early
+        try {
+          const earlyResult = await invoke<{ meeting_id: string }>('api_create_meeting_early', {
+            meetingTitle: generatedMeetingTitle,
+          });
+          recordingLogService.setMeetingId(earlyResult.meeting_id);
+          sessionStorage.setItem('early_meeting_id', earlyResult.meeting_id);
+          recordingLogService.log('meeting_created_early', { meeting_id: earlyResult.meeting_id }, 'success');
+        } catch (err) {
+          recordingLogService.log('meeting_created_early', null, 'error', err instanceof Error ? err.message : String(err));
+        }
+
         // Set STARTING status before initiating backend recording
         setStatus(RecordingStatus.STARTING, 'Initializing recording...');
 
@@ -560,6 +654,7 @@ export function useRecordingStart(
         await showRecordingNotification();
       } catch (error) {
         console.error('Failed to start recording from sidebar:', error);
+        recordingLogService.log('recording_start_failed', null, 'error', error instanceof Error ? error.message : String(error));
         setStatus(RecordingStatus.ERROR, error instanceof Error ? error.message : 'Failed to start recording from sidebar');
         alert('Failed to start recording. Check console for details.');
         Analytics.trackButtonClick('start_recording_error', 'sidebar_direct');

@@ -7,6 +7,7 @@ import { useSidebar } from '@/components/Sidebar/SidebarProvider';
 import { useRecordingState, RecordingStatus } from '@/contexts/RecordingStateContext';
 import { storageService } from '@/services/storageService';
 import { transcriptService } from '@/services/transcriptService';
+import { recordingLogService } from '@/services/recordingLogService';
 import Analytics from '@/lib/analytics';
 import { useAuth } from '@/contexts/AuthContext';
 import { useConfig } from '@/contexts/ConfigContext';
@@ -143,6 +144,11 @@ export function useRecordingStop(
     setIsRecordingDisabled(true);
     const stopStartTime = Date.now();
 
+    // Log recording stopped
+    recordingLogService.log('recording_stopped', {
+      transcript_count: transcriptsRef.current.length,
+    }, 'success');
+
     try {
       console.log('Post-stop processing (new implementation)...', {
         stop_initiated_at: new Date(stopStartTime).toISOString(),
@@ -156,6 +162,7 @@ export function useRecordingStop(
       // Wait for transcription to complete
       setStatus(RecordingStatus.PROCESSING_TRANSCRIPTS, 'Waiting for transcription...');
       console.log('Waiting for transcription to complete...');
+      recordingLogService.log('transcription_wait_started', null, 'success');
 
       const MAX_WAIT_TIME = 60000; // 60 seconds maximum wait (increased for longer processing)
       const POLL_INTERVAL = 500; // Check every 500ms
@@ -209,8 +216,10 @@ export function useRecordingStop(
 
       if (!transcriptionComplete && elapsedTime >= MAX_WAIT_TIME) {
         console.warn('⏰ Transcription wait timeout reached after', elapsedTime, 'ms');
+        recordingLogService.log('transcription_wait_timeout', { elapsed_ms: elapsedTime }, 'timeout');
       } else {
         console.log('✅ Transcription completed after', elapsedTime, 'ms');
+        recordingLogService.log('transcription_wait_completed', { elapsed_ms: elapsedTime }, 'success');
         // Wait longer for any late transcript segments (increased from 1s to 4s)
         console.log('⏳ Waiting for late transcript segments...');
         await new Promise(resolve => setTimeout(resolve, 4000));
@@ -231,6 +240,10 @@ export function useRecordingStop(
         total_time_since_stop: flushEndTime - stopStartTime,
         final_transcript_count: transcriptsRef.current.length
       });
+      recordingLogService.log('buffer_flush_completed', {
+        flush_duration_ms: flushEndTime - flushStartTime,
+        final_transcript_count: transcriptsRef.current.length,
+      }, 'success');
 
       // NOTE: Status remains PROCESSING_TRANSCRIPTS until we start saving
 
@@ -244,6 +257,9 @@ export function useRecordingStop(
       if (isCallApi && transcriptsRef.current.length > 0) {
 
         setStatus(RecordingStatus.SAVING, 'Saving meeting to database...');
+        recordingLogService.log('sqlite_save_attempted', {
+          transcript_count: transcriptsRef.current.length,
+        }, 'success');
 
         // Get fresh transcript state (ALL transcripts including late ones)
         const freshTranscripts = [...transcriptsRef.current];
@@ -251,11 +267,13 @@ export function useRecordingStop(
         // Get folder_path and meeting_name from recording-stopped event
         const folderPath = sessionStorage.getItem('last_recording_folder_path');
         const savedMeetingName = sessionStorage.getItem('last_recording_meeting_name');
+        const earlyMeetingId = sessionStorage.getItem('early_meeting_id');
 
         console.log('💾 Saving COMPLETE transcripts to database...', {
           transcript_count: freshTranscripts.length,
           meeting_name: savedMeetingName || meetingTitle,
           folder_path: folderPath,
+          early_meeting_id: earlyMeetingId,
           sample_text: freshTranscripts.length > 0 ? freshTranscripts[0].text.substring(0, 50) + '...' : 'none',
           last_transcript: freshTranscripts.length > 0 ? freshTranscripts[freshTranscripts.length - 1].text.substring(0, 30) + '...' : 'none',
         });
@@ -264,7 +282,8 @@ export function useRecordingStop(
           const responseData = await storageService.saveMeeting(
             savedMeetingName || meetingTitle || 'New Meeting',  // PREFER savedMeetingName (backend source)
             freshTranscripts,
-            folderPath
+            folderPath,
+            earlyMeetingId
           );
 
           const meetingId = responseData.meeting_id;
@@ -276,11 +295,17 @@ export function useRecordingStop(
           console.log('✅ Successfully saved COMPLETE meeting with ID:', meetingId);
           console.log('   Transcripts:', freshTranscripts.length);
           console.log('   folder_path:', folderPath);
+          recordingLogService.setMeetingId(meetingId);
+          recordingLogService.log('sqlite_save_succeeded', {
+            meeting_id: meetingId,
+            transcript_count: freshTranscripts.length,
+          }, 'success');
 
           // --- Save to Supabase (blocking) + DeepSeek eval (fire-and-forget) ---
           let conversationId: string | null = null;
           if (maityUser?.id && freshTranscripts.length > 0) {
             const cloudToastId = toast.loading('Guardando en la nube...');
+            recordingLogService.log('supabase_save_attempted', null, 'success');
             try {
               console.log('Saving conversation to Supabase for user:', maityUser.id);
 
@@ -338,12 +363,14 @@ export function useRecordingStop(
               await saveTranscriptSegments(conversationId, maityUser.id, segments);
               console.log('Transcript segments saved:', segments.length);
               toast.success('Guardado en la nube', { id: cloudToastId, duration: 3000 });
+              recordingLogService.log('supabase_save_succeeded', { conversation_id: conversationId }, 'success');
 
               // 3. Finalize conversation via Vercel API ASYNC (fire-and-forget)
               // The endpoint evaluates with LLM, generates embeddings, memories, and daily scores.
               // All results are written directly to Supabase server-side.
               (async () => {
                 const evalToastId = toast.loading('Analizando con Maity...');
+                recordingLogService.log('cloud_finalize_attempted', { conversation_id: conversationId }, 'success');
                 try {
                   const { data: { session } } = await supabase.auth.getSession();
                   const accessToken = session?.access_token;
@@ -377,6 +404,7 @@ export function useRecordingStop(
 
                   if (evalSuccess) {
                     toast.success('Analisis de comunicacion completado', { id: evalToastId, duration: 5000 });
+                    recordingLogService.log('cloud_finalize_succeeded', { conversation_id: conversationId }, 'success');
                     // Notify ConversationDetail (already mounted) to refetch
                     window.dispatchEvent(new CustomEvent('finalize-completed', {
                       detail: { conversationId },
@@ -386,6 +414,7 @@ export function useRecordingStop(
                   }
                 } catch (err) {
                   console.error('Finalize conversation error:', err);
+                  recordingLogService.log('cloud_finalize_failed', null, 'error', err instanceof Error ? err.message : String(err));
                   toast.error('Error en analisis de comunicacion', {
                     id: evalToastId,
                     duration: 10000,
@@ -395,6 +424,7 @@ export function useRecordingStop(
               })();
             } catch (err) {
               console.warn('Supabase save failed, fallback to local:', err);
+              recordingLogService.log('supabase_save_failed', null, 'error', err instanceof Error ? err.message : String(err));
               toast.dismiss();
               conversationId = null;
             }
@@ -406,6 +436,7 @@ export function useRecordingStop(
           // Clean up session storage
           sessionStorage.removeItem('last_recording_folder_path');
           sessionStorage.removeItem('last_recording_meeting_name');
+          sessionStorage.removeItem('early_meeting_id');
           // Clean up IndexedDB meeting ID (redundant with markMeetingAsSaved cleanup, but ensures cleanup)
           sessionStorage.removeItem('indexeddb_current_meeting_id');
 
@@ -502,6 +533,7 @@ export function useRecordingStop(
 
         } catch (saveError) {
           console.error('Failed to save meeting to database:', saveError);
+          recordingLogService.log('sqlite_save_failed', null, 'error', saveError instanceof Error ? saveError.message : String(saveError));
           setStatus(RecordingStatus.ERROR, saveError instanceof Error ? saveError.message : 'Unknown error');
           toast.error('Error al guardar reunión', {
             description: saveError instanceof Error ? saveError.message : 'Error desconocido'
@@ -509,13 +541,22 @@ export function useRecordingStop(
           throw saveError;
         }
       } else {
-        // No save needed, go back to IDLE
+        // No save needed — CRITICAL: log why
+        if (isCallApi && transcriptsRef.current.length === 0) {
+          recordingLogService.log('save_skipped_no_transcripts', {
+            is_call_api: isCallApi,
+            transcript_count: 0,
+          }, 'skipped');
+        }
         setStatus(RecordingStatus.IDLE);
       }
 
       setIsMeetingActive(false);
       // isRecording already set to false at function start
       setIsRecordingDisabled(false);
+
+      // Sync recording logs to cloud (fire-and-forget)
+      recordingLogService.syncToCloud();
     } catch (error) {
       console.error('Error in handleRecordingStop:', error);
       setStatus(RecordingStatus.ERROR, error instanceof Error ? error.message : 'Unknown error');

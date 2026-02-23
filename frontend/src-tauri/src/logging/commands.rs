@@ -4,11 +4,13 @@
 
 use std::io::{Read, Write};
 use std::path::PathBuf;
-use tauri::{AppHandle, Runtime};
+use tauri::{AppHandle, Manager, Runtime};
 use zip::write::SimpleFileOptions;
 use zip::ZipWriter;
 
 use super::file_logger::{get_log_directory, list_log_files, get_logs_total_size};
+use crate::database::repositories::recording_log::RecordingLogRepository;
+use crate::state::AppState;
 
 /// Information about the log files
 #[derive(Debug, Clone, serde::Serialize)]
@@ -144,6 +146,25 @@ pub async fn export_logs<R: Runtime>(
         .map_err(|e| format!("Failed to add system info to ZIP: {}", e))?;
     zip.write_all(system_info.as_bytes())
         .map_err(|e| format!("Failed to write system info: {}", e))?;
+
+    // Add recording lifecycle logs from SQLite
+    if let Some(app_state) = _app.try_state::<AppState>() {
+        let pool = app_state.db_manager.pool();
+        match RecordingLogRepository::export_all_logs_json(pool).await {
+            Ok(logs_json) => {
+                if let Err(e) = zip.start_file("recording_lifecycle_logs.json", options) {
+                    tracing::warn!("Failed to add recording logs to ZIP: {}", e);
+                } else if let Err(e) = zip.write_all(logs_json.as_bytes()) {
+                    tracing::warn!("Failed to write recording logs to ZIP: {}", e);
+                } else {
+                    tracing::info!("Added recording lifecycle logs to export ZIP");
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Failed to export recording logs: {}", e);
+            }
+        }
+    }
 
     zip.finish()
         .map_err(|e| format!("Failed to finish ZIP file: {}", e))?;

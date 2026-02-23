@@ -9,6 +9,7 @@ import { Button } from '@/components/ui/button';
 import { Loader2, CheckCircle2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { LogExporter } from '@/components/settings/LogExporter';
+import { RecordingLogsViewer } from '@/components/settings/RecordingLogsViewer';
 import { useAuth } from '@/contexts/AuthContext';
 
 
@@ -140,6 +141,9 @@ export function About() {
                     Creado por Maity
                 </p>
             </div>
+            {/* Recording Logs Viewer */}
+            <RecordingLogsViewer />
+
             {/* Log Export Section */}
             <LogExporter />
 

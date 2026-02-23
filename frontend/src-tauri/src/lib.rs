@@ -755,6 +755,7 @@ pub fn run() {
             api::api_get_meeting_transcripts,
             api::api_save_meeting_title,
             api::api_save_transcript,
+            api::api_create_meeting_early,
             api::open_meeting_folder,
             api::test_backend_connection,
             api::debug_backend_connection,
@@ -829,6 +830,10 @@ pub fn run() {
             database::commands::import_and_initialize_database,
             database::commands::initialize_fresh_database,
             // Database and Models path commands
+            database::commands::log_recording_event,
+            database::commands::get_recording_logs,
+            database::commands::get_unsynced_recording_logs,
+            database::commands::mark_recording_logs_synced,
             database::commands::get_database_directory,
             database::commands::open_database_folder,
             whisper_engine::commands::open_models_folder,

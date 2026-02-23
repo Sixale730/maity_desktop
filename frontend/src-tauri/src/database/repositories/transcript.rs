@@ -83,6 +83,76 @@ impl TranscriptsRepository {
         Ok(meeting_id)
     }
 
+    /// Save transcripts to an existing meeting (created early at recording start).
+    /// Updates the meeting title and folder_path, then inserts transcript segments.
+    pub async fn save_transcript_to_existing_meeting(
+        pool: &SqlitePool,
+        meeting_id: &str,
+        meeting_title: &str,
+        transcripts: &[TranscriptSegment],
+        folder_path: Option<String>,
+    ) -> Result<String, SqlxError> {
+        let mut conn = pool.acquire().await?;
+        let mut transaction = conn.begin().await?;
+
+        let now = Utc::now();
+
+        // Update the existing meeting with title, folder_path, and updated_at
+        let update_result = sqlx::query(
+            "UPDATE meetings SET title = ?, folder_path = ?, updated_at = ? WHERE id = ?",
+        )
+        .bind(meeting_title)
+        .bind(&folder_path)
+        .bind(now)
+        .bind(meeting_id)
+        .execute(&mut *transaction)
+        .await;
+
+        if let Err(e) = update_result {
+            error!("Failed to update existing meeting '{}': {}", meeting_id, e);
+            transaction.rollback().await?;
+            return Err(e);
+        }
+
+        // Insert each transcript segment
+        for segment in transcripts {
+            let transcript_id = format!("transcript-{}", Uuid::new_v4());
+            let result = sqlx::query(
+                "INSERT INTO transcripts (id, meeting_id, transcript, timestamp, audio_start_time, audio_end_time, duration, speaker)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+            )
+            .bind(&transcript_id)
+            .bind(meeting_id)
+            .bind(&segment.text)
+            .bind(&segment.timestamp)
+            .bind(segment.audio_start_time)
+            .bind(segment.audio_end_time)
+            .bind(segment.duration)
+            .bind(&segment.source_type)
+            .execute(&mut *transaction)
+            .await;
+
+            if let Err(e) = result {
+                error!(
+                    "Failed to save transcript segment for existing meeting {}: {}",
+                    meeting_id, e
+                );
+                transaction.rollback().await?;
+                return Err(e);
+            }
+        }
+
+        info!(
+            "Successfully saved {} transcript segments to existing meeting {}",
+            transcripts.len(),
+            meeting_id
+        );
+
+        transaction.commit().await?;
+
+        Ok(meeting_id.to_string())
+    }
+
     /// Searches for a query string within the transcripts.
     /// It returns a list of matching transcripts with context.
     pub async fn search_transcripts(

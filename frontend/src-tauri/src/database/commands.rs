@@ -1,9 +1,11 @@
 use log::{error, info};
 use serde::Serialize;
 use std::path::PathBuf;
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter, Manager, Runtime};
 
 use super::manager::DatabaseManager;
+use super::repositories::recording_log::RecordingLogRepository;
+use crate::database::models::RecordingLog;
 use crate::state::AppState;
 
 #[derive(Serialize)]
@@ -273,4 +275,85 @@ pub async fn open_database_folder(app: AppHandle) -> Result<(), String> {
 
     info!("Opened database folder: {}", folder_path);
     Ok(())
+}
+
+// ===== RECORDING LOG COMMANDS =====
+
+/// Insert a recording lifecycle event into the local recording_logs table
+#[tauri::command]
+pub async fn log_recording_event<R: Runtime>(
+    _app: AppHandle<R>,
+    state: tauri::State<'_, AppState>,
+    session_id: String,
+    event_type: String,
+    event_data: Option<String>,
+    status: Option<String>,
+    error: Option<String>,
+    meeting_id: Option<String>,
+    app_version: Option<String>,
+    device_info: Option<String>,
+) -> Result<i64, String> {
+    let pool = state.db_manager.pool();
+    RecordingLogRepository::log_event(
+        pool,
+        &session_id,
+        &event_type,
+        event_data.as_deref(),
+        status.as_deref(),
+        error.as_deref(),
+        meeting_id.as_deref(),
+        app_version.as_deref(),
+        device_info.as_deref(),
+    )
+    .await
+    .map_err(|e| {
+        error!("Failed to log recording event: {}", e);
+        e.to_string()
+    })
+}
+
+/// Get recording logs by session or recent
+#[tauri::command]
+pub async fn get_recording_logs<R: Runtime>(
+    _app: AppHandle<R>,
+    state: tauri::State<'_, AppState>,
+    session_id: Option<String>,
+    limit: Option<i64>,
+) -> Result<Vec<RecordingLog>, String> {
+    let pool = state.db_manager.pool();
+    if let Some(sid) = session_id {
+        RecordingLogRepository::get_logs_by_session(pool, &sid)
+            .await
+            .map_err(|e| e.to_string())
+    } else {
+        RecordingLogRepository::get_recent_logs(pool, limit.unwrap_or(100))
+            .await
+            .map_err(|e| e.to_string())
+    }
+}
+
+/// Get logs not yet synced to cloud
+#[tauri::command]
+pub async fn get_unsynced_recording_logs<R: Runtime>(
+    _app: AppHandle<R>,
+    state: tauri::State<'_, AppState>,
+    limit: Option<i64>,
+) -> Result<Vec<RecordingLog>, String> {
+    let pool = state.db_manager.pool();
+    RecordingLogRepository::get_unsynced_logs(pool, limit.unwrap_or(200))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Mark recording logs as synced to cloud
+#[tauri::command]
+pub async fn mark_recording_logs_synced<R: Runtime>(
+    _app: AppHandle<R>,
+    state: tauri::State<'_, AppState>,
+    ids: Vec<i64>,
+) -> Result<u64, String> {
+    let pool = state.db_manager.pool();
+    RecordingLogRepository::mark_as_synced(pool, &ids)
+        .await
+        .map_err(|e| e.to_string())
 }

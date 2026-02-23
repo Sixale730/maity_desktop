@@ -132,3 +132,18 @@ pub struct TranscriptSetting {
     /// Language for cloud transcription (e.g., "es-419", "es", "en", "multi")
     pub language: Option<String>,
 }
+
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct RecordingLog {
+    pub id: i64,
+    pub session_id: String,
+    pub event_type: String,
+    pub event_data: Option<String>,
+    pub status: Option<String>,
+    pub error: Option<String>,
+    pub meeting_id: Option<String>,
+    pub app_version: Option<String>,
+    pub device_info: Option<String>,
+    pub synced_to_cloud: bool,
+    pub created_at: String,
+}
