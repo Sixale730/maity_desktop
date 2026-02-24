@@ -17,6 +17,7 @@ import {
   saveTranscriptSegments,
 } from '@/features/conversations/services/conversations.service';
 import { supabase } from '@/lib/supabase';
+import { withRetry } from '@/lib/retry';
 
 type SummaryStatus = 'idle' | 'processing' | 'summarizing' | 'regenerating' | 'completed' | 'error';
 
@@ -303,11 +304,49 @@ export function useRecordingStop(
 
           // --- Save to Supabase (blocking) + DeepSeek eval (fire-and-forget) ---
           let conversationId: string | null = null;
-          if (maityUser?.id && freshTranscripts.length > 0) {
+
+          // Diagnostic logging: auth state at save time
+          console.log('[RecordingStop] Auth state:', {
+            maityUser_id: maityUser?.id ?? 'NULL',
+            maityUser_status: maityUser?.status ?? 'N/A',
+            transcript_count: freshTranscripts.length,
+            will_attempt_supabase: !!(maityUser?.id && freshTranscripts.length > 0),
+          });
+
+          // Fallback: if maityUser is null but Supabase session exists (race condition)
+          let effectiveMaityUser = maityUser;
+          if (!effectiveMaityUser?.id && freshTranscripts.length > 0) {
+            try {
+              const { data: { session: currentSession } } = await supabase.auth.getSession();
+              if (currentSession?.user) {
+                console.warn('[RecordingStop] maityUser null but session exists, fetching user...');
+                const { data: userData } = await supabase
+                  .from('users')
+                  .select('id, auth_id, first_name, last_name, email, status, created_at, updated_at')
+                  .eq('auth_id', currentSession.user.id)
+                  .single();
+                if (userData) effectiveMaityUser = userData;
+              }
+            } catch (e) {
+              console.warn('[RecordingStop] Fallback user fetch failed:', e);
+            }
+          }
+
+          if (effectiveMaityUser?.id && freshTranscripts.length > 0) {
             const cloudToastId = toast.loading('Guardando en la nube...');
             recordingLogService.log('supabase_save_attempted', null, 'success');
             try {
-              console.log('Saving conversation to Supabase for user:', maityUser.id);
+              // Refresh session to prevent expired token errors on long recordings
+              try {
+                const { data: { session: currentSession } } = await supabase.auth.getSession();
+                if (!currentSession) {
+                  await supabase.auth.refreshSession();
+                }
+              } catch (e) {
+                console.warn('[RecordingStop] Session refresh failed:', e);
+              }
+
+              console.log('Saving conversation to Supabase for user:', effectiveMaityUser.id);
 
               // Build transcript text with speaker labels
               const transcriptText = freshTranscripts.map(t => {
@@ -333,20 +372,31 @@ export function useRecordingStop(
                 ? new Date(Date.now() - (durationSec * 1000)).toISOString()
                 : now;
 
-              // 1. Save conversation BLOCKING with 15s timeout
+              // 1. Save conversation BLOCKING with retry + 15s timeout
               conversationId = await Promise.race([
-                saveConversationToSupabase({
-                  user_id: maityUser.id,
-                  title: savedMeetingName || meetingTitle || 'Nueva Reunión',
-                  started_at: startedAt,
-                  finished_at: now,
-                  transcript_text: transcriptText,
-                  source: 'maity_desktop',
-                  language: transcriptModelConfig?.language || 'es',
-                  words_count: wordsCount,
-                  duration_seconds: durationSec,
-                }),
-                new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Supabase save timeout')), 15000)),
+                withRetry(
+                  () => saveConversationToSupabase({
+                    user_id: effectiveMaityUser!.id,
+                    title: savedMeetingName || meetingTitle || 'Nueva Reunión',
+                    started_at: startedAt,
+                    finished_at: now,
+                    transcript_text: transcriptText,
+                    source: 'maity_desktop',
+                    language: transcriptModelConfig?.language || 'es',
+                    words_count: wordsCount,
+                    duration_seconds: durationSec,
+                  }),
+                  {
+                    maxRetries: 1,
+                    initialDelay: 1000,
+                    onRetry: (attempt, error) => {
+                      console.warn(`[RecordingStop] Supabase retry ${attempt}:`, error);
+                    },
+                  }
+                ),
+                new Promise<never>((_, reject) =>
+                  setTimeout(() => reject(new Error('Supabase save timeout (15s)')), 15000)
+                ),
               ]);
               console.log('Conversation saved to Supabase:', conversationId);
 
@@ -360,7 +410,7 @@ export function useRecordingStop(
                 start_time: t.audio_start_time || 0,
                 end_time: t.audio_end_time || 0,
               }));
-              await saveTranscriptSegments(conversationId, maityUser.id, segments);
+              await saveTranscriptSegments(conversationId, effectiveMaityUser!.id, segments);
               console.log('Transcript segments saved:', segments.length);
               toast.success('Guardado en la nube', { id: cloudToastId, duration: 3000 });
               recordingLogService.log('supabase_save_succeeded', { conversation_id: conversationId }, 'success');
@@ -423,9 +473,18 @@ export function useRecordingStop(
                 }
               })();
             } catch (err) {
-              console.warn('Supabase save failed, fallback to local:', err);
-              recordingLogService.log('supabase_save_failed', null, 'error', err instanceof Error ? err.message : String(err));
-              toast.dismiss();
+              console.error('[RecordingStop] Supabase save FAILED:', err);
+              const errorMsg = err instanceof Error ? err.message : String(err);
+              recordingLogService.log('supabase_save_failed', {
+                error_type: err instanceof Error ? err.constructor.name : typeof err,
+                user_id: effectiveMaityUser?.id,
+              }, 'error', errorMsg);
+
+              toast.dismiss(cloudToastId);
+              toast.error('Error al guardar en la nube', {
+                description: `La grabación se guardó localmente. Detalle: ${errorMsg}`,
+                duration: 8000,
+              });
               conversationId = null;
             }
           }
@@ -460,11 +519,24 @@ export function useRecordingStop(
           // Mark as completed
           setStatus(RecordingStatus.COMPLETED);
 
-          // Show success toast
-          toast.success('¡Grabación guardada exitosamente!', {
-            description: `${freshTranscripts.length} segmentos de transcripción guardados.`,
-            duration: 5000,
-          });
+          // Show contextual toast based on save result
+          if (conversationId) {
+            toast.success('¡Grabación guardada exitosamente!', {
+              description: `${freshTranscripts.length} segmentos guardados. Redirigiendo al análisis...`,
+              duration: 4000,
+            });
+          } else if (effectiveMaityUser?.id) {
+            // User logged in but cloud save failed — error toast already shown above
+            toast.info('Grabación guardada localmente', {
+              description: `${freshTranscripts.length} segmentos guardados. El análisis en la nube no está disponible.`,
+              duration: 6000,
+            });
+          } else {
+            toast.success('¡Grabación guardada exitosamente!', {
+              description: `${freshTranscripts.length} segmentos de transcripción guardados.`,
+              duration: 5000,
+            });
+          }
 
           // Auto-navigate: prefer conversations view if Supabase save succeeded, fallback to meeting-details
           setTimeout(() => {
