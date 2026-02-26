@@ -134,7 +134,7 @@ export default function Home() {
           action: result.meetingId ? {
             label: 'Ver Reunión',
             onClick: () => {
-              router.push(`/meeting-details?id=${result.meetingId}`);
+              router.push(`/conversations?id=${result.meetingId}&source=local`);
             }
           } : undefined,
           duration: 10000,
@@ -151,7 +151,7 @@ export default function Home() {
         // Auto-navigate after a short delay
         if (result.meetingId) {
           setTimeout(() => {
-            router.push(`/meeting-details?id=${result.meetingId}`);
+            router.push(`/conversations?id=${result.meetingId}&source=local`);
           }, 2000);
         }
       }
