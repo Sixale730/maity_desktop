@@ -27,6 +27,7 @@ import { OfflineIndicator } from '@/components/shared/OfflineIndicator'
 import { AuthProvider, useAuth } from '@/contexts/AuthContext'
 import { ParakeetAutoDownloadProvider } from '@/contexts/ParakeetAutoDownloadContext'
 import { LoginScreen } from '@/components/Auth'
+import { CloudSyncInitializer } from '@/components/CloudSyncInitializer'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ThemeProvider } from '@/contexts/ThemeContext'
 import Script from 'next/script'
@@ -337,6 +338,7 @@ export default function RootLayout({
                 <AuthProvider>
                   <UpdateCheckProvider>
                     <AuthGate>
+                      <CloudSyncInitializer />
                       <AppContent>{children}</AppContent>
                     </AuthGate>
                   </UpdateCheckProvider>

@@ -28,6 +28,8 @@ import {
 import { VisuallyHidden } from "@/components/ui/visually-hidden"
 
 import { MessageToast } from '@/components/shared/MessageToast';
+import { CloudSyncBadge } from '@/components/shared/CloudSyncBadge';
+import { useCloudSyncStatuses } from '@/hooks/useCloudSyncStatuses';
 import Logo from '@/components/shared/Logo';
 import Info from '@/components/shared/Info';
 import { ComplianceNotification } from '@/components/recording/ComplianceNotification';
@@ -63,6 +65,7 @@ const Sidebar: React.FC = () => {
   // Get recording state from RecordingStateContext (single source of truth)
   const { isRecording } = useRecordingState();
   const { maityUser } = useAuth();
+  const syncStatuses = useCloudSyncStatuses();
 
   // Fetch Supabase conversations for search
   const { data: omiConversations } = useQuery({
@@ -654,6 +657,7 @@ const Sidebar: React.FC = () => {
                   </div>
                 )}
                 <span className="flex-1 break-words">{item.title}</span>
+                {isMeetingItem && <CloudSyncBadge syncStatus={syncStatuses.get(item.id)} />}
                 {isMeetingItem && (
                   <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity duration-150">
                     <button

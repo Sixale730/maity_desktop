@@ -147,3 +147,31 @@ pub struct RecordingLog {
     pub synced_to_cloud: bool,
     pub created_at: String,
 }
+
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct SyncQueueJob {
+    pub id: i64,
+    pub job_type: String,
+    pub meeting_id: String,
+    pub payload: String,
+    pub status: String,
+    pub attempt_count: i64,
+    pub max_attempts: i64,
+    pub next_retry_at: Option<String>,
+    pub last_error: Option<String>,
+    pub depends_on: Option<i64>,
+    pub result_data: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub completed_at: Option<String>,
+}
+
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct MeetingSyncStatus {
+    pub meeting_id: String,
+    pub total_jobs: i64,
+    pub pending: i64,
+    pub in_progress: i64,
+    pub completed: i64,
+    pub failed: i64,
+}

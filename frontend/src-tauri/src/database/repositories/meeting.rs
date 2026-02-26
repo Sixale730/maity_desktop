@@ -271,6 +271,12 @@ async fn delete_meeting_with_transaction(
     }
 
     // Delete from related tables in proper order
+    // 0. Delete from sync_queue (cancel pending cloud syncs)
+    sqlx::query("DELETE FROM sync_queue WHERE meeting_id = ?")
+        .bind(meeting_id)
+        .execute(&mut *transaction)
+        .await?;
+
     // 1. Delete from recording_logs
     sqlx::query("DELETE FROM recording_logs WHERE meeting_id = ?")
         .bind(meeting_id)

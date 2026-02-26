@@ -487,6 +487,21 @@ pub fn run() {
             })
             .expect("Failed to initialize database");
 
+            // Reset stale sync queue jobs (in_progress > 5 min → pending)
+            if let Some(app_state) = _app.try_state::<state::AppState>() {
+                let pool = app_state.db_manager.pool();
+                match tauri::async_runtime::block_on(
+                    database::repositories::sync_queue::SyncQueueRepository::reset_stale_jobs(pool, 300)
+                ) {
+                    Ok(count) => {
+                        if count > 0 {
+                            log::info!("Reset {} stale sync queue jobs on startup", count);
+                        }
+                    }
+                    Err(e) => log::warn!("Failed to reset stale sync queue jobs: {}", e),
+                }
+            }
+
             // Set models directories (always set, even if engines won't be initialized)
             whisper_engine::commands::set_models_directory(&_app.handle());
             parakeet_engine::commands::set_models_directory(&_app.handle());
@@ -836,6 +851,17 @@ pub fn run() {
             database::commands::mark_recording_logs_synced,
             database::commands::get_database_directory,
             database::commands::open_database_folder,
+            // Sync queue commands (offline-first cloud save)
+            database::sync_queue_commands::sync_queue_enqueue,
+            database::sync_queue_commands::sync_queue_get_ready_jobs,
+            database::sync_queue_commands::sync_queue_claim_job,
+            database::sync_queue_commands::sync_queue_complete_job,
+            database::sync_queue_commands::sync_queue_fail_job,
+            database::sync_queue_commands::sync_queue_get_meeting_status,
+            database::sync_queue_commands::sync_queue_get_all_statuses,
+            database::sync_queue_commands::sync_queue_reset_stale,
+            database::sync_queue_commands::sync_queue_get_dependency_result,
+            database::sync_queue_commands::sync_queue_cancel_meeting,
             whisper_engine::commands::open_models_folder,
             // Onboarding commands
             onboarding::get_onboarding_status,
