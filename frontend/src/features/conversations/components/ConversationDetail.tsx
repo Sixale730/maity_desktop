@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { toast } from 'sonner';
+import { useAuth } from '@/contexts/AuthContext';
 import {
   OmiConversation,
   getOmiTranscriptSegments,
@@ -48,6 +49,7 @@ export function ConversationDetail({ conversation: initialConversation, onClose,
   const [conversation, setConversation] = useState(initialConversation);
   const [isWaitingForAnalysis, setIsWaitingForAnalysis] = useState(isAnalyzing ?? false);
   const queryClient = useQueryClient();
+  const { maityUser } = useAuth();
 
   // Poll for analysis completion when isAnalyzing is true
   useEffect(() => {
@@ -365,6 +367,7 @@ export function ConversationDetail({ conversation: initialConversation, onClose,
                 segments={segments}
                 loading={loadingSegments}
                 fallbackText={conversation.transcript_text}
+                userName={maityUser?.first_name ?? undefined}
               />
             </CardContent>
           </Card>

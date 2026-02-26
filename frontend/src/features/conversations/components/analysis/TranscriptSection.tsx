@@ -6,9 +6,26 @@ interface TranscriptSectionProps {
   segments: OmiTranscriptSegment[] | undefined;
   loading: boolean;
   fallbackText?: string | null;
+  userName?: string;
 }
 
-export function TranscriptSection({ segments, loading, fallbackText }: TranscriptSectionProps) {
+const GENERIC_LABELS = new Set([
+  'SPEAKER_0', 'SPEAKER_1', 'SPEAKER_2', 'SPEAKER_3',
+  'SPEAKER_4', 'SPEAKER_5', 'SPEAKER_6', 'SPEAKER_7',
+  'user', 'interlocutor', 'Usuario', 'Desconocido',
+  'Participante 1', 'Participante 2',
+]);
+
+function resolveSpeakerLabel(segment: OmiTranscriptSegment, userName?: string): string {
+  // Preserve proper names (e.g. "Julio Gonzalez")
+  if (segment.speaker && !GENERIC_LABELS.has(segment.speaker)) {
+    return segment.speaker;
+  }
+  // Label based on role
+  return segment.is_user ? (userName || 'Tú') : 'Interlocutor';
+}
+
+export function TranscriptSection({ segments, loading, fallbackText, userName }: TranscriptSectionProps) {
   if (loading) {
     return (
       <div className="space-y-4 p-4">
@@ -51,7 +68,7 @@ export function TranscriptSection({ segments, loading, fallbackText }: Transcrip
               <div className={`max-w-[75%] ${isUser ? '' : 'text-right'}`}>
                 <div className="flex items-center gap-2 mb-1">
                   <span className="text-xs font-medium text-foreground">
-                    {segment.speaker || (isUser ? 'Tu' : 'Otro')}
+                    {resolveSpeakerLabel(segment, userName)}
                   </span>
                   <span className="text-xs text-muted-foreground">
                     {Math.floor(segment.start_time / 60)}:

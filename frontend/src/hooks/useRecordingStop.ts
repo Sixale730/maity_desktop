@@ -346,7 +346,7 @@ export function useRecordingStop(
               const segments = freshTranscripts.map((t, i) => ({
                 segment_index: t.sequence_id ?? i,
                 text: t.text,
-                speaker: t.source_type === 'user' ? 'SPEAKER_0' : 'SPEAKER_1',
+                speaker: t.source_type === 'user' ? 'user' : 'interlocutor',
                 speaker_id: t.source_type === 'user' ? 0 : 1,
                 is_user: t.source_type === 'user',
                 start_time: t.audio_start_time || 0,
