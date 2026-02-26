@@ -74,6 +74,38 @@ class CloudSyncWorkerImpl {
     }
   }
 
+  /**
+   * Wait for a specific job to complete and return its result_data.
+   * Triggers immediate queue processing and polls the job status.
+   * Returns parsed result_data or null on timeout/failure.
+   */
+  async waitForJobResult(jobId: number, timeoutMs: number): Promise<Record<string, unknown> | null> {
+    this.nudge();
+    const start = Date.now();
+    const POLL_INTERVAL = 1500;
+
+    while (Date.now() - start < timeoutMs) {
+      try {
+        const job = await invoke<SyncQueueJob | null>('sync_queue_get_job', { id: jobId });
+        if (job?.status === 'completed' && job.result_data) {
+          return JSON.parse(job.result_data);
+        }
+        if (job?.status === 'failed') {
+          console.warn(`[CloudSyncWorker] Job ${jobId} failed: ${job.last_error}`);
+          return null;
+        }
+      } catch (e) {
+        console.warn(`[CloudSyncWorker] Error polling job ${jobId}:`, e);
+      }
+      await new Promise(r => setTimeout(r, POLL_INTERVAL));
+      // Nudge again in case the worker hasn't picked it up yet
+      this.nudge();
+    }
+
+    console.warn(`[CloudSyncWorker] Timeout waiting for job ${jobId} after ${timeoutMs}ms`);
+    return null;
+  }
+
   private async cleanupOldJobs() {
     try {
       const deleted = await invoke<number>('sync_queue_reset_stale', { staleSeconds: 300 });

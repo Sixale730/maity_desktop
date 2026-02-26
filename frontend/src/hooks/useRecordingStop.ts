@@ -13,6 +13,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useConfig } from '@/contexts/ConfigContext';
 import { invoke } from '@tauri-apps/api/core';
 import { supabase } from '@/lib/supabase';
+import { cloudSyncWorker } from '@/services/cloudSyncWorker';
 
 type SummaryStatus = 'idle' | 'processing' | 'summarizing' | 'regenerating' | 'completed' | 'error';
 
@@ -316,6 +317,9 @@ export function useRecordingStop(
             }
           }
 
+          // Track job1Id for post-sync navigation
+          let savedJob1Id: number | null = null;
+
           if (effectiveMaityUser?.id && freshTranscripts.length > 0) {
             try {
               // Build payloads for sync queue jobs
@@ -365,6 +369,7 @@ export function useRecordingStop(
                   duration_seconds: durationSec,
                 }),
               });
+              savedJob1Id = job1Id;
 
               // Job 2: save_transcript_segments (depends on Job 1)
               const job2Id = await invoke<number>('sync_queue_enqueue', {
@@ -436,13 +441,35 @@ export function useRecordingStop(
             duration: 5000,
           });
 
-          // Navigate to meeting details (cloud sync happens in background)
-          setTimeout(() => {
-            router.push(`/meeting-details?id=${meetingId}&source=recording`);
-            Analytics.trackPageView('meeting_details');
-            clearTranscripts();
+          // Navigate to cloud analysis screen (/conversations)
+          // If cloud sync was enqueued, wait for Job 1 to get conversation_id
+          setTimeout(async () => {
+            let navigated = false;
 
-            // Reset to IDLE after navigation
+            if (savedJob1Id !== null) {
+              try {
+                setStatus(RecordingStatus.COMPLETED, 'Sincronizando...');
+                console.log(`[RecordingStop] Waiting for Job 1 (id=${savedJob1Id}) to get conversation_id...`);
+                const result = await cloudSyncWorker.waitForJobResult(savedJob1Id, 20000);
+                const conversationId = result?.conversation_id as string | undefined;
+                if (conversationId) {
+                  console.log(`[RecordingStop] Got conversation_id=${conversationId}, navigating to /conversations`);
+                  router.push(`/conversations?id=${conversationId}&source=recording`);
+                  navigated = true;
+                }
+              } catch (e) {
+                console.warn('[RecordingStop] Error waiting for conversation_id:', e);
+              }
+            }
+
+            // Fallback: navigate to conversations list (without specific ID)
+            if (!navigated) {
+              console.log('[RecordingStop] Navigating to /conversations (fallback, no conversation_id)');
+              router.push('/conversations');
+            }
+
+            Analytics.trackPageView('conversations');
+            clearTranscripts();
             setStatus(RecordingStatus.IDLE);
           }, 1500);
           // Track meeting completion analytics

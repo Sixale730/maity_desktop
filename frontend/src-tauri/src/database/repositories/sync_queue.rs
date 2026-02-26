@@ -213,6 +213,19 @@ impl SyncQueueRepository {
         Ok(result.rows_affected())
     }
 
+    /// Get a single job by its ID (any status)
+    pub async fn get_job_by_id(
+        pool: &SqlitePool,
+        id: i64,
+    ) -> Result<Option<SyncQueueJob>, SqlxError> {
+        sqlx::query_as::<_, SyncQueueJob>(
+            "SELECT * FROM sync_queue WHERE id = ?",
+        )
+        .bind(id)
+        .fetch_optional(pool)
+        .await
+    }
+
     /// Clean up old completed jobs (older than N days)
     pub async fn cleanup_old_completed(
         pool: &SqlitePool,

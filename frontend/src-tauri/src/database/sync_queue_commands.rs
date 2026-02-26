@@ -154,6 +154,21 @@ pub async fn sync_queue_get_dependency_result<R: Runtime>(
 }
 
 #[tauri::command]
+pub async fn sync_queue_get_job<R: Runtime>(
+    _app: AppHandle<R>,
+    state: tauri::State<'_, AppState>,
+    id: i64,
+) -> Result<Option<SyncQueueJob>, String> {
+    let pool = state.db_manager.pool();
+    SyncQueueRepository::get_job_by_id(pool, id)
+        .await
+        .map_err(|e| {
+            error!("Failed to get sync job {}: {}", id, e);
+            e.to_string()
+        })
+}
+
+#[tauri::command]
 pub async fn sync_queue_cancel_meeting<R: Runtime>(
     _app: AppHandle<R>,
     state: tauri::State<'_, AppState>,
