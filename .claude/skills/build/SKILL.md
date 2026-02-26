@@ -103,6 +103,22 @@ powershell -Command '& "C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\
 
 Debe mostrar `Issued to: Asertio` / `Issued by: Certum Code Signing 2021 CA`.
 
+### Paso 8b: Regenerar updater signature post-firma Certum
+
+La firma Certum modifica el binario del instalador (embeds Authenticode signature), por lo que el `.sig` generado por Tauri durante el build ya no coincide con el exe firmado. **SIEMPRE** regenerar el `.sig` después de verificar la firma Certum:
+
+```bash
+cd /c/maity_desktop/frontend && source <(grep -E '^TAURI_SIGNING' .env) && npx @tauri-apps/cli signer sign \
+  -k "$TAURI_SIGNING_PRIVATE_KEY" -p "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" \
+  "../target/release/bundle/nsis/Maity_X.Y.Z_x64-setup.exe"
+```
+
+Después, actualizar `latest.json` con la nueva signature:
+1. Leer el nuevo contenido del `.sig` generado
+2. Editar `target/release/bundle/latest.json` reemplazando el campo `"signature"` con el nuevo valor
+
+**Sin este paso, el auto-updater rechazará la actualización** porque el `.sig` del build original fue generado del exe SIN firma Certum.
+
 ### Paso 9: Commit
 
 Crear commit con los 3 archivos de version actualizados:
