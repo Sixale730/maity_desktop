@@ -14,6 +14,8 @@ export type {
   OmiTranscriptSegment,
   OmiStats,
   CommunicationFeedback,
+  CommunicationFeedbackV4,
+  MeetingMinutesData,
   ActionItem,
   OmiEvent,
 } from './services/conversations.service';

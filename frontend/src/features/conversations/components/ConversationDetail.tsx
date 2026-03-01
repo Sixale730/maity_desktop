@@ -18,16 +18,26 @@ import {
 } from '../services/conversations.service';
 import {
   ResumenHero,
+  TuRadarCard,
+  EmotionProfiles,
   KPIGrid,
-  ScoreBars,
-  MuletillasSection,
-  PreguntasSection,
-  TemasSection,
-  PatronSection,
-  InsightsSection,
-  FortalezasAreasSection,
+  PatronCard,
+  InsightsGrid,
+  HallazgosSection,
+  PuertasDetalleSection,
+  RecomendacionesSection,
+  RealTimelineChart,
   TranscriptSection,
 } from './analysis';
+import {
+  MinutaHeroSummary,
+  MinutaKPIStrip,
+  MinutaGauge,
+  MinutaEfectividadSection,
+  MinutaDecisions,
+  MinutaActions,
+  MinutaSeguimiento,
+} from './minuta';
 
 interface ConversationDetailProps {
   conversation: OmiConversation;
@@ -57,7 +67,7 @@ export function ConversationDetail({ conversation: initialConversation, onClose,
     const interval = setInterval(async () => {
       try {
         const updated = await getOmiConversation(conversation.id);
-        if (updated?.communication_feedback) {
+        if (updated?.communication_feedback_v4) {
           setConversation(updated);
           onConversationUpdate?.(updated);
           setIsWaitingForAnalysis(false);
@@ -160,8 +170,10 @@ export function ConversationDetail({ conversation: initialConversation, onClose,
     });
   };
 
-  const feedback = conversation.communication_feedback;
-  const hasAnalysis = !!feedback;
+  const feedbackV4 = conversation.communication_feedback_v4;
+  const hasAnalysis = !!feedbackV4;
+  const minutaData = conversation.meeting_minutes_data;
+  const hasMinuta = !!minutaData;
   const canAnalyze = !reanalyzeMutation.isPending && !loadingSegments &&
     ((segments && segments.length > 0) || !!conversation.transcript_text);
 
@@ -239,34 +251,18 @@ export function ConversationDetail({ conversation: initialConversation, onClose,
 
         {/* Tab: Análisis */}
         <TabsContent value="analisis">
-          {hasAnalysis && feedback ? (
+          {hasAnalysis && feedbackV4 ? (
             <div className="space-y-8 py-2">
-              {/* 1. Resumen Hero — Gauge semicircular */}
-              <ResumenHero feedback={feedback} />
-
-              {/* 2. Radiografía Rápida — 8 KPIs */}
-              <KPIGrid feedback={feedback} />
-
-              {/* 3. Competencias de Comunicación — 6 score bars */}
-              <ScoreBars feedback={feedback} />
-
-              {/* 4. Muletillas — barras horizontales */}
-              <MuletillasSection feedback={feedback} />
-
-              {/* 5. Preguntas — 2 columnas */}
-              <PreguntasSection feedback={feedback} />
-
-              {/* 6-8. Temas + Compromisos + Pendientes */}
-              <TemasSection feedback={feedback} />
-
-              {/* 9. Fortalezas + Áreas de mejora */}
-              <FortalezasAreasSection feedback={feedback} />
-
-              {/* 10. Patrón de comunicación (opcional) */}
-              <PatronSection feedback={feedback} />
-
-              {/* 11. Insights (opcional) */}
-              <InsightsSection feedback={feedback} />
+              <ResumenHero feedback={feedbackV4} />
+              <TuRadarCard feedback={feedbackV4} />
+              <EmotionProfiles feedback={feedbackV4} />
+              <KPIGrid feedback={feedbackV4} />
+              <PatronCard feedback={feedbackV4} />
+              <InsightsGrid feedback={feedbackV4} />
+              <RealTimelineChart feedback={feedbackV4} />
+              <HallazgosSection feedback={feedbackV4} />
+              <PuertasDetalleSection feedback={feedbackV4} />
+              <RecomendacionesSection feedback={feedbackV4} />
 
               {/* Action Items (if present) */}
               {conversation.action_items && conversation.action_items.length > 0 && (
@@ -342,21 +338,35 @@ export function ConversationDetail({ conversation: initialConversation, onClose,
 
         {/* Tab: Minuta */}
         <TabsContent value="minuta">
-          <Card>
-            <CardContent className="p-6">
-              {feedback?.meeting_minutes ? (
-                <div className="prose prose-sm dark:prose-invert max-w-none text-muted-foreground whitespace-pre-wrap">
-                  {feedback.meeting_minutes}
-                </div>
-              ) : (
-                <div className="text-center py-12">
-                  <FileText className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
-                  <h3 className="text-lg font-medium mb-2 text-foreground">Sin minuta disponible</h3>
-                  <p className="text-muted-foreground">La minuta se genera automáticamente al analizar la conversación</p>
-                </div>
+          {hasMinuta && minutaData ? (
+            <div className="space-y-6 py-2">
+              <MinutaHeroSummary data={minutaData} />
+              <MinutaKPIStrip data={minutaData} />
+              {minutaData.efectividad && (
+                <>
+                  <MinutaGauge efectividad={minutaData.efectividad} />
+                  <MinutaEfectividadSection efectividad={minutaData.efectividad} />
+                </>
               )}
-            </CardContent>
-          </Card>
+              {minutaData.decisiones && minutaData.decisiones.length > 0 && (
+                <MinutaDecisions decisiones={minutaData.decisiones} />
+              )}
+              {minutaData.acciones && (
+                <MinutaActions acciones={minutaData.acciones} incompletas={minutaData.acciones_incompletas} />
+              )}
+              {minutaData.acciones?.seguimiento && (
+                <MinutaSeguimiento seguimiento={minutaData.acciones.seguimiento} />
+              )}
+            </div>
+          ) : (
+            <Card>
+              <CardContent className="p-12 text-center">
+                <FileText className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
+                <h3 className="text-lg font-medium mb-2 text-foreground">Sin minuta disponible</h3>
+                <p className="text-muted-foreground">La minuta se genera automáticamente al analizar la conversación</p>
+              </CardContent>
+            </Card>
+          )}
         </TabsContent>
 
         {/* Tab: Transcripción */}

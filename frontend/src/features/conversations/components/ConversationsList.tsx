@@ -129,7 +129,7 @@ export function ConversationsList({ onSelect, selectedId }: ConversationsListPro
                         {conversation.category}
                       </Badge>
                     )}
-                    {conversation.communication_feedback?.meeting_minutes && (
+                    {conversation.meeting_minutes_data && (
                       <Badge variant="outline" className="text-xs gap-1">
                         <FileText className="h-3 w-3" />
                         Minuta
@@ -141,7 +141,7 @@ export function ConversationsList({ onSelect, selectedId }: ConversationsListPro
                         Tareas ({conversation.action_items.length})
                       </Badge>
                     )}
-                    {conversation.communication_feedback && (
+                    {conversation.communication_feedback_v4 && (
                       <Badge variant="outline" className="text-xs gap-1">
                         <Sparkles className="h-3 w-3" />
                         Análisis

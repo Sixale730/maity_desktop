@@ -61,7 +61,7 @@ function ConversationsContent() {
   }
 
   if (selectedConversation) {
-    const isAnalyzing = source === 'recording' && !selectedConversation.communication_feedback;
+    const isAnalyzing = source === 'recording' && !selectedConversation.communication_feedback_v4;
     return (
       <div className="h-full flex flex-col bg-background">
         <ConversationDetail

@@ -1,5 +1,378 @@
 import { supabase } from '@/lib/supabase';
 
+// ─── V4 Analysis Types ──────────────────────────────────────────────
+
+export interface SubPuntaje {
+  puntaje_1_5: number;
+  puntaje_0_100: number;
+  que_mide?: string;
+}
+
+export interface Hallazgo {
+  tipo: string;
+  texto: string;
+  cita?: string;
+  alternativa?: string;
+  por_que?: string;
+}
+
+export interface DimensionBase {
+  puntaje: number;
+  nivel: string;
+  que_mide: string;
+  tu_resultado: string;
+  hallazgos?: Hallazgo[];
+  datos_tecnicos?: Record<string, unknown>;
+  dato_clave?: string;
+}
+
+export interface DimensionObjetivo extends DimensionBase {
+  tipo_intencion?: string;
+  sub_puntajes: {
+    especificidad: SubPuntaje;
+    accion: SubPuntaje;
+    temporalidad: SubPuntaje;
+    responsable: SubPuntaje;
+    verificabilidad: SubPuntaje;
+  };
+  evidencia_positiva?: string[];
+  evidencia_negativa?: string[];
+}
+
+export interface EmotionRadar {
+  alegria: number;
+  confianza: number;
+  miedo: number;
+  sorpresa: number;
+  tristeza: number;
+  disgusto: number;
+  ira: number;
+  anticipacion: number;
+}
+
+export interface SpeakerEmotion extends EmotionRadar {
+  dominante: string;
+  dominante_pct?: number;
+  subtexto?: string;
+}
+
+export interface DimensionEmociones {
+  tono_general: string;
+  polaridad: number;
+  subjetividad: number;
+  intensidad: number;
+  emocion_dominante: string;
+  radar: EmotionRadar;
+  por_hablante: Record<string, SpeakerEmotion>;
+  lectura_emocional?: string;
+}
+
+export interface DimensionMuletillas {
+  que_mide: string;
+  tu_resultado: string;
+  total: number;
+  frecuencia: string;
+  nivel: string;
+  dominante: string;
+  detalle: Record<string, number>;
+}
+
+export interface DimensionAdaptacion extends DimensionBase {
+  brechas: {
+    formalidad: number;
+    complejidad: number;
+    persuasion: number;
+    longitud_turno: number;
+    promedio: number;
+  };
+}
+
+export interface Recomendacion {
+  prioridad: number;
+  titulo: string;
+  texto_mejorado: string;
+  descripcion?: string;
+  texto_original?: string;
+  impacto?: string;
+  por_que?: string;
+}
+
+export interface MeetingInsight {
+  dato: string;
+  por_que: string;
+  sugerencia: string;
+}
+
+export interface MeetingPatron {
+  actual: string;
+  evolucion: string;
+  senales: string[];
+  que_cambiaria: string;
+}
+
+export interface TimelineSegmento {
+  tipo: string;
+  pct: number;
+  descripcion?: string;
+}
+
+export interface MomentoClave {
+  nombre: string;
+  minuto: number;
+}
+
+export interface MeetingTimeline {
+  segmentos: TimelineSegmento[];
+  momentos_clave: MomentoClave[];
+  lectura?: string;
+}
+
+export interface MeetingMeta {
+  formato: string;
+  tipo: string;
+  hablantes: string[];
+  palabras_totales: number;
+  oraciones_totales: number;
+  turnos_totales: number;
+  duracion_minutos: number;
+  palabras_por_hablante: Record<string, number>;
+  fecha: string;
+}
+
+export interface PuertaDetalleV4 {
+  quien: string;
+  minuto: number;
+  cita: string;
+  respuesta: string;
+  explorada: boolean;
+  alternativa?: string;
+}
+
+export interface MeetingRadiografiaV4 {
+  muletillas_total: number;
+  muletillas_detalle: Record<string, number>;
+  muletillas_frecuencia: string;
+  ratio_habla: number;
+  preguntas: Record<string, number>;
+  calidad_global: number;
+  mejor_dimension: { nombre: string; puntaje: number };
+  peor_dimension: { nombre: string; puntaje: number };
+  participacion_pct: Record<string, number>;
+  puertas_emocionales?: { momentos_vulnerabilidad: number; abiertas: number; exploradas: number; no_exploradas: number };
+  puertas_detalle?: PuertaDetalleV4[];
+}
+
+export interface MeetingResumenV4 {
+  puntuacion_global: number;
+  nivel: string;
+  descripcion: string;
+  fortaleza: string;
+  fortaleza_hint: string;
+  mejorar: string;
+  mejorar_hint: string;
+}
+
+export interface SpeakerProfileV4 {
+  palabras: number;
+  oraciones: number;
+  muestra_insuficiente?: boolean;
+  resumen: string;
+  claridad: { puntaje: number; nivel: string };
+  persuasion: { puntaje: number; nivel: string };
+  formalidad: { puntaje: number; nivel: string };
+  emociones: { dominante: string; polaridad: number };
+  pos?: {
+    sustantivos_pct: number;
+    verbos_pct: number;
+    adjetivos_pct: number;
+    adverbios_pct: number;
+    pronombres_pct: number;
+  };
+}
+
+export interface AntiEmpatia {
+  tipo: string;
+  descripcion: string;
+  penalizacion: number;
+}
+
+export interface EmpatiaProfileV4 {
+  evaluable: boolean;
+  puntaje: number;
+  nivel: string;
+  que_mide?: string;
+  tu_resultado: string;
+  reconocimiento_emocional?: number;
+  escucha_activa?: number;
+  tono_empatico?: number;
+  anti_empatia?: AntiEmpatia[];
+  hallazgos?: Hallazgo[];
+}
+
+export interface CalidadGlobalV4 {
+  puntaje: number;
+  nivel: string;
+  que_mide?: string;
+  tu_resultado?: string;
+  formula_usada: string;
+  componentes: {
+    claridad: number;
+    estructura: number;
+    persuasion: number;
+    proposito: number;
+    adaptacion: number | null;
+    empatia: number | null;
+  };
+  fortaleza: string;
+  fortaleza_hint: string;
+  mejorar: string;
+  mejorar_hint: string;
+}
+
+export interface MeetingDimensionesV4 {
+  claridad: DimensionBase;
+  proposito: DimensionObjetivo;
+  emociones: DimensionEmociones;
+  estructura: DimensionBase;
+  persuasion: DimensionBase;
+  formalidad: DimensionBase;
+  muletillas: DimensionMuletillas;
+  adaptacion: DimensionAdaptacion;
+}
+
+export interface CommunicationFeedbackV4 {
+  meta: MeetingMeta;
+  resumen: MeetingResumenV4;
+  radiografia: MeetingRadiografiaV4;
+  insights: MeetingInsight[];
+  patron: MeetingPatron;
+  timeline: MeetingTimeline;
+  dimensiones: MeetingDimensionesV4;
+  por_hablante: Record<string, SpeakerProfileV4>;
+  empatia: Record<string, EmpatiaProfileV4>;
+  calidad_global: CalidadGlobalV4;
+  recomendaciones: Recomendacion[];
+}
+
+// ─── Meeting Minutes Types ──────────────────────────────────────────
+
+export interface MinutaParticipante {
+  nombre: string;
+  rol: string;
+  presente: boolean;
+}
+
+export interface MinutaDistribucion {
+  nombre: string;
+  porcentaje: number;
+}
+
+export interface MinutaMeta {
+  titulo: string;
+  tipo_reunion: string;
+  tipo_secundario: string | null;
+  categoria_interlocutor: string;
+  fecha: string;
+  hora_inicio: string | null;
+  hora_fin: string | null;
+  duracion_minutos: number | null;
+  participantes: MinutaParticipante[];
+  total_palabras: number;
+  distribucion_participacion: MinutaDistribucion[];
+}
+
+export interface MinutaTema {
+  id: string | number;
+  titulo?: string;
+  nombre?: string;
+  etiqueta_cierre?: string;
+  puntos_clave?: string[];
+  resumen: string;
+}
+
+export interface MinutaDecision {
+  id: string | number;
+  descripcion: string;
+  clasificacion?: 'CONFIRMADA' | 'TENTATIVA' | 'DIFERIDA';
+  titulo?: string;
+  decidio?: string;
+  responsable?: string | null;
+  cita?: string;
+  razonamiento?: string;
+  condiciones?: string | null;
+  fecha_resolucion?: string | null;
+  voto?: string | null;
+}
+
+export interface MinutaAccionCompleta {
+  id: string | number;
+  responsable: string;
+  fecha_limite: string | null;
+  prioridad: string;
+  estado: string;
+  dependencias?: string[];
+  criterio_exito?: string;
+  descripcion?: string;
+  accion?: string;
+}
+
+export interface MinutaSeguimientoData {
+  proxima_reunion?: string | { fecha: string; hora: string; lugar: string; proposito: string } | null;
+  evento_adicional?: string | null;
+  agenda_sugerida?: string[] | null;
+  agenda_preliminar?: string[] | null;
+  preparacion_requerida?: Array<{ participante: string; preparacion: string }> | string[];
+  distribucion_minuta?: string[];
+}
+
+export interface MinutaAccionIncompleta {
+  id: string | number;
+  cita?: string;
+  descripcion?: string;
+  compromiso?: string;
+  falta?: string[];
+  que_falta?: string;
+  sugerencia?: string;
+  quien_lo_dijo?: string | { nombre: string; rol?: string | null; contexto?: string };
+}
+
+export interface MinutaComponenteEfectividad {
+  nombre: string;
+  score: number;
+  justificacion: string;
+  peso?: number;
+}
+
+export interface MinutaEfectividad {
+  score_global: number;
+  etiqueta: string;
+  componentes: MinutaComponenteEfectividad[] | Record<string, { valor: number; peso: number; justificacion: string }>;
+  veredicto: string;
+}
+
+export interface MinutaGraficas {
+  participacion?: Array<{ nombre: string; valor: number }>;
+  efectividad_componentes?: Array<{ nombre: string; valor: number }>;
+  prioridad_acciones?: Array<{ nombre: string; valor: number }>;
+  participacion_kpi?: { principal: { nombre: string; porcentaje: number }; interlocutores_porcentaje: number };
+  efectividad_desglose?: Array<{ componente: string; valor: number; emoji: string }>;
+}
+
+export interface MeetingMinutesData {
+  meta: MinutaMeta;
+  temas: MinutaTema[];
+  decisiones: MinutaDecision[];
+  acciones: {
+    lista: MinutaAccionCompleta[];
+    seguimiento: MinutaSeguimientoData;
+  };
+  acciones_incompletas: MinutaAccionIncompleta[];
+  efectividad: MinutaEfectividad;
+  graficas: MinutaGraficas;
+}
+
+// ─── Conversation Types ─────────────────────────────────────────────
+
 export interface OmiConversation {
   id: string;
   user_id: string | null;
@@ -20,6 +393,8 @@ export interface OmiConversation {
   words_count: number | null;
   duration_seconds: number | null;
   communication_feedback: CommunicationFeedback | null;
+  communication_feedback_v4: CommunicationFeedbackV4 | null;
+  meeting_minutes_data: MeetingMinutesData | null;
 }
 
 export interface ActionItem {
