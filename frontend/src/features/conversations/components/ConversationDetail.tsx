@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft, Clock, MessageSquare, Calendar, Sparkles, X, RefreshCw, Loader2, FileText } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
@@ -60,19 +60,33 @@ export function ConversationDetail({ conversation: initialConversation, onClose,
   const [isWaitingForAnalysis, setIsWaitingForAnalysis] = useState(isAnalyzing ?? false);
   const queryClient = useQueryClient();
   const { maityUser } = useAuth();
+  const prevAnalysisRef = useRef({ hadV4: !!initialConversation.communication_feedback_v4, hadMinutes: !!initialConversation.meeting_minutes_data });
 
-  // Poll for analysis completion when isAnalyzing is true
+  // Poll for analysis completion when isAnalyzing is true.
+  // V4 and minutes now run in separate Vercel runtimes, so they may arrive at different times.
+  // Update state on each partial result; stop polling when both are present or timeout (300s).
   useEffect(() => {
     if (!isWaitingForAnalysis) return;
     const interval = setInterval(async () => {
       try {
         const updated = await getOmiConversation(conversation.id);
-        if (updated?.communication_feedback_v4) {
+        if (!updated) return;
+        const hasV4 = !!updated.communication_feedback_v4;
+        const hasMinutes = !!updated.meeting_minutes_data;
+        const prev = prevAnalysisRef.current;
+
+        // Update conversation state whenever new data arrives
+        if ((hasV4 && !prev.hadV4) || (hasMinutes && !prev.hadMinutes)) {
+          prevAnalysisRef.current = { hadV4: hasV4, hadMinutes: hasMinutes };
           setConversation(updated);
           onConversationUpdate?.(updated);
-          setIsWaitingForAnalysis(false);
           queryClient.invalidateQueries({ queryKey: ['omi-conversations'] });
-          toast.success('Analisis completado');
+        }
+
+        // Stop polling when both analyses are complete
+        if (hasV4 && hasMinutes) {
+          setIsWaitingForAnalysis(false);
+          toast.success('Análisis completado');
         }
       } catch (err) {
         console.warn('Error polling for analysis:', err);
@@ -80,12 +94,14 @@ export function ConversationDetail({ conversation: initialConversation, onClose,
     }, 5000);
     const timeout = setTimeout(() => {
       setIsWaitingForAnalysis(false);
-      toast.info('El analisis esta tardando. Puedes reanalizar manualmente.');
-    }, 120000);
+      toast.info('El análisis está tardando. Puedes reanalizar manualmente.');
+    }, 300000);
     return () => { clearInterval(interval); clearTimeout(timeout); };
   }, [isWaitingForAnalysis, conversation.id, onConversationUpdate, queryClient]);
 
-  // Listen for finalize-completed event from useRecordingStop fire-and-forget
+  // Listen for finalize-completed event from useRecordingStop fire-and-forget.
+  // Now that finalize uses waitUntil (fire-and-forget), this event arrives BEFORE
+  // analyses complete. Only stop polling if both results are already present.
   useEffect(() => {
     const handler = async (e: Event) => {
       const detail = (e as CustomEvent).detail;
@@ -95,8 +111,14 @@ export function ConversationDetail({ conversation: initialConversation, onClose,
           if (updated) {
             setConversation(updated);
             onConversationUpdate?.(updated);
-            setIsWaitingForAnalysis(false);
             queryClient.invalidateQueries({ queryKey: ['omi-conversations'] });
+            const bothDone = !!updated.communication_feedback_v4 && !!updated.meeting_minutes_data;
+            if (bothDone) {
+              setIsWaitingForAnalysis(false);
+            } else {
+              // Finalize returned but analyses are still processing — start/keep polling
+              setIsWaitingForAnalysis(true);
+            }
           }
         } catch (err) {
           console.warn('Error refetching after finalize-completed:', err);
@@ -361,9 +383,19 @@ export function ConversationDetail({ conversation: initialConversation, onClose,
           ) : (
             <Card>
               <CardContent className="p-12 text-center">
-                <FileText className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
-                <h3 className="text-lg font-medium mb-2 text-foreground">Sin minuta disponible</h3>
-                <p className="text-muted-foreground">La minuta se genera automáticamente al analizar la conversación</p>
+                {isWaitingForAnalysis ? (
+                  <>
+                    <Loader2 className="h-12 w-12 mx-auto text-primary mb-4 animate-spin" />
+                    <h3 className="text-lg font-medium mb-2 text-foreground">Generando minuta...</h3>
+                    <p className="text-muted-foreground">La minuta se mostrará automáticamente</p>
+                  </>
+                ) : (
+                  <>
+                    <FileText className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
+                    <h3 className="text-lg font-medium mb-2 text-foreground">Sin minuta disponible</h3>
+                    <p className="text-muted-foreground">La minuta se genera automáticamente al analizar la conversación</p>
+                  </>
+                )}
               </CardContent>
             </Card>
           )}

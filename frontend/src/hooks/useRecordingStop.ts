@@ -433,9 +433,6 @@ export function useRecordingStop(
             setCurrentMeeting({ id: meetingId, title: savedMeetingName || meetingTitle || 'New Meeting' });
           }
 
-          // Mark as completed
-          setStatus(RecordingStatus.COMPLETED);
-
           toast.success('¡Grabación guardada exitosamente!', {
             description: `${freshTranscripts.length} segmentos de transcripción guardados.`,
             duration: 5000,
@@ -443,35 +440,33 @@ export function useRecordingStop(
 
           // Navigate to cloud analysis screen (/conversations)
           // If cloud sync was enqueued, wait for Job 1 to get conversation_id
-          setTimeout(async () => {
-            let navigated = false;
+          let navigated = false;
 
-            if (savedJob1Id !== null) {
-              try {
-                setStatus(RecordingStatus.COMPLETED, 'Sincronizando...');
-                console.log(`[RecordingStop] Waiting for Job 1 (id=${savedJob1Id}) to get conversation_id...`);
-                const result = await cloudSyncWorker.waitForJobResult(savedJob1Id, 20000);
-                const conversationId = result?.conversation_id as string | undefined;
-                if (conversationId) {
-                  console.log(`[RecordingStop] Got conversation_id=${conversationId}, navigating to /conversations`);
-                  router.push(`/conversations?id=${conversationId}&source=recording`);
-                  navigated = true;
-                }
-              } catch (e) {
-                console.warn('[RecordingStop] Error waiting for conversation_id:', e);
+          if (savedJob1Id !== null) {
+            try {
+              setStatus(RecordingStatus.SAVING, 'Sincronizando con la nube...');
+              console.log(`[RecordingStop] Waiting for Job 1 (id=${savedJob1Id}) to get conversation_id...`);
+              const result = await cloudSyncWorker.waitForJobResult(savedJob1Id, 20000);
+              const conversationId = result?.conversation_id as string | undefined;
+              if (conversationId) {
+                console.log(`[RecordingStop] Got conversation_id=${conversationId}, navigating to /conversations`);
+                router.push(`/conversations?id=${conversationId}&source=recording`);
+                navigated = true;
               }
+            } catch (e) {
+              console.warn('[RecordingStop] Error waiting for conversation_id:', e);
             }
+          }
 
-            // Fallback: navigate to conversations list (without specific ID)
-            if (!navigated) {
-              console.log('[RecordingStop] Navigating to /conversations (fallback, no conversation_id)');
-              router.push('/conversations');
-            }
+          // Fallback: navigate to conversations list (without specific ID)
+          if (!navigated) {
+            console.log('[RecordingStop] Navigating to /conversations (fallback, no conversation_id)');
+            router.push('/conversations');
+          }
 
-            Analytics.trackPageView('conversations');
-            clearTranscripts();
-            setStatus(RecordingStatus.IDLE);
-          }, 1500);
+          Analytics.trackPageView('conversations');
+          clearTranscripts();
+          setStatus(RecordingStatus.IDLE);
           // Track meeting completion analytics
           try {
             // Calculate meeting duration from transcript timestamps
