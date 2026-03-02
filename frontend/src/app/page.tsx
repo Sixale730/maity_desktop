@@ -23,6 +23,7 @@ import { toast } from 'sonner';
 import { useRouter } from 'next/navigation';
 import { useParakeetAutoDownloadContext } from '@/contexts/ParakeetAutoDownloadContext';
 import { useRecordingLevels } from '@/hooks/useRecordingLevels';
+import { GamifiedDashboardV2 } from '@/features/gamification';
 
 export default function Home() {
   // Local page state (not moved to contexts)
@@ -203,11 +204,17 @@ export default function Home() {
         onLoadPreview={loadMeetingTranscripts}
       />
       <div className="flex flex-1 overflow-hidden">
-        <TranscriptPanel
-          isProcessingStop={isProcessingStop}
-          isStopping={isStopping}
-          showModal={showModal}
-        />
+        {recordingState.isRecording || isProcessingStop || isStopping ? (
+          <TranscriptPanel
+            isProcessingStop={isProcessingStop}
+            isStopping={isStopping}
+            showModal={showModal}
+          />
+        ) : (
+          <div className="w-full overflow-y-auto">
+            <GamifiedDashboardV2 />
+          </div>
+        )}
 
         {/* Recording controls - only show when permissions are granted or already recording and not showing status messages */}
         {(hasMicrophone || isRecording) &&

@@ -506,6 +506,30 @@ export async function getOmiConversations(userId?: string): Promise<OmiConversat
   return data || [];
 }
 
+/**
+ * Fetch only created_at dates for node calculation in gamified dashboard.
+ * Much lighter than fetching full conversations.
+ */
+export async function getOmiConversationDates(
+  userId: string,
+  sinceDate: string,
+): Promise<{ created_at: string }[]> {
+  const { data, error } = await supabase
+    .from('omi_conversations')
+    .select('created_at')
+    .eq('user_id', userId)
+    .eq('deleted', false)
+    .gte('created_at', sinceDate)
+    .order('created_at', { ascending: false });
+
+  if (error) {
+    console.error('Error fetching omi conversation dates:', error);
+    throw error;
+  }
+
+  return data || [];
+}
+
 export async function getOmiConversation(conversationId: string): Promise<OmiConversation | null> {
   const { data, error } = await supabase
     .from('omi_conversations')
@@ -540,19 +564,32 @@ export async function getOmiTranscriptSegments(conversationId: string): Promise<
 export interface OmiStats {
   totalConversations: number;
   avgOverallScore: number;
-  avgClarity: number;
-  avgEngagement: number;
-  avgStructure: number;
   totalDurationMinutes: number;
+  dimensions: {
+    claridad: number;
+    proposito: number;
+    emociones: number;
+    estructura: number;
+    persuasion: number;
+    formalidad: number;
+    muletillas: number;
+    adaptacion: number;
+  };
   scoreHistory: { date: string; score: number }[];
+  recentConversations: { id: string; title: string; emoji: string | null; score: number; date: string }[];
 }
+
+const DIMENSION_KEYS_STATS = ['claridad', 'proposito', 'emociones', 'estructura', 'persuasion', 'formalidad', 'muletillas', 'adaptacion'] as const;
+
+const EMPTY_DIMENSIONS = { claridad: 0, proposito: 0, emociones: 0, estructura: 0, persuasion: 0, formalidad: 0, muletillas: 0, adaptacion: 0 };
 
 export async function getOmiStats(userId?: string): Promise<OmiStats | null> {
   if (!userId) return null;
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const { data, error } = await supabase
     .from('omi_conversations')
-    .select('created_at, duration_seconds, communication_feedback')
+    .select('id, created_at, duration_seconds, title, emoji, communication_feedback_v4')
     .eq('user_id', userId)
     .eq('deleted', false)
     .order('created_at', { ascending: true });
@@ -564,66 +601,61 @@ export async function getOmiStats(userId?: string): Promise<OmiStats | null> {
 
   if (!data || data.length === 0) {
     return {
-      totalConversations: 0,
-      avgOverallScore: 0,
-      avgClarity: 0,
-      avgEngagement: 0,
-      avgStructure: 0,
-      totalDurationMinutes: 0,
-      scoreHistory: [],
+      totalConversations: 0, avgOverallScore: 0, totalDurationMinutes: 0,
+      dimensions: { ...EMPTY_DIMENSIONS }, scoreHistory: [], recentConversations: [],
     };
   }
 
-  // Filter conversations with communication_feedback scores
-  const conversationsWithScores = data.filter(
-    (c) => c.communication_feedback?.overall_score !== undefined
-  );
-
-  // Calculate averages
   const calcAvg = (arr: number[]) =>
     arr.length > 0 ? arr.reduce((a, b) => a + b, 0) / arr.length : 0;
 
-  const overallScores = conversationsWithScores
-    .map((c) => c.communication_feedback?.overall_score)
-    .filter((s): s is number => s !== undefined);
+  // Filter conversations with V4 feedback
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const withV4 = data.filter((c: any) => c.communication_feedback_v4?.resumen?.puntuacion_global != null);
 
-  const clarityScores = conversationsWithScores
-    .map((c) => c.communication_feedback?.clarity)
-    .filter((s): s is number => s !== undefined);
+  // Overall scores
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const overallScores = withV4.map((c: any) => c.communication_feedback_v4.resumen.puntuacion_global as number);
 
-  const engagementScores = conversationsWithScores
-    .map((c) => c.communication_feedback?.engagement)
-    .filter((s): s is number => s !== undefined);
+  // Dimension averages
+  const dimAverages = { ...EMPTY_DIMENSIONS };
+  for (const key of DIMENSION_KEYS_STATS) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const scores = withV4.map((c: any) => {
+      const dim = c.communication_feedback_v4?.dimensiones?.[key];
+      return dim?.puntaje as number | undefined;
+    }).filter((s: number | undefined): s is number => s != null);
+    dimAverages[key] = Math.round(calcAvg(scores));
+  }
 
-  const structureScores = conversationsWithScores
-    .map((c) => c.communication_feedback?.structure)
-    .filter((s): s is number => s !== undefined);
+  // Total duration
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const totalDurationSeconds = data.reduce((acc: number, c: any) => acc + (c.duration_seconds || 0), 0);
 
-  // Calculate total duration
-  const totalDurationSeconds = data.reduce(
-    (acc, c) => acc + (c.duration_seconds || 0),
-    0
-  );
+  // Score history (last 10 with V4 scores)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const scoreHistory = withV4.slice(-10).map((c: any) => ({
+    date: new Date(c.created_at).toLocaleDateString('es-MX', { month: 'short', day: 'numeric' }),
+    score: c.communication_feedback_v4.resumen.puntuacion_global as number,
+  }));
 
-  // Build score history (last 10 conversations with scores)
-  const scoreHistory = conversationsWithScores
-    .slice(-10)
-    .map((c) => ({
-      date: new Date(c.created_at).toLocaleDateString('es-MX', {
-        month: 'short',
-        day: 'numeric',
-      }),
-      score: c.communication_feedback?.overall_score || 0,
-    }));
+  // Recent conversations (last 5)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const recentConversations = [...data].reverse().slice(0, 5).map((c: any) => ({
+    id: c.id as string,
+    title: (c.title || 'Sin título') as string,
+    emoji: c.emoji as string | null,
+    score: (c.communication_feedback_v4?.resumen?.puntuacion_global ?? 0) as number,
+    date: new Date(c.created_at).toLocaleDateString('es-MX', { month: 'short', day: 'numeric' }),
+  }));
 
   return {
     totalConversations: data.length,
-    avgOverallScore: Math.round(calcAvg(overallScores) * 10) / 10,
-    avgClarity: Math.round(calcAvg(clarityScores) * 10) / 10,
-    avgEngagement: Math.round(calcAvg(engagementScores) * 10) / 10,
-    avgStructure: Math.round(calcAvg(structureScores) * 10) / 10,
+    avgOverallScore: Math.round(calcAvg(overallScores)),
     totalDurationMinutes: Math.round(totalDurationSeconds / 60),
+    dimensions: dimAverages,
     scoreHistory,
+    recentConversations,
   };
 }
 
@@ -808,4 +840,23 @@ export async function updateConversationEvaluation(
     console.error('Error updating conversation evaluation:', error);
     throw error;
   }
+}
+
+// ============================================================================
+// FORM RESPONSES (self-assessment questionnaire)
+// ============================================================================
+
+export interface FormResponse {
+  q5?: string; q6?: string;   // Claridad
+  q7?: string; q8?: string;   // Adaptación
+  q9?: string; q10?: string;  // Persuasión
+  q11?: string; q12?: string; // Estructura
+  q13?: string; q14?: string; // Propósito
+  q15?: string; q16?: string; // Empatía
+}
+
+export async function getFormResponses(): Promise<FormResponse | null> {
+  const { data, error } = await supabase.rpc('get_my_form_responses');
+  if (error || !data || data.length === 0) return null;
+  return data[0];
 }

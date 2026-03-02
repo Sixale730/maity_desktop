@@ -1,6 +1,4 @@
-export { GamifiedDashboard } from './components/GamifiedDashboard';
-export { MountainMap } from './components/MountainMap';
-export { MetricsPanel } from './components/MetricsPanel';
-export { InfoPanel } from './components/InfoPanel';
-export { useGamifiedDashboardData } from './hooks/useGamifiedDashboardData';
-export type { MountainNode, GamifiedDashboardData } from './hooks/useGamifiedDashboardData';
+export { GamifiedDashboardV2 } from './components/GamifiedDashboardV2';
+export { RadarChartV2 } from './components/RadarChartV2';
+export { useGamifiedDashboardDataV2 } from './hooks/useGamifiedDashboardDataV2';
+export type { GamifiedDashboardDataV2, Competency, MountainNode } from './hooks/useGamifiedDashboardDataV2';

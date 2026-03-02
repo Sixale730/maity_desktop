@@ -28,7 +28,7 @@ interface TranscriptPanelProps {
 export function TranscriptPanel({
   isProcessingStop,
   isStopping,
-  showModal
+  showModal,
 }: TranscriptPanelProps) {
   // Contexts
   const { transcripts, transcriptContainerRef, copyTranscript } = useTranscripts();
