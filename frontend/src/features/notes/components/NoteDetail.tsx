@@ -26,7 +26,8 @@ function extractText(item: unknown): string {
 
 export function NoteDetail({ conversation, onClose }: NoteDetailProps) {
   const queryClient = useQueryClient();
-  const feedback = conversation.communication_feedback;
+  const minutaData = conversation.meeting_minutes_data;
+  const feedbackV1 = conversation.communication_feedback;
 
   const toggleMutation = useMutation({
     mutationFn: ({ index, completed }: { index: number; completed: boolean }) =>
@@ -117,25 +118,62 @@ export function NoteDetail({ conversation, onClose }: NoteDetailProps) {
       </div>
 
       <div className="grid gap-6">
-        {/* Meeting Minutes */}
-        {feedback?.meeting_minutes && (
+        {/* Meeting Minutes — V4 structured data (preferred) or V1 markdown fallback */}
+        {minutaData ? (
           <Card>
             <CardHeader>
               <CardTitle className="flex items-center gap-2 text-lg">
                 <FileText className="h-5 w-5 text-[#a78bfa]" />
-                Minuta de Reunion
+                Minuta de Reunión
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {minutaData.temas && minutaData.temas.length > 0 && minutaData.temas.map((tema, i) => (
+                <div key={i}>
+                  <h5 className="text-sm font-medium text-foreground mb-1">{tema.titulo || tema.nombre || `Tema ${i + 1}`}</h5>
+                  <p className="text-sm text-muted-foreground">{tema.resumen}</p>
+                  {tema.puntos_clave && tema.puntos_clave.length > 0 && (
+                    <ul className="mt-1 space-y-0.5">
+                      {tema.puntos_clave.map((punto, j) => (
+                        <li key={j} className="text-xs text-muted-foreground ml-4 list-disc">{punto}</li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              ))}
+              {minutaData.decisiones && minutaData.decisiones.length > 0 && (
+                <div>
+                  <h5 className="text-sm font-medium text-foreground mb-2">Decisiones</h5>
+                  <ul className="space-y-1">
+                    {minutaData.decisiones.map((dec, i) => (
+                      <li key={i} className="text-sm text-muted-foreground flex items-start gap-2">
+                        <CheckCircle2 className="h-4 w-4 text-primary mt-0.5 flex-shrink-0" />
+                        <span>{dec.descripcion || dec.titulo}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        ) : feedbackV1?.meeting_minutes ? (
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2 text-lg">
+                <FileText className="h-5 w-5 text-[#a78bfa]" />
+                Minuta de Reunión
               </CardTitle>
             </CardHeader>
             <CardContent>
               <div className="prose prose-sm dark:prose-invert max-w-none text-muted-foreground whitespace-pre-wrap">
-                {feedback.meeting_minutes}
+                {feedbackV1.meeting_minutes}
               </div>
             </CardContent>
           </Card>
-        )}
+        ) : null}
 
-        {/* Overview */}
-        {conversation.overview && !feedback?.meeting_minutes && (
+        {/* Overview — shown when no minuta exists */}
+        {conversation.overview && !minutaData && !feedbackV1?.meeting_minutes && (
           <Card>
             <CardHeader>
               <CardTitle className="text-lg">Resumen</CardTitle>
@@ -146,8 +184,8 @@ export function NoteDetail({ conversation, onClose }: NoteDetailProps) {
           </Card>
         )}
 
-        {/* Temas */}
-        {feedback?.temas && (
+        {/* Temas — V4 structured (preferred) or V1 fallback */}
+        {minutaData?.temas ? null /* Already shown in minuta above */ : feedbackV1?.temas ? (
           <Card>
             <CardHeader>
               <CardTitle className="flex items-center gap-2 text-lg">
@@ -156,21 +194,21 @@ export function NoteDetail({ conversation, onClose }: NoteDetailProps) {
               </CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
-              {feedback.temas.temas_tratados && feedback.temas.temas_tratados.length > 0 && (
+              {feedbackV1.temas.temas_tratados && feedbackV1.temas.temas_tratados.length > 0 && (
                 <div>
                   <h5 className="text-sm font-medium text-foreground mb-2">Temas tratados</h5>
                   <div className="flex flex-wrap gap-2">
-                    {feedback.temas.temas_tratados.map((tema, i) => (
+                    {feedbackV1.temas.temas_tratados.map((tema, i) => (
                       <Badge key={i} variant="secondary">{extractText(tema)}</Badge>
                     ))}
                   </div>
                 </div>
               )}
-              {feedback.temas.acciones_usuario && feedback.temas.acciones_usuario.length > 0 && (
+              {feedbackV1.temas.acciones_usuario && feedbackV1.temas.acciones_usuario.length > 0 && (
                 <div>
                   <h5 className="text-sm font-medium text-foreground mb-2">Compromisos del usuario</h5>
                   <ul className="space-y-1">
-                    {feedback.temas.acciones_usuario.map((acc, i) => (
+                    {feedbackV1.temas.acciones_usuario.map((acc, i) => (
                       <li key={i} className="text-sm flex items-start gap-2">
                         <CheckCircle2 className="h-4 w-4 text-primary mt-0.5 flex-shrink-0" />
                         <span className="text-muted-foreground">{extractText(acc)}</span>
@@ -179,16 +217,38 @@ export function NoteDetail({ conversation, onClose }: NoteDetailProps) {
                   </ul>
                 </div>
               )}
-              {feedback.temas.temas_sin_cerrar && feedback.temas.temas_sin_cerrar.length > 0 && (
+              {feedbackV1.temas.temas_sin_cerrar && feedbackV1.temas.temas_sin_cerrar.length > 0 && (
                 <div>
                   <h5 className="text-sm font-medium text-amber-600 mb-2">Temas sin cerrar</h5>
                   <ul className="space-y-1">
-                    {feedback.temas.temas_sin_cerrar.map((tema, i) => (
+                    {feedbackV1.temas.temas_sin_cerrar.map((tema, i) => (
                       <li key={i} className="text-sm text-muted-foreground">{extractText(tema)}</li>
                     ))}
                   </ul>
                 </div>
               )}
+            </CardContent>
+          </Card>
+        ) : null}
+
+        {/* Acciones incompletas — V4 only */}
+        {minutaData?.acciones_incompletas && minutaData.acciones_incompletas.length > 0 && (
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2 text-lg text-amber-600">
+                <BookOpen className="h-5 w-5" />
+                Temas sin cerrar
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <ul className="space-y-1">
+                {minutaData.acciones_incompletas.map((item, i) => (
+                  <li key={i} className="text-sm text-muted-foreground">
+                    {item.descripcion || item.compromiso || item.cita}
+                    {item.que_falta && <span className="text-amber-600"> — {item.que_falta}</span>}
+                  </li>
+                ))}
+              </ul>
             </CardContent>
           </Card>
         )}

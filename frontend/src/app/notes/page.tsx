@@ -100,8 +100,7 @@ export default function NotesPage() {
         {!isLoading && conversations && conversations.length > 0 && (
           <div className="space-y-3">
             {conversations.map((conversation) => {
-              const feedback = conversation.communication_feedback;
-              const hasMinuta = !!feedback?.meeting_minutes;
+              const hasMinuta = !!conversation.meeting_minutes_data || !!conversation.communication_feedback?.meeting_minutes;
               const actionItems = conversation.action_items;
               const hasActionItems = actionItems && actionItems.length > 0;
 
