@@ -181,9 +181,10 @@ export function GamifiedDashboardV2() {
         <div className="lg:col-span-8">
           <Card className="h-full relative overflow-hidden border-2 border-pink-500/20 hover:border-pink-500/40 transition-all bg-[#0F0F0F] group flex flex-col">
             <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/40 to-transparent z-10" />
-            <div
-              className="absolute inset-0 bg-cover bg-bottom opacity-60 group-hover:opacity-70 group-hover:scale-105 transition-all duration-700"
-              style={{ backgroundImage: "url('/images/mission-mountain.jpg')" }}
+            <img
+              src="/images/mission-mountain.jpg"
+              alt=""
+              className="absolute inset-0 w-full h-full object-cover object-[center_30%] opacity-60 group-hover:opacity-70 group-hover:scale-105 transition-all duration-700"
             />
 
             {/* Sparkline overlay */}
