@@ -116,12 +116,12 @@ export function GamifiedDashboardV2() {
   const xpProgress = Math.min((data.xp / data.nextLevelXP) * 100, 100);
 
   return (
-    <div className="max-w-[1500px] mx-auto p-4 lg:p-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+    <div className="max-w-[1500px] mx-auto p-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
 
       {/* ================================================================== */}
       {/* HEADER: Avatar + Greeting + Stats */}
       {/* ================================================================== */}
-      <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center mb-8 gap-6">
+      <div className="flex flex-row justify-between items-center mb-8 gap-6">
         {/* Left: Avatar + Greeting */}
         <div className="flex items-center gap-5">
           <div className="relative">
@@ -136,7 +136,7 @@ export function GamifiedDashboardV2() {
           </div>
 
           <div>
-            <h1 className="text-2xl lg:text-3xl font-bold text-white mb-1">
+            <h1 className="text-3xl font-bold text-white mb-1">
               Hola, {firstName}! <span className="inline-block animate-pulse">👋</span>
             </h1>
             <p className="text-gray-400 text-sm">
@@ -175,10 +175,10 @@ export function GamifiedDashboardV2() {
       {/* ================================================================== */}
       {/* MAIN GRID: Mission + Radar + Score */}
       {/* ================================================================== */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 mb-6">
+      <div className="flex gap-6 mb-6">
 
-        {/* LEFT: Mission Card (8 cols) */}
-        <div className="lg:col-span-8">
+        {/* LEFT: Mission Card */}
+        <div className="flex-1 min-w-0">
           <Card className="h-full relative overflow-hidden border-2 border-pink-500/20 hover:border-pink-500/40 transition-all bg-[#0F0F0F] group flex flex-col">
             <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/40 to-transparent z-10" />
             <img
@@ -206,7 +206,7 @@ export function GamifiedDashboardV2() {
             </div>
 
             {/* Content */}
-            <div className="relative z-20 p-6 lg:p-8 flex-1">
+            <div className="relative z-20 p-8 flex-1">
               <div className="flex items-center justify-between mb-4">
                 <div className="flex items-center gap-2 text-pink-500 font-bold tracking-widest uppercase text-xs">
                   <Swords size={14} /> Misión Actual
@@ -217,7 +217,7 @@ export function GamifiedDashboardV2() {
                 </div>
               </div>
 
-              <h2 className="text-3xl lg:text-4xl font-bold text-white mb-4 leading-tight drop-shadow-lg">
+              <h2 className="text-4xl font-bold text-white mb-4 leading-tight drop-shadow-lg">
                 {data.mission.map}
               </h2>
 
@@ -241,7 +241,7 @@ export function GamifiedDashboardV2() {
             </div>
 
             {/* Footer: Progress + CTA */}
-            <div className="relative z-20 p-4 lg:px-8 lg:pb-6 bg-gradient-to-t from-black/90 to-transparent">
+            <div className="relative z-20 px-8 pb-6 pt-4 bg-gradient-to-t from-black/90 to-transparent">
               <div className="mb-4">
                 <div className="flex justify-between items-center text-xs mb-2">
                   <span className="text-gray-300 flex items-center gap-2">
@@ -273,7 +273,7 @@ export function GamifiedDashboardV2() {
         </div>
 
         {/* RIGHT: Radar + Score (4 cols) */}
-        <div className="lg:col-span-4 space-y-6">
+        <div className="w-80 shrink-0 space-y-6">
           {/* Radar Card */}
           <Card className="p-4 bg-[#0F0F0F] border border-white/10 hover:border-blue-500/30 transition-colors">
             <div className="flex justify-between items-center mb-2">
@@ -330,10 +330,10 @@ export function GamifiedDashboardV2() {
       {/* ================================================================== */}
       {/* BOTTOM GRID: Activity + Ranking */}
       {/* ================================================================== */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      <div className="flex gap-6">
 
-        {/* Activity Card (2 cols) */}
-        <Card className="p-5 lg:col-span-2 bg-[#0F0F0F] border border-white/10">
+        {/* Activity Card */}
+        <Card className="p-5 flex-[2] min-w-0 bg-[#0F0F0F] border border-white/10">
           <div className="flex justify-between items-center mb-4">
             <h3 className="font-bold text-white flex items-center gap-2">
               <Activity size={18} className="text-green-400" /> Actividad Reciente
@@ -390,8 +390,8 @@ export function GamifiedDashboardV2() {
           </div>
         </Card>
 
-        {/* Ranking Card (1 col) */}
-        <Card className="p-5 bg-[#0F0F0F] border border-white/10">
+        {/* Ranking Card */}
+        <Card className="p-5 flex-1 bg-[#0F0F0F] border border-white/10">
           <h3 className="font-bold text-white mb-4 flex items-center gap-2">
             <Crown size={18} className="text-yellow-500" /> Ranking
           </h3>
