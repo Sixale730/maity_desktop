@@ -298,10 +298,12 @@ export interface MinutaDecision {
   decidio?: string;
   responsable?: string | null;
   cita?: string;
+  cita_textual?: string;
   razonamiento?: string;
   condiciones?: string | null;
   fecha_resolucion?: string | null;
   voto?: string | null;
+  estado?: string;
 }
 
 export interface MinutaAccionCompleta {
@@ -316,13 +318,39 @@ export interface MinutaAccionCompleta {
   accion?: string;
 }
 
+export interface MinutaSeguimientoReunion {
+  fecha: string;
+  hora: string;
+  lugar: string;
+  proposito: string;
+}
+
+export interface MinutaPreparacionItem {
+  participante: string;
+  preparacion: string;
+}
+
+export interface MinutaQuienLoDijo {
+  nombre: string;
+  rol?: string | null;
+  contexto?: string;
+}
+
+export interface MinutaComponenteEfectividadV7 {
+  valor: number;
+  peso: number;
+  justificacion: string;
+}
+
 export interface MinutaSeguimientoData {
-  proxima_reunion?: string | { fecha: string; hora: string; lugar: string; proposito: string } | null;
+  proxima_reunion?: string | MinutaSeguimientoReunion | null;
   evento_adicional?: string | null;
   agenda_sugerida?: string[] | null;
   agenda_preliminar?: string[] | null;
-  preparacion_requerida?: Array<{ participante: string; preparacion: string }> | string[];
+  preparacion_requerida?: MinutaPreparacionItem[] | string[];
   distribucion_minuta?: string[];
+  preparacion?: string[];
+  distribucion?: string[];
 }
 
 export interface MinutaAccionIncompleta {
@@ -855,8 +883,14 @@ export interface FormResponse {
   q15?: string; q16?: string; // Empatía
 }
 
-export async function getFormResponses(): Promise<FormResponse | null> {
-  const { data, error } = await supabase.rpc('get_my_form_responses');
-  if (error || !data || data.length === 0) return null;
-  return data[0];
+export async function getFormResponses(userId: string): Promise<FormResponse | null> {
+  const { data, error } = await supabase
+    .from('form_responses')
+    .select('q5, q6, q7, q8, q9, q10, q11, q12, q13, q14, q15, q16')
+    .eq('user_id', userId)
+    .order('updated_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error || !data) return null;
+  return data;
 }

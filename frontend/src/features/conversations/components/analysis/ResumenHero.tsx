@@ -1,34 +1,18 @@
 'use client';
 
 import { Card, CardContent } from '@/components/ui/card';
+import { Badge } from '@/components/ui/badge';
 import { GaugeChart } from '../charts';
-import type { CommunicationFeedbackV4, MeetingDimensionesV4 } from '../../services/conversations.service';
+import type { CommunicationFeedbackV4 } from '../../services/conversations.service';
 
 interface ResumenHeroProps {
   feedback: CommunicationFeedbackV4;
 }
 
-const DIMENSION_KEYS = ['claridad', 'proposito', 'emociones', 'estructura', 'persuasion', 'formalidad', 'muletillas', 'adaptacion'] as const;
-
-function getDimensionScore(dims: MeetingDimensionesV4, key: typeof DIMENSION_KEYS[number]): number {
-  switch (key) {
-    case 'emociones': return Math.round((dims.emociones?.intensidad ?? 0) * 100);
-    case 'muletillas': return dims.muletillas?.total != null ? Math.max(0, 100 - dims.muletillas.total * 5) : 0;
-    default: return (dims[key] as { puntaje?: number })?.puntaje ?? 0;
-  }
-}
-const DIMENSION_EMOJIS: Record<string, string> = {
-  claridad: '💡', proposito: '🎯', emociones: '💚', estructura: '🧱',
-  persuasion: '🗣️', formalidad: '👔', muletillas: '🔄', adaptacion: '🔀',
-};
-const DIMENSION_LABELS: Record<string, string> = {
-  claridad: 'Claridad', proposito: 'Propósito', emociones: 'Emociones', estructura: 'Estructura',
-  persuasion: 'Persuasión', formalidad: 'Formalidad', muletillas: 'Muletillas', adaptacion: 'Adaptación',
-};
-
 function getScoreColor(score: number): string {
-  if (score >= 75) return 'text-emerald-400';
-  if (score >= 50) return 'text-yellow-400';
+  if (score >= 85) return 'text-emerald-400';
+  if (score >= 70) return 'text-amber-400';
+  if (score >= 50) return 'text-orange-400';
   return 'text-red-400';
 }
 
@@ -49,49 +33,41 @@ export function ResumenHero({ feedback }: ResumenHeroProps) {
   return (
     <Card className="bg-card border-border">
       <CardContent className="p-6">
-        <div className="flex flex-col items-center gap-4">
-          <GaugeChart score={score} maxScore={100} size={220} />
-
-          {resumen.nivel && (
-            <span className={`px-3 py-1 rounded-full text-sm font-semibold ${getNivelColor(resumen.nivel)}`}>
-              {resumen.nivel}
-            </span>
-          )}
-
-          {resumen.descripcion && (
-            <p className="text-sm text-muted-foreground text-center max-w-md">{resumen.descripcion}</p>
-          )}
-
-          <div className="flex flex-wrap gap-3 justify-center">
-            {resumen.fortaleza && (
-              <div className="bg-emerald-500/10 border border-emerald-500/20 rounded-lg px-3 py-2 max-w-xs">
-                <p className="text-xs font-semibold text-emerald-400 mb-0.5">Fortaleza: {resumen.fortaleza}</p>
-                {resumen.fortaleza_hint && <p className="text-xs text-muted-foreground">{resumen.fortaleza_hint}</p>}
-              </div>
+        <div className="flex flex-wrap gap-8 items-center">
+          {/* Left: Gauge + score + level */}
+          <div className="w-[200px] shrink-0 flex flex-col items-center">
+            <GaugeChart score={score} maxScore={100} size={200} />
+            <div className="mt-2 text-center">
+              <span className={`text-5xl font-extrabold ${getScoreColor(score)}`}>{score}</span>
+              <p className="text-xs text-muted-foreground mt-1">de 100 puntos</p>
+            </div>
+            {resumen.nivel && (
+              <span className={`mt-2 px-3 py-1 rounded-full text-sm font-semibold ${getNivelColor(resumen.nivel)}`}>
+                {resumen.nivel}
+              </span>
             )}
-            {resumen.mejorar && (
-              <div className="bg-amber-500/10 border border-amber-500/20 rounded-lg px-3 py-2 max-w-xs">
-                <p className="text-xs font-semibold text-amber-400 mb-0.5">Mejorar: {resumen.mejorar}</p>
-                {resumen.mejorar_hint && <p className="text-xs text-muted-foreground">{resumen.mejorar_hint}</p>}
-              </div>
+          </div>
+
+          {/* Right: Description + badges */}
+          <div className="flex-1 min-w-[280px]">
+            {resumen.descripcion && (
+              <p className="text-sm text-muted-foreground mb-4">{resumen.descripcion}</p>
             )}
+
+            <div className="flex flex-wrap gap-3">
+              {resumen.fortaleza && (
+                <Badge className="bg-emerald-500/10 text-emerald-400 border-emerald-500/20 hover:bg-emerald-500/20">
+                  <span className="mr-1">&#10003;</span> {resumen.fortaleza}
+                </Badge>
+              )}
+              {resumen.mejorar && (
+                <Badge className="bg-amber-500/10 text-amber-400 border-amber-500/20 hover:bg-amber-500/20">
+                  <span className="mr-1">&uarr;</span> {resumen.mejorar}
+                </Badge>
+              )}
+            </div>
           </div>
         </div>
-
-        {feedback.dimensiones && (
-          <div className="grid grid-cols-4 gap-2 mt-6">
-            {DIMENSION_KEYS.map((key) => {
-              const puntaje = getDimensionScore(feedback.dimensiones, key);
-              return (
-                <div key={key} className="flex items-center gap-1.5 bg-muted/50 rounded-lg px-2 py-1.5">
-                  <span className="text-sm">{DIMENSION_EMOJIS[key]}</span>
-                  <span className="text-xs text-muted-foreground truncate">{DIMENSION_LABELS[key]}</span>
-                  <span className={`text-xs font-bold ml-auto ${getScoreColor(puntaje)}`}>{puntaje}</span>
-                </div>
-              );
-            })}
-          </div>
-        )}
       </CardContent>
     </Card>
   );

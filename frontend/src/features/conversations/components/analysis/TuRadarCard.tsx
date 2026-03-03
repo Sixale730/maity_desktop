@@ -1,6 +1,7 @@
 'use client';
 
 import { Card, CardContent } from '@/components/ui/card';
+import { Badge } from '@/components/ui/badge';
 import { RadarCalidad } from '../charts';
 import type { CommunicationFeedbackV4 } from '../../services/conversations.service';
 
@@ -8,50 +9,66 @@ interface TuRadarCardProps {
   feedback: CommunicationFeedbackV4;
 }
 
+function getScoreColor(score: number): string {
+  if (score >= 75) return '#00d4aa';
+  if (score >= 50) return '#fbbf24';
+  return '#ef4444';
+}
+
 export function TuRadarCard({ feedback }: TuRadarCardProps) {
   const { calidad_global } = feedback;
   if (!calidad_global) return null;
 
+  const scoreColor = getScoreColor(calidad_global.puntaje);
+
   return (
     <Card className="bg-card border-border">
       <CardContent className="p-5">
-        <h3 className="text-base font-bold text-foreground mb-1">Tu Radar de Calidad</h3>
-        <p className="text-sm text-muted-foreground mb-4">
-          6 componentes que definen la calidad de tu comunicación.
-        </p>
+        <h3 className="text-sm font-bold uppercase tracking-widest text-muted-foreground mb-1">
+          Tu Radar de Calidad
+        </h3>
+        {calidad_global.que_mide && (
+          <p className="text-sm text-muted-foreground mb-4">{calidad_global.que_mide}</p>
+        )}
+        {!calidad_global.que_mide && (
+          <p className="text-sm text-muted-foreground mb-4">
+            6 componentes que definen la calidad de tu comunicación.
+          </p>
+        )}
 
-        <div className="flex flex-col md:flex-row gap-4 items-center">
-          <div className="flex-1 w-full">
-            <RadarCalidad calidad={calidad_global} />
-          </div>
-
-          <div className="flex-1 space-y-3">
-            <div className="text-center md:text-left">
-              <span className="text-3xl font-bold text-foreground">{calidad_global.puntaje}</span>
-              <span className="text-sm text-muted-foreground ml-1">/ 100</span>
+        {/* Radar with score overlay */}
+        <div className="relative w-full">
+          <RadarCalidad calidad={calidad_global} />
+          <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+            <div className="text-center">
+              <span className="text-4xl font-extrabold" style={{ color: scoreColor }}>
+                {calidad_global.puntaje}
+              </span>
               {calidad_global.nivel && (
-                <span className="ml-2 text-xs px-2 py-0.5 rounded bg-primary/10 text-primary">{calidad_global.nivel}</span>
-              )}
-            </div>
-
-            {calidad_global.tu_resultado && (
-              <p className="text-sm text-muted-foreground">{calidad_global.tu_resultado}</p>
-            )}
-
-            <div className="flex flex-wrap gap-2">
-              {calidad_global.fortaleza && (
-                <span className="text-xs px-2 py-1 rounded bg-emerald-500/10 text-emerald-400">
-                  ✓ {calidad_global.fortaleza}
-                </span>
-              )}
-              {calidad_global.mejorar && (
-                <span className="text-xs px-2 py-1 rounded bg-amber-500/10 text-amber-400">
-                  ↑ {calidad_global.mejorar}
-                </span>
+                <p className="text-xs text-muted-foreground mt-0.5">{calidad_global.nivel}</p>
               )}
             </div>
           </div>
         </div>
+
+        {/* Badges centered below radar */}
+        <div className="flex justify-center gap-2 mt-3">
+          {calidad_global.fortaleza && (
+            <Badge className="bg-emerald-500/10 text-emerald-400 border-emerald-500/20 hover:bg-emerald-500/20">
+              &#10003; {calidad_global.fortaleza}
+            </Badge>
+          )}
+          {calidad_global.mejorar && (
+            <Badge className="bg-amber-500/10 text-amber-400 border-amber-500/20 hover:bg-amber-500/20">
+              &uarr; {calidad_global.mejorar}
+            </Badge>
+          )}
+        </div>
+
+        {/* tu_resultado */}
+        {calidad_global.tu_resultado && (
+          <p className="text-xs text-muted-foreground text-center mt-3">{calidad_global.tu_resultado}</p>
+        )}
       </CardContent>
     </Card>
   );

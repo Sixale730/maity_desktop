@@ -45,7 +45,7 @@ export function EmotionRadarChart({ porHablante, hablantes }: EmotionRadarChartP
   });
 
   return (
-    <ResponsiveContainer width="100%" height={320}>
+    <ResponsiveContainer width="100%" height={380}>
       <RadarChart data={chartData}>
         <PolarGrid stroke={GRID_STROKE} />
         <PolarAngleAxis dataKey="label" tick={TICK_STYLE} />

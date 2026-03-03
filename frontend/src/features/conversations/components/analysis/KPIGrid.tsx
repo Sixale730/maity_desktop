@@ -13,13 +13,13 @@ interface KPICardProps {
 function KPICard({ emoji, value, label, detail, color }: KPICardProps) {
   return (
     <div
-      className="rounded-lg bg-card border border-border p-3"
+      className="rounded-lg bg-card border border-border p-3 transition-transform duration-200 hover:-translate-y-0.5 hover:shadow-lg"
       style={{ borderTopWidth: '3px', borderTopColor: color }}
     >
-      <div className="text-lg mb-1">{emoji}</div>
-      <div className="text-2xl font-extrabold text-foreground">{value}</div>
-      <div className="text-xs text-muted-foreground mt-1">{label}</div>
-      {detail && <div className="text-xs text-muted-foreground/70 mt-0.5">{detail}</div>}
+      <div className="text-xl mb-1">{emoji}</div>
+      <div className="text-3xl font-extrabold" style={{ color }}>{value}</div>
+      <div className="text-sm font-semibold text-foreground mt-0.5">{label}</div>
+      {detail && <div className="text-xs text-muted-foreground mt-1 leading-relaxed">{detail}</div>}
     </div>
   );
 }
@@ -35,72 +35,141 @@ export function KPIGrid({ feedback }: KPIGridProps) {
   const participacion = r?.participacion_pct;
   const puertas = r?.puertas_emocionales;
 
-  // Calculate user participation %
-  let participacionStr = '--';
-  if (participacion) {
-    const values = Object.values(participacion);
-    if (values.length > 0) {
-      const maxPct = Math.max(...values);
-      const maxName = Object.entries(participacion).find(([, v]) => v === maxPct)?.[0];
-      participacionStr = `${Math.round(maxPct)}%`;
-      if (maxName) participacionStr += ` ${maxName}`;
+  // KPI 1 — Muletillas
+  const muletillasTotal = r?.muletillas_total ?? 0;
+  const muletillasColor = muletillasTotal > 10 ? '#ef4444' : '#22c55e';
+  let muletillasDetail = r?.muletillas_frecuencia ?? '';
+  if (r?.muletillas_detalle) {
+    const top3 = Object.entries(r.muletillas_detalle)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 3)
+      .map(([k, v]) => `${k} ×${v}`)
+      .join(', ');
+    if (top3) {
+      muletillasDetail = muletillasDetail ? `${top3} · ${muletillasDetail}` : top3;
     }
+  }
+
+  // KPI 2 — Ratio de habla
+  const ratio = r?.ratio_habla;
+  let ratioValue: string = '--';
+  let ratioDetail = '';
+  let ratioColor = '#14b8a6';
+  if (ratio != null) {
+    ratioValue = `${ratio.toFixed(1)}x`;
+    if (ratio >= 0.8 && ratio <= 1.2) {
+      ratioDetail = 'Equilibrado';
+      ratioColor = '#22c55e';
+    } else if (ratio > 1.2) {
+      ratioDetail = 'Hablas más';
+      ratioColor = ratio > 2 ? '#3b82f6' : '#eab308';
+    } else {
+      ratioDetail = 'Otros hablan más';
+      ratioColor = '#3b82f6';
+    }
+  }
+
+  // KPI 3 — Preguntas hechas
+  const preguntas = r?.preguntas;
+  let preguntasTotal = 0;
+  let preguntasDetail = '';
+  if (preguntas) {
+    preguntasTotal = Object.values(preguntas).reduce((sum, v) => sum + v, 0);
+    preguntasDetail = Object.entries(preguntas).map(([k, v]) => `${k}: ${v}`).join(', ');
+  }
+
+  // KPI 4 — Participación
+  let participacionValue = '--';
+  let participacionDetail = '';
+  if (participacion) {
+    const entries = Object.entries(participacion);
+    participacionValue = entries.map(([, v]) => `${Math.round(v)}%`).join(' / ');
+    participacionDetail = entries.map(([k, v]) => `${k}: ${Math.round(v)}%`).join(', ');
+  }
+
+  // KPI 5 — Mejor dimensión
+  const mejorLabel = mejor ? `Mejor: ${mejor.nombre}` : 'Mejor dimensión';
+  const mejorDetail = feedback.calidad_global?.fortaleza_hint
+    ?? (mejor ? `${mejor.nombre} es tu fortaleza` : undefined);
+
+  // KPI 6 — Dimensión a mejorar
+  const peorLabel = peor ? `Mejorar: ${peor.nombre}` : 'Dimensión a mejorar';
+  const peorDetail = feedback.calidad_global?.mejorar_hint
+    ?? (peor ? `${peor.nombre} necesita atención` : undefined);
+
+  // KPI 7 — Puertas emocionales
+  let puertasValue: string = '--';
+  let puertasDetail: string | undefined;
+  if (puertas) {
+    puertasValue = `${puertas.exploradas}/${puertas.abiertas}`;
+    const noExploradas = puertas.no_exploradas ?? (puertas.abiertas - puertas.exploradas);
+    puertasDetail = noExploradas > 0 ? `${noExploradas} no exploradas` : 'Todas exploradas ✓';
+  }
+
+  // KPI 8 — Recomendaciones
+  const recomendaciones = feedback.recomendaciones ?? [];
+  const recsCount = recomendaciones.length;
+  let recsDetail = 'Sin recomendaciones';
+  if (recsCount > 0) {
+    recsDetail = recomendaciones.slice(0, 2).map((r) => r.titulo).join(' · ');
   }
 
   const kpis: KPICardProps[] = [
     {
-      emoji: '🏆',
-      value: mejor?.puntaje ?? '--',
-      label: 'Mejor dimensión',
-      detail: mejor?.nombre,
-      color: '#22c55e',
-    },
-    {
-      emoji: '📉',
-      value: peor?.puntaje ?? '--',
-      label: 'Dimensión a mejorar',
-      detail: peor?.nombre,
-      color: '#ef4444',
+      emoji: '🗣️',
+      value: muletillasTotal,
+      label: 'Muletillas detectadas',
+      detail: muletillasDetail || undefined,
+      color: muletillasColor,
     },
     {
       emoji: '⚖️',
-      value: participacionStr,
-      label: 'Participación',
+      value: ratioValue,
+      label: 'Ratio de habla',
+      detail: ratioDetail || undefined,
+      color: ratioColor,
+    },
+    {
+      emoji: '❓',
+      value: preguntasTotal,
+      label: 'Preguntas hechas',
+      detail: preguntasDetail || undefined,
       color: '#3b82f6',
     },
     {
-      emoji: '🗣️',
-      value: r?.muletillas_total ?? 0,
-      label: 'Muletillas',
-      detail: r?.muletillas_frecuencia,
+      emoji: '📊',
+      value: participacionValue,
+      label: 'Participación',
+      detail: participacionDetail || undefined,
+      color: '#06b6d4',
+    },
+    {
+      emoji: '🏆',
+      value: mejor?.puntaje ?? '--',
+      label: mejorLabel,
+      detail: mejorDetail,
+      color: '#22c55e',
+    },
+    {
+      emoji: '🎯',
+      value: peor?.puntaje ?? '--',
+      label: peorLabel,
+      detail: peorDetail,
       color: '#f97316',
     },
     {
-      emoji: '🚪',
-      value: puertas?.momentos_vulnerabilidad ?? 0,
+      emoji: '🔑',
+      value: puertasValue,
       label: 'Puertas emocionales',
-      detail: puertas ? `${puertas.exploradas} exploradas` : undefined,
+      detail: puertasDetail,
       color: '#8b5cf6',
     },
     {
       emoji: '💡',
-      value: feedback.recomendaciones?.length ?? 0,
+      value: `${recsCount} clave`,
       label: 'Recomendaciones',
-      color: '#06b6d4',
-    },
-    {
-      emoji: '🔍',
-      value: Object.values(feedback.dimensiones ?? {}).reduce<number>(
-        (sum, d) => sum + ((d as { hallazgos?: unknown[] })?.hallazgos?.length ?? 0), 0
-      ),
-      label: 'Hallazgos',
-      color: '#ec4899',
-    },
-    {
-      emoji: '📊',
-      value: r?.calidad_global ?? '--',
-      label: 'Calidad global',
-      color: '#14b8a6',
+      detail: recsDetail,
+      color: '#3b82f6',
     },
   ];
 

@@ -10,7 +10,7 @@ interface GaugeChartProps {
 
 export function GaugeChart({ score, maxScore = 100, size = 240 }: GaugeChartProps) {
   const pct = Math.min(Math.max((score / maxScore) * 100, 0), 100);
-  const color = pct >= 75 ? '#00d4aa' : pct >= 50 ? '#fbbf24' : '#ef4444';
+  const color = pct >= 85 ? '#00d4aa' : pct >= 70 ? '#fbbf24' : pct >= 50 ? '#f97316' : '#ef4444';
   const data = [
     { name: 'score', value: pct },
     { name: 'rest', value: 100 - pct },
@@ -36,9 +36,6 @@ export function GaugeChart({ score, maxScore = 100, size = 240 }: GaugeChartProp
           </Pie>
         </PieChart>
       </ResponsiveContainer>
-      <div className="absolute inset-0 flex items-end justify-center pb-1">
-        <span className="text-2xl font-bold text-foreground">{Math.round(score * 10) / 10}</span>
-      </div>
     </div>
   );
 }

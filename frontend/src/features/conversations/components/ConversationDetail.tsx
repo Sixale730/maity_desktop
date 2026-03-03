@@ -33,17 +33,29 @@ import {
   MinutaHeroSummary,
   MinutaKPIStrip,
   MinutaGauge,
-  MinutaEfectividadSection,
+  MinutaEfectividad,
   MinutaDecisions,
   MinutaActions,
+  MinutaIncompleteActions,
   MinutaSeguimiento,
 } from './minuta';
+import { normalizeMeetingMinutes } from '../utils/normalize-meeting-minutes';
 
 interface ConversationDetailProps {
   conversation: OmiConversation;
   onClose: () => void;
   onConversationUpdate?: (updated: OmiConversation) => void;
   isAnalyzing?: boolean;
+}
+
+function SectionLabel({ text }: { text: string }) {
+  return (
+    <div className="text-xs font-bold uppercase tracking-widest text-muted-foreground mt-8 mb-3 pl-1 flex items-center gap-2">
+      <div className="h-px flex-1 border-t border-border" />
+      <span>{text}</span>
+      <div className="h-px flex-1 border-t border-border" />
+    </div>
+  );
 }
 
 function buildTranscriptText(segments: { is_user: boolean | null; text: string }[]): string {
@@ -361,26 +373,60 @@ export function ConversationDetail({ conversation: initialConversation, onClose,
         {/* Tab: Minuta */}
         <TabsContent value="minuta">
           {hasMinuta && minutaData ? (
-            <div className="space-y-6 py-2">
-              <MinutaHeroSummary data={minutaData} />
-              <MinutaKPIStrip data={minutaData} />
-              {minutaData.efectividad && (
-                <>
-                  <MinutaGauge efectividad={minutaData.efectividad} />
-                  <MinutaEfectividadSection efectividad={minutaData.efectividad} />
-                </>
-              )}
-              {minutaData.decisiones && minutaData.decisiones.length > 0 && (
-                <MinutaDecisions decisiones={minutaData.decisiones} />
-              )}
-              {minutaData.acciones && (
-                <MinutaActions acciones={minutaData.acciones} incompletas={minutaData.acciones_incompletas} />
-              )}
-              {minutaData.acciones?.seguimiento && (
-                <MinutaSeguimiento seguimiento={minutaData.acciones.seguimiento} />
-              )}
-            </div>
-          ) : (
+            () => {
+              const nm = normalizeMeetingMinutes(minutaData);
+              const userName = maityUser?.first_name ?? undefined;
+              const radiografia = conversation.communication_feedback?.radiografia;
+              const normalizedComponentes = Array.isArray(nm.efectividad?.componentes)
+                ? nm.efectividad.componentes
+                : [];
+
+              return (
+                <div className="space-y-6 py-2">
+                  {/* Efectividad gauge */}
+                  {nm.efectividad && <MinutaGauge efectividad={nm.efectividad} />}
+
+                  {/* En 30 segundos */}
+                  <SectionLabel text="En 30 segundos" />
+                  <MinutaHeroSummary meta={nm.meta} temas={nm.temas} />
+
+                  {/* KPI strip */}
+                  <MinutaKPIStrip
+                    meta={nm.meta}
+                    decisiones={nm.decisiones}
+                    accionesIncompletas={nm.acciones_incompletas}
+                    acciones={nm.acciones?.lista || []}
+                    graficas={nm.graficas}
+                    userName={userName}
+                    radiografia={radiografia}
+                  />
+
+                  {/* Seguimiento */}
+                  <SectionLabel text="Seguimiento" />
+                  <MinutaSeguimiento
+                    seguimiento={nm.acciones?.seguimiento || null}
+                    userName={userName}
+                  />
+
+                  {/* Decisiones */}
+                  <SectionLabel text="Decisiones" />
+                  <MinutaDecisions decisiones={nm.decisiones} />
+
+                  {/* Desglose de Efectividad */}
+                  <SectionLabel text="Desglose de Efectividad" />
+                  <MinutaEfectividad componentes={normalizedComponentes} />
+
+                  {/* Acciones */}
+                  <SectionLabel text="Acciones" />
+                  <MinutaActions acciones={nm.acciones?.lista || []} />
+
+                  {/* Acciones Incompletas */}
+                  <SectionLabel text="Acciones Incompletas" />
+                  <MinutaIncompleteActions acciones={nm.acciones_incompletas} />
+                </div>
+              );
+            }
+          )() : (
             <Card>
               <CardContent className="p-12 text-center">
                 {isWaitingForAnalysis ? (

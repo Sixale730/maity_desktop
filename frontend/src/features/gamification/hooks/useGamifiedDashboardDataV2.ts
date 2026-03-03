@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
+import { supabase } from '@/lib/supabase';
 import {
   getOmiConversations,
   getOmiConversationDates,
@@ -234,22 +235,13 @@ function getFirstDayOfMonth(): string {
   return new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
 }
 
-// Calculate XP from conversations (each conversation with feedback = base XP + score bonus)
-function calculateXP(conversations: OmiConversation[]): number {
-  return conversations.reduce((total, conv) => {
-    const score = conv.communication_feedback?.overall_score;
-    if (score != null) {
-      return total + 10 + Math.round(score * 5); // base 10 + up to 50 bonus
-    }
-    return total + 5; // minimal XP for conversations without feedback
-  }, 0);
-}
-
 export function useGamifiedDashboardDataV2(): GamifiedDashboardDataV2 {
   const { maityUser } = useAuth();
   const [conversations, setConversations] = useState<OmiConversation[]>([]);
   const [conversationDates, setConversationDates] = useState<{ created_at: string }[]>([]);
   const [formData, setFormData] = useState<FormResponse | null>(null);
+  const [streakData, setStreakData] = useState<{ streak_days: number; bonus_days: number }>({ streak_days: 0, bonus_days: 0 });
+  const [xpFromRPC, setXpFromRPC] = useState<number>(0);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -262,13 +254,31 @@ export function useGamifiedDashboardDataV2(): GamifiedDashboardDataV2 {
         const [listData, datesData, formResponse] = await Promise.all([
           getOmiConversations(maityUser.id),
           getOmiConversationDates(maityUser.id, getFirstDayOfMonth()),
-          getFormResponses(),
+          getFormResponses(maityUser.id),
         ]);
         setConversations(listData);
         setConversationDates(datesData);
         setFormData(formResponse);
         if (!formResponse) {
           console.warn('[Gamification] formData is null — getFormResponses() returned no data');
+        }
+
+        // Fetch streak and XP from Supabase RPCs (same source as web app)
+        const [streakResult, xpResult] = await Promise.all([
+          supabase.rpc('calculate_user_streak', { p_user_id: maityUser.id }),
+          supabase.rpc('get_my_xp_summary'),
+        ]);
+
+        if (streakResult.data && Array.isArray(streakResult.data) && streakResult.data.length > 0) {
+          setStreakData(streakResult.data[0]);
+        } else if (streakResult.error) {
+          console.warn('[Gamification] streak RPC error:', streakResult.error.message);
+        }
+
+        if (xpResult.data && typeof xpResult.data === 'object' && 'total_xp' in xpResult.data) {
+          setXpFromRPC((xpResult.data as { total_xp: number }).total_xp);
+        } else if (xpResult.error) {
+          console.warn('[Gamification] XP RPC error:', xpResult.error.message);
         }
       } catch (err) {
         console.error('Error loading conversations for gamified dashboard v2:', err);
@@ -326,26 +336,9 @@ export function useGamifiedDashboardDataV2(): GamifiedDashboardDataV2 {
     }));
   }, [formData, conversations]);
 
-  // Streak: consecutive days with conversations
-  const streakDays = useMemo(() => {
-    if (conversations.length === 0) return 0;
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const daySet = new Set(
-      conversations.map(c => {
-        const d = new Date(c.created_at);
-        d.setHours(0, 0, 0, 0);
-        return d.getTime();
-      })
-    );
-    let streak = 0;
-    const checkDay = new Date(today);
-    while (daySet.has(checkDay.getTime())) {
-      streak++;
-      checkDay.setDate(checkDay.getDate() - 1);
-    }
-    return streak;
-  }, [conversations]);
+  // Streak and bonus days from Supabase RPC (matches web app logic: weekends don't break streak)
+  const streakDays = streakData.streak_days;
+  const bonusDays = streakData.bonus_days;
 
   // Score from last 2 conversations
   const score = useMemo(() => {
@@ -362,8 +355,8 @@ export function useGamifiedDashboardDataV2(): GamifiedDashboardDataV2 {
     return { yesterday: 0, today: 0 };
   }, [conversations]);
 
-  // XP calculated from conversations
-  const totalXP = useMemo(() => calculateXP(conversations), [conversations]);
+  // XP from Supabase RPC (includes all sources: conversations, games, badges, etc.)
+  const totalXP = xpFromRPC;
 
   const { level, rank, nextLevelXP } = useMemo(() => calculateLevel(totalXP), [totalXP]);
 
@@ -420,7 +413,7 @@ export function useGamifiedDashboardDataV2(): GamifiedDashboardDataV2 {
     nextLevelXP,
     streakDays,
     streak: streakDays,
-    bonusDays: 0,
+    bonusDays,
     score,
     nodes,
     completedNodes,
