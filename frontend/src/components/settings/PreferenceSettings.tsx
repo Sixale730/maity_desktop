@@ -21,7 +21,7 @@ export function PreferenceSettings() {
     updateNotificationSettings
   } = useConfig();
 
-  const { signOut } = useAuth();
+  const { signOut, user } = useAuth();
 
   const [notificationsEnabled, setNotificationsEnabled] = useState<boolean | null>(null);
   const [isInitialLoad, setIsInitialLoad] = useState(true);
@@ -216,9 +216,11 @@ export function PreferenceSettings() {
       {/* Account Section */}
       <div className="bg-card rounded-lg border border-border p-6 shadow-sm">
         <h3 className="text-lg font-semibold text-foreground mb-4">Cuenta</h3>
-        <p className="text-sm text-muted-foreground mb-4">
-          Cerrar sesión de tu cuenta de Google
-        </p>
+        {user?.email && (
+          <p className="text-sm text-foreground mb-4">
+            {user.email}
+          </p>
+        )}
         <button
           onClick={signOut}
           className="flex items-center gap-2 px-4 py-2 text-sm text-primary border border-primary/50 rounded-md hover:bg-primary/10 transition-colors"
