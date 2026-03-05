@@ -26,9 +26,10 @@ function KPICard({ emoji, value, label, detail, color }: KPICardProps) {
 
 interface KPIGridProps {
   feedback: CommunicationFeedbackV4;
+  speakerNameMap?: Record<string, string>;
 }
 
-export function KPIGrid({ feedback }: KPIGridProps) {
+export function KPIGrid({ feedback, speakerNameMap = {} }: KPIGridProps) {
   const r = feedback.radiografia;
   const mejor = r?.mejor_dimension;
   const peor = r?.peor_dimension;
@@ -84,7 +85,7 @@ export function KPIGrid({ feedback }: KPIGridProps) {
   if (participacion) {
     const entries = Object.entries(participacion);
     participacionValue = entries.map(([, v]) => `${Math.round(v)}%`).join(' / ');
-    participacionDetail = entries.map(([k, v]) => `${k}: ${Math.round(v)}%`).join(', ');
+    participacionDetail = entries.map(([k, v]) => `${speakerNameMap[k] || k}: ${Math.round(v)}%`).join(', ');
   }
 
   // KPI 5 — Mejor dimensión

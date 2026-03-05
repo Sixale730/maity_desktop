@@ -14,9 +14,10 @@ const EMOTION_EMOJIS: Record<string, string> = {
 
 interface EmotionProfilesProps {
   feedback: CommunicationFeedbackV4;
+  speakerNameMap?: Record<string, string>;
 }
 
-export function EmotionProfiles({ feedback }: EmotionProfilesProps) {
+export function EmotionProfiles({ feedback, speakerNameMap = {} }: EmotionProfilesProps) {
   const emociones = feedback.dimensiones?.emociones;
   if (!emociones?.por_hablante) return null;
 
@@ -32,7 +33,7 @@ export function EmotionProfiles({ feedback }: EmotionProfilesProps) {
           <p className="text-sm text-muted-foreground mb-3">
             Cada punta del radar es una emoción. Cuanto más grande el área, más presente está esa emoción en la reunión.
           </p>
-          <EmotionRadarChart porHablante={emociones.por_hablante} hablantes={hablantes} />
+          <EmotionRadarChart porHablante={emociones.por_hablante} hablantes={hablantes} speakerNameMap={speakerNameMap} />
           {(emociones.lectura_emocional || emociones.emocion_dominante) && (
             <div className="bg-blue-500/10 rounded-lg p-3 text-sm mt-3">
               <strong>Lectura:</strong>{' '}
@@ -57,7 +58,7 @@ export function EmotionProfiles({ feedback }: EmotionProfilesProps) {
                   return (
                     <div key={speaker} className="flex flex-col items-center text-center p-3 rounded-lg bg-muted/30 min-w-[120px]">
                       <span className="text-2xl mb-1">{emoji}</span>
-                      <span className="text-sm font-semibold" style={{ color }}>{speaker}</span>
+                      <span className="text-sm font-semibold" style={{ color }}>{speakerNameMap[speaker] || speaker}</span>
                       <span className="text-xs text-muted-foreground mt-0.5">
                         {data.dominante}{pct != null && ` (${pct}%)`}
                       </span>

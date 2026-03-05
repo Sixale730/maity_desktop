@@ -12,14 +12,15 @@ const TOOLTIP_STYLE = {
 interface ParticipacionChartProps {
   palabrasPorHablante: Record<string, number>;
   hablantes: string[];
+  speakerNameMap?: Record<string, string>;
 }
 
-export function ParticipacionChart({ palabrasPorHablante, hablantes }: ParticipacionChartProps) {
+export function ParticipacionChart({ palabrasPorHablante, hablantes, speakerNameMap = {} }: ParticipacionChartProps) {
   const total = Object.values(palabrasPorHablante).reduce((s, v) => s + v, 0);
   if (total === 0) return null;
 
   const chartData = Object.entries(palabrasPorHablante).map(([name, count]) => ({
-    name: `${name} (${count.toLocaleString()})`,
+    name: `${speakerNameMap[name] || name} (${count.toLocaleString()})`,
     value: Math.round((count / total) * 100),
     rawName: name,
   }));

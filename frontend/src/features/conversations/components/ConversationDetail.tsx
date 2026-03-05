@@ -69,6 +69,28 @@ function buildTranscriptText(segments: { is_user: boolean | null; text: string }
     .join('\n');
 }
 
+/** Map raw speaker keys ("user", "interlocutor") to display names using auth + minuta data */
+function buildSpeakerNameMap(
+  userName: string | undefined,
+  minutaParticipantes: { nombre: string; rol: string; presente: boolean }[] | undefined,
+): Record<string, string> {
+  const map: Record<string, string> = {};
+  if (userName) map['user'] = userName;
+
+  if (minutaParticipantes && minutaParticipantes.length > 0) {
+    const GENERIC = new Set(['user', 'usuario', 'tú', 'yo', 'unknown', 'desconocido']);
+    const userFirst = userName?.split(' ')[0]?.toLowerCase();
+    const interlocutor = minutaParticipantes.find((p) => {
+      const n = p.nombre.toLowerCase();
+      if (GENERIC.has(n)) return false;
+      if (userFirst && n.includes(userFirst)) return false;
+      return true;
+    });
+    if (interlocutor) map['interlocutor'] = interlocutor.nombre;
+  }
+  return map;
+}
+
 export function ConversationDetail({ conversation: initialConversation, onClose, onConversationUpdate, isAnalyzing }: ConversationDetailProps) {
   const [conversation, setConversation] = useState(initialConversation);
   const [isWaitingForAnalysis, setIsWaitingForAnalysis] = useState(isAnalyzing ?? false);
@@ -221,6 +243,10 @@ export function ConversationDetail({ conversation: initialConversation, onClose,
   const hasMinuta = !!minutaData;
   const canAnalyze = !reanalyzeMutation.isPending && !loadingSegments &&
     ((segments && segments.length > 0) || !!conversation.transcript_text);
+  const speakerNameMap = buildSpeakerNameMap(
+    maityUser?.first_name ?? undefined,
+    minutaData?.meta?.participantes,
+  );
 
   return (
     <div className="flex-1 min-h-0 overflow-y-auto p-4 bg-background">
@@ -302,13 +328,13 @@ export function ConversationDetail({ conversation: initialConversation, onClose,
             <div className="space-y-8 py-2">
               <ResumenHero feedback={feedbackV4} />
               <TuRadarCard feedback={feedbackV4} />
-              <EmotionProfiles feedback={feedbackV4} />
-              <KPIGrid feedback={feedbackV4} />
+              <EmotionProfiles feedback={feedbackV4} speakerNameMap={speakerNameMap} />
+              <KPIGrid feedback={feedbackV4} speakerNameMap={speakerNameMap} />
               <PatronCard feedback={feedbackV4} />
               <InsightsGrid feedback={feedbackV4} />
-              <RealTimelineChart feedback={feedbackV4} />
+              <RealTimelineChart feedback={feedbackV4} speakerNameMap={speakerNameMap} />
               <HallazgosSection feedback={feedbackV4} />
-              <PuertasDetalleSection feedback={feedbackV4} />
+              <PuertasDetalleSection feedback={feedbackV4} speakerNameMap={speakerNameMap} />
               <RecomendacionesSection feedback={feedbackV4} />
 
               {/* Action Items (if present) */}

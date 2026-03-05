@@ -7,9 +7,10 @@ const SPEAKER_COLORS = ['#3b82f6', '#8b5cf6', '#22c55e', '#f59e0b', '#ef4444', '
 interface TimelineChartProps {
   timeline: MeetingTimeline;
   meta: MeetingMeta;
+  speakerNameMap?: Record<string, string>;
 }
 
-export function TimelineChart({ timeline, meta }: TimelineChartProps) {
+export function TimelineChart({ timeline, meta, speakerNameMap = {} }: TimelineChartProps) {
   const hablantes = meta.hablantes;
   const colorMap: Record<string, string> = {};
 
@@ -62,9 +63,10 @@ export function TimelineChart({ timeline, meta }: TimelineChartProps) {
         {tipos.map((tipo) => {
           const color = colorMap[tipo] || colorMap[tipo.toLowerCase()] || 'rgba(100,100,100,0.55)';
           const pct = Math.round(pcts[tipo] || 0);
+          const displayName = speakerNameMap[tipo] || speakerNameMap[tipo.toLowerCase()] || tipo;
           const label = tipo.toLowerCase() === 'dialogo' || tipo.toLowerCase() === 'diálogo'
             ? 'Diálogo real'
-            : tipo.charAt(0).toUpperCase() + tipo.slice(1) + ' habla';
+            : (displayName.charAt(0).toUpperCase() + displayName.slice(1)) + ' habla';
           return (
             <div key={tipo} className="flex items-center gap-1.5">
               <div className="w-3 h-3 rounded-sm shrink-0" style={{ background: color }} />

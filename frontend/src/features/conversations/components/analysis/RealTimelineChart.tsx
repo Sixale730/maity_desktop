@@ -6,9 +6,10 @@ import type { CommunicationFeedbackV4 } from '../../services/conversations.servi
 
 interface RealTimelineChartProps {
   feedback: CommunicationFeedbackV4;
+  speakerNameMap?: Record<string, string>;
 }
 
-export function RealTimelineChart({ feedback }: RealTimelineChartProps) {
+export function RealTimelineChart({ feedback, speakerNameMap }: RealTimelineChartProps) {
   const { timeline, meta } = feedback;
   if (!timeline?.segmentos || timeline.segmentos.length === 0) return null;
   if (!meta) return null;
@@ -21,7 +22,7 @@ export function RealTimelineChart({ feedback }: RealTimelineChartProps) {
           Cada segmento muestra quién habla. Los segmentos verdes son diálogo real.
         </p>
 
-        <TimelineChart timeline={timeline} meta={meta} />
+        <TimelineChart timeline={timeline} meta={meta} speakerNameMap={speakerNameMap} />
 
         <div className="bg-green-500/10 rounded-lg p-3 text-sm mt-3">
           <strong>Tip:</strong> Intercala preguntas cada 5 minutos para generar más diálogo.

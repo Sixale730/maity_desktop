@@ -5,9 +5,10 @@ import type { CommunicationFeedbackV4 } from '../../services/conversations.servi
 
 interface PuertasDetalleSectionProps {
   feedback: CommunicationFeedbackV4;
+  speakerNameMap?: Record<string, string>;
 }
 
-export function PuertasDetalleSection({ feedback }: PuertasDetalleSectionProps) {
+export function PuertasDetalleSection({ feedback, speakerNameMap = {} }: PuertasDetalleSectionProps) {
   const puertas = feedback.radiografia?.puertas_detalle;
   const stats = feedback.radiografia?.puertas_emocionales;
   if (!puertas || puertas.length === 0) return null;
@@ -49,7 +50,7 @@ export function PuertasDetalleSection({ feedback }: PuertasDetalleSectionProps) 
             <div key={i} className={`rounded-lg border border-border bg-card p-4 border-l-[4px] ${borderColor}`}>
               <div className="flex items-center gap-2 mb-2">
                 <span className="text-lg">{puerta.explorada ? '✅' : '⚠️'}</span>
-                <span className="text-sm font-semibold text-foreground">{puerta.quien}</span>
+                <span className="text-sm font-semibold text-foreground">{speakerNameMap[puerta.quien] || puerta.quien}</span>
                 <span className="text-xs text-muted-foreground ml-auto">min {puerta.minuto}</span>
                 <span className={`text-xs px-2 py-0.5 rounded-full ${
                   puerta.explorada ? 'bg-emerald-500/20 text-emerald-300' : 'bg-amber-500/20 text-amber-300'

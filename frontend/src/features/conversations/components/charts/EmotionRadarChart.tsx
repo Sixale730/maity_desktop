@@ -27,13 +27,14 @@ const TOOLTIP_STYLE = {
 interface EmotionRadarChartProps {
   porHablante: Record<string, SpeakerEmotion>;
   hablantes: string[];
+  speakerNameMap?: Record<string, string>;
 }
 
 function getEmotionValue(data: SpeakerEmotion, key: typeof EMO_KEYS[number]): number {
   return data[key] ?? 0;
 }
 
-export function EmotionRadarChart({ porHablante, hablantes }: EmotionRadarChartProps) {
+export function EmotionRadarChart({ porHablante, hablantes, speakerNameMap = {} }: EmotionRadarChartProps) {
   const speakers = Object.keys(porHablante);
 
   const chartData = EMO_LABELS.map((label, i) => {
@@ -56,7 +57,7 @@ export function EmotionRadarChart({ porHablante, hablantes }: EmotionRadarChartP
           return (
             <Radar
               key={speaker}
-              name={speaker}
+              name={speakerNameMap[speaker] || speaker}
               dataKey={speaker}
               stroke={color}
               fill={color}
