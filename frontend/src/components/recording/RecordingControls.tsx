@@ -10,6 +10,7 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import Analytics from '@/lib/analytics';
 import { useRecordingState } from '@/contexts/RecordingStateContext';
+import { InlineDeviceSelector } from './InlineDeviceSelector';
 
 interface AudioLevels {
   micRms: number;
@@ -34,6 +35,7 @@ interface RecordingControlsProps {
     systemDevice: string | null;
   };
   meetingName?: string;
+  onDeviceSwitched?: (deviceName: string, deviceType: 'Microphone' | 'SystemAudio') => void;
 }
 
 export const RecordingControls: React.FC<RecordingControlsProps> = ({
@@ -49,6 +51,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
   isParentProcessing,
   selectedDevices,
   meetingName,
+  onDeviceSwitched,
 }) => {
   // Use global recording state context for pause state (syncs with tray operations)
   const recordingState = useRecordingState();
@@ -528,6 +531,17 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
                           })}
                         </div>
                       </div>
+
+                      {/* Inline device selector for hot-swap */}
+                      {onDeviceSwitched && (
+                        <div className="border-l border-[#d0d0d3] dark:border-gray-600 pl-3">
+                          <InlineDeviceSelector
+                            currentMicDevice={selectedDevices?.micDevice ?? null}
+                            currentSystemDevice={selectedDevices?.systemDevice ?? null}
+                            onDeviceSwitched={onDeviceSwitched}
+                          />
+                        </div>
+                      )}
                     </div>
                   )}
                 </>

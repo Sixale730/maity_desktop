@@ -254,6 +254,23 @@ export interface CommunicationFeedbackV4 {
   recomendaciones: Recomendacion[];
 }
 
+// ─── Analysis Skipped Types ─────────────────────────────────────────
+
+export interface AnalysisSkipped {
+  status: 'skipped';
+  reason: string;
+  user_words?: number;
+  min_required?: number;
+}
+
+export function isAnalysisSkipped(v4: unknown): v4 is AnalysisSkipped {
+  return v4 !== null && typeof v4 === 'object' && 'status' in (v4 as Record<string, unknown>) && (v4 as Record<string, unknown>).status === 'skipped';
+}
+
+export function isFullAnalysis(v4: unknown): v4 is CommunicationFeedbackV4 {
+  return v4 !== null && typeof v4 === 'object' && 'resumen' in (v4 as Record<string, unknown>);
+}
+
 // ─── Meeting Minutes Types ──────────────────────────────────────────
 
 export interface MinutaParticipante {
@@ -421,7 +438,7 @@ export interface OmiConversation {
   words_count: number | null;
   duration_seconds: number | null;
   communication_feedback: CommunicationFeedback | null;
-  communication_feedback_v4: CommunicationFeedbackV4 | null;
+  communication_feedback_v4: CommunicationFeedbackV4 | AnalysisSkipped | null;
   meeting_minutes_data: MeetingMinutesData | null;
 }
 

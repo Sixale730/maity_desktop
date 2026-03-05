@@ -1,7 +1,7 @@
 'use client';
 
 import { useQuery } from '@tanstack/react-query';
-import { AudioLines, Clock, MessageSquare, ChevronRight, Sparkles, FileText, ListChecks } from 'lucide-react';
+import { AudioLines, Clock, MessageSquare, ChevronRight, Sparkles, FileText, ListChecks, RefreshCw } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -16,7 +16,7 @@ interface ConversationsListProps {
 export function ConversationsList({ onSelect, selectedId }: ConversationsListProps) {
   const { maityUser } = useAuth();
 
-  const { data: conversations, isLoading, error } = useQuery({
+  const { data: conversations, isLoading, error, refetch, isFetching } = useQuery({
     queryKey: ['omi-conversations', maityUser?.id],
     queryFn: () => getOmiConversations(maityUser?.id),
     enabled: !!maityUser?.id,
@@ -45,10 +45,18 @@ export function ConversationsList({ onSelect, selectedId }: ConversationsListPro
         <div className="flex items-center justify-center w-12 h-12 rounded-xl bg-primary/10">
           <AudioLines className="h-6 w-6 text-primary" />
         </div>
-        <div>
+        <div className="flex-1">
           <h1 className="text-2xl font-bold text-foreground">Conversaciones</h1>
           <p className="text-muted-foreground">Tu historial de conversaciones</p>
         </div>
+        <button
+          onClick={() => refetch()}
+          disabled={isFetching}
+          className="p-2 rounded-lg hover:bg-muted transition-colors disabled:opacity-50"
+          title="Actualizar lista"
+        >
+          <RefreshCw className={`h-5 w-5 text-muted-foreground ${isFetching ? 'animate-spin' : ''}`} />
+        </button>
       </div>
 
       {/* Loading state */}

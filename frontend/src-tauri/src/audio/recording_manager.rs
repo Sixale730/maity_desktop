@@ -559,6 +559,52 @@ impl RecordingManager {
         }
     }
 
+    /// Switch to a different audio device during an active recording.
+    /// Unlike `attempt_device_reconnect`, this does NOT require the reconnecting flag.
+    pub async fn switch_audio_device(&mut self, device_name: &str, device_type: DeviceMonitorType) -> Result<bool> {
+        info!("🔄 Switching {} device to: {}", match device_type { DeviceMonitorType::Microphone => "microphone", DeviceMonitorType::SystemAudio => "system audio" }, device_name);
+
+        let available_devices = list_audio_devices().await?;
+        let device = available_devices.iter()
+            .find(|d| d.name == device_name)
+            .cloned();
+
+        if let Some(device) = device {
+            let device_arc: Arc<AudioDevice> = Arc::new(device);
+            match device_type {
+                DeviceMonitorType::Microphone => {
+                    let system_device = self.state.get_system_device();
+                    self.stream_manager.stop_streams()?;
+                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                    self.stream_manager.start_streams(Some(device_arc.clone()), system_device, None).await?;
+                    self.state.set_microphone_device(device_arc);
+                    self.recording_saver.set_device_info(
+                        Some(device_name.to_string()),
+                        self.state.get_system_device().as_ref().map(|d| d.name.clone()),
+                    );
+                    info!("✅ Microphone switched successfully to: {}", device_name);
+                    Ok(true)
+                }
+                DeviceMonitorType::SystemAudio => {
+                    let microphone_device = self.state.get_microphone_device();
+                    self.stream_manager.stop_streams()?;
+                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                    self.stream_manager.start_streams(microphone_device, Some(device_arc.clone()), None).await?;
+                    self.state.set_system_device(device_arc);
+                    self.recording_saver.set_device_info(
+                        self.state.get_microphone_device().as_ref().map(|d| d.name.clone()),
+                        Some(device_name.to_string()),
+                    );
+                    info!("✅ System audio switched successfully to: {}", device_name);
+                    Ok(true)
+                }
+            }
+        } else {
+            warn!("❌ Device '{}' not found in available devices", device_name);
+            Ok(false)
+        }
+    }
+
     /// Handle a device disconnect event
     /// Pauses recording and attempts reconnection
     pub async fn handle_device_disconnect(&mut self, device_name: String, device_type: DeviceMonitorType) {

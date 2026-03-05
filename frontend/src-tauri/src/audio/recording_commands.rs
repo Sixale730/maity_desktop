@@ -266,6 +266,57 @@ pub async fn get_active_audio_output() -> Result<super::playback_monitor::AudioO
         .map_err(|e| format!("Failed to get audio output info: {}", e))
 }
 
+/// Switch to a different audio device during active recording.
+/// Used by the inline device selector in the recording UI.
+#[tauri::command]
+pub async fn switch_audio_device(
+    device_name: String,
+    device_type: String,
+) -> Result<bool, String> {
+    let monitor_type = match device_type.as_str() {
+        "Microphone" => DeviceMonitorType::Microphone,
+        "SystemAudio" => DeviceMonitorType::SystemAudio,
+        _ => return Err(format!("Invalid device type: {}", device_type)),
+    };
+
+    // Check if recording is active
+    {
+        let manager_guard = RECORDING_MANAGER.lock().map_err(|e| format!("Recording manager lock poisoned: {}", e))?;
+        if manager_guard.is_none() {
+            return Err("Recording not active".to_string());
+        }
+    }
+
+    let result = tokio::task::spawn_blocking(move || {
+        tokio::runtime::Handle::current().block_on(async {
+            let mut manager_guard = RECORDING_MANAGER.lock()
+                .map_err(|e| anyhow::anyhow!("Recording manager lock poisoned: {}", e))?;
+            if let Some(manager) = manager_guard.as_mut() {
+                manager.switch_audio_device(&device_name, monitor_type).await
+            } else {
+                Err(anyhow::anyhow!("Recording not active"))
+            }
+        })
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?;
+
+    match result {
+        Ok(success) => {
+            if success {
+                info!("✅ Device switch successful");
+            } else {
+                warn!("❌ Device switch failed - device not found");
+            }
+            Ok(success)
+        }
+        Err(e) => {
+            error!("Device switch error: {}", e);
+            Err(e.to_string())
+        }
+    }
+}
+
 /// Manually trigger device reconnection attempt
 /// Useful for UI "Retry" button
 #[tauri::command]

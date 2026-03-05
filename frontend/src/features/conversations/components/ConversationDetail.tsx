@@ -15,6 +15,8 @@ import {
   getOmiConversation,
   reanalyzeConversation,
   toggleActionItemCompleted,
+  isAnalysisSkipped,
+  isFullAnalysis,
 } from '../services/conversations.service';
 import {
   ResumenHero,
@@ -83,7 +85,7 @@ export function ConversationDetail({ conversation: initialConversation, onClose,
       try {
         const updated = await getOmiConversation(conversation.id);
         if (!updated) return;
-        const hasV4 = !!updated.communication_feedback_v4;
+        const hasV4 = isFullAnalysis(updated.communication_feedback_v4) || isAnalysisSkipped(updated.communication_feedback_v4);
         const hasMinutes = !!updated.meeting_minutes_data;
         const prev = prevAnalysisRef.current;
 
@@ -124,7 +126,7 @@ export function ConversationDetail({ conversation: initialConversation, onClose,
             setConversation(updated);
             onConversationUpdate?.(updated);
             queryClient.invalidateQueries({ queryKey: ['omi-conversations'] });
-            const bothDone = !!updated.communication_feedback_v4 && !!updated.meeting_minutes_data;
+            const bothDone = (isFullAnalysis(updated.communication_feedback_v4) || isAnalysisSkipped(updated.communication_feedback_v4)) && !!updated.meeting_minutes_data;
             if (bothDone) {
               setIsWaitingForAnalysis(false);
             } else {
@@ -204,8 +206,10 @@ export function ConversationDetail({ conversation: initialConversation, onClose,
     });
   };
 
-  const feedbackV4 = conversation.communication_feedback_v4;
+  const feedbackV4Raw = conversation.communication_feedback_v4;
+  const feedbackV4 = isFullAnalysis(feedbackV4Raw) ? feedbackV4Raw : null;
   const hasAnalysis = !!feedbackV4;
+  const analysisSkipped = isAnalysisSkipped(feedbackV4Raw);
   const minutaData = conversation.meeting_minutes_data;
   const hasMinuta = !!minutaData;
   const canAnalyze = !reanalyzeMutation.isPending && !loadingSegments &&
@@ -230,6 +234,8 @@ export function ConversationDetail({ conversation: initialConversation, onClose,
               <RefreshCw className="h-4 w-4 mr-2" />
               Reanalizar
             </Button>
+          ) : analysisSkipped ? (
+            null /* Don't show retry button — insufficient data won't produce a different result */
           ) : (
             <Button size="sm" onClick={handleReanalyze} disabled={!canAnalyze}>
               <Sparkles className="h-4 w-4 mr-2" />
@@ -337,6 +343,22 @@ export function ConversationDetail({ conversation: initialConversation, onClose,
                 </div>
               )}
             </div>
+          ) : analysisSkipped ? (
+            /* Analysis was skipped due to insufficient data */
+            <Card>
+              <CardContent className="p-12 text-center">
+                <MessageSquare className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
+                <h3 className="text-lg font-medium mb-2 text-foreground">Conversación muy corta para analizar</h3>
+                <p className="text-muted-foreground">
+                  {isAnalysisSkipped(feedbackV4Raw) && feedbackV4Raw.user_words != null
+                    ? `Se detectaron ${feedbackV4Raw.user_words} palabras del usuario (mínimo requerido: ${feedbackV4Raw.min_required ?? 15}).`
+                    : 'La transcripción del usuario no tiene suficientes palabras para generar un análisis significativo.'}
+                </p>
+                <p className="text-muted-foreground text-sm mt-2">
+                  La minuta de la reunión sigue disponible en la pestaña correspondiente.
+                </p>
+              </CardContent>
+            </Card>
           ) : (
             /* No analysis yet */
             <Card>
