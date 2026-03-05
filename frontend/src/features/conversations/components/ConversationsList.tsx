@@ -1,12 +1,13 @@
 'use client';
 
+import { useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { AudioLines, Clock, MessageSquare, ChevronRight, Sparkles, FileText, ListChecks, RefreshCw } from 'lucide-react';
+import { AudioLines, Clock, MessageSquare, ChevronRight, Sparkles, FileText, ListChecks, RefreshCw, CloudOff } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useAuth } from '@/contexts/AuthContext';
-import { getOmiConversations, OmiConversation } from '../services/conversations.service';
+import { getOmiConversations, getLocalConversations, mergeConversations, OmiConversation } from '../services/conversations.service';
 
 interface ConversationsListProps {
   onSelect: (conversation: OmiConversation) => void;
@@ -16,11 +17,31 @@ interface ConversationsListProps {
 export function ConversationsList({ onSelect, selectedId }: ConversationsListProps) {
   const { maityUser } = useAuth();
 
-  const { data: conversations, isLoading, error, refetch, isFetching } = useQuery({
+  // Local data loads instantly from SQLite
+  const { data: localConversations } = useQuery({
+    queryKey: ['local-conversations'],
+    queryFn: () => getLocalConversations(),
+    staleTime: 30_000,
+  });
+
+  // Cloud data loads in background
+  const { data: cloudConversations, isLoading: isCloudLoading, error, refetch, isFetching } = useQuery({
     queryKey: ['omi-conversations', maityUser?.id],
     queryFn: () => getOmiConversations(maityUser?.id),
     enabled: !!maityUser?.id,
   });
+
+  // Merge: local shows first, cloud enriches
+  const conversations = useMemo(() => {
+    const local = localConversations ?? [];
+    const cloud = cloudConversations ?? [];
+    if (local.length === 0 && cloud.length === 0) return [];
+    if (local.length === 0) return cloud;
+    if (cloud.length === 0) return local;
+    return mergeConversations(local, cloud);
+  }, [localConversations, cloudConversations]);
+
+  const isLoading = !localConversations && isCloudLoading;
 
   const formatDuration = (seconds: number | null) => {
     if (!seconds) return '--';
@@ -132,6 +153,12 @@ export function ConversationsList({ onSelect, selectedId }: ConversationsListPro
                     </div>
                   </div>
                   <div className="flex flex-col items-end gap-2">
+                    {conversation.source === 'local' && !conversation.communication_feedback_v4 && (
+                      <Badge variant="outline" className="text-xs gap-1 text-amber-600 border-amber-300">
+                        <CloudOff className="h-3 w-3" />
+                        Sincronizando...
+                      </Badge>
+                    )}
                     {conversation.category && (
                       <Badge variant="secondary" className="text-xs">
                         {conversation.category}

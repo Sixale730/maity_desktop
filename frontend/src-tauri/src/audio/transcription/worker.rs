@@ -23,6 +23,13 @@ pub fn reset_speech_detected_flag() {
     info!("🔍 SPEECH_DETECTED_EMITTED reset to: {}", SPEECH_DETECTED_EMITTED.load(Ordering::SeqCst));
 }
 
+/// Reset session-scoped counters for a new recording session
+pub fn reset_session_counters() {
+    SEQUENCE_COUNTER.store(0, Ordering::SeqCst);
+    reset_speech_detected_flag();
+    info!("Session counters reset: SEQUENCE_COUNTER=0, SPEECH_DETECTED=false");
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct TranscriptUpdate {
     pub text: String,
@@ -51,6 +58,9 @@ pub fn start_transcription_task<R: Runtime>(
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         info!("🚀 Starting optimized parallel transcription task - guaranteeing zero chunk loss");
+
+        // Reset session-scoped counters (sequence IDs, speech detection flag)
+        reset_session_counters();
 
         // Initialize transcription engine (Whisper or Parakeet based on config)
         println!("🚀 [WORKER] Inicializando transcription engine...");
@@ -109,7 +119,6 @@ pub fn start_transcription_task<R: Runtime>(
             let chunks_completed_clone = chunks_completed.clone();
             let input_finished_clone = input_finished.clone();
             let chunks_queued_clone = chunks_queued.clone();
-            let is_streaming_worker = is_streaming;
 
             let worker_handle = tokio::spawn(async move {
                 info!("👷 Worker {} started", worker_id);
@@ -171,19 +180,6 @@ pub fn start_transcription_task<R: Runtime>(
                                 crate::audio::recording_state::DeviceType::System => Some("interlocutor".to_string()),
                                 crate::audio::recording_state::DeviceType::Mixed => None, // Mixed audio should not be transcribed
                             };
-
-                            // For streaming providers (Deepgram), queue chunk metadata
-                            // so the reader task can associate transcripts with correct speaker/timestamps
-                            if is_streaming_worker {
-                                let audio_start_time = chunk_timestamp;
-                                let audio_end_time = chunk_timestamp + chunk_duration;
-                                engine_clone.queue_chunk_info(
-                                    &chunk_device_type,
-                                    audio_start_time,
-                                    audio_end_time,
-                                    chunk_duration,
-                                ).await;
-                            }
 
                             // Transcribe with provider-agnostic approach
                             match transcribe_chunk_with_provider(

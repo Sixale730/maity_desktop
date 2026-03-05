@@ -62,26 +62,6 @@ impl TranscriptionEngine {
         matches!(self, Self::Deepgram { .. })
     }
 
-    /// Queue chunk metadata for the Deepgram streaming provider.
-    /// Routes to the correct transcriber (mic or sys) based on device_type.
-    /// No-op for non-streaming engines.
-    pub async fn queue_chunk_info(
-        &self,
-        device_type: &crate::audio::recording_state::DeviceType,
-        audio_start_time: f64,
-        audio_end_time: f64,
-        duration: f64,
-    ) {
-        if let Self::Deepgram { mic, sys } = self {
-            let dg = match device_type {
-                crate::audio::recording_state::DeviceType::Microphone => mic,
-                crate::audio::recording_state::DeviceType::System => sys,
-                crate::audio::recording_state::DeviceType::Mixed => { return; }
-            };
-            dg.queue_chunk_info(audio_start_time, audio_end_time, duration).await;
-        }
-    }
-
     /// Transcribe audio routed to the correct Deepgram instance by device_type.
     /// Only valid for Deepgram engines; returns error for other engine types.
     pub async fn transcribe_for_device(

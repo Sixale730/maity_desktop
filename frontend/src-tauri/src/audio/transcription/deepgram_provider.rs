@@ -5,6 +5,7 @@
 // sending audio chunks as binary messages and receiving transcription results
 // via a background reader task.
 
+use super::deepgram_commands::get_cached_proxy_config;
 use super::provider::{TranscriptionError, TranscriptionProvider, TranscriptResult};
 use super::worker::{TranscriptUpdate, SEQUENCE_COUNTER};
 use async_trait::async_trait;
@@ -12,7 +13,6 @@ use futures::{SinkExt, StreamExt};
 use futures::stream::SplitSink;
 use log::{debug, error, info, warn};
 use serde::Deserialize;
-use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::Mutex;
@@ -38,6 +38,10 @@ struct DeepgramResponse {
     is_final: Option<bool>,
     #[allow(dead_code)]
     speech_final: Option<bool>,
+    /// Offset in seconds from the start of the audio stream
+    start: Option<f64>,
+    /// Duration of this transcript segment in seconds
+    duration: Option<f64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -87,19 +91,6 @@ impl Default for DeepgramConfig {
 }
 
 // ============================================================================
-// CHUNK METADATA FOR SPEAKER ATTRIBUTION
-// ============================================================================
-
-/// Metadata about an audio chunk, queued before sending to Deepgram.
-/// The reader task dequeues this when it receives a final transcript.
-#[derive(Debug, Clone)]
-struct ChunkInfo {
-    audio_start_time: f64,       // Seconds from recording start
-    audio_end_time: f64,         // Seconds from recording start
-    duration: f64,               // Chunk duration in seconds
-}
-
-// ============================================================================
 // DEEPGRAM REALTIME TRANSCRIBER (PERSISTENT STREAMING)
 // ============================================================================
 
@@ -117,8 +108,6 @@ pub struct DeepgramRealtimeTranscriber {
     reader_handle: Arc<Mutex<Option<JoinHandle<()>>>>,
     /// Event emitter function: called by reader task to emit transcript-update events
     event_emitter: Arc<Mutex<Option<Arc<dyn Fn(TranscriptUpdate) + Send + Sync>>>>,
-    /// Queue of chunk metadata, dequeued by reader task when final results arrive
-    chunk_info_queue: Arc<Mutex<VecDeque<ChunkInfo>>>,
     /// Accumulated text from interim results for the current utterance
     interim_text: Arc<Mutex<String>>,
     /// Fixed source label for this transcriber instance ("user" or "interlocutor").
@@ -127,6 +116,8 @@ pub struct DeepgramRealtimeTranscriber {
     /// Generation counter: incremented on each new WebSocket connection.
     /// Reader tasks check this to detect they've been superseded and should exit.
     connection_generation: Arc<AtomicU64>,
+    /// Handle for the keep-alive task; aborted before spawning a new one on reconnect
+    keepalive_handle: Arc<Mutex<Option<JoinHandle<()>>>>,
 }
 
 impl DeepgramRealtimeTranscriber {
@@ -146,10 +137,10 @@ impl DeepgramRealtimeTranscriber {
             persistent_ws: Arc::new(Mutex::new(None)),
             reader_handle: Arc::new(Mutex::new(None)),
             event_emitter: Arc::new(Mutex::new(None)),
-            chunk_info_queue: Arc::new(Mutex::new(VecDeque::new())),
             interim_text: Arc::new(Mutex::new(String::new())),
             source_label: Arc::new(Mutex::new(None)),
             connection_generation: Arc::new(AtomicU64::new(0)),
+            keepalive_handle: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -182,22 +173,6 @@ impl DeepgramRealtimeTranscriber {
     {
         let mut guard = self.event_emitter.lock().await;
         *guard = Some(Arc::new(emitter));
-    }
-
-    /// Queue chunk metadata before calling transcribe().
-    /// The reader task will dequeue this when it receives the corresponding final result.
-    pub async fn queue_chunk_info(
-        &self,
-        audio_start_time: f64,
-        audio_end_time: f64,
-        duration: f64,
-    ) {
-        let mut queue = self.chunk_info_queue.lock().await;
-        queue.push_back(ChunkInfo {
-            audio_start_time,
-            audio_end_time,
-            duration,
-        });
     }
 
     /// Close the persistent WebSocket stream gracefully.
@@ -234,10 +209,16 @@ impl DeepgramRealtimeTranscriber {
             }
         }
 
+        // Abort keep-alive task
+        {
+            let mut ka_guard = self.keepalive_handle.lock().await;
+            if let Some(ka) = ka_guard.take() {
+                ka.abort();
+            }
+        }
+
         *self.is_connected.lock().await = false;
 
-        // Clear any remaining chunk info
-        self.chunk_info_queue.lock().await.clear();
         self.interim_text.lock().await.clear();
 
         info!("Deepgram persistent stream closed");
@@ -250,9 +231,18 @@ impl DeepgramRealtimeTranscriber {
 
     /// Build the WebSocket URL targeting the Cloudflare Worker proxy.
     /// The JWT and Deepgram params are passed as query parameters.
+    /// Checks the global proxy config cache for a fresher JWT (handles token refresh
+    /// when the original JWT has expired after >5 min recording sessions).
     fn build_websocket_url(&self, language_override: Option<&str>) -> Option<String> {
         let proxy_base_url = self.config.proxy_base_url.as_ref()?;
-        let jwt = self.config.jwt.as_ref()?;
+
+        // Prefer a fresher JWT from the global cache (frontend may have refreshed it)
+        let jwt = if let Some((_cached_url, cached_jwt)) = get_cached_proxy_config() {
+            cached_jwt
+        } else {
+            // Fall back to the JWT stored at construction time
+            self.config.jwt.as_ref()?.clone()
+        };
 
         let language = language_override.unwrap_or(&self.config.language);
 
@@ -401,7 +391,6 @@ impl DeepgramRealtimeTranscriber {
         info!("[DEEPGRAM-{}] New connection generation: {}", label, my_generation);
 
         // Spawn the reader task
-        let chunk_info_queue = self.chunk_info_queue.clone();
         let event_emitter = self.event_emitter.clone();
         let is_connected = self.is_connected.clone();
         let interim_text = self.interim_text.clone();
@@ -409,15 +398,24 @@ impl DeepgramRealtimeTranscriber {
         let connection_generation = self.connection_generation.clone();
 
         let reader_handle = tokio::spawn(async move {
-            Self::reader_task(read, chunk_info_queue, event_emitter, is_connected, interim_text, source_label, connection_generation, my_generation).await;
+            Self::reader_task(read, event_emitter, is_connected, interim_text, source_label, connection_generation, my_generation).await;
         });
 
         *self.reader_handle.lock().await = Some(reader_handle);
 
+        // Abort any existing keep-alive task before spawning a new one
+        {
+            let mut ka_guard = self.keepalive_handle.lock().await;
+            if let Some(old_ka) = ka_guard.take() {
+                info!("[DEEPGRAM-{}] Aborting previous keep-alive task", label);
+                old_ka.abort();
+            }
+        }
+
         // Spawn keep-alive task (Deepgram closes idle connections after ~10s of inactivity)
         let ws_for_keepalive = self.persistent_ws.clone();
         let is_connected_keepalive = self.is_connected.clone();
-        tokio::spawn(async move {
+        let ka_handle = tokio::spawn(async move {
             let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(8));
             loop {
                 interval.tick().await;
@@ -437,13 +435,14 @@ impl DeepgramRealtimeTranscriber {
             }
         });
 
+        *self.keepalive_handle.lock().await = Some(ka_handle);
+
         Ok(())
     }
 
     /// Background reader task that receives Deepgram responses and emits transcript events.
     async fn reader_task(
         mut read: futures::stream::SplitStream<WsStream>,
-        chunk_info_queue: Arc<Mutex<VecDeque<ChunkInfo>>>,
         event_emitter: Arc<Mutex<Option<Arc<dyn Fn(TranscriptUpdate) + Send + Sync>>>>,
         is_connected: Arc<Mutex<bool>>,
         interim_text: Arc<Mutex<String>>,
@@ -506,23 +505,13 @@ impl DeepgramRealtimeTranscriber {
                         // Clear interim text since we got the final version
                         *interim_text.lock().await = String::new();
 
-                        // Dequeue chunk info for timestamp metadata
-                        let chunk_info = {
-                            let mut queue = chunk_info_queue.lock().await;
-                            queue.pop_front()
-                        };
-
-                        let (audio_start_time, audio_end_time, duration) = match chunk_info {
-                            Some(info) => (
-                                info.audio_start_time,
-                                info.audio_end_time,
-                                info.duration,
-                            ),
-                            None => {
-                                // No chunk info available, use defaults
-                                (0.0, 0.0, 0.0)
-                            }
-                        };
+                        // Use Deepgram's own start/duration from the response (more reliable
+                        // than the FIFO chunk_info_queue which can get out of sync)
+                        let dg_start = response.start.unwrap_or(0.0);
+                        let dg_duration = response.duration.unwrap_or(0.0);
+                        let audio_start_time = dg_start;
+                        let audio_end_time = dg_start + dg_duration;
+                        let duration = dg_duration;
 
                         let sequence_id = SEQUENCE_COUNTER.fetch_add(1, Ordering::SeqCst);
 
@@ -560,19 +549,12 @@ impl DeepgramRealtimeTranscriber {
                         *interim_text.lock().await = alt.transcript.clone();
 
                         // Also emit interim results so the UI can show live transcription
-                        let chunk_info = {
-                            let queue = chunk_info_queue.lock().await;
-                            queue.front().cloned()
-                        };
-
-                        let (audio_start_time, audio_end_time, duration) = match chunk_info {
-                            Some(ref info) => (
-                                info.audio_start_time,
-                                info.audio_end_time,
-                                info.duration,
-                            ),
-                            None => (0.0, 0.0, 0.0),
-                        };
+                        // Use Deepgram's response timestamps directly
+                        let dg_start = response.start.unwrap_or(0.0);
+                        let dg_duration = response.duration.unwrap_or(0.0);
+                        let audio_start_time = dg_start;
+                        let audio_end_time = dg_start + dg_duration;
+                        let duration = dg_duration;
 
                         let sequence_id = SEQUENCE_COUNTER.fetch_add(1, Ordering::SeqCst);
 
@@ -656,13 +638,12 @@ impl TranscriptionProvider for DeepgramRealtimeTranscriber {
                 }
             }
 
-            // Clear old connection state and stale metadata
+            // Clear old connection state
             *self.persistent_ws.lock().await = None;
             *self.is_connected.lock().await = false;
-            self.chunk_info_queue.lock().await.clear();
             self.interim_text.lock().await.clear();
 
-            // Reconnect
+            // Reconnect (build_websocket_url will check for a fresher JWT from cache)
             self.ensure_connected(language.as_deref()).await?;
 
             // Retry send once after reconnect
@@ -859,18 +840,4 @@ mod tests {
         assert!(matches!(result, Err(TranscriptionError::AudioTooShort { .. })));
     }
 
-    #[tokio::test]
-    async fn test_chunk_info_queue() {
-        let transcriber = DeepgramRealtimeTranscriber::with_proxy(
-            "wss://proxy.example.com".to_string(),
-            "jwt".to_string(),
-        );
-        transcriber.queue_chunk_info(0.0, 3.0, 3.0).await;
-        transcriber.queue_chunk_info(3.0, 6.0, 3.0).await;
-
-        let queue = transcriber.chunk_info_queue.lock().await;
-        assert_eq!(queue.len(), 2);
-        assert_eq!(queue[0].audio_start_time, 0.0);
-        assert_eq!(queue[1].audio_start_time, 3.0);
-    }
 }

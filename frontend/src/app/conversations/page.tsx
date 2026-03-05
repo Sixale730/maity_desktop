@@ -3,17 +3,19 @@
 import { useState, useEffect, Suspense } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { Loader2 } from 'lucide-react';
-import { ConversationsList, ConversationDetail, OmiConversation, getOmiConversation } from '@/features/conversations';
+import { ConversationsList, ConversationDetail, OmiConversation, getOmiConversation, getLocalMeetingDetail } from '@/features/conversations';
 
 function ConversationsContent() {
   const searchParams = useSearchParams();
   const router = useRouter();
   const idParam = searchParams.get('id');
+  const localIdParam = searchParams.get('localId');
   const source = searchParams.get('source');
 
   const [selectedConversation, setSelectedConversation] = useState<OmiConversation | null>(null);
-  const [isLoadingFromParam, setIsLoadingFromParam] = useState(!!idParam);
+  const [isLoadingFromParam, setIsLoadingFromParam] = useState(!!idParam || !!localIdParam);
 
+  // Load from Supabase ?id= param
   useEffect(() => {
     if (!idParam) return;
     setIsLoadingFromParam(true);
@@ -37,10 +39,28 @@ function ConversationsContent() {
     fetchWithRetry().finally(() => setIsLoadingFromParam(false));
   }, [idParam]);
 
+  // Load from local SQLite ?localId= param
+  useEffect(() => {
+    if (!localIdParam) return;
+    setIsLoadingFromParam(true);
+
+    getLocalMeetingDetail(localIdParam)
+      .then((conv) => {
+        if (conv) {
+          setSelectedConversation(conv);
+        } else {
+          console.warn('Local meeting not found:', localIdParam);
+        }
+      })
+      .catch((err) => {
+        console.warn('Error loading local meeting:', err);
+      })
+      .finally(() => setIsLoadingFromParam(false));
+  }, [localIdParam]);
+
   const handleClose = () => {
     setSelectedConversation(null);
-    // Clear query params when closing
-    if (idParam) {
+    if (idParam || localIdParam) {
       router.replace('/conversations');
     }
   };

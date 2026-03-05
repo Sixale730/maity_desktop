@@ -59,6 +59,17 @@ impl AudioMixerRingBuffer {
         }
     }
 
+    /// Clear both buffers (used during device hot-swap to discard stale audio)
+    fn clear(&mut self) {
+        let mic_len = self.mic_buffer.len();
+        let sys_len = self.system_buffer.len();
+        self.mic_buffer.clear();
+        self.system_buffer.clear();
+        if mic_len > 0 || sys_len > 0 {
+            log::info!("🧹 Ring buffer cleared: discarded {} mic + {} sys samples", mic_len, sys_len);
+        }
+    }
+
     fn add_samples(&mut self, device_type: DeviceType, samples: Vec<f32>) {
         // Log buffer health periodically for diagnostics
         // FIX M5: Use AtomicU64 instead of unsafe static to prevent race conditions
@@ -852,6 +863,14 @@ impl AudioPipeline {
                 self.receiver.recv()
             ).await {
                 Ok(Some(chunk)) => {
+                    // DEVICE SWITCH signal: flush VAD + clear ring buffer (stale audio from old device)
+                    if chunk.chunk_id >= u64::MAX - 110 && chunk.chunk_id <= u64::MAX - 100 {
+                        info!("🔄 Received DEVICE SWITCH flush signal - clearing ring buffer and flushing VAD");
+                        self.ring_buffer.clear();
+                        self.flush_remaining_audio()?;
+                        continue;
+                    }
+
                     // PERFORMANCE: Check for flush signal (special chunk with ID >= u64::MAX - 10)
                     // Multiple flush signals may be sent to ensure processing
                     if chunk.chunk_id >= u64::MAX - 10 {

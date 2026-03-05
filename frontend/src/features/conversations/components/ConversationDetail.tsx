@@ -79,8 +79,9 @@ export function ConversationDetail({ conversation: initialConversation, onClose,
   // Poll for analysis completion when isAnalyzing is true.
   // V4 and minutes now run in separate Vercel runtimes, so they may arrive at different times.
   // Update state on each partial result; stop polling when both are present or timeout (300s).
+  // Skip polling for local-only conversations (no Supabase record to poll).
   useEffect(() => {
-    if (!isWaitingForAnalysis) return;
+    if (!isWaitingForAnalysis || conversation.source === 'local') return;
     const interval = setInterval(async () => {
       try {
         const updated = await getOmiConversation(conversation.id);
@@ -143,9 +144,12 @@ export function ConversationDetail({ conversation: initialConversation, onClose,
     return () => window.removeEventListener('finalize-completed', handler);
   }, [conversation.id, onConversationUpdate, queryClient]);
 
+  const isLocalOnly = conversation.source === 'local';
+
   const { data: segments, isLoading: loadingSegments } = useQuery({
     queryKey: ['omi-segments', conversation.id],
     queryFn: () => getOmiTranscriptSegments(conversation.id),
+    enabled: !isLocalOnly, // Skip Supabase fetch for local-only conversations
   });
 
   const reanalyzeMutation = useMutation({

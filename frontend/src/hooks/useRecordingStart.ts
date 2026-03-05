@@ -59,16 +59,16 @@ export function useRecordingStart(
     const hours = String(now.getHours()).padStart(2, '0');
     const minutes = String(now.getMinutes()).padStart(2, '0');
     const seconds = String(now.getSeconds()).padStart(2, '0');
-    return `Reunión ${day}_${month}_${year}_${hours}_${minutes}_${seconds}`;
+    return `Reunion ${day}_${month}_${year}_${hours}_${minutes}_${seconds}`;
   }, []);
 
   // Get appropriate toast title based on error type
   const getErrorToastTitle = useCallback((result: TranscriptionReadyResult): string => {
     switch (result.errorType) {
-      case 'auth': return 'Sesión expirada';
-      case 'network': return 'Error de conexión';
+      case 'auth': return 'Sesion expirada';
+      case 'network': return 'Error de conexion';
       case 'server': return 'Error del servidor';
-      default: return 'Error de transcripción';
+      default: return 'Error de transcripcion';
     }
   }, []);
 
@@ -80,30 +80,21 @@ export function useRecordingStart(
     try {
       switch (provider) {
         case 'deepgram': {
-          // For Deepgram (cloud), get proxy config via Rust backend (no CORS issues)
-          // This requires the user to be authenticated with Supabase
           try {
             console.log('[recording] Deepgram: checking auth status and proxy config...');
 
-            // Check if we already have a valid cached proxy config (in Rust)
             if (await hasValidCachedProxyConfig()) {
-              console.log('✅ Deepgram proxy config already cached, ready to record');
+              console.log('Deepgram proxy config already cached, ready to record');
               return { ready: true, isDownloading: false };
             }
 
-            // Fetch proxy config (Rust handles HTTP + caching)
-            console.log('🔄 Fetching Deepgram proxy config...');
+            console.log('Fetching Deepgram proxy config...');
             await getDeepgramProxyConfig();
-            console.log('✅ Deepgram proxy config obtained and cached, ready to record');
+            console.log('Deepgram proxy config obtained and cached, ready to record');
 
             return { ready: true, isDownloading: false };
           } catch (error) {
-            console.error('❌ Failed to get Deepgram proxy config:', error);
-            console.error('[recording] Deepgram proxy config error details:', {
-              message: error instanceof Error ? error.message : String(error),
-              name: error instanceof Error ? error.name : undefined,
-              stack: error instanceof Error ? error.stack : undefined
-            });
+            console.error('Failed to get Deepgram proxy config:', error);
 
             if (error instanceof DeepgramError) {
               return {
@@ -125,16 +116,14 @@ export function useRecordingStart(
         }
 
         case 'parakeet': {
-          // For Parakeet, check if local models are available
           try {
             await invoke('parakeet_init');
             const hasModels = await invoke<boolean>('parakeet_has_available_models');
             if (hasModels) {
-              console.log('✅ Parakeet models available, ready to record');
+              console.log('Parakeet models available, ready to record');
               return { ready: true, isDownloading: false };
             }
 
-            // Check if downloading
             const models = await invoke<any[]>('parakeet_get_available_models');
             const isDownloading = models.some(m =>
               m.status && (
@@ -148,8 +137,8 @@ export function useRecordingStart(
               ready: false,
               isDownloading,
               error: isDownloading
-                ? 'El modelo de transcripción se está descargando. Podrás grabar cuando termine.'
-                : 'Modelo de transcripción no disponible. Reinicia la app para iniciar la descarga.'
+                ? 'El modelo de transcripcion se esta descargando. Podras grabar cuando termine.'
+                : 'Modelo de transcripcion no disponible. Reinicia la app para iniciar la descarga.'
             };
           } catch (error) {
             console.error('Failed to check Parakeet status:', error);
@@ -158,16 +147,14 @@ export function useRecordingStart(
         }
 
         case 'localWhisper': {
-          // For local Whisper, check if models are available
           try {
             await invoke('whisper_init');
             const hasModels = await invoke<boolean>('whisper_has_available_models');
             if (hasModels) {
-              console.log('✅ Whisper models available, ready to record');
+              console.log('Whisper models available, ready to record');
               return { ready: true, isDownloading: false };
             }
 
-            // Check if downloading
             const models = await invoke<any[]>('whisper_get_available_models');
             const isDownloading = models.some(m =>
               m.status && (
@@ -180,7 +167,7 @@ export function useRecordingStart(
             return {
               ready: false,
               isDownloading,
-              error: 'Modelo de transcripción Whisper no disponible.'
+              error: 'Modelo de transcripcion Whisper no disponible.'
             };
           } catch (error) {
             console.error('Failed to check Whisper status:', error);
@@ -189,16 +176,14 @@ export function useRecordingStart(
         }
 
         case 'moonshine': {
-          // For Moonshine, check if local models are available
           try {
             await invoke('moonshine_init');
             const hasModels = await invoke<boolean>('moonshine_has_available_models');
             if (hasModels) {
-              console.log('✅ Moonshine models available, ready to record');
+              console.log('Moonshine models available, ready to record');
               return { ready: true, isDownloading: false };
             }
 
-            // Check if downloading
             const models = await invoke<any[]>('moonshine_get_available_models');
             const isDownloading = models.some(m =>
               m.status && (
@@ -211,7 +196,7 @@ export function useRecordingStart(
             return {
               ready: false,
               isDownloading,
-              error: 'Modelo de transcripción Moonshine no disponible.'
+              error: 'Modelo de transcripcion Moonshine no disponible.'
             };
           } catch (error) {
             console.error('Failed to check Moonshine status:', error);
@@ -225,9 +210,94 @@ export function useRecordingStart(
       }
     } catch (error) {
       console.error('Failed to check transcription readiness:', error);
-      return { ready: false, isDownloading: false, error: 'Error al verificar el estado de transcripción' };
+      return { ready: false, isDownloading: false, error: 'Error al verificar el estado de transcripcion' };
     }
   }, [transcriptModelConfig]);
+
+  /**
+   * Shared recording start flow — used by manual, auto-start, sidebar-direct, and meeting-detector triggers.
+   * Handles: generate title -> log -> create early meeting -> start backend -> update UI state.
+   */
+  const startRecordingFlow = useCallback(async (
+    trigger: string,
+    meetingNameOverride?: string,
+  ) => {
+    const title = meetingNameOverride || generateMeetingTitle();
+
+    // Start logging session
+    recordingLogService.startSession();
+    recordingLogService.log('recording_started', {
+      meeting_title: title,
+      mic_device: selectedDevices?.micDevice || null,
+      system_device: selectedDevices?.systemDevice || null,
+      provider: transcriptModelConfig?.provider || 'deepgram',
+      trigger,
+    }, 'success');
+
+    // Create meeting early in SQLite
+    try {
+      const earlyResult = await invoke<{ meeting_id: string }>('api_create_meeting_early', {
+        meetingTitle: title,
+      });
+      recordingLogService.setMeetingId(earlyResult.meeting_id);
+      sessionStorage.setItem('early_meeting_id', earlyResult.meeting_id);
+      recordingLogService.log('meeting_created_early', { meeting_id: earlyResult.meeting_id }, 'success');
+    } catch (err) {
+      recordingLogService.log('meeting_created_early', null, 'error', err instanceof Error ? err.message : String(err));
+    }
+
+    // Set STARTING status before initiating backend recording
+    setStatus(RecordingStatus.STARTING, 'Initializing recording...');
+
+    // Start the actual backend recording
+    console.log(`Starting backend recording (trigger=${trigger}) with meeting:`, title);
+    await recordingService.startRecordingWithDevices(
+      selectedDevices?.micDevice || null,
+      selectedDevices?.systemDevice || null,
+      title
+    );
+    console.log('Backend recording started successfully');
+
+    // Update UI state after successful backend start
+    // Note: RECORDING status will be set by RecordingStateContext event listener
+    setMeetingTitle(title);
+    setIsRecording(true);
+    clearTranscripts();
+    setIsMeetingActive(true);
+    Analytics.trackButtonClick('start_recording', trigger);
+
+    // Show recording notification if enabled
+    await showRecordingNotification();
+  }, [generateMeetingTitle, selectedDevices, transcriptModelConfig, setStatus, setMeetingTitle, setIsRecording, clearTranscripts, setIsMeetingActive]);
+
+  /**
+   * Handle transcription not ready — show appropriate toast/modal.
+   */
+  const handleTranscriptionNotReady = useCallback((
+    transcriptionStatus: TranscriptionReadyResult,
+    trigger: string
+  ) => {
+    if (transcriptionStatus.isDownloading) {
+      toast.info('Descarga de modelo en progreso', {
+        description: 'Por favor espera a que el modelo termine de descargarse antes de grabar.',
+        duration: 5000,
+      });
+      Analytics.trackButtonClick('start_recording_blocked_downloading', trigger);
+    } else {
+      const toastTitle = transcriptionStatus.errorType
+        ? getErrorToastTitle(transcriptionStatus)
+        : 'Modelo de transcripcion no listo';
+      toast.error(toastTitle, {
+        description: transcriptionStatus.error || 'Por favor configura un modelo de transcripcion antes de grabar.',
+        duration: 5000,
+      });
+      if (!transcriptionStatus.errorType || transcriptionStatus.errorType === 'unknown') {
+        showModal?.('modelSelector', 'Configuracion de reconocimiento de voz requerida');
+      }
+      Analytics.trackButtonClick('start_recording_blocked_missing', trigger);
+    }
+    setStatus(RecordingStatus.IDLE);
+  }, [getErrorToastTitle, showModal, setStatus]);
 
   // Handle manual recording start (from button click)
   const handleRecordingStart = useCallback(async () => {
@@ -241,96 +311,26 @@ export function useRecordingStart(
       const provider = transcriptModelConfig?.provider || 'deepgram';
       console.log(`handleRecordingStart called - checking ${provider} transcription status`);
 
-      // Check if transcription is ready based on selected provider
       const transcriptionStatus = await checkTranscriptionReady();
       if (!transcriptionStatus.ready) {
-        if (transcriptionStatus.isDownloading) {
-          toast.info('Descarga de modelo en progreso', {
-            description: 'Por favor espera a que el modelo termine de descargarse antes de grabar.',
-            duration: 5000,
-          });
-          Analytics.trackButtonClick('start_recording_blocked_downloading', 'home_page');
-        } else {
-          const toastTitle = transcriptionStatus.errorType
-            ? getErrorToastTitle(transcriptionStatus)
-            : 'Modelo de transcripción no listo';
-          toast.error(toastTitle, {
-            description: transcriptionStatus.error || 'Por favor configura un modelo de transcripción antes de grabar.',
-            duration: 5000,
-          });
-          // Only show model selector for non-auth/network errors
-          if (!transcriptionStatus.errorType || transcriptionStatus.errorType === 'unknown') {
-            showModal?.('modelSelector', 'Configuración de reconocimiento de voz requerida');
-          }
-          Analytics.trackButtonClick('start_recording_blocked_missing', 'home_page');
-        }
-        setStatus(RecordingStatus.IDLE);
+        handleTranscriptionNotReady(transcriptionStatus, 'home_page');
         return;
       }
 
-      console.log(`${provider} ready - setting up meeting title and state`);
-
-      const randomTitle = generateMeetingTitle();
-      setMeetingTitle(randomTitle);
-
-      // Start logging session
-      recordingLogService.startSession();
-      recordingLogService.log('recording_started', {
-        meeting_title: randomTitle,
-        mic_device: selectedDevices?.micDevice || null,
-        system_device: selectedDevices?.systemDevice || null,
-        provider,
-        trigger: 'manual',
-      }, 'success');
-
-      // Create meeting early in SQLite
-      let earlyMeetingId: string | null = null;
-      try {
-        const result = await invoke<{ meeting_id: string }>('api_create_meeting_early', {
-          meetingTitle: randomTitle,
-        });
-        earlyMeetingId = result.meeting_id;
-        recordingLogService.setMeetingId(earlyMeetingId);
-        sessionStorage.setItem('early_meeting_id', earlyMeetingId);
-        recordingLogService.log('meeting_created_early', { meeting_id: earlyMeetingId }, 'success');
-      } catch (err) {
-        recordingLogService.log('meeting_created_early', null, 'error', err instanceof Error ? err.message : String(err));
-      }
-
-      // Set STARTING status before initiating backend recording
-      setStatus(RecordingStatus.STARTING, 'Initializing recording...');
-
-      // Start the actual backend recording
-      console.log('Starting backend recording with meeting:', randomTitle);
-      await recordingService.startRecordingWithDevices(
-        selectedDevices?.micDevice || null,
-        selectedDevices?.systemDevice || null,
-        randomTitle
-      );
-      console.log('Backend recording started successfully');
-
-      // Update state after successful backend start
-      // Note: RECORDING status will be set by RecordingStateContext event listener
-      console.log('Setting isRecordingState to true');
-      setIsRecording(true); // This will also update the sidebar via the useEffect
-      clearTranscripts(); // Clear previous transcripts when starting new recording
-      setIsMeetingActive(true);
-      Analytics.trackButtonClick('start_recording', 'home_page');
-
-      // Show recording notification if enabled
-      await showRecordingNotification();
+      console.log(`${provider} ready - starting recording flow`);
+      await startRecordingFlow('manual');
     } catch (error) {
       console.error('Failed to start recording:', error);
       recordingLogService.log('recording_start_failed', null, 'error', error instanceof Error ? error.message : String(error));
       setStatus(RecordingStatus.ERROR, error instanceof Error ? error.message : 'Failed to start recording');
-      setIsRecording(false); // Reset state on error
+      setIsRecording(false);
       Analytics.trackButtonClick('start_recording_error', 'home_page');
       // Re-throw so RecordingControls can handle device-specific errors
       throw error;
     } finally {
       isStartingRef.current = false;
     }
-  }, [generateMeetingTitle, setMeetingTitle, setIsRecording, clearTranscripts, setIsMeetingActive, checkTranscriptionReady, selectedDevices, showModal, setStatus, transcriptModelConfig, getErrorToastTitle]);
+  }, [checkTranscriptionReady, handleTranscriptionNotReady, startRecordingFlow, setStatus, setIsRecording, transcriptModelConfig]);
 
   // Check for autoStartRecording flag and start recording automatically
   useEffect(() => {
@@ -340,88 +340,21 @@ export function useRecordingStart(
         if (shouldAutoStart === 'true' && !isRecording && !isAutoStarting) {
           console.log('Auto-starting recording from navigation...');
           setIsAutoStarting(true);
-          sessionStorage.removeItem('autoStartRecording'); // Clear the flag
+          sessionStorage.removeItem('autoStartRecording');
 
-          // Check if transcription is ready based on selected provider
           const transcriptionStatus = await checkTranscriptionReady();
           if (!transcriptionStatus.ready) {
-            if (transcriptionStatus.isDownloading) {
-              toast.info('Descarga de modelo en progreso', {
-                description: 'Por favor espera a que el modelo termine de descargarse antes de grabar.',
-                duration: 5000,
-              });
-              Analytics.trackButtonClick('start_recording_blocked_downloading', 'sidebar_auto');
-            } else {
-              const toastTitle = transcriptionStatus.errorType
-                ? getErrorToastTitle(transcriptionStatus)
-                : 'Modelo de transcripción no listo';
-              toast.error(toastTitle, {
-                description: transcriptionStatus.error || 'Por favor configura un modelo de transcripción antes de grabar.',
-                duration: 5000,
-              });
-              if (!transcriptionStatus.errorType || transcriptionStatus.errorType === 'unknown') {
-                showModal?.('modelSelector', 'Configuración de reconocimiento de voz requerida');
-              }
-              Analytics.trackButtonClick('start_recording_blocked_missing', 'sidebar_auto');
-            }
-            setStatus(RecordingStatus.IDLE);
+            handleTranscriptionNotReady(transcriptionStatus, 'sidebar_auto');
             setIsAutoStarting(false);
             return;
           }
 
-          // Start the actual backend recording
           try {
-            // Generate meeting title
-            const generatedMeetingTitle = generateMeetingTitle();
-
-            // Start logging session
-            recordingLogService.startSession();
-            recordingLogService.log('recording_started', {
-              meeting_title: generatedMeetingTitle,
-              mic_device: selectedDevices?.micDevice || null,
-              system_device: selectedDevices?.systemDevice || null,
-              provider: transcriptModelConfig?.provider || 'deepgram',
-              trigger: 'auto_start',
-            }, 'success');
-
-            // Create meeting early
-            try {
-              const earlyResult = await invoke<{ meeting_id: string }>('api_create_meeting_early', {
-                meetingTitle: generatedMeetingTitle,
-              });
-              recordingLogService.setMeetingId(earlyResult.meeting_id);
-              sessionStorage.setItem('early_meeting_id', earlyResult.meeting_id);
-              recordingLogService.log('meeting_created_early', { meeting_id: earlyResult.meeting_id }, 'success');
-            } catch (err) {
-              recordingLogService.log('meeting_created_early', null, 'error', err instanceof Error ? err.message : String(err));
-            }
-
-            // Set STARTING status before initiating backend recording
-            setStatus(RecordingStatus.STARTING, 'Initializing recording...');
-
-            console.log('Auto-starting backend recording with meeting:', generatedMeetingTitle);
-            const result = await recordingService.startRecordingWithDevices(
-              selectedDevices?.micDevice || null,
-              selectedDevices?.systemDevice || null,
-              generatedMeetingTitle
-            );
-            console.log('Auto-start backend recording result:', result);
-
-            // Update UI state after successful backend start
-            // Note: RECORDING status will be set by RecordingStateContext event listener
-            setMeetingTitle(generatedMeetingTitle);
-            setIsRecording(true);
-            clearTranscripts();
-            setIsMeetingActive(true);
-            Analytics.trackButtonClick('start_recording', 'sidebar_auto');
-
-            // Show recording notification if enabled
-            await showRecordingNotification();
+            await startRecordingFlow('auto_start');
           } catch (error) {
             console.error('Failed to auto-start recording:', error);
             recordingLogService.log('recording_start_failed', null, 'error', error instanceof Error ? error.message : String(error));
             setStatus(RecordingStatus.ERROR, error instanceof Error ? error.message : 'Failed to auto-start recording');
-            alert('Failed to start recording. Check console for details.');
             Analytics.trackButtonClick('start_recording_error', 'sidebar_auto');
           } finally {
             setIsAutoStarting(false);
@@ -434,16 +367,10 @@ export function useRecordingStart(
   }, [
     isRecording,
     isAutoStarting,
-    selectedDevices,
-    generateMeetingTitle,
-    setMeetingTitle,
-    setIsRecording,
-    clearTranscripts,
-    setIsMeetingActive,
     checkTranscriptionReady,
-    showModal,
+    handleTranscriptionNotReady,
+    startRecordingFlow,
     setStatus,
-    getErrorToastTitle,
   ]);
 
   // Listen for recording trigger from meeting detector (Tauri event)
@@ -455,7 +382,7 @@ export function useRecordingStart(
         const { listen } = await import('@tauri-apps/api/event');
         unlisten = await listen<string>('start-recording-from-detector', async (event) => {
           const meetingName = event.payload;
-          console.log(`🎤 Meeting detector triggered recording: "${meetingName}"`);
+          console.log(`Meeting detector triggered recording: "${meetingName}"`);
 
           if (isRecording || isAutoStarting) {
             console.log('Recording already in progress, ignoring detector event');
@@ -464,60 +391,17 @@ export function useRecordingStart(
 
           setIsAutoStarting(true);
 
-          // Check if transcription is ready
           const transcriptionStatus = await checkTranscriptionReady();
           if (!transcriptionStatus.ready) {
-            const toastTitle = transcriptionStatus.errorType
-              ? getErrorToastTitle(transcriptionStatus)
-              : 'Modelo de transcripción no listo';
-            toast.error(toastTitle, {
-              description: transcriptionStatus.error || 'Por favor configura un modelo de transcripción antes de grabar.',
-              duration: 5000,
-            });
+            handleTranscriptionNotReady(transcriptionStatus, 'meeting_detector');
             setIsAutoStarting(false);
             return;
           }
 
           try {
-            // Start logging session for meeting detector
-            recordingLogService.startSession();
-            recordingLogService.log('recording_started', {
-              meeting_title: meetingName,
-              mic_device: selectedDevices?.micDevice || null,
-              system_device: selectedDevices?.systemDevice || null,
-              provider: transcriptModelConfig?.provider || 'deepgram',
-              trigger: 'meeting_detector',
-            }, 'success');
-
-            // Create meeting early
-            try {
-              const earlyResult = await invoke<{ meeting_id: string }>('api_create_meeting_early', {
-                meetingTitle: meetingName,
-              });
-              recordingLogService.setMeetingId(earlyResult.meeting_id);
-              sessionStorage.setItem('early_meeting_id', earlyResult.meeting_id);
-              recordingLogService.log('meeting_created_early', { meeting_id: earlyResult.meeting_id }, 'success');
-            } catch (err) {
-              recordingLogService.log('meeting_created_early', null, 'error', err instanceof Error ? err.message : String(err));
-            }
-
-            setStatus(RecordingStatus.STARTING, 'Iniciando grabación...');
-
-            await recordingService.startRecordingWithDevices(
-              selectedDevices?.micDevice || null,
-              selectedDevices?.systemDevice || null,
-              meetingName
-            );
-
-            setMeetingTitle(meetingName);
-            setIsRecording(true);
-            clearTranscripts();
-            setIsMeetingActive(true);
-            Analytics.trackButtonClick('start_recording', 'meeting_detector');
-
-            await showRecordingNotification();
-            toast.success('Grabación iniciada', {
-              description: `Reunión: ${meetingName}`,
+            await startRecordingFlow('meeting_detector', meetingName);
+            toast.success('Grabacion iniciada', {
+              description: `Reunion: ${meetingName}`,
               duration: 3000,
             });
           } catch (error) {
@@ -526,24 +410,23 @@ export function useRecordingStart(
             const errorMsg = error instanceof Error ? error.message : String(error);
             setStatus(RecordingStatus.ERROR, errorMsg);
 
-            // Categorize errors for user-friendly feedback (matching RecordingControls style)
             if (errorMsg.includes('microphone') || errorMsg.includes('mic') || errorMsg.includes('input')) {
-              toast.error('Micrófono No Disponible', {
-                description: 'Verifica que tu micrófono esté conectado y con permisos.',
+              toast.error('Microfono No Disponible', {
+                description: 'Verifica que tu microfono este conectado y con permisos.',
                 duration: 6000,
               });
             } else if (errorMsg.includes('system audio') || errorMsg.includes('speaker') || errorMsg.includes('output')) {
               toast.error('Audio del Sistema No Disponible', {
-                description: 'Verifica que un dispositivo de audio virtual esté instalado y configurado.',
+                description: 'Verifica que un dispositivo de audio virtual este instalado y configurado.',
                 duration: 6000,
               });
             } else if (errorMsg.includes('permission')) {
               toast.error('Permiso Requerido', {
-                description: 'Otorga permisos de grabación en Configuración del Sistema.',
+                description: 'Otorga permisos de grabacion en Configuracion del Sistema.',
                 duration: 6000,
               });
             } else {
-              toast.error('Error al iniciar grabación', {
+              toast.error('Error al iniciar grabacion', {
                 description: errorMsg,
                 duration: 5000,
               });
@@ -564,7 +447,7 @@ export function useRecordingStart(
         unlisten();
       }
     };
-  }, [isRecording, isAutoStarting, selectedDevices, setMeetingTitle, setIsRecording, clearTranscripts, setIsMeetingActive, checkTranscriptionReady, setStatus, getErrorToastTitle]);
+  }, [isRecording, isAutoStarting, checkTranscriptionReady, handleTranscriptionNotReady, startRecordingFlow, setStatus]);
 
   // Listen for direct recording trigger from sidebar when already on home page
   useEffect(() => {
@@ -578,85 +461,19 @@ export function useRecordingStart(
       console.log(`Direct start from sidebar - checking ${provider} transcription status`);
       setIsAutoStarting(true);
 
-      // Check if transcription is ready based on selected provider
       const transcriptionStatus = await checkTranscriptionReady();
       if (!transcriptionStatus.ready) {
-        if (transcriptionStatus.isDownloading) {
-          toast.info('Descarga de modelo en progreso', {
-            description: 'Por favor espera a que el modelo termine de descargarse antes de grabar.',
-            duration: 5000,
-          });
-          Analytics.trackButtonClick('start_recording_blocked_downloading', 'sidebar_direct');
-        } else {
-          const toastTitle = transcriptionStatus.errorType
-            ? getErrorToastTitle(transcriptionStatus)
-            : 'Modelo de transcripción no listo';
-          toast.error(toastTitle, {
-            description: transcriptionStatus.error || 'Por favor configura un modelo de transcripción antes de grabar.',
-            duration: 5000,
-          });
-          if (!transcriptionStatus.errorType || transcriptionStatus.errorType === 'unknown') {
-            showModal?.('modelSelector', 'Configuración de reconocimiento de voz requerida');
-          }
-          Analytics.trackButtonClick('start_recording_blocked_missing', 'sidebar_direct');
-        }
-        setStatus(RecordingStatus.IDLE);
+        handleTranscriptionNotReady(transcriptionStatus, 'sidebar_direct');
         setIsAutoStarting(false);
         return;
       }
 
       try {
-        // Generate meeting title
-        const generatedMeetingTitle = generateMeetingTitle();
-
-        // Start logging session
-        recordingLogService.startSession();
-        recordingLogService.log('recording_started', {
-          meeting_title: generatedMeetingTitle,
-          mic_device: selectedDevices?.micDevice || null,
-          system_device: selectedDevices?.systemDevice || null,
-          provider,
-          trigger: 'sidebar_direct',
-        }, 'success');
-
-        // Create meeting early
-        try {
-          const earlyResult = await invoke<{ meeting_id: string }>('api_create_meeting_early', {
-            meetingTitle: generatedMeetingTitle,
-          });
-          recordingLogService.setMeetingId(earlyResult.meeting_id);
-          sessionStorage.setItem('early_meeting_id', earlyResult.meeting_id);
-          recordingLogService.log('meeting_created_early', { meeting_id: earlyResult.meeting_id }, 'success');
-        } catch (err) {
-          recordingLogService.log('meeting_created_early', null, 'error', err instanceof Error ? err.message : String(err));
-        }
-
-        // Set STARTING status before initiating backend recording
-        setStatus(RecordingStatus.STARTING, 'Initializing recording...');
-
-        console.log('Starting backend recording with meeting:', generatedMeetingTitle);
-        const result = await recordingService.startRecordingWithDevices(
-          selectedDevices?.micDevice || null,
-          selectedDevices?.systemDevice || null,
-          generatedMeetingTitle
-        );
-        console.log('Backend recording result:', result);
-
-        // Update UI state after successful backend start
-        // Note: RECORDING status will be set by RecordingStateContext event listener
-        setMeetingTitle(generatedMeetingTitle);
-        setIsRecording(true);
-        clearTranscripts();
-        setIsMeetingActive(true);
-        Analytics.trackButtonClick('start_recording', 'sidebar_direct');
-
-        // Show recording notification if enabled
-        await showRecordingNotification();
+        await startRecordingFlow('sidebar_direct');
       } catch (error) {
         console.error('Failed to start recording from sidebar:', error);
         recordingLogService.log('recording_start_failed', null, 'error', error instanceof Error ? error.message : String(error));
         setStatus(RecordingStatus.ERROR, error instanceof Error ? error.message : 'Failed to start recording from sidebar');
-        alert('Failed to start recording. Check console for details.');
         Analytics.trackButtonClick('start_recording_error', 'sidebar_direct');
       } finally {
         setIsAutoStarting(false);
@@ -671,17 +488,11 @@ export function useRecordingStart(
   }, [
     isRecording,
     isAutoStarting,
-    selectedDevices,
-    generateMeetingTitle,
-    setMeetingTitle,
-    setIsRecording,
-    clearTranscripts,
-    setIsMeetingActive,
     checkTranscriptionReady,
-    showModal,
+    handleTranscriptionNotReady,
+    startRecordingFlow,
     setStatus,
     transcriptModelConfig,
-    getErrorToastTitle,
   ]);
 
   // B3: Poll for audio device events during recording (disconnect/reconnect)
@@ -695,17 +506,17 @@ export function useRecordingStart(
 
         if (event.type === 'DeviceDisconnected') {
           toast.warning('Dispositivo de audio desconectado', {
-            description: `${event.device_name || 'Dispositivo desconocido'} se desconectó. La grabación continúa con los dispositivos disponibles.`,
+            description: `${event.device_name || 'Dispositivo desconocido'} se desconecto. La grabacion continua con los dispositivos disponibles.`,
             duration: 8000,
           });
         } else if (event.type === 'DeviceReconnected') {
           toast.success('Dispositivo reconectado', {
-            description: `${event.device_name || 'Dispositivo'} se reconectó correctamente.`,
+            description: `${event.device_name || 'Dispositivo'} se reconecto correctamente.`,
             duration: 5000,
           });
         } else if (event.type === 'DeviceListChanged') {
           toast.info('Cambio en dispositivos de audio', {
-            description: 'Se detectó un cambio en los dispositivos de audio disponibles.',
+            description: 'Se detecto un cambio en los dispositivos de audio disponibles.',
             duration: 4000,
           });
         }

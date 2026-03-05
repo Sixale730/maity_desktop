@@ -8,6 +8,9 @@ export {
   reanalyzeConversation,
   toggleActionItemCompleted,
   updateConversationEvaluation,
+  getLocalConversations,
+  getLocalMeetingDetail,
+  mergeConversations,
 } from './services/conversations.service';
 export type {
   OmiConversation,

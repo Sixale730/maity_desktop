@@ -262,7 +262,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
     const setupListeners = async () => {
       try {
         // Transcript error listener - handles both regular and actionable errors
-        const transcriptErrorUnsubscribe = await listen('transcript-error', (event) => {
+        const transcriptErrorUnsubscribe = await listen('transcript-error', async (event) => {
           console.log('transcript-error event received:', event);
           console.error('Transcription error received:', event.payload);
           const errorMessage = event.payload as string;
@@ -276,6 +276,15 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
             return newCount;
           });
           setIsProcessing(false);
+
+          // Stop Rust recording first, then notify frontend
+          try {
+            console.log('Stopping Rust recording before resetting frontend state...');
+            await invoke('stop_recording', { args: { save_path: '' } });
+          } catch (stopErr) {
+            console.warn('stop_recording failed (may already be stopped):', stopErr);
+          }
+
           console.log('Calling onRecordingStop(false) due to transcript error');
           onRecordingStop(false);
           if (onTranscriptionError) {
@@ -284,7 +293,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
         });
 
         // Transcription error listener - handles structured error objects with actionable flag
-        const transcriptionErrorUnsubscribe = await listen('transcription-error', (event) => {
+        const transcriptionErrorUnsubscribe = await listen('transcription-error', async (event) => {
           console.log('transcription-error event received:', event);
           console.error('Transcription error received:', event.payload);
 
@@ -308,6 +317,15 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
             return newCount;
           });
           setIsProcessing(false);
+
+          // Stop Rust recording first, then notify frontend
+          try {
+            console.log('Stopping Rust recording before resetting frontend state...');
+            await invoke('stop_recording', { args: { save_path: '' } });
+          } catch (stopErr) {
+            console.warn('stop_recording failed (may already be stopped):', stopErr);
+          }
+
           console.log('Calling onRecordingStop(false) due to transcription error');
           onRecordingStop(false);
 

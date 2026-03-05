@@ -1,3 +1,4 @@
+import { invoke } from '@tauri-apps/api/core';
 import { supabase } from '@/lib/supabase';
 
 // ─── V4 Analysis Types ──────────────────────────────────────────────
@@ -440,6 +441,8 @@ export interface OmiConversation {
   communication_feedback: CommunicationFeedback | null;
   communication_feedback_v4: CommunicationFeedbackV4 | AnalysisSkipped | null;
   meeting_minutes_data: MeetingMinutesData | null;
+  /** Local SQLite meeting ID (present when loaded from local storage) */
+  _localId?: string;
 }
 
 export interface ActionItem {
@@ -549,6 +552,189 @@ export async function getOmiConversations(userId?: string): Promise<OmiConversat
   }
 
   return data || [];
+}
+
+// ─── Local SQLite Types ────────────────────────────────────────────
+
+interface LocalMeeting {
+  id: string;
+  title: string;
+}
+
+interface LocalMeetingMetadata {
+  id: string;
+  title: string;
+  created_at: string;
+  updated_at: string;
+  folder_path?: string | null;
+}
+
+interface LocalMeetingTranscript {
+  id: string;
+  text: string;
+  timestamp: string;
+  audio_start_time?: number | null;
+  audio_end_time?: number | null;
+  duration?: number | null;
+  source_type?: string | null;
+}
+
+interface LocalMeetingDetails {
+  id: string;
+  title: string;
+  created_at: string;
+  updated_at: string;
+  transcripts: LocalMeetingTranscript[];
+}
+
+// ─── Local-first Conversations ─────────────────────────────────────
+
+/**
+ * Get conversations from local SQLite, mapped to OmiConversation format.
+ * Fields not available locally (emoji, category, analysis, etc.) are null.
+ */
+export async function getLocalConversations(): Promise<OmiConversation[]> {
+  try {
+    const meetings = await invoke<LocalMeeting[]>('api_get_meetings', { authToken: null });
+    if (!meetings || meetings.length === 0) return [];
+
+    // Fetch metadata in parallel to get created_at timestamps
+    const metadataResults = await Promise.allSettled(
+      meetings.map((m) => invoke<LocalMeetingMetadata>('api_get_meeting_metadata', { meetingId: m.id }))
+    );
+
+    return meetings.map((meeting, i) => {
+      const metaResult = metadataResults[i];
+      const meta = metaResult.status === 'fulfilled' ? metaResult.value : null;
+
+      return {
+        id: meeting.id,
+        user_id: null,
+        firebase_uid: null,
+        created_at: meta?.created_at ?? new Date().toISOString(),
+        started_at: meta?.created_at ?? null,
+        finished_at: null,
+        title: meeting.title || 'Sin título',
+        overview: '',
+        emoji: null,
+        category: null,
+        action_items: null,
+        events: null,
+        transcript_text: null,
+        source: 'local',
+        language: null,
+        status: null,
+        words_count: null,
+        duration_seconds: null,
+        communication_feedback: null,
+        communication_feedback_v4: null,
+        meeting_minutes_data: null,
+        _localId: meeting.id,
+      };
+    });
+  } catch (err) {
+    console.warn('Error fetching local conversations:', err);
+    return [];
+  }
+}
+
+/**
+ * Get full meeting details from local SQLite, mapped to OmiConversation format.
+ * Includes transcript text built from local transcript segments.
+ */
+export async function getLocalMeetingDetail(meetingId: string): Promise<OmiConversation | null> {
+  try {
+    const details = await invoke<LocalMeetingDetails>('api_get_meeting', { meetingId, authToken: null });
+    if (!details) return null;
+
+    const transcriptText = details.transcripts
+      .map((t) => {
+        const speaker = t.source_type === 'user' ? 'Usuario' : 'Interlocutor';
+        return `${speaker}: ${t.text}`;
+      })
+      .join('\n');
+
+    const wordCount = details.transcripts.reduce((acc, t) => acc + t.text.split(/\s+/).length, 0);
+
+    // Estimate duration from transcripts
+    let durationSeconds: number | null = null;
+    if (details.transcripts.length > 0) {
+      const lastTranscript = details.transcripts[details.transcripts.length - 1];
+      if (lastTranscript.audio_end_time) {
+        durationSeconds = Math.round(lastTranscript.audio_end_time);
+      }
+    }
+
+    return {
+      id: meetingId,
+      user_id: null,
+      firebase_uid: null,
+      created_at: details.created_at,
+      started_at: details.created_at,
+      finished_at: null,
+      title: details.title || 'Sin título',
+      overview: '',
+      emoji: null,
+      category: null,
+      action_items: null,
+      events: null,
+      transcript_text: transcriptText || null,
+      source: 'local',
+      language: null,
+      status: null,
+      words_count: wordCount > 0 ? wordCount : null,
+      duration_seconds: durationSeconds,
+      communication_feedback: null,
+      communication_feedback_v4: null,
+      meeting_minutes_data: null,
+    };
+  } catch (err) {
+    console.warn('Error fetching local meeting detail:', err);
+    return null;
+  }
+}
+
+/**
+ * Merge local and cloud conversations.
+ * Cloud data wins when it has more complete info; local-only items are kept.
+ * Matching is done by title + close created_at timestamp (within 5 minutes).
+ */
+export function mergeConversations(
+  local: OmiConversation[],
+  cloud: OmiConversation[]
+): OmiConversation[] {
+  const merged = new Map<string, OmiConversation>();
+
+  // Index cloud by id
+  for (const c of cloud) {
+    merged.set(c.id, c);
+  }
+
+  // For each local, try to find a matching cloud entry
+  for (const loc of local) {
+    // Check if any cloud entry matches by title + timestamp proximity
+    const match = cloud.find((c) => {
+      if (c.title !== loc.title) return false;
+      const cloudTime = new Date(c.created_at).getTime();
+      const localTime = new Date(loc.created_at).getTime();
+      return Math.abs(cloudTime - localTime) < 5 * 60 * 1000; // 5 minutes
+    });
+
+    if (match) {
+      // Cloud has this conversation — cloud wins (more complete data)
+      // Attach localId for reference
+      merged.set(match.id, { ...match, _localId: loc._localId });
+    } else {
+      // Local-only conversation
+      const localId = loc._localId || loc.id;
+      merged.set(`local:${localId}`, loc);
+    }
+  }
+
+  // Sort by created_at descending
+  return Array.from(merged.values()).sort(
+    (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+  );
 }
 
 /**

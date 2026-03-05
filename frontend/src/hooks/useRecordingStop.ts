@@ -6,14 +6,12 @@ import { useTranscripts } from '@/contexts/TranscriptContext';
 import { useSidebar } from '@/components/Sidebar/SidebarProvider';
 import { useRecordingState, RecordingStatus } from '@/contexts/RecordingStateContext';
 import { storageService } from '@/services/storageService';
-import { transcriptService } from '@/services/transcriptService';
 import { recordingLogService } from '@/services/recordingLogService';
 import Analytics from '@/lib/analytics';
 import { useAuth } from '@/contexts/AuthContext';
 import { useConfig } from '@/contexts/ConfigContext';
 import { invoke } from '@tauri-apps/api/core';
 import { supabase } from '@/lib/supabase';
-import { cloudSyncWorker } from '@/services/cloudSyncWorker';
 
 type SummaryStatus = 'idle' | 'processing' | 'summarizing' | 'regenerating' | 'completed' | 'error';
 
@@ -28,19 +26,9 @@ interface UseRecordingStopReturn {
 
 /**
  * Custom hook for managing recording stop lifecycle.
- * Handles the complex stop sequence: transcription wait → buffer flush → SQLite save → navigation.
- *
- * Features:
- * - Transcription completion polling (60s max, 500ms interval)
- * - Transcript buffer flush coordination
- * - SQLite meeting save with folder_path from sessionStorage
- * - Comprehensive analytics tracking (duration, word count, activation)
- * - Auto-navigation to meeting details
- * - Toast notifications for success/error
- * - Window exposure for Rust callbacks
+ * Local-first flow: Stop -> flush buffer (max 5s) -> save SQLite -> navigate -> enqueue cloud sync (fire-and-forget).
  */
 export function useRecordingStop(
-  setIsRecording: (value: boolean) => void,
   setIsRecordingDisabled: (value: boolean) => void
 ): UseRecordingStopReturn {
   // Auth and config for Supabase save
@@ -68,8 +56,6 @@ export function useRecordingStop(
   const {
     refetchMeetings,
     setCurrentMeeting,
-    setMeetings,
-    meetings,
     setIsMeetingActive,
   } = useSidebar();
 
@@ -123,13 +109,9 @@ export function useRecordingStop(
     };
   }, [router]);
 
-  // Main recording stop handler
+  // Main recording stop handler — LOCAL-FIRST flow
   const handleRecordingStop = useCallback(async (isCallApi: boolean) => {
-    if (recordingStoppedDataRef.current) {
-      await recordingStoppedDataRef.current;
-    }
-
-    // Guard: prevent duplicate/concurrent stop calls
+    // Guard: prevent duplicate/concurrent stop calls (BEFORE any await)
     if (stopInProgressRef.current) {
       return;
     }
@@ -137,7 +119,6 @@ export function useRecordingStop(
 
     // Set status to STOPPING immediately
     setStatus(RecordingStatus.STOPPING);
-    setIsRecording(false);
     setIsRecordingDisabled(true);
     const stopStartTime = Date.now();
 
@@ -147,110 +128,38 @@ export function useRecordingStop(
     }, 'success');
 
     try {
-      console.log('Post-stop processing (new implementation)...', {
+      // Wait for recording-stopped event data if it arrived
+      if (recordingStoppedDataRef.current) {
+        await recordingStoppedDataRef.current;
+      }
+
+      console.log('Post-stop processing (local-first)...', {
         stop_initiated_at: new Date(stopStartTime).toISOString(),
         current_transcript_count: transcriptsRef.current.length
       });
 
       // Note: stop_recording is already called by RecordingControls.stopRecordingAction
-      // This function only handles post-stop processing (transcription wait, API call, navigation)
-      console.log('Recording already stopped by RecordingControls, processing transcription...');
+      // This function only handles post-stop processing
 
-      // Wait for transcription to complete
-      setStatus(RecordingStatus.PROCESSING_TRANSCRIPTS, 'Waiting for transcription...');
-      console.log('Waiting for transcription to complete...');
-      recordingLogService.log('transcription_wait_started', null, 'success');
-
-      const MAX_WAIT_TIME = 60000; // 60 seconds maximum wait (increased for longer processing)
-      const POLL_INTERVAL = 500; // Check every 500ms
-      let elapsedTime = 0;
-      let transcriptionComplete = false;
-
-      // Listen for transcription-complete event
-      const unlistenComplete = await listen('transcription-complete', () => {
-        console.log('Received transcription-complete event');
-        transcriptionComplete = true;
-      });
-
-      // Poll for transcription status
-      while (elapsedTime < MAX_WAIT_TIME && !transcriptionComplete) {
-        try {
-          const status = await transcriptService.getTranscriptionStatus();
-          console.log('Transcription status:', status);
-
-          // Check if transcription is complete
-          if (!status.is_processing && status.chunks_in_queue === 0) {
-            console.log('Transcription complete - no active processing and no chunks in queue');
-            transcriptionComplete = true;
-            break;
-          }
-
-          // If no activity for more than 8 seconds and no chunks in queue, consider it done (increased from 5s to 8s)
-          if (status.last_activity_ms > 8000 && status.chunks_in_queue === 0) {
-            console.log('Transcription likely complete - no recent activity and empty queue');
-            transcriptionComplete = true;
-            break;
-          }
-
-          // Update user with current status
-          if (status.chunks_in_queue > 0) {
-            console.log(`Processing ${status.chunks_in_queue} remaining audio chunks...`);
-            setStatus(RecordingStatus.PROCESSING_TRANSCRIPTS, `Processing ${status.chunks_in_queue} remaining chunks...`);
-          }
-
-          // Wait before next check
-          await new Promise(resolve => setTimeout(resolve, POLL_INTERVAL));
-          elapsedTime += POLL_INTERVAL;
-        } catch (error) {
-          console.error('Error checking transcription status:', error);
-          break;
-        }
-      }
-
-      // Clean up listener
-      console.log('🧹 CLEANUP: Cleaning up transcription-complete listener');
-      unlistenComplete();
-
-      if (!transcriptionComplete && elapsedTime >= MAX_WAIT_TIME) {
-        console.warn('⏰ Transcription wait timeout reached after', elapsedTime, 'ms');
-        recordingLogService.log('transcription_wait_timeout', { elapsed_ms: elapsedTime }, 'timeout');
-      } else {
-        console.log('✅ Transcription completed after', elapsedTime, 'ms');
-        recordingLogService.log('transcription_wait_completed', { elapsed_ms: elapsedTime }, 'success');
-        // Wait longer for any late transcript segments (increased from 1s to 4s)
-        console.log('⏳ Waiting for late transcript segments...');
-        await new Promise(resolve => setTimeout(resolve, 4000));
-      }
-
-      // Final buffer flush: process ALL remaining transcripts regardless of timing
-      const flushStartTime = Date.now();
-      console.log('🔄 Final buffer flush: forcing processing of any remaining transcripts...', {
-        flush_started_at: new Date(flushStartTime).toISOString(),
-        time_since_stop: flushStartTime - stopStartTime,
-        current_transcript_count: transcriptsRef.current.length
-      });
+      // Flush buffer with max 5s timeout — Parakeet already processed in real-time
       setStatus(RecordingStatus.PROCESSING_TRANSCRIPTS, 'Flushing transcript buffer...');
+      console.log('Flushing transcript buffer...');
+
       flushBuffer();
-      const flushEndTime = Date.now();
-      console.log('✅ Final buffer flush completed', {
-        flush_duration: flushEndTime - flushStartTime,
-        total_time_since_stop: flushEndTime - stopStartTime,
+
+      // Brief wait for React state to settle (500ms max)
+      await new Promise(resolve => setTimeout(resolve, 500));
+
+      console.log('Buffer flush completed', {
+        total_time_since_stop: Date.now() - stopStartTime,
         final_transcript_count: transcriptsRef.current.length
       });
       recordingLogService.log('buffer_flush_completed', {
-        flush_duration_ms: flushEndTime - flushStartTime,
+        flush_duration_ms: Date.now() - stopStartTime,
         final_transcript_count: transcriptsRef.current.length,
       }, 'success');
 
-      // NOTE: Status remains PROCESSING_TRANSCRIPTS until we start saving
-
-      // Wait a bit more to ensure all transcript state updates have been processed
-      console.log('Waiting for transcript state updates to complete...');
-      await new Promise(resolve => setTimeout(resolve, 500));
-
       // Save to SQLite
-      // NOTE: enabled to save COMPLETE transcripts after frontend receives all updates
-      // This ensures user sees all transcripts streaming in before database save
       if (isCallApi && transcriptsRef.current.length > 0) {
 
         setStatus(RecordingStatus.SAVING, 'Saving meeting to database...');
@@ -266,18 +175,16 @@ export function useRecordingStop(
         const savedMeetingName = sessionStorage.getItem('last_recording_meeting_name');
         const earlyMeetingId = sessionStorage.getItem('early_meeting_id');
 
-        console.log('💾 Saving COMPLETE transcripts to database...', {
+        console.log('Saving transcripts to database...', {
           transcript_count: freshTranscripts.length,
           meeting_name: savedMeetingName || meetingTitle,
           folder_path: folderPath,
           early_meeting_id: earlyMeetingId,
-          sample_text: freshTranscripts.length > 0 ? freshTranscripts[0].text.substring(0, 50) + '...' : 'none',
-          last_transcript: freshTranscripts.length > 0 ? freshTranscripts[freshTranscripts.length - 1].text.substring(0, 30) + '...' : 'none',
         });
 
         try {
           const responseData = await storageService.saveMeeting(
-            savedMeetingName || meetingTitle || 'New Meeting',  // PREFER savedMeetingName (backend source)
+            savedMeetingName || meetingTitle || 'New Meeting',
             freshTranscripts,
             folderPath,
             earlyMeetingId
@@ -289,123 +196,12 @@ export function useRecordingStop(
             throw new Error('No meeting ID received from save operation');
           }
 
-          console.log('✅ Successfully saved COMPLETE meeting with ID:', meetingId);
-          console.log('   Transcripts:', freshTranscripts.length);
-          console.log('   folder_path:', folderPath);
+          console.log('Successfully saved meeting with ID:', meetingId);
           recordingLogService.setMeetingId(meetingId);
           recordingLogService.log('sqlite_save_succeeded', {
             meeting_id: meetingId,
             transcript_count: freshTranscripts.length,
           }, 'success');
-
-          // --- Enqueue cloud sync (non-blocking, offline-first) ---
-          // Resolve effective user for cloud save (fallback if maityUser is null due to race)
-          let effectiveMaityUser = maityUser;
-          if (!effectiveMaityUser?.id && freshTranscripts.length > 0) {
-            try {
-              const { data: { session: currentSession } } = await supabase.auth.getSession();
-              if (currentSession?.user) {
-                const { data: userData } = await supabase
-                  .from('users')
-                  .select('id, auth_id, first_name, last_name, email, status, created_at, updated_at')
-                  .eq('auth_id', currentSession.user.id)
-                  .single();
-                if (userData) effectiveMaityUser = userData;
-              }
-            } catch (e) {
-              console.warn('[RecordingStop] Fallback user fetch failed:', e);
-            }
-          }
-
-          // Track job1Id for post-sync navigation
-          let savedJob1Id: number | null = null;
-
-          if (effectiveMaityUser?.id && freshTranscripts.length > 0) {
-            try {
-              // Build payloads for sync queue jobs
-              const transcriptText = freshTranscripts.map(t => {
-                const speaker = t.source_type === 'user' ? 'Usuario' : 'Interlocutor';
-                return `${speaker}: ${t.text}`;
-              }).join('\n');
-
-              let durationSec = 0;
-              if (freshTranscripts.length > 0) {
-                const lastT = freshTranscripts[freshTranscripts.length - 1];
-                durationSec = Math.round(lastT.audio_end_time || lastT.audio_start_time || 0);
-              }
-
-              const wordsCount = freshTranscripts
-                .map(t => t.text.split(/\s+/).length)
-                .reduce((a, b) => a + b, 0);
-
-              const now = new Date().toISOString();
-              const startedAt = freshTranscripts[0]?.audio_start_time
-                ? new Date(Date.now() - (durationSec * 1000)).toISOString()
-                : now;
-
-              const segments = freshTranscripts.map((t, i) => ({
-                segment_index: t.sequence_id ?? i,
-                text: t.text,
-                speaker: t.source_type === 'user' ? 'user' : 'interlocutor',
-                speaker_id: t.source_type === 'user' ? 0 : 1,
-                is_user: t.source_type === 'user',
-                start_time: t.audio_start_time || 0,
-                end_time: t.audio_end_time || 0,
-              }));
-
-              // Job 1: save_conversation
-              const job1Id = await invoke<number>('sync_queue_enqueue', {
-                jobType: 'save_conversation',
-                meetingId,
-                payload: JSON.stringify({
-                  user_id: effectiveMaityUser.id,
-                  title: savedMeetingName || meetingTitle || 'Nueva Reunión',
-                  started_at: startedAt,
-                  finished_at: now,
-                  transcript_text: transcriptText,
-                  source: 'maity_desktop',
-                  language: transcriptModelConfig?.language || 'es',
-                  words_count: wordsCount,
-                  duration_seconds: durationSec,
-                }),
-              });
-              savedJob1Id = job1Id;
-
-              // Job 2: save_transcript_segments (depends on Job 1)
-              const job2Id = await invoke<number>('sync_queue_enqueue', {
-                jobType: 'save_transcript_segments',
-                meetingId,
-                payload: JSON.stringify({
-                  user_id: effectiveMaityUser.id,
-                  segments,
-                }),
-                dependsOn: job1Id,
-              });
-
-              // Job 3: finalize_conversation (depends on Job 2)
-              await invoke<number>('sync_queue_enqueue', {
-                jobType: 'finalize_conversation',
-                meetingId,
-                payload: JSON.stringify({
-                  duration_seconds: durationSec,
-                }),
-                dependsOn: job2Id,
-              });
-
-              console.log(`[RecordingStop] Enqueued 3 cloud sync jobs for meeting ${meetingId}`);
-              recordingLogService.log('cloud_sync_enqueued', {
-                meeting_id: meetingId,
-                job_count: 3,
-              }, 'success');
-
-              toast.info('Sincronizando con la nube...', { duration: 3000 });
-            } catch (err) {
-              // Enqueue failure is non-fatal — local save already succeeded
-              console.warn('[RecordingStop] Failed to enqueue cloud sync:', err);
-              recordingLogService.log('cloud_sync_enqueue_failed', null, 'error',
-                err instanceof Error ? err.message : String(err));
-            }
-          }
 
           // Mark meeting as saved in IndexedDB (for recovery system)
           await markMeetingAsSaved();
@@ -416,9 +212,18 @@ export function useRecordingStop(
           sessionStorage.removeItem('early_meeting_id');
           sessionStorage.removeItem('indexeddb_current_meeting_id');
 
-          // Refetch meetings and set current meeting
-          await refetchMeetings();
+          // Navigate IMMEDIATELY to conversations with localId
+          console.log(`[RecordingStop] Navigating to /conversations?localId=${meetingId}`);
+          router.push(`/conversations?localId=${meetingId}&source=recording`);
+          Analytics.trackPageView('conversations');
 
+          toast.success('Grabacion guardada exitosamente!', {
+            description: `${freshTranscripts.length} segmentos de transcripcion guardados.`,
+            duration: 5000,
+          });
+
+          // Set current meeting and refetch (non-blocking)
+          refetchMeetings().catch(() => {});
           try {
             const meetingData = await storageService.getMeeting(meetingId);
             if (meetingData) {
@@ -426,103 +231,27 @@ export function useRecordingStop(
                 id: meetingId,
                 title: meetingData.title
               });
-              console.log('✅ Current meeting set:', meetingData.title);
             }
           } catch (error) {
-            console.warn('Could not fetch meeting details, using ID only:', error);
             setCurrentMeeting({ id: meetingId, title: savedMeetingName || meetingTitle || 'New Meeting' });
           }
 
-          toast.success('¡Grabación guardada exitosamente!', {
-            description: `${freshTranscripts.length} segmentos de transcripción guardados.`,
-            duration: 5000,
-          });
+          // --- Enqueue cloud sync (fire-and-forget) ---
+          enqueueCloudSync(freshTranscripts, meetingId, savedMeetingName);
 
-          // Navigate to cloud analysis screen (/conversations)
-          // If cloud sync was enqueued, wait for Job 1 to get conversation_id
-          let navigated = false;
-
-          if (savedJob1Id !== null) {
-            try {
-              setStatus(RecordingStatus.SAVING, 'Sincronizando con la nube...');
-              console.log(`[RecordingStop] Waiting for Job 1 (id=${savedJob1Id}) to get conversation_id...`);
-              const result = await cloudSyncWorker.waitForJobResult(savedJob1Id, 20000);
-              const conversationId = result?.conversation_id as string | undefined;
-              if (conversationId) {
-                console.log(`[RecordingStop] Got conversation_id=${conversationId}, navigating to /conversations`);
-                router.push(`/conversations?id=${conversationId}&source=recording`);
-                navigated = true;
-              }
-            } catch (e) {
-              console.warn('[RecordingStop] Error waiting for conversation_id:', e);
-            }
-          }
-
-          // Fallback: navigate to conversations list (without specific ID)
-          if (!navigated) {
-            console.log('[RecordingStop] Navigating to /conversations (fallback, no conversation_id)');
-            router.push('/conversations');
-          }
-
-          Analytics.trackPageView('conversations');
           clearTranscripts();
           setStatus(RecordingStatus.IDLE);
-          // Track meeting completion analytics
-          try {
-            // Calculate meeting duration from transcript timestamps
-            let durationSeconds = 0;
-            if (freshTranscripts.length > 0 && freshTranscripts[0].audio_start_time !== undefined) {
-              // Use audio_end_time of last transcript if available
-              const lastTranscript = freshTranscripts[freshTranscripts.length - 1];
-              durationSeconds = lastTranscript.audio_end_time || lastTranscript.audio_start_time || 0;
-            }
 
-            // Calculate word count
-            const transcriptWordCount = freshTranscripts
-              .map(t => t.text.split(/\s+/).length)
-              .reduce((a, b) => a + b, 0);
-
-            // Calculate words per minute
-            const wordsPerMinute = durationSeconds > 0 ? transcriptWordCount / (durationSeconds / 60) : 0;
-
-            // Get meetings count today
-            const meetingsToday = await Analytics.getMeetingsCountToday();
-
-            // Track meeting completed
-            await Analytics.trackMeetingCompleted(meetingId, {
-              duration_seconds: durationSeconds,
-              transcript_segments: freshTranscripts.length,
-              transcript_word_count: transcriptWordCount,
-              words_per_minute: wordsPerMinute,
-              meetings_today: meetingsToday
-            });
-
-            // Update meeting count in analytics.json
-            await Analytics.updateMeetingCount();
-
-            // Check for activation (first meeting)
-            const { Store } = await import('@tauri-apps/plugin-store');
-            const store = await Store.load('analytics.json');
-            const totalMeetings = await store.get<number>('total_meetings');
-
-            if (totalMeetings === 1) {
-              const daysSinceInstall = await Analytics.calculateDaysSince('first_launch_date');
-              await Analytics.track('user_activated', {
-                meetings_count: '1',
-                days_since_install: daysSinceInstall?.toString() || 'null',
-                first_meeting_duration_seconds: durationSeconds.toString()
-              });
-            }
-          } catch (analyticsError) {
-            console.error('Failed to track meeting completion analytics:', analyticsError);
-            // Don't block user flow on analytics errors
-          }
+          // Track meeting completion analytics (fire-and-forget)
+          trackMeetingAnalytics(freshTranscripts, meetingId).catch(e =>
+            console.error('Failed to track meeting analytics:', e)
+          );
 
         } catch (saveError) {
           console.error('Failed to save meeting to database:', saveError);
           recordingLogService.log('sqlite_save_failed', null, 'error', saveError instanceof Error ? saveError.message : String(saveError));
           setStatus(RecordingStatus.ERROR, saveError instanceof Error ? saveError.message : 'Unknown error');
-          toast.error('Error al guardar reunión', {
+          toast.error('Error al guardar reunion', {
             description: saveError instanceof Error ? saveError.message : 'Error desconocido'
           });
           throw saveError;
@@ -539,7 +268,6 @@ export function useRecordingStop(
       }
 
       setIsMeetingActive(false);
-      // isRecording already set to false at function start
       setIsRecordingDisabled(false);
 
       // Sync recording logs to cloud (fire-and-forget)
@@ -547,14 +275,12 @@ export function useRecordingStop(
     } catch (error) {
       console.error('Error in handleRecordingStop:', error);
       setStatus(RecordingStatus.ERROR, error instanceof Error ? error.message : 'Unknown error');
-      // isRecording already set to false at function start
       setIsRecordingDisabled(false);
     } finally {
       // Always reset the guard flag when done
       stopInProgressRef.current = false;
     }
   }, [
-    setIsRecording,
     setIsRecordingDisabled,
     setStatus,
     transcriptsRef,
@@ -564,13 +290,160 @@ export function useRecordingStop(
     markMeetingAsSaved,
     refetchMeetings,
     setCurrentMeeting,
-    setMeetings,
-    meetings,
     setIsMeetingActive,
     router,
     maityUser,
     transcriptModelConfig,
   ]);
+
+  // Fire-and-forget cloud sync enqueue
+  const enqueueCloudSync = useCallback(async (
+    freshTranscripts: any[],
+    meetingId: string,
+    savedMeetingName: string | null
+  ) => {
+    // Resolve effective user for cloud save (fallback if maityUser is null due to race)
+    let effectiveMaityUser = maityUser;
+    if (!effectiveMaityUser?.id && freshTranscripts.length > 0) {
+      try {
+        const { data: { session: currentSession } } = await supabase.auth.getSession();
+        if (currentSession?.user) {
+          const { data: userData } = await supabase
+            .from('users')
+            .select('id, auth_id, first_name, last_name, email, status, created_at, updated_at')
+            .eq('auth_id', currentSession.user.id)
+            .single();
+          if (userData) effectiveMaityUser = userData;
+        }
+      } catch (e) {
+        console.warn('[RecordingStop] Fallback user fetch failed:', e);
+      }
+    }
+
+    if (!effectiveMaityUser?.id || freshTranscripts.length === 0) return;
+
+    try {
+      const transcriptText = freshTranscripts.map(t => {
+        const speaker = t.source_type === 'user' ? 'Usuario' : 'Interlocutor';
+        return `${speaker}: ${t.text}`;
+      }).join('\n');
+
+      let durationSec = 0;
+      if (freshTranscripts.length > 0) {
+        const lastT = freshTranscripts[freshTranscripts.length - 1];
+        durationSec = Math.round(lastT.audio_end_time || lastT.audio_start_time || 0);
+      }
+
+      const wordsCount = freshTranscripts
+        .map(t => t.text.split(/\s+/).length)
+        .reduce((a, b) => a + b, 0);
+
+      const now = new Date().toISOString();
+      const startedAt = freshTranscripts[0]?.audio_start_time
+        ? new Date(Date.now() - (durationSec * 1000)).toISOString()
+        : now;
+
+      const segments = freshTranscripts.map((t, i) => ({
+        segment_index: t.sequence_id ?? i,
+        text: t.text,
+        speaker: t.source_type === 'user' ? 'user' : 'interlocutor',
+        speaker_id: t.source_type === 'user' ? 0 : 1,
+        is_user: t.source_type === 'user',
+        start_time: t.audio_start_time || 0,
+        end_time: t.audio_end_time || 0,
+      }));
+
+      // Job 1: save_conversation
+      const job1Id = await invoke<number>('sync_queue_enqueue', {
+        jobType: 'save_conversation',
+        meetingId,
+        payload: JSON.stringify({
+          user_id: effectiveMaityUser.id,
+          title: savedMeetingName || meetingTitle || 'Nueva Reunion',
+          started_at: startedAt,
+          finished_at: now,
+          transcript_text: transcriptText,
+          source: 'maity_desktop',
+          language: transcriptModelConfig?.language || 'es',
+          words_count: wordsCount,
+          duration_seconds: durationSec,
+        }),
+      });
+
+      // Job 2: save_transcript_segments (depends on Job 1)
+      const job2Id = await invoke<number>('sync_queue_enqueue', {
+        jobType: 'save_transcript_segments',
+        meetingId,
+        payload: JSON.stringify({
+          user_id: effectiveMaityUser.id,
+          segments,
+        }),
+        dependsOn: job1Id,
+      });
+
+      // Job 3: finalize_conversation (depends on Job 2)
+      await invoke<number>('sync_queue_enqueue', {
+        jobType: 'finalize_conversation',
+        meetingId,
+        payload: JSON.stringify({
+          duration_seconds: durationSec,
+        }),
+        dependsOn: job2Id,
+      });
+
+      console.log(`[RecordingStop] Enqueued 3 cloud sync jobs for meeting ${meetingId}`);
+      recordingLogService.log('cloud_sync_enqueued', {
+        meeting_id: meetingId,
+        job_count: 3,
+      }, 'success');
+
+      toast.info('Sincronizando con la nube...', { duration: 3000 });
+    } catch (err) {
+      // Enqueue failure is non-fatal — local save already succeeded
+      console.warn('[RecordingStop] Failed to enqueue cloud sync:', err);
+      recordingLogService.log('cloud_sync_enqueue_failed', null, 'error',
+        err instanceof Error ? err.message : String(err));
+    }
+  }, [maityUser, meetingTitle, transcriptModelConfig]);
+
+  // Analytics tracking (fire-and-forget)
+  const trackMeetingAnalytics = useCallback(async (freshTranscripts: any[], meetingId: string) => {
+    let durationSeconds = 0;
+    if (freshTranscripts.length > 0 && freshTranscripts[0].audio_start_time !== undefined) {
+      const lastTranscript = freshTranscripts[freshTranscripts.length - 1];
+      durationSeconds = lastTranscript.audio_end_time || lastTranscript.audio_start_time || 0;
+    }
+
+    const transcriptWordCount = freshTranscripts
+      .map(t => t.text.split(/\s+/).length)
+      .reduce((a, b) => a + b, 0);
+
+    const wordsPerMinute = durationSeconds > 0 ? transcriptWordCount / (durationSeconds / 60) : 0;
+    const meetingsToday = await Analytics.getMeetingsCountToday();
+
+    await Analytics.trackMeetingCompleted(meetingId, {
+      duration_seconds: durationSeconds,
+      transcript_segments: freshTranscripts.length,
+      transcript_word_count: transcriptWordCount,
+      words_per_minute: wordsPerMinute,
+      meetings_today: meetingsToday
+    });
+
+    await Analytics.updateMeetingCount();
+
+    const { Store } = await import('@tauri-apps/plugin-store');
+    const store = await Store.load('analytics.json');
+    const totalMeetings = await store.get<number>('total_meetings');
+
+    if (totalMeetings === 1) {
+      const daysSinceInstall = await Analytics.calculateDaysSince('first_launch_date');
+      await Analytics.track('user_activated', {
+        meetings_count: '1',
+        days_since_install: daysSinceInstall?.toString() || 'null',
+        first_meeting_duration_seconds: durationSeconds.toString()
+      });
+    }
+  }, []);
 
   // Expose handleRecordingStop function to window for Rust callbacks
   const handleRecordingStopRef = useRef(handleRecordingStop);

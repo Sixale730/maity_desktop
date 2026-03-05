@@ -571,17 +571,26 @@ impl RecordingManager {
 
         if let Some(device) = device {
             let device_arc: Arc<AudioDevice> = Arc::new(device);
+
+            // Send a device-switch flush signal to the pipeline to clear stale audio
+            // from the ring buffer before streams restart with the new device.
+            self.send_device_switch_flush();
+
             match device_type {
                 DeviceMonitorType::Microphone => {
                     let system_device = self.state.get_system_device();
                     self.stream_manager.stop_streams()?;
                     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-                    self.stream_manager.start_streams(Some(device_arc.clone()), system_device, None).await?;
-                    self.state.set_microphone_device(device_arc);
+                    self.stream_manager.start_streams(Some(device_arc.clone()), system_device.clone(), None).await?;
+                    self.state.set_microphone_device(device_arc.clone());
                     self.recording_saver.set_device_info(
                         Some(device_name.to_string()),
-                        self.state.get_system_device().as_ref().map(|d| d.name.clone()),
+                        system_device.as_ref().map(|d| d.name.clone()),
                     );
+
+                    // Update device monitor to watch the new device
+                    self.restart_device_monitor(Some(device_arc), system_device).await;
+
                     info!("✅ Microphone switched successfully to: {}", device_name);
                     Ok(true)
                 }
@@ -589,12 +598,16 @@ impl RecordingManager {
                     let microphone_device = self.state.get_microphone_device();
                     self.stream_manager.stop_streams()?;
                     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-                    self.stream_manager.start_streams(microphone_device, Some(device_arc.clone()), None).await?;
-                    self.state.set_system_device(device_arc);
+                    self.stream_manager.start_streams(microphone_device.clone(), Some(device_arc.clone()), None).await?;
+                    self.state.set_system_device(device_arc.clone());
                     self.recording_saver.set_device_info(
-                        self.state.get_microphone_device().as_ref().map(|d| d.name.clone()),
+                        microphone_device.as_ref().map(|d| d.name.clone()),
                         Some(device_name.to_string()),
                     );
+
+                    // Update device monitor to watch the new device
+                    self.restart_device_monitor(microphone_device, Some(device_arc)).await;
+
                     info!("✅ System audio switched successfully to: {}", device_name);
                     Ok(true)
                 }
@@ -602,6 +615,39 @@ impl RecordingManager {
         } else {
             warn!("❌ Device '{}' not found in available devices", device_name);
             Ok(false)
+        }
+    }
+
+    /// Send a device-switch flush signal through the pipeline to clear the ring buffer
+    fn send_device_switch_flush(&self) {
+        use super::recording_state::{AudioChunk, DeviceType as RecDT};
+        // Use chunk_id in range [u64::MAX-110, u64::MAX-100] to signal device switch
+        let flush_chunk = AudioChunk {
+            data: vec![],
+            sample_rate: 48000,
+            timestamp: 0.0,
+            chunk_id: u64::MAX - 100,
+            device_type: RecDT::Microphone,
+        };
+        match self.state.send_audio_chunk(flush_chunk) {
+            Ok(_) => info!("📤 Sent device-switch flush signal to pipeline"),
+            Err(e) => warn!("Failed to send device-switch flush signal: {}", e),
+        }
+    }
+
+    /// Restart the device monitor with updated devices
+    async fn restart_device_monitor(
+        &mut self,
+        microphone: Option<Arc<AudioDevice>>,
+        system_audio: Option<Arc<AudioDevice>>,
+    ) {
+        if let Some(ref mut monitor) = self.device_monitor {
+            monitor.stop_monitoring().await;
+            if let Err(e) = monitor.start_monitoring(microphone, system_audio) {
+                warn!("Failed to restart device monitoring after device switch: {}", e);
+            } else {
+                info!("✅ Device monitor restarted for new device");
+            }
         }
     }
 

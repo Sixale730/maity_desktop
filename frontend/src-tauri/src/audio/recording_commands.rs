@@ -3,11 +3,9 @@
 // Slim Tauri command layer for recording functionality.
 // Delegates to recording_lifecycle and recording_helpers for actual implementation.
 
-use anyhow::Result;
 use log::{error, info, warn};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::Ordering;
-use tauri::{AppHandle, Runtime};
 
 use super::{
     DeviceEvent,
@@ -279,27 +277,22 @@ pub async fn switch_audio_device(
         _ => return Err(format!("Invalid device type: {}", device_type)),
     };
 
-    // Check if recording is active
-    {
-        let manager_guard = RECORDING_MANAGER.lock().map_err(|e| format!("Recording manager lock poisoned: {}", e))?;
-        if manager_guard.is_none() {
-            return Err("Recording not active".to_string());
-        }
-    }
+    // Take the manager out of the mutex so we can call async methods without
+    // holding the MutexGuard across await points (MutexGuard is not Send).
+    let mut manager = {
+        let mut guard = RECORDING_MANAGER.lock()
+            .map_err(|e| format!("Recording manager lock poisoned: {}", e))?;
+        guard.take().ok_or_else(|| "Recording not active".to_string())?
+    };
 
-    let result = tokio::task::spawn_blocking(move || {
-        tokio::runtime::Handle::current().block_on(async {
-            let mut manager_guard = RECORDING_MANAGER.lock()
-                .map_err(|e| anyhow::anyhow!("Recording manager lock poisoned: {}", e))?;
-            if let Some(manager) = manager_guard.as_mut() {
-                manager.switch_audio_device(&device_name, monitor_type).await
-            } else {
-                Err(anyhow::anyhow!("Recording not active"))
-            }
-        })
-    })
-    .await
-    .map_err(|e| format!("Task join error: {}", e))?;
+    let result = manager.switch_audio_device(&device_name, monitor_type).await;
+
+    // Put the manager back
+    {
+        let mut guard = RECORDING_MANAGER.lock()
+            .map_err(|e| format!("Recording manager lock poisoned: {}", e))?;
+        *guard = Some(manager);
+    }
 
     match result {
         Ok(success) => {
@@ -330,27 +323,22 @@ pub async fn attempt_device_reconnect(
         _ => return Err(format!("Invalid device type: {}", device_type)),
     };
 
-    // Check if recording is active
-    {
-        let manager_guard = RECORDING_MANAGER.lock().map_err(|e| format!("Recording manager lock poisoned: {}", e))?;
-        if manager_guard.is_none() {
-            return Err("Recording not active".to_string());
-        }
-    }
+    // Take the manager out of the mutex so we can call async methods without
+    // holding the MutexGuard across await points (MutexGuard is not Send).
+    let mut manager = {
+        let mut guard = RECORDING_MANAGER.lock()
+            .map_err(|e| format!("Recording manager lock poisoned: {}", e))?;
+        guard.take().ok_or_else(|| "Recording not active".to_string())?
+    };
 
-    let result = tokio::task::spawn_blocking(move || {
-        tokio::runtime::Handle::current().block_on(async {
-            let mut manager_guard = RECORDING_MANAGER.lock()
-                .map_err(|e| anyhow::anyhow!("Recording manager lock poisoned: {}", e))?;
-            if let Some(manager) = manager_guard.as_mut() {
-                manager.attempt_device_reconnect(&device_name, monitor_type).await
-            } else {
-                Err(anyhow::anyhow!("Recording not active"))
-            }
-        })
-    })
-    .await
-    .map_err(|e| format!("Task join error: {}", e))?;
+    let result = manager.attempt_device_reconnect(&device_name, monitor_type).await;
+
+    // Put the manager back
+    {
+        let mut guard = RECORDING_MANAGER.lock()
+            .map_err(|e| format!("Recording manager lock poisoned: {}", e))?;
+        *guard = Some(manager);
+    }
 
     match result {
         Ok(success) => {
