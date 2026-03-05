@@ -159,7 +159,10 @@ export function ConversationDetail({ conversation: initialConversation, onClose,
       setConversation(updated);
       onConversationUpdate?.(updated);
       queryClient.invalidateQueries({ queryKey: ['omi-conversations'] });
-      toast.success('Analisis completado');
+      toast.info('Reanálisis iniciado. Te avisaremos cuando esté listo.');
+      // Reset ref so polling detects the NEW results, not old ones
+      prevAnalysisRef.current = { hadV4: false, hadMinutes: false };
+      setIsWaitingForAnalysis(true);
     },
     onError: (error: Error) => {
       toast.error('Error al analizar', { description: error.message });
@@ -228,7 +231,7 @@ export function ConversationDetail({ conversation: initialConversation, onClose,
           Volver
         </Button>
         <div className="flex items-center gap-2">
-          {reanalyzeMutation.isPending ? (
+          {reanalyzeMutation.isPending || isWaitingForAnalysis ? (
             <Button variant="outline" size="sm" disabled>
               <Loader2 className="h-4 w-4 mr-2 animate-spin" />
               Analizando...
