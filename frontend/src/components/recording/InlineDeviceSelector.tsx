@@ -9,12 +9,15 @@ interface InlineDeviceSelectorProps {
   currentMicDevice: string | null;
   currentSystemDevice: string | null;
   onDeviceSwitched: (deviceName: string, deviceType: 'Microphone' | 'SystemAudio') => void;
+  /** When false (preview), selecting a device only updates preferences without hot-swapping */
+  isRecording?: boolean;
 }
 
 export function InlineDeviceSelector({
   currentMicDevice,
   currentSystemDevice,
   onDeviceSwitched,
+  isRecording = true,
 }: InlineDeviceSelectorProps) {
   const [devices, setDevices] = useState<AudioDevice[]>([]);
   const [openDropdown, setOpenDropdown] = useState<'mic' | 'system' | null>(null);
@@ -48,6 +51,14 @@ export function InlineDeviceSelector({
   const handleSelect = useCallback(
     async (deviceName: string, deviceType: 'Microphone' | 'SystemAudio') => {
       setOpenDropdown(null);
+
+      if (!isRecording) {
+        // Preview mode: just update the preference, no hot-swap needed
+        onDeviceSwitched(deviceName, deviceType);
+        return;
+      }
+
+      // Recording mode: hot-swap the active device via Rust
       const switchType = deviceType === 'Microphone' ? 'mic' : 'system';
       setSwitching(switchType);
       try {
@@ -64,7 +75,7 @@ export function InlineDeviceSelector({
         setSwitching(null);
       }
     },
-    [onDeviceSwitched],
+    [isRecording, onDeviceSwitched],
   );
 
   // Close dropdown when clicking outside
