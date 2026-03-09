@@ -24,6 +24,9 @@ use log::info;
 use super::configuration::AudioDevice;
 use super::microphone::default_input_device;
 use super::speakers::default_output_device;
+use log::warn;
+use crate::audio::InputDeviceKind;
+use crate::audio::devices::find_builtin_input_device;
 
 /// Get safe recording devices with automatic Bluetooth fallback (macOS-specific)
 ///

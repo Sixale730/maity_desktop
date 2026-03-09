@@ -7,8 +7,8 @@ import { SidebarProvider } from '@/components/Sidebar/SidebarProvider'
 import MainContent from '@/components/MainContent'
 import AnalyticsProvider from '@/components/analytics/AnalyticsProvider'
 import { Toaster, toast } from 'sonner'
-import { useState, useEffect } from 'react'
-import { listen } from '@tauri-apps/api/event'
+import { useState, useEffect, useRef } from 'react'
+import { listen, emit } from '@tauri-apps/api/event'
 import { invoke } from '@tauri-apps/api/core'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { RecordingStateProvider } from '@/contexts/RecordingStateContext'
@@ -51,6 +51,42 @@ const sourceSans3 = Source_Sans_3({
 // export { metadata } from './metadata'
 
 /**
+ * SplashScreen: minimal loading screen with logo + spinner.
+ * Uses inline styles so it renders instantly without waiting for CSS/fonts.
+ */
+function SplashScreen() {
+  return (
+    <>
+    <style dangerouslySetInnerHTML={{ __html: '@keyframes spin{to{transform:rotate(360deg)}}' }} />
+    <div style={{
+      display: 'flex',
+      flexDirection: 'column',
+      alignItems: 'center',
+      justifyContent: 'center',
+      height: '100vh',
+      backgroundColor: '#000',
+      gap: '20px',
+    }}>
+      <img
+        src="icon_128x128.png"
+        alt="Maity"
+        style={{ width: 56, height: 56, opacity: 0.9 }}
+      />
+      <svg
+        style={{ width: 24, height: 24, animation: 'spin 1s linear infinite' }}
+        xmlns="http://www.w3.org/2000/svg"
+        fill="none"
+        viewBox="0 0 24 24"
+      >
+        <circle opacity="0.25" cx="12" cy="12" r="10" stroke="#a78bfa" strokeWidth="4" />
+        <path opacity="0.75" fill="#a78bfa" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+      </svg>
+    </div>
+    </>
+  )
+}
+
+/**
  * AuthGate: renders LoginScreen when not authenticated, otherwise renders children.
  * Must be used inside AuthProvider.
  */
@@ -87,14 +123,26 @@ function AuthGate({ children }: { children: React.ReactNode }) {
     }
   }, [isAuthenticated, maityUser, maityUserError, retryFetchMaityUser])
 
+  // Signal Tauri to show the window once we have real content (not splash).
+  // This runs once when auth resolves to any visible state.
+  const hasSignaledReady = useRef(false)
+  useEffect(() => {
+    if (!mounted || isLoading || hasSignaledReady.current) return
+    // At this point we have real UI to show (login, maityUser wait, or app)
+    hasSignaledReady.current = true
+    emit('app-ready').catch(() => {
+      // Silently ignore — may fail outside Tauri (e.g. browser dev)
+    })
+  }, [mounted, isLoading])
+
   // SSG hydration placeholder
   if (!mounted) {
-    return <div className="flex flex-col h-screen bg-background" />
+    return <SplashScreen />
   }
 
   // Auth loading state
   if (isLoading) {
-    return <div className="flex flex-col h-screen bg-background" />
+    return <SplashScreen />
   }
 
   // Not authenticated — show login
