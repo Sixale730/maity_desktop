@@ -13,6 +13,7 @@ import {
   OmiConversation,
   getOmiTranscriptSegments,
   getOmiConversation,
+  getLocalMeetingDetail,
   reanalyzeConversation,
   toggleActionItemCompleted,
   isAnalysisSkipped,
@@ -169,10 +170,24 @@ export function ConversationDetail({ conversation: initialConversation, onClose,
 
   const isLocalOnly = conversation.source === 'local';
 
-  const { data: segments, isLoading: loadingSegments } = useQuery({
+  // For local conversations selected from the list, transcript_text may be null.
+  // Fetch the full detail (with transcript) from SQLite.
+  useEffect(() => {
+    if (!isLocalOnly || conversation.transcript_text) return;
+    const localId = conversation._localId || conversation.id;
+    getLocalMeetingDetail(localId).then((detail) => {
+      if (detail?.transcript_text) {
+        setConversation((prev) => ({ ...prev, transcript_text: detail.transcript_text }));
+      }
+    }).catch((err) => console.warn('Error fetching local transcript detail:', err));
+  }, [isLocalOnly, conversation._localId, conversation.id, conversation.transcript_text]);
+
+  const { data: segments, isLoading: loadingSegments, error: segmentsError } = useQuery({
     queryKey: ['omi-segments', conversation.id],
     queryFn: () => getOmiTranscriptSegments(conversation.id),
     enabled: !isLocalOnly, // Skip Supabase fetch for local-only conversations
+    retry: 1, // Only retry once to avoid long loading states
+    staleTime: 1000 * 60 * 5, // Cache for 5 min
   });
 
   const reanalyzeMutation = useMutation({
@@ -532,9 +547,10 @@ export function ConversationDetail({ conversation: initialConversation, onClose,
             <CardContent className="p-0">
               <TranscriptSection
                 segments={segments}
-                loading={loadingSegments}
+                loading={loadingSegments && !segmentsError}
                 fallbackText={conversation.transcript_text}
                 userName={maityUser?.first_name ?? undefined}
+                error={segmentsError ? String(segmentsError) : undefined}
               />
             </CardContent>
           </Card>

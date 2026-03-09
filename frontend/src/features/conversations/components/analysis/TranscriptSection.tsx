@@ -7,6 +7,7 @@ interface TranscriptSectionProps {
   loading: boolean;
   fallbackText?: string | null;
   userName?: string;
+  error?: string;
 }
 
 const GENERIC_LABELS = new Set([
@@ -25,7 +26,19 @@ function resolveSpeakerLabel(segment: OmiTranscriptSegment, userName?: string): 
   return segment.is_user ? (userName || 'Tú') : 'Interlocutor';
 }
 
-export function TranscriptSection({ segments, loading, fallbackText, userName }: TranscriptSectionProps) {
+export function TranscriptSection({ segments, loading, fallbackText, userName, error }: TranscriptSectionProps) {
+  // On error, skip loading and try fallback text
+  if (error && fallbackText) {
+    return (
+      <div className="p-4">
+        <p className="text-xs text-muted-foreground mb-3">No se pudieron cargar los segmentos. Mostrando transcripción completa.</p>
+        <p className="text-sm whitespace-pre-wrap text-muted-foreground">
+          {fallbackText}
+        </p>
+      </div>
+    );
+  }
+
   if (loading) {
     return (
       <div className="space-y-4 p-4">
