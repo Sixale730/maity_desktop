@@ -1,8 +1,8 @@
 'use client';
 
-import { useState, useCallback, useRef, useEffect } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { ChevronDown, Loader2 } from 'lucide-react';
+import { ChevronUp, Loader2 } from 'lucide-react';
 import type { AudioDevice } from '@/types/audio';
 
 interface InlineDeviceSelectorProps {
@@ -22,7 +22,6 @@ export function InlineDeviceSelector({
   const [devices, setDevices] = useState<AudioDevice[]>([]);
   const [openDropdown, setOpenDropdown] = useState<'mic' | 'system' | null>(null);
   const [switching, setSwitching] = useState<'mic' | 'system' | null>(null);
-  const dropdownRef = useRef<HTMLDivElement>(null);
 
   const inputDevices = devices.filter((d) => d.device_type === 'Input');
   const outputDevices = devices.filter((d) => d.device_type === 'Output');
@@ -35,6 +34,11 @@ export function InlineDeviceSelector({
       console.error('Failed to fetch audio devices:', err);
     }
   }, []);
+
+  // Pre-fetch devices on mount so the list is ready before first open
+  useEffect(() => {
+    fetchDevices();
+  }, [fetchDevices]);
 
   const handleOpen = useCallback(
     (type: 'mic' | 'system') => {
@@ -78,30 +82,27 @@ export function InlineDeviceSelector({
     [isRecording, onDeviceSwitched],
   );
 
-  // Close dropdown when clicking outside
-  useEffect(() => {
-    const handler = (e: MouseEvent) => {
-      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
-        setOpenDropdown(null);
-      }
-    };
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
-  }, []);
-
   const truncate = (s: string | null, max: number) => {
     if (!s) return 'Predeterminado';
     return s.length > max ? s.slice(0, max) + '...' : s;
   };
 
   return (
-    <div ref={dropdownRef} className="flex items-center gap-2 text-[10px] relative">
+    <>
+      {/* Fullscreen backdrop: blocks clicks to content behind when dropdown is open */}
+      {openDropdown !== null && (
+        <div
+          className="fixed inset-0 z-40 bg-black/20"
+          onClick={() => setOpenDropdown(null)}
+        />
+      )}
+    <div className="flex items-center gap-2 text-[10px] relative">
       {/* Mic selector */}
       <div className="relative">
         <button
           onClick={() => handleOpen('mic')}
           disabled={switching === 'mic'}
-          className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-[#485df4]/10 hover:bg-[#485df4]/20 text-[#485df4] transition-colors max-w-[140px]"
+          className="flex items-center gap-1 px-2 py-1 rounded bg-[#485df4] hover:bg-[#3a4ed6] text-white transition-colors max-w-[140px] cursor-pointer select-none"
           title={currentMicDevice || 'Predeterminado'}
         >
           {switching === 'mic' ? (
@@ -110,10 +111,10 @@ export function InlineDeviceSelector({
             <span>🎤</span>
           )}
           <span className="truncate">{truncate(currentMicDevice, 16)}</span>
-          <ChevronDown className="h-3 w-3 flex-shrink-0" />
+          <ChevronUp className="h-3 w-3 flex-shrink-0" />
         </button>
         {openDropdown === 'mic' && (
-          <div className="absolute top-full left-0 mt-1 z-50 bg-card border border-border rounded-md shadow-lg py-1 min-w-[200px] max-h-[200px] overflow-y-auto">
+          <div className="absolute bottom-full left-0 mb-1 z-[60] bg-card border border-border rounded-md shadow-lg py-1 min-w-[200px] max-h-[200px] overflow-y-auto">
             {inputDevices.length === 0 ? (
               <div className="px-3 py-2 text-muted-foreground">Sin dispositivos</div>
             ) : (
@@ -136,7 +137,7 @@ export function InlineDeviceSelector({
         <button
           onClick={() => handleOpen('system')}
           disabled={switching === 'system'}
-          className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-[#10b981]/10 hover:bg-[#10b981]/20 text-[#10b981] transition-colors max-w-[140px]"
+          className="flex items-center gap-1 px-2 py-1 rounded bg-[#10b981] hover:bg-[#0d9668] text-white transition-colors max-w-[140px] cursor-pointer select-none"
           title={currentSystemDevice || 'Predeterminado'}
         >
           {switching === 'system' ? (
@@ -145,10 +146,10 @@ export function InlineDeviceSelector({
             <span>🔊</span>
           )}
           <span className="truncate">{truncate(currentSystemDevice, 16)}</span>
-          <ChevronDown className="h-3 w-3 flex-shrink-0" />
+          <ChevronUp className="h-3 w-3 flex-shrink-0" />
         </button>
         {openDropdown === 'system' && (
-          <div className="absolute top-full left-0 mt-1 z-50 bg-card border border-border rounded-md shadow-lg py-1 min-w-[200px] max-h-[200px] overflow-y-auto">
+          <div className="absolute bottom-full left-0 mb-1 z-[60] bg-card border border-border rounded-md shadow-lg py-1 min-w-[200px] max-h-[200px] overflow-y-auto">
             {outputDevices.length === 0 ? (
               <div className="px-3 py-2 text-muted-foreground">Sin dispositivos</div>
             ) : (
@@ -166,5 +167,6 @@ export function InlineDeviceSelector({
         )}
       </div>
     </div>
+    </>
   );
 }
