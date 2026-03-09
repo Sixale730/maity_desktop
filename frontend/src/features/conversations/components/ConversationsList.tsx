@@ -143,13 +143,13 @@ export function ConversationsList({ onSelect, selectedId }: ConversationsListPro
                     <div className="flex items-center gap-4 text-xs text-muted-foreground">
                       <span className="flex items-center gap-1">
                         <Clock className="h-3 w-3" />
-                        {formatDuration(conversation.duration_seconds)}
+                        Duración: {formatDuration(conversation.duration_seconds)}
                       </span>
                       <span className="flex items-center gap-1">
                         <MessageSquare className="h-3 w-3" />
                         {conversation.words_count || 0} palabras
                       </span>
-                      <span>{formatDate(conversation.created_at)}</span>
+                      <span>{formatDate(conversation.started_at ?? conversation.created_at)}</span>
                     </div>
                   </div>
                   <div className="flex flex-col items-end gap-2">

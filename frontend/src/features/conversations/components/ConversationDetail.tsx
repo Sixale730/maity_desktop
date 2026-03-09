@@ -1,8 +1,8 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { ArrowLeft, Clock, MessageSquare, Calendar, Sparkles, X, RefreshCw, Loader2, FileText } from 'lucide-react';
+import { ArrowLeft, Clock, MessageSquare, Calendar, Sparkles, X, RefreshCw, Loader2, FileText, Copy, Check } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -94,6 +94,7 @@ function buildSpeakerNameMap(
 export function ConversationDetail({ conversation: initialConversation, onClose, onConversationUpdate, isAnalyzing }: ConversationDetailProps) {
   const [conversation, setConversation] = useState(initialConversation);
   const [isWaitingForAnalysis, setIsWaitingForAnalysis] = useState(isAnalyzing ?? false);
+  const [copied, setCopied] = useState(false);
   const queryClient = useQueryClient();
   const { maityUser } = useAuth();
   const prevAnalysisRef = useRef({ hadV4: !!initialConversation.communication_feedback_v4, hadMinutes: !!initialConversation.meeting_minutes_data });
@@ -248,6 +249,15 @@ export function ConversationDetail({ conversation: initialConversation, onClose,
     minutaData?.meta?.participantes,
   );
 
+  const truncateId = (id: string) =>
+    id.length > 14 ? `${id.slice(0, 6)}...${id.slice(-6)}` : id;
+
+  const handleCopyId = useCallback(() => {
+    navigator.clipboard.writeText(conversation.id);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  }, [conversation.id]);
+
   return (
     <div className="flex-1 min-h-0 overflow-y-auto p-4 bg-background">
       {/* Close button */}
@@ -291,17 +301,31 @@ export function ConversationDetail({ conversation: initialConversation, onClose,
         <div className="flex flex-wrap items-center gap-4 text-sm text-muted-foreground">
           <span className="flex items-center gap-1">
             <Calendar className="h-4 w-4" />
-            {formatDate(conversation.created_at)}
+            {formatDate(conversation.started_at ?? conversation.created_at)}
           </span>
           <span className="flex items-center gap-1">
             <Clock className="h-4 w-4" />
-            {formatDuration(conversation.duration_seconds)}
+            Duración: {formatDuration(conversation.duration_seconds)}
           </span>
           <span className="flex items-center gap-1">
             <MessageSquare className="h-4 w-4" />
             {conversation.words_count || 0} palabras
           </span>
           {conversation.category && <Badge variant="secondary">{conversation.category}</Badge>}
+        </div>
+        <div className="flex items-center gap-2 text-xs text-muted-foreground mt-1">
+          <span className="font-mono">ID: {truncateId(conversation.id)}</span>
+          <button
+            onClick={handleCopyId}
+            className="p-0.5 rounded hover:bg-muted transition-colors"
+            title="Copiar ID completo"
+          >
+            {copied ? (
+              <Check className="h-3.5 w-3.5 text-green-500" />
+            ) : (
+              <Copy className="h-3.5 w-3.5" />
+            )}
+          </button>
         </div>
       </div>
 
