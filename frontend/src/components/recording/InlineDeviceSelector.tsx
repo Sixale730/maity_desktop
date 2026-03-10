@@ -114,7 +114,7 @@ export function InlineDeviceSelector({
           <ChevronUp className="h-3 w-3 flex-shrink-0" />
         </button>
         {openDropdown === 'mic' && (
-          <div className="absolute bottom-full left-0 mb-1 z-[60] bg-card border border-border rounded-md shadow-lg py-1 min-w-[200px] max-h-[200px] overflow-y-auto">
+          <div className="absolute bottom-full left-0 mb-1 z-[60] bg-white dark:bg-gray-900 border border-border rounded-md shadow-lg py-1 min-w-[200px] max-h-[200px] overflow-y-auto">
             {inputDevices.length === 0 ? (
               <div className="px-3 py-2 text-muted-foreground">Sin dispositivos</div>
             ) : (
@@ -149,7 +149,7 @@ export function InlineDeviceSelector({
           <ChevronUp className="h-3 w-3 flex-shrink-0" />
         </button>
         {openDropdown === 'system' && (
-          <div className="absolute bottom-full left-0 mb-1 z-[60] bg-card border border-border rounded-md shadow-lg py-1 min-w-[200px] max-h-[200px] overflow-y-auto">
+          <div className="absolute bottom-full left-0 mb-1 z-[60] bg-white dark:bg-gray-900 border border-border rounded-md shadow-lg py-1 min-w-[200px] max-h-[200px] overflow-y-auto">
             {outputDevices.length === 0 ? (
               <div className="px-3 py-2 text-muted-foreground">Sin dispositivos</div>
             ) : (

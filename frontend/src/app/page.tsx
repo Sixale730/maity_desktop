@@ -222,7 +222,7 @@ export default function Home() {
                 }}
               >
                 <div className="w-2/3 max-w-[750px] flex justify-center">
-                  <div className="bg-card rounded-full shadow-lg flex items-center">
+                  <div className="bg-white dark:bg-gray-900 rounded-full shadow-lg flex items-center">
                     <RecordingControls
                       isRecording={isRecording}
                       onRecordingStop={(callApi = true) => handleRecordingStop(callApi)}
