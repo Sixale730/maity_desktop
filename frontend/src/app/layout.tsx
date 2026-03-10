@@ -7,8 +7,8 @@ import { SidebarProvider } from '@/components/Sidebar/SidebarProvider'
 import MainContent from '@/components/MainContent'
 import AnalyticsProvider from '@/components/analytics/AnalyticsProvider'
 import { Toaster, toast } from 'sonner'
-import { useState, useEffect, useRef } from 'react'
-import { listen, emit } from '@tauri-apps/api/event'
+import { useState, useEffect } from 'react'
+import { listen } from '@tauri-apps/api/event'
 import { invoke } from '@tauri-apps/api/core'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { RecordingStateProvider } from '@/contexts/RecordingStateContext'
@@ -122,18 +122,6 @@ function AuthGate({ children }: { children: React.ReactNode }) {
       clearTimeout(timeout)
     }
   }, [isAuthenticated, maityUser, maityUserError, retryFetchMaityUser])
-
-  // Signal Tauri to show the window once we have real content (not splash).
-  // This runs once when auth resolves to any visible state.
-  const hasSignaledReady = useRef(false)
-  useEffect(() => {
-    if (!mounted || isLoading || hasSignaledReady.current) return
-    // At this point we have real UI to show (login, maityUser wait, or app)
-    hasSignaledReady.current = true
-    emit('app-ready').catch(() => {
-      // Silently ignore — may fail outside Tauri (e.g. browser dev)
-    })
-  }, [mounted, isLoading])
 
   // SSG hydration placeholder
   if (!mounted) {
