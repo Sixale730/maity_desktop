@@ -9,10 +9,13 @@ pub struct MeetingsRepository;
 
 impl MeetingsRepository {
     pub async fn get_meetings(pool: &SqlitePool) -> Result<Vec<MeetingModel>, sqlx::Error> {
-        let meetings =
-            sqlx::query_as::<_, MeetingModel>("SELECT * FROM meetings ORDER BY created_at DESC")
-                .fetch_all(pool)
-                .await?;
+        let meetings = sqlx::query_as::<_, MeetingModel>(
+            "SELECT m.* FROM meetings m
+             WHERE EXISTS (SELECT 1 FROM transcripts t WHERE t.meeting_id = m.id)
+             ORDER BY m.created_at DESC",
+        )
+        .fetch_all(pool)
+        .await?;
         Ok(meetings)
     }
 
@@ -219,6 +222,25 @@ impl MeetingsRepository {
         }
         transaction.commit().await?;
         Ok(true)
+    }
+
+    /// Delete meetings that have no transcripts and were created more than 5 minutes ago.
+    /// The grace period protects meetings that are currently being recorded.
+    pub async fn cleanup_empty_meetings(pool: &SqlitePool) -> Result<u64, SqlxError> {
+        let five_minutes_ago = Utc::now() - chrono::Duration::minutes(5);
+        let result = sqlx::query(
+            "DELETE FROM meetings WHERE NOT EXISTS (
+                SELECT 1 FROM transcripts t WHERE t.meeting_id = meetings.id
+            ) AND created_at < ?",
+        )
+        .bind(five_minutes_ago)
+        .execute(pool)
+        .await?;
+        let deleted = result.rows_affected();
+        if deleted > 0 {
+            info!("Cleaned up {} empty/ghost meetings", deleted);
+        }
+        Ok(deleted)
     }
 
     pub async fn update_meeting_name(

@@ -2,6 +2,7 @@ use log::info;
 use tauri::{AppHandle, Emitter, Manager};
 
 use super::manager::DatabaseManager;
+use super::repositories::meeting::MeetingsRepository;
 use crate::state::AppState;
 
 /// Initialize database on app startup
@@ -32,6 +33,14 @@ pub async fn initialize_database_on_startup(app: &AppHandle) -> Result<(), Strin
 
         app.manage(AppState { db_manager });
         info!("Database initialized successfully");
+
+        // Clean up ghost meetings (no transcripts, older than 5 minutes)
+        let pool = app.state::<AppState>().db_manager.pool().clone();
+        tauri::async_runtime::spawn(async move {
+            if let Err(e) = MeetingsRepository::cleanup_empty_meetings(&pool).await {
+                log::warn!("Failed to cleanup empty meetings: {}", e);
+            }
+        });
     }
 
     Ok(())

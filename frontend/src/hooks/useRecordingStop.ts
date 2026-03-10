@@ -263,6 +263,21 @@ export function useRecordingStop(
             is_call_api: isCallApi,
             transcript_count: 0,
           }, 'skipped');
+
+          // Delete ghost meeting created at recording start
+          const earlyMeetingId = sessionStorage.getItem('early_meeting_id');
+          if (earlyMeetingId) {
+            try {
+              await invoke('api_delete_meeting', { meetingId: earlyMeetingId, authToken: null });
+              console.log(`[RecordingStop] Deleted ghost meeting: ${earlyMeetingId}`);
+            } catch (err) {
+              console.warn(`[RecordingStop] Failed to delete ghost meeting:`, err);
+            }
+          }
+          // Clean up sessionStorage (not cleaned in this branch otherwise)
+          sessionStorage.removeItem('early_meeting_id');
+          sessionStorage.removeItem('last_recording_folder_path');
+          sessionStorage.removeItem('last_recording_meeting_name');
         }
         setStatus(RecordingStatus.IDLE);
       }
