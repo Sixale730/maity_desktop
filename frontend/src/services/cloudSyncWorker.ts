@@ -302,7 +302,7 @@ class CloudSyncWorkerImpl {
 
     // Notify UI that finalize completed
     window.dispatchEvent(new CustomEvent('finalize-completed', {
-      detail: { conversationId },
+      detail: { conversationId, meetingId: job.meeting_id },
     }));
 
     return { ok: true, conversation_id: conversationId };

@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft, Clock, MessageSquare, Calendar, Sparkles, X, RefreshCw, Loader2, FileText, Copy, Check } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
@@ -12,13 +12,14 @@ import { useAuth } from '@/contexts/AuthContext';
 import {
   OmiConversation,
   getOmiTranscriptSegments,
-  getOmiConversation,
   getLocalMeetingDetail,
   reanalyzeConversation,
   toggleActionItemCompleted,
   isAnalysisSkipped,
   isFullAnalysis,
 } from '../services/conversations.service';
+import { useAnalysisPolling } from '../hooks/useAnalysisPolling';
+import { AnalysisStatusBanner } from './AnalysisStatusBanner';
 import {
   ResumenHero,
   TuRadarCard,
@@ -94,79 +95,24 @@ function buildSpeakerNameMap(
 
 export function ConversationDetail({ conversation: initialConversation, onClose, onConversationUpdate, isAnalyzing }: ConversationDetailProps) {
   const [conversation, setConversation] = useState(initialConversation);
-  const [isWaitingForAnalysis, setIsWaitingForAnalysis] = useState(isAnalyzing ?? false);
   const [copied, setCopied] = useState(false);
   const queryClient = useQueryClient();
   const { maityUser } = useAuth();
-  const prevAnalysisRef = useRef({ hadV4: !!initialConversation.communication_feedback_v4, hadMinutes: !!initialConversation.meeting_minutes_data });
 
-  // Poll for analysis completion when isAnalyzing is true.
-  // V4 and minutes now run in separate Vercel runtimes, so they may arrive at different times.
-  // Update state on each partial result; stop polling when both are present or timeout (300s).
-  // Skip polling for local-only conversations (no Supabase record to poll).
-  useEffect(() => {
-    if (!isWaitingForAnalysis || conversation.source === 'local') return;
-    const interval = setInterval(async () => {
-      try {
-        const updated = await getOmiConversation(conversation.id);
-        if (!updated) return;
-        const hasV4 = isFullAnalysis(updated.communication_feedback_v4) || isAnalysisSkipped(updated.communication_feedback_v4);
-        const hasMinutes = !!updated.meeting_minutes_data;
-        const prev = prevAnalysisRef.current;
-
-        // Update conversation state whenever new data arrives
-        if ((hasV4 && !prev.hadV4) || (hasMinutes && !prev.hadMinutes)) {
-          prevAnalysisRef.current = { hadV4: hasV4, hadMinutes: hasMinutes };
-          setConversation(updated);
-          onConversationUpdate?.(updated);
-          queryClient.invalidateQueries({ queryKey: ['omi-conversations'] });
-        }
-
-        // Stop polling when both analyses are complete
-        if (hasV4 && hasMinutes) {
-          setIsWaitingForAnalysis(false);
-          toast.success('Análisis completado');
-        }
-      } catch (err) {
-        console.warn('Error polling for analysis:', err);
-      }
-    }, 5000);
-    const timeout = setTimeout(() => {
-      setIsWaitingForAnalysis(false);
-      toast.info('El análisis está tardando. Puedes reanalizar manualmente.');
-    }, 300000);
-    return () => { clearInterval(interval); clearTimeout(timeout); };
-  }, [isWaitingForAnalysis, conversation.id, onConversationUpdate, queryClient]);
-
-  // Listen for finalize-completed event from useRecordingStop fire-and-forget.
-  // Now that finalize uses waitUntil (fire-and-forget), this event arrives BEFORE
-  // analyses complete. Only stop polling if both results are already present.
-  useEffect(() => {
-    const handler = async (e: Event) => {
-      const detail = (e as CustomEvent).detail;
-      if (detail?.conversationId === conversation.id) {
-        try {
-          const updated = await getOmiConversation(conversation.id);
-          if (updated) {
-            setConversation(updated);
-            onConversationUpdate?.(updated);
-            queryClient.invalidateQueries({ queryKey: ['omi-conversations'] });
-            const bothDone = (isFullAnalysis(updated.communication_feedback_v4) || isAnalysisSkipped(updated.communication_feedback_v4)) && !!updated.meeting_minutes_data;
-            if (bothDone) {
-              setIsWaitingForAnalysis(false);
-            } else {
-              // Finalize returned but analyses are still processing — start/keep polling
-              setIsWaitingForAnalysis(true);
-            }
-          }
-        } catch (err) {
-          console.warn('Error refetching after finalize-completed:', err);
-        }
-      }
-    };
-    window.addEventListener('finalize-completed', handler);
-    return () => window.removeEventListener('finalize-completed', handler);
-  }, [conversation.id, onConversationUpdate, queryClient]);
+  // Analysis polling hook — handles both local and cloud conversations,
+  // auto-retries on timeout, and listens for sync worker events.
+  const analysisPolling = useAnalysisPolling({
+    conversation,
+    enabled: isAnalyzing ?? false,
+    onUpdate: (updated) => {
+      setConversation(updated);
+      onConversationUpdate?.(updated);
+    },
+    onComplete: () => {
+      toast.success('Análisis completado');
+    },
+  });
+  const isAnalysisActive = analysisPolling.isActive;
 
   const isLocalOnly = conversation.source === 'local';
 
@@ -198,9 +144,7 @@ export function ConversationDetail({ conversation: initialConversation, onClose,
       onConversationUpdate?.(updated);
       queryClient.invalidateQueries({ queryKey: ['omi-conversations'] });
       toast.info('Reanálisis iniciado. Te avisaremos cuando esté listo.');
-      // Reset ref so polling detects the NEW results, not old ones
-      prevAnalysisRef.current = { hadV4: false, hadMinutes: false };
-      setIsWaitingForAnalysis(true);
+      analysisPolling.startPolling();
     },
     onError: (error: Error) => {
       toast.error('Error al analizar', { description: error.message });
@@ -282,7 +226,7 @@ export function ConversationDetail({ conversation: initialConversation, onClose,
           Volver
         </Button>
         <div className="flex items-center gap-2">
-          {reanalyzeMutation.isPending || isWaitingForAnalysis ? (
+          {reanalyzeMutation.isPending || isAnalysisActive ? (
             <Button variant="outline" size="sm" disabled>
               <Loader2 className="h-4 w-4 mr-2 animate-spin" />
               Analizando...
@@ -343,6 +287,16 @@ export function ConversationDetail({ conversation: initialConversation, onClose,
           </button>
         </div>
       </div>
+
+      {/* Analysis status banner */}
+      <AnalysisStatusBanner
+        phase={analysisPolling.phase}
+        hasV4={analysisPolling.hasV4}
+        hasMinuta={analysisPolling.hasMinuta}
+        retryCount={analysisPolling.retryCount}
+        error={analysisPolling.error}
+        onRetry={analysisPolling.retryManually}
+      />
 
       {/* 3 Tabs: Análisis + Minuta + Transcripción */}
       <Tabs defaultValue="analisis">
@@ -435,7 +389,7 @@ export function ConversationDetail({ conversation: initialConversation, onClose,
             /* No analysis yet */
             <Card>
               <CardContent className="p-12 text-center">
-                {isWaitingForAnalysis ? (
+                {isAnalysisActive ? (
                   <>
                     <Loader2 className="h-12 w-12 mx-auto text-primary mb-4 animate-spin" />
                     <h3 className="text-lg font-medium mb-2 text-foreground">Analizando con Maity...</h3>
@@ -523,7 +477,7 @@ export function ConversationDetail({ conversation: initialConversation, onClose,
           )() : (
             <Card>
               <CardContent className="p-12 text-center">
-                {isWaitingForAnalysis ? (
+                {isAnalysisActive ? (
                   <>
                     <Loader2 className="h-12 w-12 mx-auto text-primary mb-4 animate-spin" />
                     <h3 className="text-lg font-medium mb-2 text-foreground">Generando minuta...</h3>

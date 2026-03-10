@@ -2,7 +2,7 @@
 
 import { useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { AudioLines, Clock, MessageSquare, ChevronRight, Sparkles, FileText, ListChecks, RefreshCw, CloudOff } from 'lucide-react';
+import { AudioLines, Clock, MessageSquare, ChevronRight, Sparkles, FileText, ListChecks, RefreshCw } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -155,7 +155,7 @@ export function ConversationsList({ onSelect, selectedId }: ConversationsListPro
                   <div className="flex flex-col items-end gap-2">
                     {conversation.source === 'local' && !conversation.communication_feedback_v4 && (
                       <Badge variant="outline" className="text-xs gap-1 text-amber-600 border-amber-300">
-                        <CloudOff className="h-3 w-3" />
+                        <RefreshCw className="h-3 w-3 animate-spin" />
                         Sincronizando...
                       </Badge>
                     )}
