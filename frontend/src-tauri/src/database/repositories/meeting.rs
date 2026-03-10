@@ -3,16 +3,14 @@ use crate::database::models::{MeetingModel, Transcript};
 use chrono::Utc;
 use sqlx::{Connection, Error as SqlxError, SqliteConnection, SqlitePool};
 use tracing::{error, info};
-use uuid::Uuid;
+
 
 pub struct MeetingsRepository;
 
 impl MeetingsRepository {
     pub async fn get_meetings(pool: &SqlitePool) -> Result<Vec<MeetingModel>, sqlx::Error> {
         let meetings = sqlx::query_as::<_, MeetingModel>(
-            "SELECT m.* FROM meetings m
-             WHERE EXISTS (SELECT 1 FROM transcripts t WHERE t.meeting_id = m.id)
-             ORDER BY m.created_at DESC",
+            "SELECT * FROM meetings ORDER BY created_at DESC",
         )
         .fetch_all(pool)
         .await?;
@@ -170,29 +168,6 @@ impl MeetingsRepository {
         Ok((transcripts, total.0))
     }
 
-    /// Create a meeting early (at recording start) with just a title, no transcripts.
-    /// Returns the meeting_id for later association with transcripts.
-    pub async fn create_meeting_early(
-        pool: &SqlitePool,
-        meeting_title: &str,
-    ) -> Result<String, SqlxError> {
-        let meeting_id = format!("meeting-{}", Uuid::new_v4());
-        let now = Utc::now();
-
-        sqlx::query(
-            "INSERT INTO meetings (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)",
-        )
-        .bind(&meeting_id)
-        .bind(meeting_title)
-        .bind(now)
-        .bind(now)
-        .execute(pool)
-        .await?;
-
-        info!("Created early meeting '{}' with id: {}", meeting_title, meeting_id);
-        Ok(meeting_id)
-    }
-
     pub async fn update_meeting_title(
         pool: &SqlitePool,
         meeting_id: &str,
@@ -222,25 +197,6 @@ impl MeetingsRepository {
         }
         transaction.commit().await?;
         Ok(true)
-    }
-
-    /// Delete meetings that have no transcripts and were created more than 5 minutes ago.
-    /// The grace period protects meetings that are currently being recorded.
-    pub async fn cleanup_empty_meetings(pool: &SqlitePool) -> Result<u64, SqlxError> {
-        let five_minutes_ago = Utc::now() - chrono::Duration::minutes(5);
-        let result = sqlx::query(
-            "DELETE FROM meetings WHERE NOT EXISTS (
-                SELECT 1 FROM transcripts t WHERE t.meeting_id = meetings.id
-            ) AND created_at < ?",
-        )
-        .bind(five_minutes_ago)
-        .execute(pool)
-        .await?;
-        let deleted = result.rows_affected();
-        if deleted > 0 {
-            info!("Cleaned up {} empty/ghost meetings", deleted);
-        }
-        Ok(deleted)
     }
 
     pub async fn update_meeting_name(

@@ -234,17 +234,11 @@ export function useRecordingStart(
       trigger,
     }, 'success');
 
-    // Create meeting early in SQLite
-    try {
-      const earlyResult = await invoke<{ meeting_id: string }>('api_create_meeting_early', {
-        meetingTitle: title,
-      });
-      recordingLogService.setMeetingId(earlyResult.meeting_id);
-      sessionStorage.setItem('early_meeting_id', earlyResult.meeting_id);
-      recordingLogService.log('meeting_created_early', { meeting_id: earlyResult.meeting_id }, 'success');
-    } catch (err) {
-      recordingLogService.log('meeting_created_early', null, 'error', err instanceof Error ? err.message : String(err));
-    }
+    // Generate meeting ID in frontend (no DB insert — meeting created atomically when saving transcripts)
+    const meetingId = `meeting-${crypto.randomUUID()}`;
+    recordingLogService.setMeetingId(meetingId);
+    sessionStorage.setItem('early_meeting_id', meetingId);
+    recordingLogService.log('meeting_id_generated', { meeting_id: meetingId }, 'success');
 
     // Set STARTING status before initiating backend recording
     setStatus(RecordingStatus.STARTING, 'Initializing recording...');

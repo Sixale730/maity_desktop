@@ -634,31 +634,6 @@ pub async fn api_save_meeting_title<R: Runtime>(
     }
 }
 
-/// Create a meeting early (at recording start) before transcripts are available
-#[tauri::command]
-pub async fn api_create_meeting_early<R: Runtime>(
-    _app: AppHandle<R>,
-    state: tauri::State<'_, AppState>,
-    meeting_title: String,
-) -> Result<serde_json::Value, String> {
-    log_info!("api_create_meeting_early called for: {}", meeting_title);
-    let pool = state.db_manager.pool();
-
-    match MeetingsRepository::create_meeting_early(pool, &meeting_title).await {
-        Ok(meeting_id) => {
-            log_info!("Early meeting created with id: {}", meeting_id);
-            Ok(serde_json::json!({
-                "status": "success",
-                "meeting_id": meeting_id
-            }))
-        }
-        Err(e) => {
-            log_error!("Failed to create early meeting '{}': {}", meeting_title, e);
-            Err(format!("Failed to create early meeting: {}", e))
-        }
-    }
-}
-
 #[tauri::command]
 pub async fn api_save_transcript<R: Runtime>(
     _app: AppHandle<R>,
@@ -707,53 +682,26 @@ pub async fn api_save_transcript<R: Runtime>(
 
     let pool = state.db_manager.pool();
 
-    // If an early meeting_id was provided, save to that existing meeting
-    if let Some(ref early_id) = meeting_id {
-        log_info!("Saving transcripts to existing early meeting: {}", early_id);
-        match TranscriptsRepository::save_transcript_to_existing_meeting(
-            pool,
-            early_id,
-            &meeting_title,
-            &transcripts_to_save,
-            folder_path,
-        )
-        .await
-        {
-            Ok(mid) => {
-                log_info!("Successfully saved transcripts to existing meeting: {}", mid);
-                Ok(serde_json::json!({
-                    "status": "success",
-                    "message": "Transcript saved to existing meeting",
-                    "meeting_id": mid
-                }))
-            }
-            Err(e) => {
-                log_error!("Error saving to existing meeting '{}': {}", early_id, e);
-                Err(format!("Failed to save transcript: {}", e))
-            }
+    match TranscriptsRepository::save_transcript(
+        pool,
+        &meeting_title,
+        &transcripts_to_save,
+        folder_path,
+        meeting_id,
+    )
+    .await
+    {
+        Ok(mid) => {
+            log_info!("Successfully saved transcript and created meeting with id: {}", mid);
+            Ok(serde_json::json!({
+                "status": "success",
+                "message": "Transcript saved successfully",
+                "meeting_id": mid
+            }))
         }
-    } else {
-        // No early meeting_id — create a new meeting (legacy path)
-        match TranscriptsRepository::save_transcript(
-            pool,
-            &meeting_title,
-            &transcripts_to_save,
-            folder_path,
-        )
-        .await
-        {
-            Ok(mid) => {
-                log_info!("Successfully saved transcript and created meeting with id: {}", mid);
-                Ok(serde_json::json!({
-                    "status": "success",
-                    "message": "Transcript saved successfully",
-                    "meeting_id": mid
-                }))
-            }
-            Err(e) => {
-                log_error!("Error saving transcript for meeting '{}': {}", meeting_title, e);
-                Err(format!("Failed to save transcript: {}", e))
-            }
+        Err(e) => {
+            log_error!("Error saving transcript for meeting '{}': {}", meeting_title, e);
+            Err(format!("Failed to save transcript: {}", e))
         }
     }
 }
