@@ -443,13 +443,13 @@ pub fn run() {
                 }
             });
 
-            // Safety fallback: show window after 15s even if frontend hasn't signaled
+            // Safety fallback: show window after 3s even if frontend hasn't signaled
             let app_handle_for_fallback = _app.handle().clone();
             std::thread::spawn(move || {
-                std::thread::sleep(std::time::Duration::from_secs(15));
+                std::thread::sleep(std::time::Duration::from_secs(3));
                 if let Some(window) = app_handle_for_fallback.get_webview_window("main") {
                     if !window.is_visible().unwrap_or(true) {
-                        log::warn!("Fallback: showing window after 15s timeout");
+                        log::warn!("Fallback: showing window after 3s timeout");
                         let _ = window.show();
                         let _ = window.set_focus();
                     }
