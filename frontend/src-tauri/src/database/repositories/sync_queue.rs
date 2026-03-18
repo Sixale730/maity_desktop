@@ -240,4 +240,22 @@ impl SyncQueueRepository {
 
         Ok(result.rows_affected())
     }
+
+    /// Get result_data from a completed finalize_conversation job for a meeting.
+    /// Used to recover the Supabase conversation_id when DOM events were missed.
+    pub async fn get_completed_finalize_result(
+        pool: &SqlitePool,
+        meeting_id: &str,
+    ) -> Result<Option<String>, SqlxError> {
+        let row: Option<(Option<String>,)> = sqlx::query_as(
+            "SELECT result_data FROM sync_queue
+             WHERE meeting_id = ? AND job_type = 'finalize_conversation' AND status = 'completed'
+             LIMIT 1",
+        )
+        .bind(meeting_id)
+        .fetch_optional(pool)
+        .await?;
+
+        Ok(row.and_then(|r| r.0))
+    }
 }

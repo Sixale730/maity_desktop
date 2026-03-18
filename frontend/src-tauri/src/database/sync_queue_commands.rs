@@ -182,3 +182,18 @@ pub async fn sync_queue_cancel_meeting<R: Runtime>(
             e.to_string()
         })
 }
+
+#[tauri::command]
+pub async fn sync_queue_get_finalize_result<R: Runtime>(
+    _app: AppHandle<R>,
+    state: tauri::State<'_, AppState>,
+    meeting_id: String,
+) -> Result<Option<String>, String> {
+    let pool = state.db_manager.pool();
+    SyncQueueRepository::get_completed_finalize_result(pool, &meeting_id)
+        .await
+        .map_err(|e| {
+            error!("Failed to get finalize result for meeting {}: {}", meeting_id, e);
+            e.to_string()
+        })
+}

@@ -881,6 +881,7 @@ pub fn run() {
             database::sync_queue_commands::sync_queue_get_dependency_result,
             database::sync_queue_commands::sync_queue_get_job,
             database::sync_queue_commands::sync_queue_cancel_meeting,
+            database::sync_queue_commands::sync_queue_get_finalize_result,
             whisper_engine::commands::open_models_folder,
             // Onboarding commands
             onboarding::get_onboarding_status,
