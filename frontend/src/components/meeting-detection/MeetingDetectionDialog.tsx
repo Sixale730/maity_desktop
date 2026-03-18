@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useState, useEffect, useCallback } from 'react'
+import React, { useState, useEffect, useCallback, useRef } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { listen, UnlistenFn } from '@tauri-apps/api/event'
 import {
@@ -16,6 +16,7 @@ import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
 import { Video, Mic, X, Clock, Settings } from 'lucide-react'
 import { toast } from 'sonner'
+import { useRecordingState } from '@/contexts/RecordingStateContext'
 
 interface DetectedMeeting {
   app: string | { Unknown: string }
@@ -67,6 +68,13 @@ export function MeetingDetectionDialog() {
   const [autoRecordCountdown, setAutoRecordCountdown] = useState<number | null>(null)
   const [isLoading, setIsLoading] = useState(false)
 
+  const { isRecording } = useRecordingState()
+  const isRecordingRef = useRef(isRecording)
+
+  useEffect(() => {
+    isRecordingRef.current = isRecording
+  }, [isRecording])
+
   // Play notification sound when meeting is detected
   const playNotificationSound = useCallback(() => {
     try {
@@ -97,6 +105,11 @@ export function MeetingDetectionDialog() {
       unlisten = await listen<MeetingDetectedEvent>('meeting-detected', (event) => {
         const { meeting, action } = event.payload
         console.log('[MeetingDetection] Detected:', meeting, 'Action:', action)
+
+        if (isRecordingRef.current) {
+          console.log('[MeetingDetection] Recording active, suppressing detection')
+          return
+        }
 
         if (action === 'ask') {
           // Show dialog for user to decide
