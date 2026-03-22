@@ -116,7 +116,7 @@ export function GamifiedDashboardV2() {
   const xpProgress = Math.min((data.xp / data.nextLevelXP) * 100, 100);
 
   return (
-    <div className="max-w-[1500px] mx-auto p-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+    <div className="max-w-[1500px] mx-auto p-6 pb-28 animate-in fade-in slide-in-from-bottom-4 duration-500">
 
       {/* ================================================================== */}
       {/* HEADER: Avatar + Greeting + Stats */}

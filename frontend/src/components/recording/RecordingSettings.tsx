@@ -97,6 +97,10 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
       await invoke('open_recordings_folder');
     } catch (error) {
       console.error('Failed to open recordings folder:', error);
+      toast.error('No se pudo abrir la carpeta de grabaciones', {
+        description: error instanceof Error ? error.message : String(error),
+        duration: 5000,
+      });
     }
   };
 
