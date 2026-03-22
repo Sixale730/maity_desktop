@@ -148,6 +148,12 @@ class AnalysisPollingServiceImpl {
     this.persistToSession(state);
     this.emitStateChanged(key);
     console.log(`[AnalysisPollingService] Now tracking ${key} (source: ${opts.source})`);
+
+    // For local conversations, immediately check if sync already completed
+    // (handles race condition where track() is called after finalize-completed event was missed)
+    if (opts.source === 'local' && opts.localId) {
+      this.tryRecoverSupabaseId(key, state, opts.localId).catch(() => {});
+    }
   }
 
   /** Stop tracking a conversation */
@@ -278,6 +284,13 @@ class AnalysisPollingServiceImpl {
 
       if (!syncStatus) return; // No jobs found — waiting for enqueue
 
+      // All jobs completed — recover supabaseId from finalize result
+      // (self-healing path for when finalize-completed DOM event was missed)
+      if (syncStatus.completed > 0 && syncStatus.pending === 0 && syncStatus.in_progress === 0 && syncStatus.failed === 0) {
+        await this.tryRecoverSupabaseId(key, state, meetingId);
+        return;
+      }
+
       if (syncStatus.failed > 0 && syncStatus.pending === 0 && syncStatus.in_progress === 0) {
         // All remaining jobs have failed
         state.phase = 'failed';
@@ -289,6 +302,43 @@ class AnalysisPollingServiceImpl {
       // Otherwise: jobs still pending/in_progress, keep waiting for events
     } catch (err) {
       console.warn(`[AnalysisPollingService] Sync status check error for ${key}:`, err);
+    }
+  }
+
+  /**
+   * Recover Supabase conversation ID from a completed finalize job's result_data.
+   * This is the self-healing path for when the finalize-completed DOM event was missed
+   * due to a race condition (event fired before track() was called).
+   */
+  private async tryRecoverSupabaseId(key: string, state: AnalysisState, meetingId: string) {
+    try {
+      const resultData = await invoke<string | null>('sync_queue_get_finalize_result', { meetingId });
+      if (!resultData) return;
+
+      const parsed = JSON.parse(resultData);
+      const supabaseId = parsed.conversation_id;
+      if (!supabaseId) return;
+
+      console.log(`[AnalysisPollingService] Recovered supabaseId=${supabaseId} for ${key} from sync_queue`);
+
+      // Same logic as handleFinalizeCompleted: store resolved ID and start cloud polling
+      this.resolvedIds.set(key, supabaseId);
+      state.conversationId = supabaseId;
+      if (state.source === 'local') {
+        state.source = 'maity_desktop';
+      }
+
+      // Immediately fetch latest conversation data
+      try {
+        const updated = await getOmiConversation(supabaseId);
+        if (updated) {
+          this.handleConversationData(key, updated);
+        }
+      } catch (err) {
+        console.warn(`[AnalysisPollingService] Error fetching after recovery:`, err);
+      }
+    } catch (err) {
+      console.warn(`[AnalysisPollingService] Failed to recover supabaseId for ${key}:`, err);
     }
   }
 
