@@ -22,6 +22,7 @@ import { toast } from 'sonner';
 import { useRouter } from 'next/navigation';
 import { useParakeetAutoDownloadContext } from '@/contexts/ParakeetAutoDownloadContext';
 import { useRecordingLevels } from '@/hooks/useRecordingLevels';
+import { usePreviewLevels } from '@/hooks/usePreviewLevels';
 import { GamifiedDashboardV2 } from '@/features/gamification';
 
 export default function Home() {
@@ -165,8 +166,10 @@ export default function Home() {
     }
   };
 
-  // Real audio levels from Rust pipeline (replaces random bar heights)
-  const audioLevels = useRecordingLevels(isRecording);
+  // Audio levels: preview (CPAL monitor) when idle, pipeline levels when recording
+  const recordingLevels = useRecordingLevels(isRecording);
+  const previewLevels = usePreviewLevels(isRecording, selectedDevices.micDevice);
+  const audioLevels = isRecording ? recordingLevels : previewLevels;
 
   // Computed values using global status
   const isProcessingStop = status === RecordingStatus.PROCESSING_TRANSCRIPTS || isProcessing;
@@ -219,7 +222,7 @@ export default function Home() {
                 }}
               >
                 <div className="w-2/3 max-w-[750px] flex justify-center">
-                  <div className="bg-card rounded-full shadow-lg flex items-center">
+                  <div className="bg-white dark:bg-gray-900 rounded-full shadow-lg flex items-center">
                     <RecordingControls
                       isRecording={isRecording}
                       onRecordingStop={(callApi = true) => handleRecordingStop(callApi)}

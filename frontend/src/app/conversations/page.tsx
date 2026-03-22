@@ -4,6 +4,7 @@ import { useState, useEffect, Suspense } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { Loader2 } from 'lucide-react';
 import { ConversationsList, ConversationDetail, OmiConversation, getOmiConversation, getLocalMeetingDetail } from '@/features/conversations';
+import { analysisPollingService } from '@/services/analysisPollingService';
 
 function ConversationsContent() {
   const searchParams = useSearchParams();
@@ -81,8 +82,17 @@ function ConversationsContent() {
   }
 
   if (selectedConversation) {
-    const isAnalyzing = source === 'recording' &&
-      (!selectedConversation.communication_feedback_v4 || !selectedConversation.meeting_minutes_data);
+    // Check if the service is already tracking this conversation (survives navigation)
+    const serviceState = analysisPollingService.getState(
+      selectedConversation.id,
+      selectedConversation._localId
+    );
+    const isAnalyzing =
+      // Service is actively tracking this conversation
+      (serviceState && (serviceState.phase === 'polling' || serviceState.phase === 'retrying')) ||
+      // Fresh from recording and analysis not yet complete
+      (source === 'recording' &&
+        (!selectedConversation.communication_feedback_v4 || !selectedConversation.meeting_minutes_data));
     return (
       <div className="h-full flex flex-col bg-background">
         <ConversationDetail

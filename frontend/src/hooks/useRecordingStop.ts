@@ -263,6 +263,11 @@ export function useRecordingStop(
             is_call_api: isCallApi,
             transcript_count: 0,
           }, 'skipped');
+
+          // Clean up sessionStorage (no ghost to delete — meeting was never inserted)
+          sessionStorage.removeItem('early_meeting_id');
+          sessionStorage.removeItem('last_recording_folder_path');
+          sessionStorage.removeItem('last_recording_meeting_name');
         }
         setStatus(RecordingStatus.IDLE);
       }

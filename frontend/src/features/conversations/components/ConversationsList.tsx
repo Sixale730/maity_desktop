@@ -2,7 +2,7 @@
 
 import { useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { AudioLines, Clock, MessageSquare, ChevronRight, Sparkles, FileText, ListChecks, RefreshCw, CloudOff } from 'lucide-react';
+import { AudioLines, Clock, MessageSquare, ChevronRight, Sparkles, FileText, ListChecks, RefreshCw } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -143,19 +143,19 @@ export function ConversationsList({ onSelect, selectedId }: ConversationsListPro
                     <div className="flex items-center gap-4 text-xs text-muted-foreground">
                       <span className="flex items-center gap-1">
                         <Clock className="h-3 w-3" />
-                        {formatDuration(conversation.duration_seconds)}
+                        Duración: {formatDuration(conversation.duration_seconds)}
                       </span>
                       <span className="flex items-center gap-1">
                         <MessageSquare className="h-3 w-3" />
                         {conversation.words_count || 0} palabras
                       </span>
-                      <span>{formatDate(conversation.created_at)}</span>
+                      <span>{formatDate(conversation.started_at ?? conversation.created_at)}</span>
                     </div>
                   </div>
                   <div className="flex flex-col items-end gap-2">
                     {conversation.source === 'local' && !conversation.communication_feedback_v4 && (
                       <Badge variant="outline" className="text-xs gap-1 text-amber-600 border-amber-300">
-                        <CloudOff className="h-3 w-3" />
+                        <RefreshCw className="h-3 w-3 animate-spin" />
                         Sincronizando...
                       </Badge>
                     )}

@@ -3,16 +3,17 @@ use crate::database::models::{MeetingModel, Transcript};
 use chrono::Utc;
 use sqlx::{Connection, Error as SqlxError, SqliteConnection, SqlitePool};
 use tracing::{error, info};
-use uuid::Uuid;
+
 
 pub struct MeetingsRepository;
 
 impl MeetingsRepository {
     pub async fn get_meetings(pool: &SqlitePool) -> Result<Vec<MeetingModel>, sqlx::Error> {
-        let meetings =
-            sqlx::query_as::<_, MeetingModel>("SELECT * FROM meetings ORDER BY created_at DESC")
-                .fetch_all(pool)
-                .await?;
+        let meetings = sqlx::query_as::<_, MeetingModel>(
+            "SELECT * FROM meetings ORDER BY created_at DESC",
+        )
+        .fetch_all(pool)
+        .await?;
         Ok(meetings)
     }
 
@@ -165,29 +166,6 @@ impl MeetingsRepository {
         .await?;
 
         Ok((transcripts, total.0))
-    }
-
-    /// Create a meeting early (at recording start) with just a title, no transcripts.
-    /// Returns the meeting_id for later association with transcripts.
-    pub async fn create_meeting_early(
-        pool: &SqlitePool,
-        meeting_title: &str,
-    ) -> Result<String, SqlxError> {
-        let meeting_id = format!("meeting-{}", Uuid::new_v4());
-        let now = Utc::now();
-
-        sqlx::query(
-            "INSERT INTO meetings (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)",
-        )
-        .bind(&meeting_id)
-        .bind(meeting_title)
-        .bind(now)
-        .bind(now)
-        .execute(pool)
-        .await?;
-
-        info!("Created early meeting '{}' with id: {}", meeting_title, meeting_id);
-        Ok(meeting_id)
     }
 
     pub async fn update_meeting_title(

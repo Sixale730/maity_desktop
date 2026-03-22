@@ -506,62 +506,61 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
                     </>
                   )}
 
-                  {/* Dual-channel audio level bars — only visible while recording */}
-                  {isRecording && (
-                    <div className="flex items-center gap-3 mx-4">
-                      {/* Mic (user) levels */}
-                      <div className="flex items-center gap-1">
-                        <span className="text-[10px] text-[#485df4]" title="Tú (micrófono)">🎤</span>
-                        <div className="flex items-end space-x-[2px] h-6">
-                          {[0, 1, 2].map((i) => {
-                            const rms = audioLevels?.micRms ?? 0;
-                            const scale = [0.7, 1.0, 0.8][i];
-                            const h = !isPaused
-                              ? Math.max(3, Math.min(24, rms * 200 * scale))
-                              : 3;
-                            return (
-                              <div
-                                key={`mic-${i}`}
-                                className="w-[3px] rounded-full transition-all duration-100 bg-[#485df4]"
-                                style={{ height: `${h}px`, opacity: isPaused ? 0.4 : 1 }}
-                              />
-                            );
-                          })}
-                        </div>
+                  {/* Dual-channel audio level bars + device selector — always visible */}
+                  <div className="flex items-center gap-3 mx-4">
+                    {/* Mic (user) levels */}
+                    <div className="flex items-center gap-1">
+                      <span className="text-[10px] text-[#485df4]" title="Tú (micrófono)">🎤</span>
+                      <div className="flex items-end space-x-[2px] h-6">
+                        {[0, 1, 2].map((i) => {
+                          const rms = audioLevels?.micRms ?? 0;
+                          const scale = [0.7, 1.0, 0.8][i];
+                          const h = !isPaused
+                            ? Math.max(3, Math.min(24, rms * 200 * scale))
+                            : 3;
+                          return (
+                            <div
+                              key={`mic-${i}`}
+                              className="w-[3px] rounded-full transition-all duration-100 bg-[#485df4]"
+                              style={{ height: `${h}px`, opacity: isPaused ? 0.4 : 1 }}
+                            />
+                          );
+                        })}
                       </div>
-                      {/* System (interlocutor) levels */}
-                      <div className="flex items-center gap-1">
-                        <span className="text-[10px] text-[#10b981]" title="Interlocutor (bocina)">🔊</span>
-                        <div className="flex items-end space-x-[2px] h-6">
-                          {[0, 1, 2].map((i) => {
-                            const rms = audioLevels?.sysRms ?? 0;
-                            const scale = [0.8, 1.0, 0.7][i];
-                            const h = !isPaused
-                              ? Math.max(3, Math.min(24, rms * 200 * scale))
-                              : 3;
-                            return (
-                              <div
-                                key={`sys-${i}`}
-                                className="w-[3px] rounded-full transition-all duration-100 bg-[#10b981]"
-                                style={{ height: `${h}px`, opacity: isPaused ? 0.4 : 1 }}
-                              />
-                            );
-                          })}
-                        </div>
-                      </div>
-
-                      {/* Inline device selector for hot-swap */}
-                      {onDeviceSwitched && (
-                        <div className="border-l border-[#d0d0d3] dark:border-gray-600 pl-3">
-                          <InlineDeviceSelector
-                            currentMicDevice={selectedDevices?.micDevice ?? null}
-                            currentSystemDevice={selectedDevices?.systemDevice ?? null}
-                            onDeviceSwitched={onDeviceSwitched}
-                          />
-                        </div>
-                      )}
                     </div>
-                  )}
+                    {/* System (interlocutor) levels */}
+                    <div className="flex items-center gap-1">
+                      <span className="text-[10px] text-[#10b981]" title="Interlocutor (bocina)">🔊</span>
+                      <div className="flex items-end space-x-[2px] h-6">
+                        {[0, 1, 2].map((i) => {
+                          const rms = audioLevels?.sysRms ?? 0;
+                          const scale = [0.8, 1.0, 0.7][i];
+                          const h = !isPaused
+                            ? Math.max(3, Math.min(24, rms * 200 * scale))
+                            : 3;
+                          return (
+                            <div
+                              key={`sys-${i}`}
+                              className="w-[3px] rounded-full transition-all duration-100 bg-[#10b981]"
+                              style={{ height: `${h}px`, opacity: isPaused ? 0.4 : 1 }}
+                            />
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    {/* Inline device selector — preview or hot-swap */}
+                    {onDeviceSwitched && (
+                      <div className="border-l border-[#d0d0d3] dark:border-gray-600 pl-3">
+                        <InlineDeviceSelector
+                          currentMicDevice={selectedDevices?.micDevice ?? null}
+                          currentSystemDevice={selectedDevices?.systemDevice ?? null}
+                          onDeviceSwitched={onDeviceSwitched}
+                          isRecording={isRecording}
+                        />
+                      </div>
+                    )}
+                  </div>
                 </>
               )}
             </>

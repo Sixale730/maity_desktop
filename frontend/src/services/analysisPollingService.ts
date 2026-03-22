@@ -1,0 +1,595 @@
+/**
+ * AnalysisPollingService — Global singleton that tracks analysis progress
+ * for conversations, surviving page navigation.
+ *
+ * Follows the same pattern as CloudSyncWorker:
+ * - Singleton class with start/stop lifecycle
+ * - React bridge (AnalysisPollingInitializer) mounted in layout.tsx
+ * - Dispatches window CustomEvents for UI subscribers
+ *
+ * Fixes two bugs:
+ * 1. Analysis banner disappears on navigation (state was component-local)
+ * 2. Post-recording "not synced" error (local convs now wait for finalize event)
+ */
+import { invoke } from '@tauri-apps/api/core';
+import { supabase } from '@/lib/supabase';
+import {
+  getOmiConversation,
+  isFullAnalysis,
+  isAnalysisSkipped,
+} from '@/features/conversations/services/conversations.service';
+import type { OmiConversation } from '@/features/conversations/services/conversations.service';
+
+export type AnalysisPhase = 'idle' | 'polling' | 'retrying' | 'completed' | 'failed';
+
+export interface AnalysisState {
+  conversationId: string;
+  localId?: string;
+  source: string | null;
+  phase: AnalysisPhase;
+  hasV4: boolean;
+  hasMinuta: boolean;
+  retryCount: number;
+  error: string | null;
+  durationSeconds: number;
+}
+
+/** Event dispatched whenever any tracked conversation's analysis state changes */
+export const ANALYSIS_STATE_CHANGED = 'analysis-state-changed';
+/** Event dispatched when analysis completes (for toast notifications) */
+export const ANALYSIS_COMPLETED = 'analysis-completed';
+
+function checkV4(conv: OmiConversation): boolean {
+  return isFullAnalysis(conv.communication_feedback_v4) || isAnalysisSkipped(conv.communication_feedback_v4);
+}
+
+function checkMinuta(conv: OmiConversation): boolean {
+  return !!conv.meeting_minutes_data;
+}
+
+const POLL_INTERVAL_MS = 5000;
+const AUTO_RETRY_TIMEOUT_MS = 75000;
+const MAX_AUTO_RETRIES = 2;
+const MAX_TOTAL_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
+const SESSION_KEY_PREFIX = 'analysis_active_';
+
+interface MeetingSyncStatus {
+  meeting_id: string;
+  total_jobs: number;
+  pending: number;
+  in_progress: number;
+  completed: number;
+  failed: number;
+}
+
+class AnalysisPollingServiceImpl {
+  private started = false;
+  private pollIntervalId: ReturnType<typeof setInterval> | null = null;
+
+  /** Map of tracking key -> tracking state */
+  private tracked = new Map<string, AnalysisState>();
+  /** Per-conversation retry timeout handles */
+  private retryTimeouts = new Map<string, ReturnType<typeof setTimeout>>();
+  /** Timestamp when polling started for each conversation */
+  private pollingStartedAt = new Map<string, number>();
+  /** Resolved Supabase ID for local conversations (key -> supabaseId) */
+  private resolvedIds = new Map<string, string>();
+
+  start() {
+    if (this.started) return;
+    this.started = true;
+    console.log('[AnalysisPollingService] Started');
+
+    this.restoreFromSession();
+
+    window.addEventListener('finalize-completed', this.handleFinalizeCompleted);
+    window.addEventListener('sync-status-changed', this.handleSyncStatusChanged);
+
+    this.pollAll();
+    this.pollIntervalId = setInterval(() => this.pollAll(), POLL_INTERVAL_MS);
+  }
+
+  stop() {
+    if (!this.started) return;
+    this.started = false;
+
+    window.removeEventListener('finalize-completed', this.handleFinalizeCompleted);
+    window.removeEventListener('sync-status-changed', this.handleSyncStatusChanged);
+
+    if (this.pollIntervalId) {
+      clearInterval(this.pollIntervalId);
+      this.pollIntervalId = null;
+    }
+
+    for (const timeout of this.retryTimeouts.values()) {
+      clearTimeout(timeout);
+    }
+    this.retryTimeouts.clear();
+    this.pollingStartedAt.clear();
+
+    console.log('[AnalysisPollingService] Stopped');
+  }
+
+  /**
+   * Start tracking a conversation for analysis completion.
+   * Called when user triggers re-analysis or recording finishes.
+   */
+  track(opts: {
+    conversationId: string;
+    localId?: string;
+    source: string | null;
+    durationSeconds?: number;
+    initialHasV4?: boolean;
+    initialHasMinuta?: boolean;
+  }) {
+    const key = this.trackingKey(opts.conversationId, opts.localId);
+
+    const existing = this.tracked.get(key);
+    if (existing && (existing.phase === 'polling' || existing.phase === 'retrying')) {
+      console.log(`[AnalysisPollingService] Already tracking ${key}, skipping`);
+      return;
+    }
+
+    const state: AnalysisState = {
+      conversationId: opts.conversationId,
+      localId: opts.localId,
+      source: opts.source,
+      phase: 'polling',
+      hasV4: opts.initialHasV4 ?? false,
+      hasMinuta: opts.initialHasMinuta ?? false,
+      retryCount: 0,
+      error: null,
+      durationSeconds: opts.durationSeconds ?? 0,
+    };
+
+    this.tracked.set(key, state);
+    this.pollingStartedAt.set(key, Date.now());
+    this.scheduleAutoRetry(key);
+    this.persistToSession(state);
+    this.emitStateChanged(key);
+    console.log(`[AnalysisPollingService] Now tracking ${key} (source: ${opts.source})`);
+  }
+
+  /** Stop tracking a conversation */
+  untrack(conversationId: string, localId?: string) {
+    const key = this.trackingKey(conversationId, localId);
+    this.cleanupKey(key);
+    this.tracked.delete(key);
+  }
+
+  /** Get current state for a conversation (used by UI subscribers) */
+  getState(conversationId: string, localId?: string): AnalysisState | null {
+    const key = this.trackingKey(conversationId, localId);
+    const state = this.tracked.get(key);
+    if (state) return state;
+
+    // Fallback: search across all tracked entries
+    for (const s of this.tracked.values()) {
+      if (s.conversationId === conversationId) return s;
+      if (localId && s.localId === localId) return s;
+      if (s.localId === conversationId) return s;
+    }
+    return null;
+  }
+
+  /** Check if any conversation is currently being analyzed */
+  hasActiveAnalysis(): boolean {
+    for (const s of this.tracked.values()) {
+      if (s.phase === 'polling' || s.phase === 'retrying') return true;
+    }
+    return false;
+  }
+
+  /** Manual retry triggered by user clicking "Reintentar" */
+  retryManually(conversationId: string, localId?: string) {
+    const key = this.findKey(conversationId, localId);
+    if (!key) return;
+    const state = this.tracked.get(key);
+    if (!state) return;
+
+    state.retryCount = 0;
+    state.error = null;
+    this.doRetry(key);
+  }
+
+  /** Restart polling (e.g., after user clicks re-analyze) */
+  restartPolling(conversationId: string, localId?: string, source?: string | null) {
+    const key = this.findKey(conversationId, localId) ?? this.trackingKey(conversationId, localId);
+    const existing = this.tracked.get(key);
+
+    if (existing) {
+      existing.phase = 'polling';
+      existing.hasV4 = false;
+      existing.hasMinuta = false;
+      existing.retryCount = 0;
+      existing.error = null;
+      if (source !== undefined) existing.source = source;
+    } else {
+      this.track({ conversationId, localId, source: source ?? null });
+      return;
+    }
+
+    this.pollingStartedAt.set(key, Date.now());
+    this.clearRetryTimeout(key);
+    this.scheduleAutoRetry(key);
+    this.emitStateChanged(key);
+  }
+
+  // ── Private helpers ──────────────────────────────────────────────
+
+  private trackingKey(conversationId: string, localId?: string): string {
+    return localId || conversationId;
+  }
+
+  private findKey(conversationId: string, localId?: string): string | null {
+    const key = this.trackingKey(conversationId, localId);
+    if (this.tracked.has(key)) return key;
+
+    for (const [k, s] of this.tracked.entries()) {
+      if (s.conversationId === conversationId) return k;
+      if (localId && s.localId === localId) return k;
+      if (s.localId === conversationId) return k;
+    }
+    return null;
+  }
+
+  private async pollAll() {
+    if (!this.started) return;
+
+    for (const [key, state] of this.tracked.entries()) {
+      if (state.phase !== 'polling') continue;
+
+      // Global timeout: 10 minutes
+      const startedAt = this.pollingStartedAt.get(key) || 0;
+      if (startedAt > 0 && Date.now() - startedAt > MAX_TOTAL_TIMEOUT_MS) {
+        state.phase = 'failed';
+        state.error = 'El análisis no se completó después de 10 minutos.';
+        this.cleanupKey(key);
+        this.removeFromSession(key);
+        this.emitStateChanged(key);
+        continue;
+      }
+
+      // For local convs without a resolved Supabase ID: check sync queue status
+      if (state.source === 'local' && !this.resolvedIds.has(key)) {
+        await this.pollLocalSyncStatus(key, state);
+        continue;
+      }
+
+      const supabaseId = this.resolvedIds.get(key) || state.conversationId;
+      try {
+        const updated = await getOmiConversation(supabaseId);
+        if (updated) {
+          this.handleConversationData(key, updated);
+        }
+      } catch (err) {
+        console.warn(`[AnalysisPollingService] Poll error for ${key}:`, err);
+      }
+    }
+  }
+
+  /** Check sync queue status for local conversations waiting to be synced */
+  private async pollLocalSyncStatus(key: string, state: AnalysisState) {
+    try {
+      const meetingId = state.localId || state.conversationId;
+      const syncStatus = await invoke<MeetingSyncStatus | null>('sync_queue_get_meeting_status', {
+        meetingId,
+      });
+
+      if (!syncStatus) return; // No jobs found — waiting for enqueue
+
+      if (syncStatus.failed > 0 && syncStatus.pending === 0 && syncStatus.in_progress === 0) {
+        // All remaining jobs have failed
+        state.phase = 'failed';
+        state.error = 'La sincronización con la nube falló. Intenta de nuevo.';
+        this.cleanupKey(key);
+        this.removeFromSession(key);
+        this.emitStateChanged(key);
+      }
+      // Otherwise: jobs still pending/in_progress, keep waiting for events
+    } catch (err) {
+      console.warn(`[AnalysisPollingService] Sync status check error for ${key}:`, err);
+    }
+  }
+
+  private handleConversationData(key: string, conv: OmiConversation) {
+    const state = this.tracked.get(key);
+    if (!state) return;
+
+    const hasV4 = checkV4(conv);
+    const hasMinuta = checkMinuta(conv);
+    const changed = hasV4 !== state.hasV4 || hasMinuta !== state.hasMinuta;
+
+    state.hasV4 = hasV4;
+    state.hasMinuta = hasMinuta;
+
+    if (hasV4 && hasMinuta) {
+      state.phase = 'completed';
+      this.cleanupKey(key);
+      this.removeFromSession(key);
+
+      window.dispatchEvent(new CustomEvent(ANALYSIS_COMPLETED, {
+        detail: {
+          conversationId: state.conversationId,
+          localId: state.localId,
+          title: conv.title,
+        },
+      }));
+    }
+
+    if (changed) {
+      // Dispatch with updated conversation data for UI subscribers
+      window.dispatchEvent(new CustomEvent(ANALYSIS_STATE_CHANGED, {
+        detail: { key, state: { ...state }, conversation: conv },
+      }));
+    } else {
+      this.emitStateChanged(key);
+    }
+  }
+
+  private scheduleAutoRetry(key: string) {
+    this.clearRetryTimeout(key);
+    const timeout = setTimeout(() => {
+      const state = this.tracked.get(key);
+      if (!state || state.phase !== 'polling') return;
+
+      if (state.retryCount < MAX_AUTO_RETRIES) {
+        this.doRetry(key);
+      } else {
+        state.phase = 'failed';
+        state.error = 'El analisis no se completo despues de varios intentos.';
+        this.cleanupKey(key);
+        this.emitStateChanged(key);
+      }
+    }, AUTO_RETRY_TIMEOUT_MS);
+
+    this.retryTimeouts.set(key, timeout);
+  }
+
+  private async doRetry(key: string) {
+    const state = this.tracked.get(key);
+    if (!state) return;
+
+    // For local conversations without a resolved Supabase ID:
+    // Check sync queue status before deciding whether to fail.
+    const supabaseId = this.resolvedIds.get(key);
+    if (state.source === 'local' && !supabaseId) {
+      // Check if sync jobs are still running
+      const meetingId = state.localId || state.conversationId;
+      let syncStillRunning = false;
+      try {
+        const syncStatus = await invoke<MeetingSyncStatus | null>('sync_queue_get_meeting_status', {
+          meetingId,
+        });
+        if (syncStatus && (syncStatus.pending > 0 || syncStatus.in_progress > 0)) {
+          syncStillRunning = true;
+        }
+      } catch { /* ignore */ }
+
+      if (syncStillRunning) {
+        // Sync jobs still processing — extend wait, don't count as a retry
+        console.log(`[AnalysisPollingService] ${key} sync still running, extending wait...`);
+        this.pollingStartedAt.set(key, Date.now());
+        this.scheduleAutoRetry(key);
+        return;
+      }
+
+      // Sync not running but no Supabase ID — jobs may have failed
+      state.retryCount += 1;
+      console.log(`[AnalysisPollingService] ${key} still local, retry ${state.retryCount}/${MAX_AUTO_RETRIES}`);
+
+      if (state.retryCount >= MAX_AUTO_RETRIES) {
+        state.phase = 'failed';
+        state.error = 'La conversación aún no se ha sincronizado a la nube. Intenta de nuevo.';
+        this.cleanupKey(key);
+        this.removeFromSession(key);
+        this.emitStateChanged(key);
+      } else {
+        // Stay in polling, re-schedule
+        this.pollingStartedAt.set(key, Date.now());
+        this.scheduleAutoRetry(key);
+        this.persistToSession(state);
+        this.emitStateChanged(key);
+      }
+      return;
+    }
+
+    state.phase = 'retrying';
+    state.retryCount += 1;
+    state.error = null;
+    this.emitStateChanged(key);
+
+    const conversationId = supabaseId || state.conversationId;
+
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.access_token) {
+        throw new Error('Sin sesion activa');
+      }
+
+      const result = await invoke<{ ok: boolean; error?: string }>('finalize_conversation_cloud', {
+        conversationId,
+        durationSeconds: state.durationSeconds,
+        accessToken: session.access_token,
+      });
+
+      if (!result.ok) {
+        throw new Error(result.error || 'Finalize returned ok=false');
+      }
+
+      // Resume polling
+      state.phase = 'polling';
+      this.pollingStartedAt.set(key, Date.now());
+      this.scheduleAutoRetry(key);
+      this.persistToSession(state);
+      this.emitStateChanged(key);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`[AnalysisPollingService] Retry failed for ${key}:`, msg);
+      state.error = msg;
+
+      if (state.retryCount >= MAX_AUTO_RETRIES) {
+        state.phase = 'failed';
+        this.cleanupKey(key);
+        this.removeFromSession(key);
+      } else {
+        state.phase = 'polling';
+        this.pollingStartedAt.set(key, Date.now());
+        this.scheduleAutoRetry(key);
+        this.persistToSession(state);
+      }
+      this.emitStateChanged(key);
+    }
+  }
+
+  // ── Event handlers from CloudSyncWorker ──────────────────────────
+
+  private handleFinalizeCompleted = async (e: Event) => {
+    const detail = (e as CustomEvent).detail;
+    if (!detail?.conversationId) return;
+
+    const { conversationId: supabaseId, meetingId } = detail;
+
+    // Find the tracked conversation
+    let key: string | null = null;
+    for (const [k, s] of this.tracked.entries()) {
+      if (s.localId === meetingId || s.conversationId === meetingId) {
+        key = k;
+        break;
+      }
+      if (s.conversationId === supabaseId) {
+        key = k;
+        break;
+      }
+    }
+
+    if (!key) return;
+
+    const state = this.tracked.get(key);
+    if (!state) return;
+
+    console.log(`[AnalysisPollingService] finalize-completed for ${key}, supabaseId=${supabaseId}`);
+
+    // Store resolved Supabase ID so cloud polling can begin
+    this.resolvedIds.set(key, supabaseId);
+    state.conversationId = supabaseId;
+
+    if (state.source === 'local') {
+      state.source = 'maity_desktop';
+    }
+
+    // Fetch latest data
+    try {
+      const updated = await getOmiConversation(supabaseId);
+      if (updated) {
+        this.handleConversationData(key, updated);
+      }
+    } catch (err) {
+      console.warn(`[AnalysisPollingService] Error fetching after finalize:`, err);
+    }
+  };
+
+  private handleSyncStatusChanged = async (e: Event) => {
+    const detail = (e as CustomEvent).detail;
+    if (!detail?.meetingId || detail.status !== 'completed') return;
+
+    if (detail.jobType === 'save_conversation') {
+      for (const [, s] of this.tracked.entries()) {
+        if (s.localId === detail.meetingId || s.conversationId === detail.meetingId) {
+          console.log(`[AnalysisPollingService] sync-status-changed: ${detail.jobType} completed for ${detail.meetingId}`);
+          break;
+        }
+      }
+    }
+  };
+
+  // ── Utilities ────────────────────────────────────────────────────
+
+  private cleanupKey(key: string) {
+    this.clearRetryTimeout(key);
+    this.pollingStartedAt.delete(key);
+  }
+
+  private clearRetryTimeout(key: string) {
+    const timeout = this.retryTimeouts.get(key);
+    if (timeout) {
+      clearTimeout(timeout);
+      this.retryTimeouts.delete(key);
+    }
+  }
+
+  private emitStateChanged(key: string) {
+    const state = this.tracked.get(key);
+    if (!state) return;
+    window.dispatchEvent(new CustomEvent(ANALYSIS_STATE_CHANGED, {
+      detail: { key, state: { ...state } },
+    }));
+  }
+
+  // ── Session persistence (survives page reloads in dev) ──────────
+
+  private persistToSession(state: AnalysisState) {
+    try {
+      const key = state.localId || state.conversationId;
+      sessionStorage.setItem(
+        `${SESSION_KEY_PREFIX}${key}`,
+        JSON.stringify({ ...state, _savedAt: Date.now() })
+      );
+    } catch { /* ignore */ }
+  }
+
+  private removeFromSession(key: string) {
+    try {
+      sessionStorage.removeItem(`${SESSION_KEY_PREFIX}${key}`);
+    } catch { /* ignore */ }
+  }
+
+  private restoreFromSession() {
+    try {
+      const now = Date.now();
+      for (let i = sessionStorage.length - 1; i >= 0; i--) {
+        const storageKey = sessionStorage.key(i);
+        if (!storageKey?.startsWith(SESSION_KEY_PREFIX)) continue;
+
+        const raw = sessionStorage.getItem(storageKey);
+        if (!raw) continue;
+
+        try {
+          const saved = JSON.parse(raw);
+          const savedAt = saved._savedAt || 0;
+          // Skip entries older than 10 minutes
+          if (now - savedAt > MAX_TOTAL_TIMEOUT_MS) {
+            sessionStorage.removeItem(storageKey);
+            continue;
+          }
+          // Only restore active entries
+          if (saved.phase === 'polling' || saved.phase === 'retrying') {
+            const key = storageKey.replace(SESSION_KEY_PREFIX, '');
+            const state: AnalysisState = {
+              conversationId: saved.conversationId,
+              localId: saved.localId,
+              source: saved.source,
+              phase: 'polling', // Always resume as polling
+              hasV4: saved.hasV4 || false,
+              hasMinuta: saved.hasMinuta || false,
+              retryCount: saved.retryCount || 0,
+              error: null,
+              durationSeconds: saved.durationSeconds || 0,
+            };
+            this.tracked.set(key, state);
+            this.pollingStartedAt.set(key, Date.now());
+            this.scheduleAutoRetry(key);
+            console.log(`[AnalysisPollingService] Restored from session: ${key}`);
+          } else {
+            sessionStorage.removeItem(storageKey);
+          }
+        } catch {
+          sessionStorage.removeItem(storageKey);
+        }
+      }
+    } catch { /* ignore */ }
+  }
+}
+
+/** Singleton instance */
+export const analysisPollingService = new AnalysisPollingServiceImpl();
