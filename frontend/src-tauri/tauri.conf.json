@@ -59,10 +59,7 @@
     },
     "bundle": {
         "active": true,
-        "targets": [
-            "app",
-            "dmg"
-        ],
+        "targets": "all",
         "createUpdaterArtifacts": true,
         "icon": [
             "icons/icon.png",
