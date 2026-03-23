@@ -242,7 +242,7 @@ export function useGamifiedDashboardDataV2(): GamifiedDashboardDataV2 {
   const [formData, setFormData] = useState<FormResponse | null>(null);
   const [streakData, setStreakData] = useState<{ streak_days: number; bonus_days: number }>({ streak_days: 0, bonus_days: 0 });
   const [xpFromRPC, setXpFromRPC] = useState<number>(0);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
 
   useEffect(() => {
     let cancelled = false;

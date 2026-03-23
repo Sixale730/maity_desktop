@@ -107,6 +107,10 @@ export function TranscriptRecovery({
       await onDelete(selectedMeetingId);
       setSelectedMeetingId(null);
       setPreviewTranscripts([]);
+      // Close dialog if no more meetings to recover
+      if (recoverableMeetings.length <= 1) {
+        onClose();
+      }
     } catch (error) {
       console.error('Delete failed:', error);
       alert('Error al eliminar la reunión. Por favor intenta de nuevo.');

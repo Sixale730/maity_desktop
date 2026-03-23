@@ -227,6 +227,40 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
         />
       </div>
 
+      {/* System Audio Gain */}
+      <div className="p-4 border rounded-lg">
+        <div className="flex items-center justify-between mb-2">
+          <div>
+            <div className="font-medium">Volumen de Audio del Sistema</div>
+            <div className="text-sm text-[#4a4a4c] dark:text-gray-300">
+              Amplifica el audio capturado del sistema (bocinas/audífonos) sin cambiar el volumen del OS
+            </div>
+          </div>
+          <span className="text-sm font-mono font-bold text-[#485df4] min-w-[3rem] text-right">
+            {((preferences.system_audio_gain ?? 1.5) * 100).toFixed(0)}%
+          </span>
+        </div>
+        <input
+          type="range"
+          min="50"
+          max="300"
+          step="10"
+          value={(preferences.system_audio_gain ?? 1.5) * 100}
+          onChange={async (e) => {
+            const gain = parseInt(e.target.value) / 100;
+            const newPreferences = { ...preferences, system_audio_gain: gain };
+            setPreferences(newPreferences);
+            await savePreferences(newPreferences);
+          }}
+          className="w-full h-2 bg-[#1a1a2e] rounded-lg appearance-none cursor-pointer accent-[#485df4]"
+        />
+        <div className="flex justify-between text-xs text-[#8a8a8d] mt-1">
+          <span>50%</span>
+          <span>150% (predeterminado)</span>
+          <span>300%</span>
+        </div>
+      </div>
+
       {/* Device Preferences */}
       <div className="space-y-4">
         <div className="border-t pt-6">

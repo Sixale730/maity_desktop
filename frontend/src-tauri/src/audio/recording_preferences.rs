@@ -23,6 +23,14 @@ pub struct RecordingPreferences {
     #[cfg(target_os = "macos")]
     #[serde(default)]
     pub system_audio_backend: Option<String>,
+    /// Gain multiplier for system audio (0.5 – 3.0, default 1.5).
+    /// Higher values boost the captured system audio without changing OS volume.
+    #[serde(default = "default_system_audio_gain")]
+    pub system_audio_gain: f32,
+}
+
+fn default_system_audio_gain() -> f32 {
+    1.5
 }
 
 impl Default for RecordingPreferences {
@@ -35,6 +43,7 @@ impl Default for RecordingPreferences {
             preferred_system_device: None,
             #[cfg(target_os = "macos")]
             system_audio_backend: Some("coreaudio".to_string()),
+            system_audio_gain: default_system_audio_gain(),
         }
     }
 }

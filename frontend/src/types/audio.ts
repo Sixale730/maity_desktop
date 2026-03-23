@@ -33,6 +33,8 @@ export interface RecordingPreferences {
   file_format: string;
   preferred_mic_device: string | null;
   preferred_system_device: string | null;
+  /** Gain multiplier for system audio (0.5–3.0, default 1.5) */
+  system_audio_gain?: number;
 }
 
 // Subset of RecordingPreferences for device-only config

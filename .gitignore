@@ -22,6 +22,8 @@
 !.yarn/releases
 !.yarn/versions
 *.mp4
+*.pkg
+*.dmg
 
 # testing
 /coverage

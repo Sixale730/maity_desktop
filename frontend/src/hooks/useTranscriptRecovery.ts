@@ -48,6 +48,7 @@ export function useTranscriptRecovery(): UseTranscriptRecoveryReturn {
       const secondsAgo = Date.now() - (15 * 1000);
 
       const recentMeetings = meetings.filter(m => {
+        if (m.savedToSQLite) return false; // Already recovered — skip
         const isWithinRetention = m.lastUpdated > cutoffTime; // Not older than 7 days
         const isOldEnough = m.lastUpdated < secondsAgo; // Older than 15 seconds
         return isWithinRetention && isOldEnough;

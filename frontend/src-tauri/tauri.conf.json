@@ -2,7 +2,7 @@
     "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
     "productName": "Maity",
     "version": "0.2.31",
-    "identifier": "com.maity.auth",
+    "identifier": "com.maity.ai",
     "build": {
         "frontendDist": "../out",
         "devUrl": "http://localhost:3118",
@@ -18,7 +18,8 @@
                 "resizable": true,
                 "fullscreen": false,
                 "theme": "Dark",
-                "decorations": true
+                "decorations": true,
+                "visible": false
             }
         ],
         "macOSPrivateApi": true,
@@ -32,25 +33,48 @@
             },
             "assetProtocol": {
                 "enable": true,
-                "scope": ["$APPDATA/**"]
+                "scope": [
+                    "$APPDATA/**"
+                ]
             },
             "capabilities": [
                 {
                     "identifier": "main",
                     "description": "Main window capability with file system and media access",
-                    "windows": ["main"],
+                    "windows": [
+                        "main"
+                    ],
                     "permissions": [
-                        "fs:default", "fs:allow-read-file", "fs:read-all", "fs:write-all",
-                        "fs:allow-app-read", "fs:allow-app-write", "fs:allow-download-write",
-                        "fs:allow-download-read", "fs:scope-download", "core:path:default",
-                        "core:event:default", "core:window:default", "core:app:default",
-                        "core:resources:default", "core:menu:default", "core:tray:default",
-                        "core:window:allow-set-title", "store:default", "notification:default",
-                        "notification:allow-is-permission-granted", "updater:default",
-                        "process:default", "deep-link:default",
+                        "fs:default",
+                        "fs:allow-read-file",
+                        "fs:read-all",
+                        "fs:write-all",
+                        "fs:allow-app-read",
+                        "fs:allow-app-write",
+                        "fs:allow-download-write",
+                        "fs:allow-download-read",
+                        "fs:scope-download",
+                        "core:path:default",
+                        "core:event:default",
+                        "core:window:default",
+                        "core:app:default",
+                        "core:resources:default",
+                        "core:menu:default",
+                        "core:tray:default",
+                        "core:window:allow-set-title",
+                        "store:default",
+                        "notification:default",
+                        "notification:allow-is-permission-granted",
+                        "updater:default",
+                        "process:default",
+                        "deep-link:default",
                         {
                             "identifier": "fs:scope",
-                            "allow": [{ "path": "$APPDATA/*" }]
+                            "allow": [
+                                {
+                                    "path": "$APPDATA/*"
+                                }
+                            ]
                         }
                     ]
                 }
@@ -69,20 +93,34 @@
         "resources": [
             "templates/*.json"
         ],
+        "externalBin": [],
         "macOS": {
-            "entitlements": "entitlements.plist",
-            "minimumSystemVersion": "14.0",
-            "signingIdentity": null,
+            "entitlements": "entitlements-appstore.plist",
+            "signingIdentity": "3rd Party Mac Developer Application: Julio Alexis Gonzalez Villa (8YLD233TA2)",
             "hardenedRuntime": true
+        },
+        "windows": {
+            "signCommand": "powershell -ExecutionPolicy Bypass -File scripts/sign-windows.ps1 -FilePath %1",
+            "nsis": {
+                "languages": ["SpanishInternational"],
+                "displayLanguageSelector": false
+            },
+            "wix": {
+                "language": ["es-ES"]
+            }
         }
     },
     "plugins": {
         "deep-link": {
-            "desktop": { "schemes": ["maity"] }
+            "desktop": {
+                "schemes": ["maity"]
+            }
         },
         "updater": {
             "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDM1QTNGQUUzRjVBN0Y0MzAKUldRdzlLZjE0L3FqTlpOa2NVVlRFMDBmVk1pcm5KbGs1NDZTK01lNGc2NlhORDJNdEdVS1NYYkMK",
-            "endpoints": ["https://github.com/Sixale730/maity_desktop/releases/latest/download/latest.json"]
+            "endpoints": [
+                "https://github.com/Sixale730/maity_desktop/releases/latest/download/latest.json"
+            ]
         }
     }
 }

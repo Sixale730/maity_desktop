@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex as StdMutex;
+use tauri::Listener;
 
 // Performance optimization: Conditional logging macros for hot paths
 #[cfg(debug_assertions)]
@@ -429,6 +430,31 @@ pub fn run() {
         .manage(Arc::new(RwLock::new(meeting_detector::MeetingDetector::new())) as meeting_detector::commands::MeetingDetectorState)
         .setup(|_app| {
             log::info!("Application setup complete");
+
+            // Listen for "app-ready" event from frontend to show the window.
+            // The window starts hidden (visible: false in tauri.conf.json) to avoid
+            // showing a black screen or ChunkLoadError while Next.js compiles/loads.
+            let app_handle_for_show = _app.handle().clone();
+            _app.listen("app-ready", move |_event| {
+                log::info!("Frontend signaled app-ready, showing main window");
+                if let Some(window) = app_handle_for_show.get_webview_window("main") {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
+            });
+
+            // Safety fallback: show window after 3s even if frontend hasn't signaled
+            let app_handle_for_fallback = _app.handle().clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_secs(3));
+                if let Some(window) = app_handle_for_fallback.get_webview_window("main") {
+                    if !window.is_visible().unwrap_or(true) {
+                        log::warn!("Fallback: showing window after 3s timeout");
+                        let _ = window.show();
+                        let _ = window.set_focus();
+                    }
+                }
+            });
 
             // Register deep-link scheme for OAuth callbacks
             #[cfg(desktop)]

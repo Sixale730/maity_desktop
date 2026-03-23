@@ -760,6 +760,8 @@ pub struct AudioPipeline {
     echo_suppressed_mic: u64,
     echo_suppressed_sys: u64,
     last_echo_report_time: std::time::Instant,
+    /// Gain multiplier for system audio (default 1.5)
+    system_audio_gain: f32,
 }
 
 impl AudioPipeline {
@@ -844,6 +846,7 @@ impl AudioPipeline {
             echo_suppressed_mic: 0,
             echo_suppressed_sys: 0,
             last_echo_report_time: std::time::Instant::now(),
+            system_audio_gain: 1.5, // Default boost; overridden by set_system_audio_gain
         })
     }
 
@@ -1036,9 +1039,10 @@ impl AudioPipeline {
                         if let Some((mic_window, sys_window)) = self.ring_buffer.extract_window() {
                             // Interleave as stereo: Left = microphone, Right = system audio
                             let mut stereo = Vec::with_capacity(mic_window.len() * 2);
+                            let gain = self.system_audio_gain;
                             for (m, s) in mic_window.iter().zip(sys_window.iter()) {
                                 stereo.push(*m); // Left channel = microphone (user)
-                                stereo.push(*s); // Right channel = system (interlocutor)
+                                stereo.push((*s * gain).clamp(-1.0, 1.0)); // Right channel = system (with gain)
                             }
                             if let Some(ref sender) = self.recording_sender_for_mixed {
                                 let recording_chunk = AudioChunk {
@@ -1166,6 +1170,11 @@ impl AudioPipeline {
         Ok(())
     }
 
+    /// Set the system audio gain multiplier (called before pipeline starts processing)
+    pub fn set_system_audio_gain(&mut self, gain: f32) {
+        self.system_audio_gain = gain.clamp(0.5, 3.0);
+        info!("🔊 System audio gain set to {:.1}x", self.system_audio_gain);
+    }
 }
 
 /// Simple audio pipeline manager
@@ -1194,6 +1203,7 @@ impl AudioPipelineManager {
         mic_device_kind: super::device_detection::InputDeviceKind,
         system_device_name: String,
         system_device_kind: super::device_detection::InputDeviceKind,
+        system_audio_gain: f32,
     ) -> Result<()> {
         // Log device information for adaptive buffering
         info!("🎙️ Starting pipeline with device info:");
@@ -1222,6 +1232,7 @@ impl AudioPipelineManager {
         // CRITICAL FIX: Connect recording sender to receive pre-mixed audio
         // This ensures both mic AND system audio are captured in recordings
         pipeline.recording_sender_for_mixed = recording_sender;
+        pipeline.set_system_audio_gain(system_audio_gain);
 
         let handle = tokio::spawn(async move {
             pipeline.run().await

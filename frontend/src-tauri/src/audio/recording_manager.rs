@@ -29,6 +29,8 @@ pub struct RecordingManager {
     recording_saver: RecordingSaver,
     device_monitor: Option<AudioDeviceMonitor>,
     device_event_receiver: Option<mpsc::UnboundedReceiver<DeviceEvent>>,
+    /// Gain multiplier for system audio capture (0.5–3.0)
+    pub system_audio_gain: f32,
 }
 
 // SAFETY: RecordingManager contains types that we've marked as Send
@@ -49,6 +51,7 @@ impl RecordingManager {
             recording_saver: RecordingSaver::new(),
             device_monitor: Some(device_monitor),
             device_event_receiver: Some(device_event_receiver),
+            system_audio_gain: 1.5,
         }
     }
 
@@ -116,6 +119,7 @@ impl RecordingManager {
             mic_kind,
             sys_name,
             sys_kind,
+            self.system_audio_gain,
         )?;
 
         // Give the pipeline a moment to fully initialize before starting streams

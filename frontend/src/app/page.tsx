@@ -69,19 +69,10 @@ export default function Home() {
     Analytics.trackPageView('home');
   }, []);
 
-  // Startup recovery check
+  // Startup recovery check — runs once on mount only
   useEffect(() => {
     const performStartupChecks = async () => {
       try {
-        // Skip recovery check if currently recording or processing stop
-        if (isRecording ||
-          status === RecordingStatus.STOPPING ||
-          status === RecordingStatus.PROCESSING_TRANSCRIPTS ||
-          status === RecordingStatus.SAVING) {
-          console.log('Skipping recovery check - recording in progress or processing');
-          return;
-        }
-
         // 1. Clean up old meetings (7+ days)
         try {
           await indexedDBService.deleteOldMeetings(7);
@@ -96,7 +87,7 @@ export default function Home() {
           console.warn('Failed to clean up saved meetings:', error);
         }
 
-        // 3. Always check for recoverable meetings on startup
+        // 3. Check for recoverable meetings on startup
         await checkForRecoverableTranscripts();
       } catch (error) {
         console.error('Failed to perform startup checks:', error);
@@ -104,7 +95,8 @@ export default function Home() {
     };
 
     performStartupChecks();
-  }, [checkForRecoverableTranscripts, isRecording, status]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Watch for recoverable meetings changes and show dialog once per session
   useEffect(() => {
