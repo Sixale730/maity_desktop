@@ -221,8 +221,8 @@ export default function Home() {
                   marginLeft: sidebarCollapsed ? '4rem' : '16rem'
                 }}
               >
-                <div className="w-2/3 max-w-[750px] flex justify-center">
-                  <div className="bg-white dark:bg-gray-900 rounded-full shadow-lg flex items-center">
+                <div className="w-2/3 max-w-[750px] min-w-[200px] flex justify-center">
+                  <div className="bg-white dark:bg-gray-900 rounded-full shadow-lg flex items-center overflow-visible">
                     <RecordingControls
                       isRecording={isRecording}
                       onRecordingStop={(callApi = true) => handleRecordingStop(callApi)}

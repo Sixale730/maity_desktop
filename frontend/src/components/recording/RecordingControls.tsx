@@ -68,6 +68,9 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
   const MIN_RECORDING_DURATION = 2000; // 2 seconds minimum recording time
   const [transcriptionErrors, setTranscriptionErrors] = useState(0);
   const [isValidatingModel, setIsValidatingModel] = useState(false);
+
+  // Global guard: prevents ANY action while another is in progress (prevents deadlocks from rapid clicking)
+  const isBusy = isStarting || isStopping || isPausing || isResuming || isProcessing || isValidatingModel;
   const [speechDetected, setSpeechDetected] = useState(false);
   const [deviceError, setDeviceError] = useState<{ title: string, message: string } | null>(null);
 
@@ -89,7 +92,6 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
         console.log('Tauri is initialized and ready, is_recording result:', result);
       } catch (error) {
         console.error('Tauri initialization error:', error);
-        alert('Error al inicializar grabación. Por favor revisa la consola para más detalles.');
       }
     };
     checkTauri();
@@ -221,11 +223,13 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
 
     try {
       await invoke('pause_recording');
-      // isPaused state now managed by RecordingStateContext via events
       console.log('Recording paused successfully');
     } catch (error) {
       console.error('Failed to pause recording:', error);
-      alert('Error al pausar grabación. Por favor revisa la consola para más detalles.');
+      const msg = error instanceof Error ? error.message : String(error);
+      // Use toast instead of blocking alert
+      const { toast } = await import('sonner');
+      toast.error('Error al pausar grabación', { description: msg, duration: 5000 });
     } finally {
       setIsPausing(false);
     }
@@ -239,11 +243,12 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
 
     try {
       await invoke('resume_recording');
-      // isPaused state now managed by RecordingStateContext via events
       console.log('Recording resumed successfully');
     } catch (error) {
       console.error('Failed to resume recording:', error);
-      alert('Error al reanudar grabación. Por favor revisa la consola para más detalles.');
+      const msg = error instanceof Error ? error.message : String(error);
+      const { toast } = await import('sonner');
+      toast.error('Error al reanudar grabación', { description: msg, duration: 5000 });
     } finally {
       setIsResuming(false);
     }
@@ -428,8 +433,8 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
                             Analytics.trackButtonClick('start_recording', 'recording_controls');
                             handleStartRecording();
                           }}
-                          disabled={isStarting || isProcessing || isRecordingDisabled || isValidatingModel}
-                          className={`w-12 h-12 flex items-center justify-center ${isStarting || isProcessing || isValidatingModel || isRecordingDisabled ? 'bg-[#8a8a8d]' : 'bg-[#ff0050] hover:bg-[#cc0040]'
+                          disabled={isBusy || isRecordingDisabled}
+                          className={`w-12 h-12 flex items-center justify-center ${isBusy || isRecordingDisabled ? 'bg-[#8a8a8d]' : 'bg-[#ff0050] hover:bg-[#cc0040]'
                             } rounded-full text-white transition-colors relative`}
                           aria-label="Iniciar grabación"
                         >
@@ -459,8 +464,8 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
                                 handlePauseRecording();
                               }
                             }}
-                            disabled={isPausing || isResuming || isStopping}
-                            className={`w-10 h-10 flex items-center justify-center ${isPausing || isResuming || isStopping
+                            disabled={isBusy}
+                            className={`w-10 h-10 flex items-center justify-center ${isBusy
                               ? 'bg-[#d0d0d3] dark:bg-gray-600 border-2 border-[#d0d0d3] dark:border-gray-600 text-[#8a8a8d]'
                               : 'bg-white dark:bg-gray-800 border-2 border-[#d0d0d3] dark:border-gray-600 text-[#4a4a4c] dark:text-gray-300 hover:border-gray-400 hover:bg-[#f5f5f6] dark:hover:bg-gray-700'
                               } rounded-full transition-colors relative`}
@@ -486,8 +491,8 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
                               Analytics.trackButtonClick('stop_recording', 'recording_controls');
                               handleStopRecording();
                             }}
-                            disabled={isStopping || isPausing || isResuming}
-                            className={`w-10 h-10 flex items-center justify-center ${isStopping || isPausing || isResuming ? 'bg-[#8a8a8d]' : 'bg-[#ff0050] hover:bg-[#cc0040]'
+                            disabled={isBusy}
+                            className={`w-10 h-10 flex items-center justify-center ${isBusy ? 'bg-[#8a8a8d]' : 'bg-[#ff0050] hover:bg-[#cc0040]'
                               } rounded-full text-white transition-colors relative`}
                             aria-label="Detener grabación"
                           >

@@ -45,18 +45,16 @@ export function TranscriptRecovery({
   const [isRecovering, setIsRecovering] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
 
-  // Reset selection when dialog opens
+  // Reset selection and auto-select first meeting when dialog opens
   useEffect(() => {
     if (isOpen) {
-      setSelectedMeetingId(null);
       setPreviewTranscripts([]);
-    }
-  }, [isOpen]);
-
-  // Auto-select first meeting if available
-  useEffect(() => {
-    if (isOpen && recoverableMeetings.length > 0 && !selectedMeetingId) {
-      handleMeetingSelect(recoverableMeetings[0].meetingId);
+      // Auto-select first meeting if available, otherwise reset
+      if (recoverableMeetings.length > 0) {
+        handleMeetingSelect(recoverableMeetings[0].meetingId);
+      } else {
+        setSelectedMeetingId(null);
+      }
     }
   }, [isOpen, recoverableMeetings]);
 
@@ -77,16 +75,21 @@ export function TranscriptRecovery({
   };
 
   const handleRecover = async () => {
-    if (!selectedMeetingId) return;
+    if (!selectedMeetingId || isRecovering) return;
 
     setIsRecovering(true);
     try {
-      const result = await onRecover(selectedMeetingId);
+      // Race recovery against a 30s timeout to prevent infinite hang
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('La recuperación tardó demasiado. Intenta de nuevo.')), 30000)
+      );
+      const result = await Promise.race([onRecover(selectedMeetingId), timeoutPromise]);
       console.log('Recovery successful:', result);
       onClose();
     } catch (error) {
       console.error('Recovery failed:', error);
-      alert('Error al recuperar la reunión. Por favor intenta de nuevo.');
+      // Use window.alert to ensure it's visible above the dialog portal
+      window.alert(`Error al recuperar la reunión: ${error instanceof Error ? error.message : 'Error desconocido'}. Por favor intenta de nuevo.`);
     } finally {
       setIsRecovering(false);
     }

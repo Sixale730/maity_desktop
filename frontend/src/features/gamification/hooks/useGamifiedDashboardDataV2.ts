@@ -245,48 +245,78 @@ export function useGamifiedDashboardDataV2(): GamifiedDashboardDataV2 {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    let cancelled = false;
+
     async function load() {
       if (!maityUser?.id) {
         setLoading(false);
         return;
       }
+
+      // Helper: race a promise against a timeout (returns null on timeout)
+      const withTimeout = <T,>(promise: Promise<T>, ms: number): Promise<T | null> =>
+        Promise.race([
+          promise,
+          new Promise<null>(resolve => setTimeout(() => resolve(null), ms)),
+        ]);
+
       try {
-        const [listData, datesData, formResponse] = await Promise.all([
-          getOmiConversations(maityUser.id),
-          getOmiConversationDates(maityUser.id, getFirstDayOfMonth()),
-          getFormResponses(maityUser.id),
-        ]);
-        setConversations(listData);
-        setConversationDates(datesData);
-        setFormData(formResponse);
-        if (!formResponse) {
-          console.warn('[Gamification] formData is null — getFormResponses() returned no data');
-        }
+        // Primary data with 8s timeout — unblocks the dashboard quickly
+        const result = await withTimeout(
+          Promise.all([
+            getOmiConversations(maityUser.id),
+            getOmiConversationDates(maityUser.id, getFirstDayOfMonth()),
+            getFormResponses(maityUser.id),
+          ]),
+          8000,
+        );
 
-        // Fetch streak and XP from Supabase RPCs (same source as web app)
-        const [streakResult, xpResult] = await Promise.all([
-          supabase.rpc('calculate_user_streak', { p_user_id: maityUser.id }),
-          supabase.rpc('get_my_xp_summary'),
-        ]);
+        if (cancelled) return;
 
-        if (streakResult.data && Array.isArray(streakResult.data) && streakResult.data.length > 0) {
-          setStreakData(streakResult.data[0]);
-        } else if (streakResult.error) {
-          console.warn('[Gamification] streak RPC error:', streakResult.error.message);
-        }
-
-        if (xpResult.data && typeof xpResult.data === 'object' && 'total_xp' in xpResult.data) {
-          setXpFromRPC((xpResult.data as { total_xp: number }).total_xp);
-        } else if (xpResult.error) {
-          console.warn('[Gamification] XP RPC error:', xpResult.error.message);
+        if (result) {
+          const [listData, datesData, formResponse] = result;
+          setConversations(listData);
+          setConversationDates(datesData);
+          setFormData(formResponse);
+          if (!formResponse) {
+            console.warn('[Gamification] formData is null — getFormResponses() returned no data');
+          }
+        } else {
+          console.warn('[Gamification] Primary data fetch timed out after 8s — showing defaults');
         }
       } catch (err) {
         console.error('Error loading conversations for gamified dashboard v2:', err);
       } finally {
-        setLoading(false);
+        // Unblock dashboard immediately — streak/XP load in background
+        if (!cancelled) setLoading(false);
+      }
+
+      // Secondary data (streak + XP) — non-blocking, loaded after dashboard renders
+      try {
+        const [streakResult, xpResult] = await Promise.all([
+          withTimeout(Promise.resolve(supabase.rpc('calculate_user_streak', { p_user_id: maityUser.id })), 8000),
+          withTimeout(Promise.resolve(supabase.rpc('get_my_xp_summary')), 8000),
+        ]);
+
+        if (cancelled) return;
+
+        if (streakResult?.data && Array.isArray(streakResult.data) && streakResult.data.length > 0) {
+          setStreakData(streakResult.data[0]);
+        } else if (streakResult?.error) {
+          console.warn('[Gamification] streak RPC error:', streakResult.error.message);
+        }
+
+        if (xpResult?.data && typeof xpResult.data === 'object' && 'total_xp' in xpResult.data) {
+          setXpFromRPC((xpResult.data as { total_xp: number }).total_xp);
+        } else if (xpResult?.error) {
+          console.warn('[Gamification] XP RPC error:', xpResult.error.message);
+        }
+      } catch (err) {
+        console.warn('[Gamification] Streak/XP fetch failed (non-fatal):', err);
       }
     }
     load();
+    return () => { cancelled = true; };
   }, [maityUser?.id]);
 
   const completedNodes = useMemo(

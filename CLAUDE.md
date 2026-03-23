@@ -430,6 +430,52 @@ $env:RUST_LOG="debug"; ./clean_run_windows.bat
 - **GPU**: CUDA (NVIDIA) o Vulkan vía features de Cargo
 - **Dependencias**: Requiere cmake, llvm, libomp
 
+## Configuración Multiplataforma (IMPORTANTE)
+
+### Arquitectura de Configuración
+
+Tauri 2.x soporta archivos de configuración por plataforma que se **mergean** con el `tauri.conf.json` base vía JSON Merge Patch (RFC 7396):
+
+```
+frontend/src-tauri/
+├── tauri.conf.json              # Config BASE compartida (todas las plataformas)
+├── tauri.macos.conf.json        # Overrides para macOS (merge automático)
+├── tauri.windows.conf.json      # Overrides para Windows (si se necesita)
+├── entitlements.plist           # Entitlements para desarrollo/distribución directa
+├── entitlements-appstore.plist  # Entitlements para App Store (sandbox)
+└── Info.plist                   # Permisos macOS (NUNCA eliminar las *UsageDescription)
+```
+
+### Reglas CRITICAS para Desarrollo Multiplataforma
+
+1. **`tauri.conf.json` es la config BASE compartida** — NO modificar para adaptar a una sola plataforma. Usar `tauri.{platform}.conf.json` para overrides.
+2. **NUNCA cambiar el `identifier`** (`com.maity.ai`) — Cambiarlo rompe datos de usuarios existentes (SQLite, modelos, configuración) porque el OS almacena datos por identifier.
+3. **NUNCA eliminar permisos de `Info.plist`** (`NSMicrophoneUsageDescription`, `NSScreenCaptureUsageDescription`, `NSAudioCaptureUsageDescription`) — macOS los requiere para mostrar el diálogo de permisos.
+4. **NUNCA commitear artefactos de build** (`.pkg`, `.dmg`, `.msi`, `*-setup.exe`) al repositorio — usar GitHub Releases.
+5. **NUNCA eliminar la config `bundle.windows`** del `tauri.conf.json` base — contiene signing, idioma de instaladores, etc.
+6. **El sistema `visible: false` + `app-ready`** en `lib.rs` y `layout.tsx` es intencional — evita pantalla negra al inicio. No eliminar.
+
+### CI/CD (GitHub Actions)
+
+Los workflows multiplataforma ya existen en `.github/workflows/`:
+- `build-windows.yml` — Build Windows con DigiCert HSM signing
+- `build-macos.yml` — Build macOS con Apple Developer Certificate + notarization
+- `build-linux.yml` — Build Linux (deb + AppImage)
+- `release.yml` — Build final para releases en GitHub
+
+### Build Local por Plataforma
+
+```bash
+# Windows (desarrollo principal)
+cd frontend && pnpm run tauri:build:debug
+
+# macOS (usa tauri.macos.conf.json automáticamente)
+cd frontend && pnpm run tauri:build:debug
+
+# La auto-detección de GPU selecciona el feature correcto:
+# Windows → vulkan/cuda, macOS → metal/coreml, Linux → openblas
+```
+
 ## Directrices de Optimización de Rendimiento
 
 ### Procesamiento de Audio

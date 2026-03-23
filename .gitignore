@@ -98,3 +98,9 @@ supabase/.temp/
 # MCP server config (contains secrets)
 .mcp.json
 frontend/.claude/
+
+# Build artifacts (never commit installers/packages)
+*.pkg
+*.dmg
+*.msi
+*-setup.exe
