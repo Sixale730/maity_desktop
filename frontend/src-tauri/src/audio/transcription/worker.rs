@@ -1,10 +1,12 @@
 // audio/transcription/worker.rs
 //
 // Parallel transcription worker pool and chunk processing logic.
+// Includes ChunkAccumulator for batching small VAD segments before Parakeet/Whisper.
 
 use super::engine::TranscriptionEngine;
 use super::provider::{TranscriptionError, TranscriptionProvider};
 use crate::audio::AudioChunk;
+use crate::audio::recording_state::DeviceType;
 use log::{error, info, warn};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -17,6 +19,21 @@ pub static SEQUENCE_COUNTER: AtomicU64 = AtomicU64::new(0);
 // Speech detection flag - reset per recording session (pub for use by streaming providers)
 pub static SPEECH_DETECTED_EMITTED: AtomicBool = AtomicBool::new(false);
 
+/// Global cancellation flag for pending transcription during shutdown.
+/// When set to true, workers stop processing and the task completes early.
+static CANCEL_PENDING: AtomicBool = AtomicBool::new(false);
+
+/// Check if cancellation has been requested
+pub fn is_cancellation_requested() -> bool {
+    CANCEL_PENDING.load(Ordering::SeqCst)
+}
+
+/// Request cancellation of pending transcription chunks
+pub fn request_cancellation() {
+    CANCEL_PENDING.store(true, Ordering::SeqCst);
+    info!("Transcription cancellation requested");
+}
+
 /// Reset the speech detected flag for a new recording session
 pub fn reset_speech_detected_flag() {
     SPEECH_DETECTED_EMITTED.store(false, Ordering::SeqCst);
@@ -26,8 +43,98 @@ pub fn reset_speech_detected_flag() {
 /// Reset session-scoped counters for a new recording session
 pub fn reset_session_counters() {
     SEQUENCE_COUNTER.store(0, Ordering::SeqCst);
+    CANCEL_PENDING.store(false, Ordering::SeqCst);
     reset_speech_detected_flag();
-    info!("Session counters reset: SEQUENCE_COUNTER=0, SPEECH_DETECTED=false");
+    info!("Session counters reset: SEQUENCE_COUNTER=0, SPEECH_DETECTED=false, CANCEL_PENDING=false");
+}
+
+/// Accumulates small VAD segments into larger chunks before sending to transcription engine.
+/// Reduces per-chunk inference overhead: 1 call with 3s audio is faster than 15 calls of 200ms.
+/// Separate accumulators per device type (mic/system) preserve speaker attribution.
+struct ChunkAccumulator {
+    buffer: Vec<f32>,
+    sample_rate: u32,
+    /// Timestamp of the first sample in the buffer (recording-relative seconds)
+    first_timestamp: f64,
+    /// Device type of accumulated audio (mic or system)
+    device_type: DeviceType,
+    /// Running chunk_id counter for accumulated chunks
+    next_chunk_id: u64,
+    /// Minimum duration in seconds before flushing (default: varies by hardware tier)
+    min_duration_secs: f64,
+    /// Maximum duration in seconds before forcing a flush
+    max_duration_secs: f64,
+    /// Last time audio was added (for flush timeout)
+    last_add_time: std::time::Instant,
+    /// Flush timeout: if no new audio arrives within this duration, flush what we have
+    flush_timeout: std::time::Duration,
+}
+
+impl ChunkAccumulator {
+    fn new(min_duration: f64, max_duration: f64, flush_timeout_ms: u64) -> Self {
+        Self {
+            buffer: Vec::new(),
+            sample_rate: 16000,
+            first_timestamp: 0.0,
+            device_type: DeviceType::Mixed,
+            next_chunk_id: 0,
+            min_duration_secs: min_duration,
+            max_duration_secs: max_duration,
+            last_add_time: std::time::Instant::now(),
+            flush_timeout: std::time::Duration::from_millis(flush_timeout_ms),
+        }
+    }
+
+    /// Add a chunk to the accumulator. Returns a merged AudioChunk if ready to flush.
+    fn add(&mut self, chunk: AudioChunk) -> Option<AudioChunk> {
+        if self.buffer.is_empty() {
+            self.first_timestamp = chunk.timestamp;
+            self.device_type = chunk.device_type;
+            self.sample_rate = chunk.sample_rate;
+        }
+
+        self.buffer.extend_from_slice(&chunk.data);
+        self.last_add_time = std::time::Instant::now();
+
+        let duration = self.buffer.len() as f64 / self.sample_rate as f64;
+
+        if duration >= self.max_duration_secs || duration >= self.min_duration_secs {
+            return self.flush();
+        }
+
+        None
+    }
+
+    /// Check if buffer should be flushed due to timeout (no new audio for flush_timeout).
+    fn check_timeout(&mut self) -> Option<AudioChunk> {
+        if !self.buffer.is_empty() && self.last_add_time.elapsed() >= self.flush_timeout {
+            let duration = self.buffer.len() as f64 / self.sample_rate as f64;
+            if duration >= 0.5 {
+                return self.flush();
+            }
+        }
+        None
+    }
+
+    /// Force flush remaining buffer (e.g., when recording stops).
+    fn flush(&mut self) -> Option<AudioChunk> {
+        if self.buffer.is_empty() {
+            return None;
+        }
+
+        let chunk_id = self.next_chunk_id;
+        self.next_chunk_id += 1;
+
+        let flushed = AudioChunk {
+            data: std::mem::take(&mut self.buffer),
+            sample_rate: self.sample_rate,
+            timestamp: self.first_timestamp,
+            chunk_id,
+            device_type: self.device_type,
+        };
+
+        Some(flushed)
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -119,6 +226,7 @@ pub fn start_transcription_task<R: Runtime>(
             let chunks_completed_clone = chunks_completed.clone();
             let input_finished_clone = input_finished.clone();
             let chunks_queued_clone = chunks_queued.clone();
+            let chunks_dropped_clone = chunks_dropped.clone();
 
             let worker_handle = tokio::spawn(async move {
                 info!("👷 Worker {} started", worker_id);
@@ -142,6 +250,24 @@ pub fn start_transcription_task<R: Runtime>(
                 }
 
                 loop {
+                    // Check cancellation before processing next chunk
+                    if CANCEL_PENDING.load(Ordering::SeqCst) {
+                        let mut cancelled_count: u64 = 0;
+                        {
+                            let mut receiver = work_receiver_clone.lock().await;
+                            while receiver.try_recv().is_ok() {
+                                cancelled_count += 1;
+                            }
+                        }
+                        if cancelled_count > 0 {
+                            chunks_dropped_clone.fetch_add(cancelled_count, Ordering::SeqCst);
+                            chunks_completed_clone.fetch_add(cancelled_count, Ordering::SeqCst);
+                            warn!("Worker {}: cancelled {} pending chunks", worker_id, cancelled_count);
+                        }
+                        info!("Worker {} stopping due to cancellation", worker_id);
+                        break;
+                    }
+
                     // Try to get a chunk to process
                     let chunk = {
                         let mut receiver = work_receiver_clone.lock().await;
@@ -370,36 +496,186 @@ pub fn start_transcription_task<R: Runtime>(
             worker_handles.push(worker_handle);
         }
 
-        // Main dispatcher: receive chunks and distribute to workers
+        // Main dispatcher: accumulate small VAD chunks before sending to workers.
+        // Reduces transcription engine invocations (each has fixed inference overhead)
+        // and improves throughput (processing 3s of audio in one call is faster than
+        // processing 15 separate 200ms segments).
         let mut receiver = transcription_receiver;
         let chunks_dropped_dispatcher = chunks_dropped.clone();
-        while let Some(chunk) = receiver.recv().await {
-            let chunk_id = chunk.chunk_id;
+
+        // Separate accumulators per device type (mic and system audio transcribe independently)
+        // Adaptive parameters based on hardware tier
+        let hw_profile = crate::audio::HardwareProfile::detect();
+        let (min_dur, max_dur, flush_timeout) = match hw_profile.performance_tier {
+            crate::audio::PerformanceTier::Ultra  => (1.0, 8.0, 1500),
+            crate::audio::PerformanceTier::High   => (0.8, 6.0, 1200),
+            crate::audio::PerformanceTier::Medium => (0.8, 4.0, 1000),
+            crate::audio::PerformanceTier::Low    => (0.5, 3.0, 800),
+        };
+        info!("[WORKER] Adaptive ChunkAccumulator: min={:.1}s, max={:.1}s, flush={}ms (tier: {:?})",
+                 min_dur, max_dur, flush_timeout, hw_profile.performance_tier);
+        let mut mic_accumulator = ChunkAccumulator::new(min_dur, max_dur, flush_timeout);
+        let mut sys_accumulator = ChunkAccumulator::new(min_dur, max_dur, flush_timeout);
+
+        // Lag metrics tracking
+        let mut last_lag_emit = std::time::Instant::now();
+        let lag_emit_interval = std::time::Duration::from_secs(3);
+        let backpressure_threshold: u64 = 1500; // 75% of 2000 capacity
+
+        /// Helper: send an accumulated chunk to the worker channel with adaptive backpressure
+        async fn dispatch_accumulated(
+            accumulated: AudioChunk,
+            work_sender: &tokio::sync::mpsc::Sender<AudioChunk>,
+            work_receiver: &Arc<tokio::sync::Mutex<tokio::sync::mpsc::Receiver<AudioChunk>>>,
+            chunks_queued: &AtomicU64,
+            chunks_dropped: &AtomicU64,
+        ) -> bool {
+            let duration = accumulated.data.len() as f64 / accumulated.sample_rate as f64;
             let queued = chunks_queued.fetch_add(1, Ordering::SeqCst) + 1;
             info!(
-                "📥 Dispatching chunk {} to workers (total queued: {})",
-                chunk_id, queued
+                "📥 Dispatching accumulated chunk {} ({:.1}s, {:?}) to workers (total queued: {})",
+                accumulated.chunk_id, duration, accumulated.device_type, queued
             );
 
-            // FIX: Bounded channel con backpressure - espera si la cola está llena
-            // Usa timeout para detectar si el worker está bloqueado
-            match tokio::time::timeout(
-                tokio::time::Duration::from_secs(5),
-                work_sender.send(chunk)
-            ).await {
-                Ok(Ok(())) => {
-                    // Chunk enviado exitosamente
+            // ADAPTIVE BACKPRESSURE: drop OLDEST chunks when full (not newest)
+            match work_sender.try_send(accumulated) {
+                Ok(()) => true,
+                Err(tokio::sync::mpsc::error::TrySendError::Full(chunk)) => {
+                    // Queue full: drain OLDEST chunks to make room for newest audio
+                    let mut drained: u64 = 0;
+                    {
+                        let mut work_rx = work_receiver.lock().await;
+                        for _ in 0..200 {
+                            match work_rx.try_recv() {
+                                Ok(_old_chunk) => {
+                                    drained += 1;
+                                    chunks_dropped.fetch_add(1, Ordering::SeqCst);
+                                }
+                                Err(_) => break,
+                            }
+                        }
+                    }
+                    if drained > 0 {
+                        warn!(
+                            "Backpressure: dropped {} oldest chunks to keep transcription current (chunk {})",
+                            drained, chunk.chunk_id
+                        );
+                    }
+                    match work_sender.try_send(chunk) {
+                        Ok(()) => true,
+                        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                            warn!("Accumulated chunk dropped - queue still full after drain");
+                            chunks_dropped.fetch_add(1, Ordering::SeqCst);
+                            true
+                        }
+                        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                            error!("Channel closed - workers terminated unexpectedly");
+                            false
+                        }
+                    }
                 }
-                Ok(Err(_)) => {
-                    // Channel cerrado - workers terminaron
-                    error!("❌ Channel closed - workers terminated unexpectedly");
+                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                    error!("Channel closed - workers terminated unexpectedly");
+                    false
+                }
+            }
+        }
+
+        // Streaming providers (Deepgram) bypass accumulation — they send raw audio over WebSocket
+        let use_accumulator = !is_streaming;
+
+        loop {
+            // Use a short timeout to periodically check for flush timeouts
+            // (200ms for responsive silence detection in accumulators)
+            match tokio::time::timeout(
+                tokio::time::Duration::from_millis(200),
+                receiver.recv()
+            ).await {
+                Ok(Some(chunk)) => {
+                    if use_accumulator {
+                        // Route chunk to appropriate accumulator based on device type
+                        let accumulated = match chunk.device_type {
+                            DeviceType::Microphone => mic_accumulator.add(chunk),
+                            DeviceType::System => sys_accumulator.add(chunk),
+                            DeviceType::Mixed => Some(chunk), // Mixed: send directly
+                        };
+
+                        if let Some(acc_chunk) = accumulated {
+                            if !dispatch_accumulated(acc_chunk, &work_sender, &work_receiver, &chunks_queued, &chunks_dropped_dispatcher).await {
+                                break;
+                            }
+                        }
+                    } else {
+                        // Streaming provider: dispatch directly without accumulation
+                        let queued = chunks_queued.fetch_add(1, Ordering::SeqCst) + 1;
+                        info!("📥 Dispatching chunk {} to streaming worker (total queued: {})", chunk.chunk_id, queued);
+                        match work_sender.try_send(chunk) {
+                            Ok(()) => {}
+                            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                                warn!("Streaming chunk dropped - queue full");
+                                chunks_dropped_dispatcher.fetch_add(1, Ordering::SeqCst);
+                            }
+                            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                                error!("Channel closed - workers terminated unexpectedly");
+                                break;
+                            }
+                        }
+                    }
+                }
+                Ok(None) => {
+                    // Channel closed - flush remaining accumulator buffers and exit
+                    info!("📭 Input channel closed, flushing accumulators...");
+                    if let Some(remaining) = mic_accumulator.flush() {
+                        dispatch_accumulated(remaining, &work_sender, &work_receiver, &chunks_queued, &chunks_dropped_dispatcher).await;
+                    }
+                    if let Some(remaining) = sys_accumulator.flush() {
+                        dispatch_accumulated(remaining, &work_sender, &work_receiver, &chunks_queued, &chunks_dropped_dispatcher).await;
+                    }
                     break;
                 }
                 Err(_) => {
-                    // Timeout - cola llena por más de 5 segundos
-                    error!("⚠️ Chunk {} dropped - queue full for >5s (backpressure timeout)", chunk_id);
-                    chunks_dropped_dispatcher.fetch_add(1, Ordering::SeqCst);
+                    // Timeout — check if accumulators need flushing due to silence
+                    if use_accumulator {
+                        if let Some(timeout_chunk) = mic_accumulator.check_timeout() {
+                            dispatch_accumulated(timeout_chunk, &work_sender, &work_receiver, &chunks_queued, &chunks_dropped_dispatcher).await;
+                        }
+                        if let Some(timeout_chunk) = sys_accumulator.check_timeout() {
+                            dispatch_accumulated(timeout_chunk, &work_sender, &work_receiver, &chunks_queued, &chunks_dropped_dispatcher).await;
+                        }
+                    }
                 }
+            }
+
+            // Lag metrics to frontend every 3 seconds
+            let current_queued = chunks_queued.load(Ordering::Relaxed);
+            let current_completed = chunks_completed.load(Ordering::Relaxed);
+            let current_dropped = chunks_dropped.load(Ordering::Relaxed);
+            let pending = current_queued.saturating_sub(current_completed);
+
+            if pending > backpressure_threshold && pending % 100 == 0 {
+                warn!(
+                    "Transcription queue depth high: {} pending chunks",
+                    pending
+                );
+            }
+
+            if last_lag_emit.elapsed() >= lag_emit_interval {
+                // With accumulation, each queued chunk is ~min_dur seconds of audio
+                let lag_seconds = pending as f64 * min_dur;
+                let chunks_per_second = if current_completed > 0 {
+                    current_completed as f64 / last_lag_emit.elapsed().as_secs_f64().max(1.0)
+                } else {
+                    0.0
+                };
+                let _ = app.emit("transcription-lag-update", serde_json::json!({
+                    "queue_depth": pending,
+                    "lag_seconds": lag_seconds,
+                    "chunks_per_second": chunks_per_second,
+                    "chunks_received": current_queued,
+                    "chunks_processed": current_completed,
+                    "chunks_dropped": current_dropped
+                }));
+                last_lag_emit = std::time::Instant::now();
             }
         }
 
@@ -410,6 +686,18 @@ pub fn start_transcription_task<R: Runtime>(
         let total_chunks_queued = chunks_queued.load(Ordering::SeqCst);
         info!("📭 Input finished with {} total chunks queued. Waiting for all {} workers to complete...",
               total_chunks_queued, NUM_WORKERS);
+
+        // Emit transcription-finishing event so frontend can show progress UI
+        let completed_now = chunks_completed.load(Ordering::SeqCst);
+        let remaining = total_chunks_queued.saturating_sub(completed_now);
+        let estimated_seconds = remaining as f64 * 0.5; // ~500ms per accumulated chunk
+        let _ = app.emit("transcription-finishing", serde_json::json!({
+            "total_remaining": remaining,
+            "processed": 0,
+            "estimated_seconds": estimated_seconds,
+            "total_chunks": total_chunks_queued,
+            "chunks_completed": completed_now
+        }));
 
         // Emit final chunk count to frontend
         let _ = app.emit("transcription-queue-complete", serde_json::json!({
@@ -501,7 +789,18 @@ pub fn start_transcription_task<R: Runtime>(
             }
         }
 
-        info!("✅ Parallel transcription task completed - all workers finished, ready for model unload");
+        // Emit transcription-complete event so frontend knows processing is done
+        let final_completed = chunks_completed.load(Ordering::SeqCst);
+        let final_dropped = chunks_dropped.load(Ordering::SeqCst);
+        let was_cancelled = CANCEL_PENDING.load(Ordering::SeqCst);
+        let _ = app.emit("transcription-complete", serde_json::json!({
+            "chunks_completed": final_completed,
+            "chunks_dropped": final_dropped,
+            "total_chunks": total_chunks_queued,
+            "was_cancelled": was_cancelled
+        }));
+
+        info!("Parallel transcription task completed - all workers finished, ready for model unload");
     })
 }
 

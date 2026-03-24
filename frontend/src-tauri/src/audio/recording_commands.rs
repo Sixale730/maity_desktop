@@ -355,3 +355,16 @@ pub async fn attempt_device_reconnect(
         }
     }
 }
+
+// ============================================================================
+// TRANSCRIPTION CONTROL COMMANDS
+// ============================================================================
+
+/// Cancel any pending transcription chunks during shutdown.
+/// Frontend can call this to skip remaining chunks and finish faster.
+#[tauri::command]
+pub async fn cancel_pending_transcription() -> Result<(), String> {
+    info!("cancel_pending_transcription called by frontend");
+    super::transcription::worker::request_cancellation();
+    Ok(())
+}

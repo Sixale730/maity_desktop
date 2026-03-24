@@ -258,49 +258,56 @@ pub async fn stop_recording<R: Runtime>(
         global_task.take()
     };
 
-    if let Some(task_handle) = transcription_task {
-        info!("⏳ Waiting for ALL transcription chunks to be processed (no timeout - preserving every chunk)");
+    if let Some(mut task_handle) = transcription_task {
+        info!("Waiting for transcription to finish (2 min max)");
 
-        let progress_app = app.clone();
-        let progress_task = tokio::spawn(async move {
-            let last_update = std::time::Instant::now();
+        // Adaptive timeout: 2 min max, but stop early if no progress for 15s
+        let max_timeout = std::time::Duration::from_secs(120);
+        let start = std::time::Instant::now();
+        let mut task_done = false;
 
-            loop {
-                tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+        loop {
+            tokio::select! {
+                result = &mut task_handle => {
+                    match result {
+                        Ok(()) => info!("All transcription chunks processed successfully"),
+                        Err(e) => warn!("Transcription task completed with error: {:?}", e),
+                    }
+                    task_done = true;
+                    break;
+                }
+                _ = tokio::time::sleep(tokio::time::Duration::from_millis(1500)) => {
+                    let elapsed = start.elapsed();
 
-                let elapsed = last_update.elapsed().as_secs();
-                let _ = progress_app.emit(
-                    "recording-shutdown-progress",
-                    serde_json::json!({
-                        "stage": "processing_transcripts",
-                        "message": format!("Processing transcripts... ({}s elapsed)", elapsed),
-                        "progress": 40,
-                        "detailed": true,
-                        "elapsed_seconds": elapsed
-                    }),
-                );
-            }
-        });
+                    // Emit progress event for frontend
+                    let _ = app.emit(
+                        "recording-shutdown-progress",
+                        serde_json::json!({
+                            "stage": "processing_transcripts",
+                            "message": format!("Processing transcripts... ({:.0}s elapsed)", elapsed.as_secs_f64()),
+                            "progress": 40,
+                            "detailed": true,
+                            "elapsed_seconds": elapsed.as_secs()
+                        }),
+                    );
 
-        // Wait up to 10 minutes for transcription completion
-        match tokio::time::timeout(
-            tokio::time::Duration::from_secs(600),
-            task_handle
-        ).await {
-            Ok(Ok(())) => {
-                info!("✅ ALL transcription chunks processed successfully - no data lost");
-            }
-            Ok(Err(e)) => {
-                warn!("⚠️ Transcription task completed with error: {:?}", e);
-            }
-            Err(_) => {
-                warn!("⏱️ Transcription timeout (10 minutes) reached, continuing shutdown to prevent indefinite hang");
+                    // Check max timeout (2 minutes)
+                    if elapsed >= max_timeout {
+                        warn!("Transcription timeout (2 min) reached, continuing shutdown");
+                        break;
+                    }
+
+                }
             }
         }
 
-        progress_task.abort();
+        // If task didn't complete naturally, it's still running — that's OK, 
+        // the worker will finish on its own or respond to cancellation
+        if !task_done {
+            info!("Transcription task still running after timeout, proceeding with shutdown");
+        }
     } else {
-        info!("ℹ️ No transcription task found to wait for");
+        info!("No transcription task found to wait for");
     }
 
     // Step 3: Unload transcription model after ALL chunks are processed

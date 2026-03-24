@@ -23,6 +23,7 @@ import { useRouter } from 'next/navigation';
 import { useParakeetAutoDownloadContext } from '@/contexts/ParakeetAutoDownloadContext';
 import { useRecordingLevels } from '@/hooks/useRecordingLevels';
 import { usePreviewLevels } from '@/hooks/usePreviewLevels';
+import { TranscriptionLagIndicator } from '@/components/recording/TranscriptionLagIndicator';
 import { GamifiedDashboardV2 } from '@/features/gamification';
 
 export default function Home() {
@@ -221,7 +222,8 @@ export default function Home() {
                   marginLeft: sidebarCollapsed ? '4rem' : '16rem'
                 }}
               >
-                <div className="w-2/3 max-w-[750px] min-w-[200px] flex justify-center">
+                <div className="w-2/3 max-w-[750px] min-w-[200px] flex flex-col items-center gap-2">
+                  <TranscriptionLagIndicator />
                   <div className="bg-white dark:bg-gray-900 rounded-full shadow-lg flex items-center overflow-visible">
                     <RecordingControls
                       isRecording={isRecording}

@@ -1,3 +1,6 @@
+import { TranscriptionProgressBar } from '@/components/recording/TranscriptionProgressBar';
+import { useTranscriptionProgress } from '@/hooks/useTranscriptionProgress';
+
 interface StatusOverlaysProps {
   // Status flags
   isProcessing: boolean;      // Processing transcription after recording stops
@@ -42,14 +45,40 @@ export function StatusOverlays({
   isSaving,
   sidebarCollapsed
 }: StatusOverlaysProps) {
+  const { isFinishing, totalRemaining, processed, estimatedSeconds, cancelPending } =
+    useTranscriptionProgress();
+
   return (
     <>
       {/* Overlay de procesamiento - mostrado después de detener grabación mientras finaliza transcripción */}
-      <StatusOverlay
-        show={isProcessing}
-        message="Finalizando transcripción..."
-        sidebarCollapsed={sidebarCollapsed}
-      />
+      {/* When transcription-finishing events are available, show detailed progress bar instead of generic spinner */}
+      {isProcessing && (
+        isFinishing ? (
+          <div className="fixed bottom-4 left-0 right-0 z-10">
+            <div
+              className="flex justify-center pl-8 transition-[margin] duration-300"
+              style={{
+                marginLeft: sidebarCollapsed ? '4rem' : '16rem'
+              }}
+            >
+              <div className="w-2/3 max-w-[750px] flex justify-center">
+                <TranscriptionProgressBar
+                  totalRemaining={totalRemaining}
+                  processed={processed}
+                  estimatedSeconds={estimatedSeconds}
+                  onCancel={cancelPending}
+                />
+              </div>
+            </div>
+          </div>
+        ) : (
+          <StatusOverlay
+            show={true}
+            message="Finalizando transcripción..."
+            sidebarCollapsed={sidebarCollapsed}
+          />
+        )
+      )}
 
       {/* Overlay de guardado - mostrado mientras guarda transcripción en base de datos */}
       <StatusOverlay
