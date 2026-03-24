@@ -5,7 +5,7 @@ import { supabase } from '@/lib/supabase';
 
 export interface SubPuntaje {
   puntaje_1_5: number;
-  puntaje_0_100: number;
+  puntaje_0_100?: number;
   que_mide?: string;
 }
 

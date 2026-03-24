@@ -8,9 +8,15 @@ import type {
   DimensionBase,
   DimensionObjetivo,
   Hallazgo,
+  SubPuntaje,
 } from '../../services/conversations.service';
 
 // ─── Helpers ────────────────────────────────────────────────────────
+
+/** Derive puntaje_0_100 from puntaje_1_5 when the optimized prompt omits it */
+function getScore100(sp: SubPuntaje): number {
+  return sp.puntaje_0_100 ?? (sp.puntaje_1_5 > 0 ? (sp.puntaje_1_5 - 1) * 25 : 0);
+}
 
 function mapHallazgoType(tipo: string): 'ok' | 'warn' | 'bad' {
   const t = tipo.toLowerCase();
@@ -266,11 +272,11 @@ export function HallazgosSection({ feedback }: HallazgosSectionProps) {
         hallazgos: obj.hallazgos,
         subScores: sub
           ? [
-              { label: '¿De qué habla?', value: sub.especificidad.puntaje_0_100 },
-              { label: '¿Qué hacer?', value: sub.accion.puntaje_0_100 },
-              { label: '¿Para cuándo?', value: sub.temporalidad.puntaje_0_100 },
-              { label: '¿Quién?', value: sub.responsable.puntaje_0_100 },
-              { label: '¿Cómo verificar?', value: sub.verificabilidad.puntaje_0_100 },
+              { label: '¿De qué habla?', value: getScore100(sub.especificidad) },
+              { label: '¿Qué hacer?', value: getScore100(sub.accion) },
+              { label: '¿Para cuándo?', value: getScore100(sub.temporalidad) },
+              { label: '¿Quién?', value: getScore100(sub.responsable) },
+              { label: '¿Cómo verificar?', value: getScore100(sub.verificabilidad) },
             ]
           : undefined,
       });
