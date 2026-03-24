@@ -441,6 +441,8 @@ export interface OmiConversation {
   communication_feedback: CommunicationFeedback | null;
   communication_feedback_v4: CommunicationFeedbackV4 | AnalysisSkipped | null;
   meeting_minutes_data: MeetingMinutesData | null;
+  /** Explicit analysis status field — source of truth for polling */
+  analysis_status?: 'pending' | 'processing' | 'completed' | 'failed' | 'skipped' | null;
   /** Local SQLite meeting ID (present when loaded from local storage) */
   _localId?: string;
 }
@@ -774,6 +776,23 @@ export async function getOmiConversation(conversationId: string): Promise<OmiCon
   }
 
   return data;
+}
+
+/**
+ * Lightweight status check — only fetches analysis_status, not the full V4 JSON.
+ * Used by the polling service to avoid downloading heavy payloads every cycle.
+ */
+export async function checkAnalysisStatus(
+  conversationId: string
+): Promise<string | null> {
+  const { data, error } = await supabase
+    .from('omi_conversations')
+    .select('analysis_status')
+    .eq('id', conversationId)
+    .single();
+
+  if (error || !data) return null;
+  return (data as { analysis_status: string | null }).analysis_status ?? null;
 }
 
 export async function getOmiTranscriptSegments(conversationId: string): Promise<OmiTranscriptSegment[]> {

@@ -7,14 +7,16 @@
  * - React bridge (AnalysisPollingInitializer) mounted in layout.tsx
  * - Dispatches window CustomEvents for UI subscribers
  *
- * Fixes two bugs:
- * 1. Analysis banner disappears on navigation (state was component-local)
- * 2. Post-recording "not synced" error (local convs now wait for finalize event)
+ * Uses `analysis_status` column for lightweight polling (20s interval).
+ * Only fetches full conversation data when status reaches a terminal state.
+ * Falls back to checking communication_feedback_v4 when analysis_status is null
+ * (backward compatibility during transition before web app sets the field).
  */
 import { invoke } from '@tauri-apps/api/core';
 import { supabase } from '@/lib/supabase';
 import {
   getOmiConversation,
+  checkAnalysisStatus,
   isFullAnalysis,
   isAnalysisSkipped,
 } from '@/features/conversations/services/conversations.service';
@@ -47,9 +49,7 @@ function checkMinuta(conv: OmiConversation): boolean {
   return !!conv.meeting_minutes_data;
 }
 
-const POLL_INTERVAL_MS = 5000;
-const AUTO_RETRY_TIMEOUT_MS = 75000;
-const MAX_AUTO_RETRIES = 2;
+const POLL_INTERVAL_MS = 20_000;
 const MAX_TOTAL_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
 const SESSION_KEY_PREFIX = 'analysis_active_';
 
@@ -68,8 +68,6 @@ class AnalysisPollingServiceImpl {
 
   /** Map of tracking key -> tracking state */
   private tracked = new Map<string, AnalysisState>();
-  /** Per-conversation retry timeout handles */
-  private retryTimeouts = new Map<string, ReturnType<typeof setTimeout>>();
   /** Timestamp when polling started for each conversation */
   private pollingStartedAt = new Map<string, number>();
   /** Resolved Supabase ID for local conversations (key -> supabaseId) */
@@ -101,10 +99,6 @@ class AnalysisPollingServiceImpl {
       this.pollIntervalId = null;
     }
 
-    for (const timeout of this.retryTimeouts.values()) {
-      clearTimeout(timeout);
-    }
-    this.retryTimeouts.clear();
     this.pollingStartedAt.clear();
 
     console.log('[AnalysisPollingService] Stopped');
@@ -144,7 +138,6 @@ class AnalysisPollingServiceImpl {
 
     this.tracked.set(key, state);
     this.pollingStartedAt.set(key, Date.now());
-    this.scheduleAutoRetry(key);
     this.persistToSession(state);
     this.emitStateChanged(key);
     console.log(`[AnalysisPollingService] Now tracking ${key} (source: ${opts.source})`);
@@ -159,7 +152,7 @@ class AnalysisPollingServiceImpl {
   /** Stop tracking a conversation */
   untrack(conversationId: string, localId?: string) {
     const key = this.trackingKey(conversationId, localId);
-    this.cleanupKey(key);
+    this.pollingStartedAt.delete(key);
     this.tracked.delete(key);
   }
 
@@ -193,9 +186,12 @@ class AnalysisPollingServiceImpl {
     const state = this.tracked.get(key);
     if (!state) return;
 
-    state.retryCount = 0;
+    state.retryCount += 1;
     state.error = null;
-    this.doRetry(key);
+    state.phase = 'retrying';
+    this.emitStateChanged(key);
+
+    this.callFinalize(key).catch(() => {});
   }
 
   /** Restart polling (e.g., after user clicks re-analyze) */
@@ -216,8 +212,6 @@ class AnalysisPollingServiceImpl {
     }
 
     this.pollingStartedAt.set(key, Date.now());
-    this.clearRetryTimeout(key);
-    this.scheduleAutoRetry(key);
     this.emitStateChanged(key);
   }
 
@@ -250,7 +244,7 @@ class AnalysisPollingServiceImpl {
       if (startedAt > 0 && Date.now() - startedAt > MAX_TOTAL_TIMEOUT_MS) {
         state.phase = 'failed';
         state.error = 'El análisis no se completó después de 10 minutos.';
-        this.cleanupKey(key);
+        this.pollingStartedAt.delete(key);
         this.removeFromSession(key);
         this.emitStateChanged(key);
         continue;
@@ -262,12 +256,38 @@ class AnalysisPollingServiceImpl {
         continue;
       }
 
+      // Lightweight status check via analysis_status column
       const supabaseId = this.resolvedIds.get(key) || state.conversationId;
       try {
-        const updated = await getOmiConversation(supabaseId);
-        if (updated) {
-          this.handleConversationData(key, updated);
+        const status = await checkAnalysisStatus(supabaseId);
+
+        if (status === 'completed') {
+          // Status confirms analysis is done — fetch full data once
+          const conv = await getOmiConversation(supabaseId);
+          if (conv) {
+            this.handleConversationData(key, conv);
+          }
+        } else if (status === 'failed') {
+          state.phase = 'failed';
+          state.error = 'El análisis falló en el servidor. Intenta de nuevo.';
+          this.pollingStartedAt.delete(key);
+          this.removeFromSession(key);
+          this.emitStateChanged(key);
+        } else if (status === 'skipped') {
+          // Fetch data to get the skip reason for the UI
+          const conv = await getOmiConversation(supabaseId);
+          if (conv) {
+            this.handleConversationData(key, conv);
+          }
+        } else if (status === null) {
+          // analysis_status not set yet — fallback to checking communication_feedback_v4
+          // (backward compatibility: web app hasn't been updated to set analysis_status)
+          const conv = await getOmiConversation(supabaseId);
+          if (conv) {
+            this.handleConversationData(key, conv);
+          }
         }
+        // 'pending' or 'processing' → keep waiting, do nothing
       } catch (err) {
         console.warn(`[AnalysisPollingService] Poll error for ${key}:`, err);
       }
@@ -295,7 +315,7 @@ class AnalysisPollingServiceImpl {
         // All remaining jobs have failed
         state.phase = 'failed';
         state.error = 'La sincronización con la nube falló. Intenta de nuevo.';
-        this.cleanupKey(key);
+        this.pollingStartedAt.delete(key);
         this.removeFromSession(key);
         this.emitStateChanged(key);
       }
@@ -328,14 +348,25 @@ class AnalysisPollingServiceImpl {
         state.source = 'maity_desktop';
       }
 
-      // Immediately fetch latest conversation data
+      // Immediately check status after recovering ID
       try {
-        const updated = await getOmiConversation(supabaseId);
-        if (updated) {
-          this.handleConversationData(key, updated);
+        const status = await checkAnalysisStatus(supabaseId);
+        if (status === 'completed' || status === 'skipped' || status === null) {
+          // Fetch full data for completed/skipped/unknown
+          const conv = await getOmiConversation(supabaseId);
+          if (conv) {
+            this.handleConversationData(key, conv);
+          }
+        } else if (status === 'failed') {
+          state.phase = 'failed';
+          state.error = 'El análisis falló en el servidor. Intenta de nuevo.';
+          this.pollingStartedAt.delete(key);
+          this.removeFromSession(key);
+          this.emitStateChanged(key);
         }
+        // 'pending'/'processing' → will be picked up by next poll cycle
       } catch (err) {
-        console.warn(`[AnalysisPollingService] Error fetching after recovery:`, err);
+        console.warn(`[AnalysisPollingService] Error checking status after recovery:`, err);
       }
     } catch (err) {
       console.warn(`[AnalysisPollingService] Failed to recover supabaseId for ${key}:`, err);
@@ -355,7 +386,7 @@ class AnalysisPollingServiceImpl {
 
     if (hasV4 && hasMinuta) {
       state.phase = 'completed';
-      this.cleanupKey(key);
+      this.pollingStartedAt.delete(key);
       this.removeFromSession(key);
 
       window.dispatchEvent(new CustomEvent(ANALYSIS_COMPLETED, {
@@ -377,79 +408,12 @@ class AnalysisPollingServiceImpl {
     }
   }
 
-  private scheduleAutoRetry(key: string) {
-    this.clearRetryTimeout(key);
-    const timeout = setTimeout(() => {
-      const state = this.tracked.get(key);
-      if (!state || state.phase !== 'polling') return;
-
-      if (state.retryCount < MAX_AUTO_RETRIES) {
-        this.doRetry(key);
-      } else {
-        state.phase = 'failed';
-        state.error = 'El analisis no se completo despues de varios intentos.';
-        this.cleanupKey(key);
-        this.emitStateChanged(key);
-      }
-    }, AUTO_RETRY_TIMEOUT_MS);
-
-    this.retryTimeouts.set(key, timeout);
-  }
-
-  private async doRetry(key: string) {
+  /** Manual retry: re-trigger finalize and resume polling */
+  private async callFinalize(key: string) {
     const state = this.tracked.get(key);
     if (!state) return;
 
-    // For local conversations without a resolved Supabase ID:
-    // Check sync queue status before deciding whether to fail.
-    const supabaseId = this.resolvedIds.get(key);
-    if (state.source === 'local' && !supabaseId) {
-      // Check if sync jobs are still running
-      const meetingId = state.localId || state.conversationId;
-      let syncStillRunning = false;
-      try {
-        const syncStatus = await invoke<MeetingSyncStatus | null>('sync_queue_get_meeting_status', {
-          meetingId,
-        });
-        if (syncStatus && (syncStatus.pending > 0 || syncStatus.in_progress > 0)) {
-          syncStillRunning = true;
-        }
-      } catch { /* ignore */ }
-
-      if (syncStillRunning) {
-        // Sync jobs still processing — extend wait, don't count as a retry
-        console.log(`[AnalysisPollingService] ${key} sync still running, extending wait...`);
-        this.pollingStartedAt.set(key, Date.now());
-        this.scheduleAutoRetry(key);
-        return;
-      }
-
-      // Sync not running but no Supabase ID — jobs may have failed
-      state.retryCount += 1;
-      console.log(`[AnalysisPollingService] ${key} still local, retry ${state.retryCount}/${MAX_AUTO_RETRIES}`);
-
-      if (state.retryCount >= MAX_AUTO_RETRIES) {
-        state.phase = 'failed';
-        state.error = 'La conversación aún no se ha sincronizado a la nube. Intenta de nuevo.';
-        this.cleanupKey(key);
-        this.removeFromSession(key);
-        this.emitStateChanged(key);
-      } else {
-        // Stay in polling, re-schedule
-        this.pollingStartedAt.set(key, Date.now());
-        this.scheduleAutoRetry(key);
-        this.persistToSession(state);
-        this.emitStateChanged(key);
-      }
-      return;
-    }
-
-    state.phase = 'retrying';
-    state.retryCount += 1;
-    state.error = null;
-    this.emitStateChanged(key);
-
-    const conversationId = supabaseId || state.conversationId;
+    const supabaseId = this.resolvedIds.get(key) || state.conversationId;
 
     try {
       const { data: { session } } = await supabase.auth.getSession();
@@ -458,7 +422,7 @@ class AnalysisPollingServiceImpl {
       }
 
       const result = await invoke<{ ok: boolean; error?: string }>('finalize_conversation_cloud', {
-        conversationId,
+        conversationId: supabaseId,
         durationSeconds: state.durationSeconds,
         accessToken: session.access_token,
       });
@@ -470,24 +434,15 @@ class AnalysisPollingServiceImpl {
       // Resume polling
       state.phase = 'polling';
       this.pollingStartedAt.set(key, Date.now());
-      this.scheduleAutoRetry(key);
       this.persistToSession(state);
       this.emitStateChanged(key);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.warn(`[AnalysisPollingService] Retry failed for ${key}:`, msg);
+      state.phase = 'failed';
       state.error = msg;
-
-      if (state.retryCount >= MAX_AUTO_RETRIES) {
-        state.phase = 'failed';
-        this.cleanupKey(key);
-        this.removeFromSession(key);
-      } else {
-        state.phase = 'polling';
-        this.pollingStartedAt.set(key, Date.now());
-        this.scheduleAutoRetry(key);
-        this.persistToSession(state);
-      }
+      this.pollingStartedAt.delete(key);
+      this.removeFromSession(key);
       this.emitStateChanged(key);
     }
   }
@@ -528,14 +483,24 @@ class AnalysisPollingServiceImpl {
       state.source = 'maity_desktop';
     }
 
-    // Fetch latest data
+    // Immediately check status
     try {
-      const updated = await getOmiConversation(supabaseId);
-      if (updated) {
-        this.handleConversationData(key, updated);
+      const status = await checkAnalysisStatus(supabaseId);
+      if (status === 'completed' || status === 'skipped' || status === null) {
+        const conv = await getOmiConversation(supabaseId);
+        if (conv) {
+          this.handleConversationData(key, conv);
+        }
+      } else if (status === 'failed') {
+        state.phase = 'failed';
+        state.error = 'El análisis falló en el servidor. Intenta de nuevo.';
+        this.pollingStartedAt.delete(key);
+        this.removeFromSession(key);
+        this.emitStateChanged(key);
       }
+      // 'pending'/'processing' → will be picked up by poll cycle
     } catch (err) {
-      console.warn(`[AnalysisPollingService] Error fetching after finalize:`, err);
+      console.warn(`[AnalysisPollingService] Error checking status after finalize:`, err);
     }
   };
 
@@ -554,19 +519,6 @@ class AnalysisPollingServiceImpl {
   };
 
   // ── Utilities ────────────────────────────────────────────────────
-
-  private cleanupKey(key: string) {
-    this.clearRetryTimeout(key);
-    this.pollingStartedAt.delete(key);
-  }
-
-  private clearRetryTimeout(key: string) {
-    const timeout = this.retryTimeouts.get(key);
-    if (timeout) {
-      clearTimeout(timeout);
-      this.retryTimeouts.delete(key);
-    }
-  }
 
   private emitStateChanged(key: string) {
     const state = this.tracked.get(key);
@@ -628,7 +580,6 @@ class AnalysisPollingServiceImpl {
             };
             this.tracked.set(key, state);
             this.pollingStartedAt.set(key, Date.now());
-            this.scheduleAutoRetry(key);
             console.log(`[AnalysisPollingService] Restored from session: ${key}`);
           } else {
             sessionStorage.removeItem(storageKey);
