@@ -134,9 +134,7 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
         return Err("Recording already in progress".to_string());
     }
 
-    // Validate transcription model
-    recording_helpers::validate_transcription_ready(&app).await?;
-
+    // Skip transcription validation here — frontend already validated via checkTranscriptionReady()
     info!("🚀 Starting async recording initialization with custom devices");
 
     // Parse explicit device names
@@ -310,95 +308,10 @@ pub async fn stop_recording<R: Runtime>(
         info!("No transcription task found to wait for");
     }
 
-    // Step 3: Unload transcription model after ALL chunks are processed
-    let _ = app.emit(
-        "recording-shutdown-progress",
-        serde_json::json!({
-            "stage": "unloading_model",
-            "message": "Unloading speech recognition model...",
-            "progress": 70
-        }),
-    );
-
-    info!("🧠 All transcript chunks processed. Now safely unloading transcription model...");
-
-    // Determine which provider was used and unload the appropriate model
-    let config = match tokio::time::timeout(
-        tokio::time::Duration::from_secs(30),
-        crate::api::api_get_transcript_config(
-            app.clone(),
-            app.clone().state(),
-            None,
-        )
-    )
-    .await
-    {
-        Ok(Ok(Some(config))) => Some(config.provider),
-        Ok(Ok(None)) => None,
-        Ok(Err(e)) => {
-            warn!("⚠️ Failed to get transcript config: {:?}", e);
-            None
-        }
-        Err(_) => {
-            warn!("⏱️ Transcript config timeout (30s), continuing shutdown");
-            None
-        }
-    };
-
-    match config.as_deref() {
-        Some("parakeet") => {
-            info!("🦜 Unloading Parakeet model...");
-            let engine_clone = match crate::parakeet_engine::commands::PARAKEET_ENGINE.lock() {
-                Ok(engine_guard) => engine_guard.as_ref().cloned(),
-                Err(e) => {
-                    warn!("⚠️ Parakeet engine lock poisoned: {}", e);
-                    None
-                }
-            };
-
-            if let Some(engine) = engine_clone {
-                let current_model = engine
-                    .get_current_model()
-                    .await
-                    .unwrap_or_else(|| "unknown".to_string());
-                info!("Current Parakeet model before unload: '{}'", current_model);
-
-                if engine.unload_model().await {
-                    info!("✅ Parakeet model '{}' unloaded successfully", current_model);
-                } else {
-                    warn!("⚠️ Failed to unload Parakeet model '{}'", current_model);
-                }
-            } else {
-                warn!("⚠️ No Parakeet engine found to unload model");
-            }
-        }
-        _ => {
-            info!("🎤 Unloading Whisper model...");
-            let engine_clone = match crate::whisper_engine::commands::WHISPER_ENGINE.lock() {
-                Ok(engine_guard) => engine_guard.as_ref().cloned(),
-                Err(e) => {
-                    warn!("⚠️ Whisper engine lock poisoned: {}", e);
-                    None
-                }
-            };
-
-            if let Some(engine) = engine_clone {
-                let current_model = engine
-                    .get_current_model()
-                    .await
-                    .unwrap_or_else(|| "unknown".to_string());
-                info!("Current Whisper model before unload: '{}'", current_model);
-
-                if engine.unload_model().await {
-                    info!("✅ Whisper model '{}' unloaded successfully", current_model);
-                } else {
-                    warn!("⚠️ Failed to unload Whisper model '{}'", current_model);
-                }
-            } else {
-                warn!("⚠️ No Whisper engine found to unload model");
-            }
-        }
-    }
+    // Step 3: Keep transcription model loaded in memory for fast recording restart
+    // ~600MB RAM footprint is acceptable for a desktop meeting app.
+    // Avoids 2-8s model reload delay on next recording start.
+    info!("Transcription model kept loaded in memory for next recording");
 
     // Step 3.5: Track meeting ended analytics
     let analytics_data = if let Some(ref manager) = manager_for_cleanup {

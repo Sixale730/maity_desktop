@@ -371,7 +371,7 @@ impl AudioStreamManager {
         }
     }
 
-    /// Start audio streams for the given devices
+    /// Start audio streams for the given devices (mic + system in parallel)
     pub async fn start_streams(
         &mut self,
         microphone_device: Option<Arc<AudioDevice>>,
@@ -382,40 +382,63 @@ impl AudioStreamManager {
         let backend = get_current_backend();
         info!("🎙️ Starting audio streams with backend: {:?}", backend);
 
-        // Start microphone stream
-        if let Some(mic_device) = microphone_device {
-            info!("🎤 Creating microphone stream: {} (always uses CPAL)", mic_device.name);
-            match AudioStream::create(mic_device.clone(), self.state.clone(), DeviceType::Microphone, recording_sender.clone()).await {
-                Ok(stream) => {
-                    self.state.set_microphone_device(mic_device);
-                    self.microphone_stream = Some(stream);
-                    info!("✅ Microphone stream created successfully");
+        // Create both streams in parallel (WASAPI device enumeration is slow)
+        let state_for_mic = self.state.clone();
+        let state_for_sys = self.state.clone();
+        let sender_for_mic = recording_sender.clone();
+        let sender_for_sys = recording_sender;
+
+        let mic_future = async {
+            if let Some(mic_device) = microphone_device {
+                info!("🎤 Creating microphone stream: {} (always uses CPAL)", mic_device.name);
+                match AudioStream::create(mic_device.clone(), state_for_mic, DeviceType::Microphone, sender_for_mic).await {
+                    Ok(stream) => {
+                        info!("✅ Microphone stream created successfully");
+                        Ok(Some((stream, mic_device)))
+                    }
+                    Err(e) => {
+                        error!("❌ Failed to create microphone stream: {}", e);
+                        Err(e)
+                    }
                 }
-                Err(e) => {
-                    error!("❌ Failed to create microphone stream: {}", e);
-                    return Err(e);
-                }
+            } else {
+                info!("ℹ️ No microphone device specified, skipping microphone stream");
+                Ok(None)
             }
-        } else {
-            info!("ℹ️ No microphone device specified, skipping microphone stream");
+        };
+
+        let sys_future = async {
+            if let Some(sys_device) = system_device {
+                info!("🔊 Creating system audio stream: {} (backend: {:?})", sys_device.name, backend);
+                match AudioStream::create(sys_device.clone(), state_for_sys, DeviceType::System, sender_for_sys).await {
+                    Ok(stream) => {
+                        info!("✅ System audio stream created with {:?} backend", backend);
+                        Ok::<_, anyhow::Error>(Some((stream, sys_device)))
+                    }
+                    Err(e) => {
+                        warn!("⚠️ Failed to create system audio stream: {}", e);
+                        Ok(None) // Don't fail if only system audio fails
+                    }
+                }
+            } else {
+                info!("ℹ️ No system device specified, skipping system audio stream");
+                Ok(None)
+            }
+        };
+
+        let (mic_result, sys_result) = tokio::join!(mic_future, sys_future);
+
+        // Assign results to self
+        if let Ok(Some((stream, device))) = mic_result {
+            self.state.set_microphone_device(device);
+            self.microphone_stream = Some(stream);
+        } else if let Err(e) = mic_result {
+            return Err(e);
         }
 
-        // Start system audio stream
-        if let Some(sys_device) = system_device {
-            info!("🔊 Creating system audio stream: {} (backend: {:?})", sys_device.name, backend);
-            match AudioStream::create(sys_device.clone(), self.state.clone(), DeviceType::System, recording_sender.clone()).await {
-                Ok(stream) => {
-                    self.state.set_system_device(sys_device);
-                    self.system_stream = Some(stream);
-                    info!("✅ System audio stream created with {:?} backend", backend);
-                }
-                Err(e) => {
-                    warn!("⚠️ Failed to create system audio stream: {}", e);
-                    // Don't fail if only system audio fails
-                }
-            }
-        } else {
-            info!("ℹ️ No system device specified, skipping system audio stream");
+        if let Ok(Some((stream, device))) = sys_result {
+            self.state.set_system_device(device);
+            self.system_stream = Some(stream);
         }
 
         // Ensure at least one stream was created

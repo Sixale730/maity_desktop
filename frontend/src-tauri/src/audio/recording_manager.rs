@@ -118,9 +118,6 @@ impl RecordingManager {
             sys_kind,
         )?;
 
-        // Give the pipeline a moment to fully initialize before starting streams
-        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-
         // Start audio streams - they send RAW unmixed chunks to pipeline for mixing
         // Pipeline handles mixing and distribution to both recording and transcription
         self.stream_manager.start_streams(microphone_device.clone(), system_device.clone(), None).await?;
