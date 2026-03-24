@@ -1,65 +1,53 @@
 # CLAUDE.md
 
-Este archivo proporciona orientación a Claude Code (claude.ai/code) al trabajar con el código de este repositorio.
+Este archivo proporciona orientacion a Claude Code al trabajar con este repositorio.
 
-## Descripción del Proyecto
+## Descripcion del Proyecto
 
-**Meetily (Maity Desktop)** es un asistente de reuniones con IA enfocado en privacidad que captura, transcribe y resume reuniones completamente en infraestructura local. El proyecto consta de dos componentes principales:
+**Meetily (Maity Desktop)** es un asistente de reuniones con IA enfocado en privacidad que captura, transcribe y resume reuniones localmente. Dos componentes principales:
 
-1. **Frontend**: Aplicación de escritorio basada en Tauri (Rust + Next.js + TypeScript)
-2. **Backend**: Servidor FastAPI para almacenamiento de reuniones y resúmenes con LLM (Python)
+1. **Frontend**: App de escritorio Tauri (Rust + Next.js + TypeScript)
+2. **Backend**: Servidor FastAPI para persistencia y resumenes LLM (Python)
 
-### Stack Tecnológico Principal
+### Stack Tecnologico
 - **App de Escritorio**: Tauri 2.x (Rust) + Next.js 14 + React 18
 - **Procesamiento de Audio**: Rust (cpal, whisper-rs, mezcla de audio profesional)
-- **Transcripción**: Whisper.cpp (local, acelerado por GPU) + Deepgram (nube, opcional)
-- **Backend API**: FastAPI + SQLite (aiosqlite)
-- **Integración LLM**: Ollama (local), Claude, Groq, OpenRouter
+- **Transcripcion**: Whisper.cpp (local, GPU) + Deepgram (nube, opcional)
+- **Backend API**: FastAPI + SQLite (aiosqlite) — modulo DB en `backend/app/db/`
+- **Integracion LLM**: Ollama (local), Claude, Groq, OpenRouter
 
 ## Skills (Slash Commands)
 
 ### `/build [patch|minor|major]`
-Build firmado de producción con bump automático de versión semver. Lee signing keys de `frontend/.env`, actualiza la versión en 3 archivos (`tauri.conf.json`, `package.json`, `Cargo.toml`), y ejecuta `pnpm run tauri:build` con las credenciales de firma.
-
-- `/build patch` → 0.2.5 → 0.2.6
-- `/build minor` → 0.2.5 → 0.3.0
-- `/build major` → 0.2.5 → 1.0.0
-- `/build` (sin argumento) → pregunta tipo de bump
-
-**Definición**: `.claude/skills/build/SKILL.md`
+Build firmado de produccion con bump automatico de version semver. Lee signing keys de `frontend/.env`, actualiza la version en 3 archivos (`tauri.conf.json`, `package.json`, `Cargo.toml`), y ejecuta `pnpm run tauri:build` con las credenciales de firma. Definicion: `.claude/skills/build/SKILL.md`
 
 ## Comandos Esenciales de Desarrollo
 
-### Desarrollo Frontend (App de Escritorio Tauri)
-
-**Ubicación**: `/frontend`
+### Frontend (App de Escritorio Tauri) — Ubicacion: `/frontend`
 
 ```bash
 # Desarrollo en macOS
 ./clean_run.sh              # Build limpio y ejecutar con logging info
 ./clean_run.sh debug        # Ejecutar con logging debug
-./clean_build.sh            # Build de producción
 
 # Desarrollo en Windows
 clean_run_windows.bat       # Build limpio y ejecutar
-clean_build_windows.bat     # Build de producción
 
 # Comandos Manuales
 pnpm install                # Instalar dependencias
 pnpm run dev                # Servidor dev Next.js (puerto 3118)
 pnpm run tauri:dev          # Modo desarrollo completo Tauri
-pnpm run tauri:build        # Build de producción
+pnpm run tauri:build        # Build de produccion (release)
+pnpm run tauri:build:debug  # Build debug (mas rapido, para verificar)
 
-# Builds específicos por GPU (para probar aceleración)
+# Builds especificos por GPU
 pnpm run tauri:dev:metal    # macOS Metal GPU
 pnpm run tauri:dev:cuda     # NVIDIA CUDA
 pnpm run tauri:dev:vulkan   # AMD/Intel Vulkan
 pnpm run tauri:dev:cpu      # Solo CPU (sin GPU)
 ```
 
-### Desarrollo Backend (Servidor FastAPI)
-
-**Ubicación**: `/backend`
+### Backend (Servidor FastAPI) — Ubicacion: `/backend`
 
 ```bash
 # macOS
@@ -68,751 +56,280 @@ pnpm run tauri:dev:cpu      # Solo CPU (sin GPU)
 
 # Windows
 build_whisper.cmd small               # Compilar Whisper con modelo
-start_with_output.ps1                 # Configuración interactiva e inicio
 clean_start_backend.cmd               # Iniciar servidor
 
 # Docker (Multiplataforma)
-./run-docker.sh start --interactive   # Configuración interactiva (macOS/Linux)
-.\run-docker.ps1 start -Interactive   # Configuración interactiva (Windows)
-./run-docker.sh logs --service app    # Ver logs
+./run-docker.sh start --interactive   # macOS/Linux
+.\run-docker.ps1 start -Interactive   # Windows
 ```
 
-**Modelos Whisper Disponibles**: `tiny`, `tiny.en`, `base`, `base.en`, `small`, `small.en`, `medium`, `medium.en`, `large-v1`, `large-v2`, `large-v3`, `large-v3-turbo`
+**Modelos Whisper**: `tiny`, `base`, `small`, `medium`, `large-v3`, `large-v3-turbo` (variantes `.en` disponibles)
 
-### Endpoints de Servicios
-- **API Backend**: http://localhost:5167 (opcional, para persistencia y resúmenes LLM)
-- **Documentación Backend**: http://localhost:5167/docs
+### Endpoints
+- **API Backend**: http://localhost:5167 (opcional, para persistencia y resumenes LLM)
+- **Documentacion Backend**: http://localhost:5167/docs
 - **Frontend Dev**: http://localhost:3118
 
 ## Arquitectura de Alto Nivel
-
-### Arquitectura de Tres Niveles
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                Frontend (App de Escritorio Tauri)                │
 │  ┌──────────────────┐  ┌─────────────────┐  ┌────────────────┐ │
 │  │   UI Next.js     │  │  Backend Rust   │  │ Motor Whisper  │ │
-│  │  (React/TS)      │←→│  (Audio + IPC)  │←→│  (STT Local)   │ │
+│  │  (React/TS)      │<->│  (Audio + IPC)  │<->│  (STT Local)   │ │
 │  └──────────────────┘  └─────────────────┘  └────────────────┘ │
-│         ↑ Eventos Tauri         ↑ Pipeline de Audio             │
-└─────────┼────────────────────────┼─────────────────────────────┘
-          │ HTTP/WebSocket         │
-          ↓                        │
-┌─────────────────────────────────┼─────────────────────────────┐
-│              Backend (FastAPI)  │                              │
-│  ┌────────────┐  ┌─────────────┴──────┐  ┌────────────────┐  │
-│  │   SQLite   │←→│ Gestor Reuniones   │←→│ Proveedor LLM  │  │
-│  │ (Reuniones)│  │ (CRUD + Resumen)   │  │ (Ollama/etc.)  │  │
-│  └────────────┘  └────────────────────┘  └────────────────┘  │
+└─────────┬──────────────────────────────────────────────────────┘
+          │ HTTP/WebSocket (opcional)
+          ↓
+┌─────────────────────────────────────────────────────────────────┐
+│              Backend (FastAPI + SQLite + LLM providers)          │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-### Pipeline de Procesamiento de Audio (Comprensión Crítica)
+### Pipeline de Procesamiento de Audio (Comprension Critica)
 
-El sistema de audio tiene **tres rutas paralelas** con propósitos distintos:
+El sistema de audio tiene **tres rutas paralelas**:
 
 ```
-Audio Crudo (Micrófono + Sistema)
+Audio Crudo (Microfono + Sistema)
          ↓
-┌────────────────────────────────────────────────────────────────┐
-│              Gestor del Pipeline de Audio                       │
-│  (frontend/src-tauri/src/audio/pipeline.rs)                    │
-└──────┬──────────────────┬──────────────────┬──────────────────┘
-       ↓                  ↓                  ↓
-┌──────────────┐  ┌───────────────┐  ┌───────────────────────┐
-│ Ruta de      │  │ Ruta de       │  │ Ruta de               │
-│ Grabación    │  │ Transcripción │  │ Transcripción Nube    │
-│ (Stereo L/R) │  │ (VAD local)   │  │ (Deepgram WebSocket)  │
-└──────────────┘  └───────────────┘  └───────────────────────┘
-       ↓                  ↓                  ↓
-RecordingSaver     WhisperEngine      DeepgramProvider
-(L=mic, R=sistema) (solo voz)        (streaming en vivo)
+    AudioPipelineManager (pipeline.rs)
+    ┌────────┬──────────────┬──────────────────┐
+    ↓        ↓              ↓                  ↓
+Grabacion   Transcripcion  Transcripcion Nube
+Stereo L/R  VAD local      Deepgram WebSocket
+    ↓        ↓              ↓
+RecordingSaver WhisperEngine DeepgramProvider
 ```
 
 **Puntos Clave**:
-- **Grabación stereo**: El audio se entrelaza como stereo (canal izquierdo = micrófono/usuario, canal derecho = sistema/interlocutor) para permitir separación posterior de hablantes.
-- **VAD dual-canal**: Procesadores VAD independientes para micrófono (`mic_vad_processor`) y sistema (`sys_vad_processor`), permitiendo detección de voz por fuente de audio separada.
-- **Atribución de hablante**: El `DeviceType` (Microphone/System) se captura ANTES de enviar al motor de transcripción, mapeando `Microphone→"user"` y `System→"interlocutor"`.
+- **Grabacion stereo**: Audio entrelazado (L=microfono/usuario, R=sistema/interlocutor) para separacion de hablantes
+- **VAD dual-canal**: Procesadores VAD independientes para microfono (`mic_vad_processor`) y sistema (`sys_vad_processor`)
+- **Atribucion de hablante**: `DeviceType` (Microphone/System) se captura ANTES de enviar al motor de transcripcion, mapeando `Microphone->"user"` y `System->"interlocutor"`
+- **Ring Buffer de mezcla**: Acumula muestras hasta ventanas alineadas de 50ms; ducking RMS evita que audio del sistema ahogue al microfono
 
-### Modularización de Dispositivos de Audio (Completada)
-
-**Contexto**: El sistema de audio fue refactorizado de un archivo monolítico `core.rs` de 1028 líneas a módulos enfocados.
+### Estructura del Modulo de Audio
 
 ```
 audio/
-├── devices/                    # Descubrimiento y configuración de dispositivos
+├── devices/                    # Descubrimiento y configuracion de dispositivos
 │   ├── discovery.rs           # list_audio_devices, trigger_audio_permission
 │   ├── microphone.rs          # default_input_device
 │   ├── speakers.rs            # default_output_device
 │   ├── configuration.rs       # Tipos AudioDevice, parsing
 │   └── platform/              # Implementaciones por plataforma
-│       ├── windows.rs         # Lógica WASAPI (~200 líneas)
-│       ├── macos.rs           # Lógica ScreenCaptureKit
-│       └── linux.rs           # Lógica ALSA/PulseAudio
+│       ├── windows.rs         # Logica WASAPI
+│       ├── macos.rs           # Logica ScreenCaptureKit
+│       └── linux.rs           # Logica ALSA/PulseAudio
 ├── capture/                   # Captura de streams de audio
-│   ├── microphone.rs          # Stream de captura de micrófono
+│   ├── microphone.rs          # Stream de captura de microfono
 │   ├── system.rs              # Stream de captura de audio del sistema
-│   └── core_audio.rs          # Integración ScreenCaptureKit macOS
-├── transcription/             # Motor de transcripción
-│   ├── engine.rs              # Gestión de motores (Whisper + Parakeet)
-│   ├── worker.rs              # Pool de workers de transcripción
-│   └── deepgram_provider.rs   # Proveedor Deepgram (nube, WebSocket)
-├── pipeline.rs                # Mezcla de audio, VAD y distribución
-├── recording_manager.rs       # Coordinación de grabación de alto nivel
+│   └── core_audio.rs          # Integracion ScreenCaptureKit macOS
+├── transcription/             # Motor de transcripcion
+│   ├── engine.rs              # Gestion de motores (Whisper + Parakeet)
+│   ├── worker.rs              # Pool de workers de transcripcion
+│   ├── deepgram_provider.rs   # Proveedor Deepgram (nube, WebSocket)
+│   └── deepgram_commands.rs   # Comandos Tauri para proxy config
+├── pipeline.rs                # Mezcla de audio, VAD y distribucion
+├── recording_manager.rs       # Coordinacion de grabacion de alto nivel
 ├── recording_commands.rs      # Interfaz de comandos Tauri
 ├── recording_saver.rs         # Escritura de archivos de audio
 ├── incremental_saver.rs       # Guardado incremental con checkpoints (30s)
-└── encode.rs                  # Codificación FFmpeg (PCM → AAC/MP4)
+└── encode.rs                  # Codificacion FFmpeg (PCM -> AAC/MP4)
 ```
 
 **Al trabajar en funcionalidades de audio**:
-- Problemas de detección de dispositivos → `devices/discovery.rs` o `devices/platform/{windows,macos,linux}.rs`
-- Problemas de micrófono/altavoces → `devices/microphone.rs` o `devices/speakers.rs`
-- Problemas de captura de audio → `capture/microphone.rs` o `capture/system.rs`
-- Problemas de mezcla/procesamiento → `pipeline.rs`
-- Flujo de grabación → `recording_manager.rs` + `recording_saver.rs` + `incremental_saver.rs`
-- Transcripción local → `transcription/engine.rs` + `transcription/worker.rs`
-- Transcripción nube → `transcription/deepgram_provider.rs`
+- Deteccion de dispositivos -> `devices/discovery.rs` o `devices/platform/{windows,macos,linux}.rs`
+- Microfono/altavoces -> `devices/microphone.rs` o `devices/speakers.rs`
+- Captura de audio -> `capture/microphone.rs` o `capture/system.rs`
+- Mezcla/procesamiento -> `pipeline.rs`
+- Flujo de grabacion -> `recording_manager.rs` + `recording_saver.rs` + `incremental_saver.rs`
+- Transcripcion local -> `transcription/engine.rs` + `transcription/worker.rs`
+- Transcripcion nube -> `transcription/deepgram_provider.rs`
 
-### Comunicación Rust ↔ Frontend (Arquitectura Tauri)
+### Comunicacion Rust <-> Frontend
 
-**Patrón de Comandos** (Frontend → Rust):
-```typescript
-// Frontend: src/app/page.tsx
-await invoke('start_recording', {
-  mic_device_name: "Built-in Microphone",
-  system_device_name: "BlackHole 2ch",
-  meeting_name: "Team Standup"
-});
-```
+Comandos via `invoke()` (Frontend->Rust), Eventos via `emit()`/`listen()` (Rust->Frontend). Todos los comandos registrados en `lib.rs`. La implementacion delega a modulos en `audio/recording_commands.rs`, `audio/transcription/deepgram_commands.rs`, etc.
 
-```rust
-// Rust: src/lib.rs
-#[tauri::command]
-async fn start_recording<R: Runtime>(
-    app: AppHandle<R>,
-    mic_device_name: Option<String>,
-    system_device_name: Option<String>,
-    meeting_name: Option<String>
-) -> Result<(), String> {
-    // La implementación delega a audio::recording_commands
-}
-```
+**Patron de estado**: Comandos Tauri actualizan estado Rust -> Emiten eventos -> Listeners del frontend actualizan estado React -> El contexto se propaga a los componentes.
 
-**Patrón de Eventos** (Rust → Frontend):
-```rust
-// Rust: Emitir actualizaciones de transcripción
-app.emit("transcript-update", TranscriptUpdate {
-    text: "Hello world".to_string(),
-    timestamp: chrono::Utc::now(),
-    // ...
-})?;
-```
+### Gestion de Modelos Whisper
 
-```typescript
-// Frontend: Escuchar eventos
-await listen<TranscriptUpdate>('transcript-update', (event) => {
-  setTranscripts(prev => [...prev, event.payload]);
-});
-```
-
-### Gestión de Modelos Whisper
-
-**Ubicaciones de Almacenamiento de Modelos**:
+**Ubicaciones de Almacenamiento**:
 - **Desarrollo**: `frontend/models/`
-- **Producción (macOS)**: `~/Library/Application Support/com.maity.ai/models/`
-- **Producción (Windows)**: `%APPDATA%\com.maity.ai\models\`
+- **Produccion (macOS)**: `~/Library/Application Support/com.maity.ai/models/`
+- **Produccion (Windows)**: `%APPDATA%\com.maity.ai\models\`
 
-**Carga de Modelos** (frontend/src-tauri/src/whisper_engine/whisper_engine.rs):
-```rust
-pub async fn load_model(&self, model_name: &str) -> Result<()> {
-    // Detecta automáticamente capacidades GPU (Metal/CUDA/Vulkan)
-    // Usa CPU como fallback si GPU no está disponible
-}
-```
+Los modelos se cargan una vez y se cachean. Cambiar modelos requiere reinicio de la app o descarga/recarga manual. Auto-deteccion de GPU (Metal/CUDA/Vulkan) con fallback a CPU.
 
-**Aceleración por GPU**:
-- **macOS**: Metal + CoreML (habilitado automáticamente)
-- **Windows/Linux**: CUDA (NVIDIA), Vulkan (AMD/Intel), o CPU
-- Configurar vía features de Cargo: `--features cuda`, `--features vulkan`
+## Patrones Criticos de Desarrollo
 
-## Patrones Críticos de Desarrollo
+### Seguridad de Hilos y Estado Compartido
+- `Arc<RwLock<T>>` para estado compartido entre tareas async, `Arc<AtomicBool>` para flags simples
+- Mutex con `.lock().map_err()`, **nunca** `.lock().unwrap()` — evita panics por envenenamiento de mutex
+- Ver `recording_state.rs` para el patron de referencia
 
-### 1. Gestión de Buffers de Audio
+### Logging Consciente del Rendimiento
+- `perf_debug!()`/`perf_trace!()` para logging en rutas criticas — costo cero en builds de release (definidos en `lib.rs`)
+- `AudioMetricsBatcher` (batch_processor.rs) para agrupar metricas de audio
+- `AudioBufferPool` (buffer_pool.rs) para pre-asignar buffers
 
-**Ring Buffer de Mezcla** (pipeline.rs):
-- El audio de micrófono y sistema llega asincrónicamente a diferentes velocidades
-- El Ring Buffer acumula muestras hasta que ambos streams tienen ventanas alineadas (50ms)
-- La mezcla profesional aplica ducking basado en RMS para evitar que el audio del sistema ahogue al micrófono
-- Usa `VecDeque` para procesamiento eficiente por ventanas
-- **Nota**: Para grabación, el audio ahora se entrelaza como stereo (L=mic, R=system) en lugar de mezclarse a mono
+### Rendimiento de Audio
+- El filtrado VAD reduce la carga de Whisper en ~70% (solo procesa voz)
+- El guardado incremental con checkpoints de 30s previene perdida de datos por crashes
+- Features de Cargo para GPU: `--features cuda`, `--features vulkan`, `--features metal`
 
-### 2. Seguridad de Hilos y Límites Async
+## Depuracion
 
-**Estado de Grabación** (recording_state.rs):
-```rust
-pub struct RecordingState {
-    is_recording: Arc<AtomicBool>,
-    audio_sender: Arc<RwLock<Option<mpsc::UnboundedSender<AudioChunk>>>>,
-    // ...
-}
-```
-
-**Patrón Clave**: Usar `Arc<RwLock<T>>` para estado compartido entre tareas async, `Arc<AtomicBool>` para flags simples. Los mutex deben adquirirse con `.lock().map_err()` en lugar de `.lock().unwrap()` para evitar panics por envenenamiento de mutex.
-
-### 3. Manejo de Errores y Logging
-
-**Logging Consciente del Rendimiento** (lib.rs):
-```rust
-#[cfg(debug_assertions)]
-macro_rules! perf_debug {
-    ($($arg:tt)*) => { log::debug!($($arg)*) };
-}
-
-#[cfg(not(debug_assertions))]
-macro_rules! perf_debug {
-    ($($arg:tt)*) => {};  // Costo cero en builds de release
-}
-```
-
-**Uso**: Usar `perf_debug!()` y `perf_trace!()` para logging en rutas críticas que debe eliminarse en producción.
-
-### 4. Gestión de Estado del Frontend
-
-**Contexto del Sidebar** (components/Sidebar/SidebarProvider.tsx):
-- Estado global para lista de reuniones, reunión actual, estado de grabación
-- Se comunica con API backend (http://localhost:5167)
-- Gestiona conexiones WebSocket para actualizaciones en tiempo real
-
-**Patrón**: Comandos Tauri actualizan estado Rust → Emiten eventos → Listeners del frontend actualizan estado React → El contexto se propaga a los componentes
-
-## Tareas Comunes de Desarrollo
-
-### Agregar una Nueva Plataforma de Dispositivo de Audio
-
-1. Crear archivo de plataforma: `audio/devices/platform/{nombre_plataforma}.rs`
-2. Implementar enumeración de dispositivos para la plataforma
-3. Agregar configuración específica en `audio/devices/configuration.rs`
-4. Actualizar `audio/devices/platform/mod.rs` para exportar funciones de la nueva plataforma
-5. Probar con `cargo check` y tests específicos de dispositivos por plataforma
-
-### Agregar un Nuevo Comando Tauri
-
-1. Definir comando en `src/lib.rs`:
-   ```rust
-   #[tauri::command]
-   async fn mi_comando(arg: String) -> Result<String, String> { /* ... */ }
-   ```
-2. Registrar en `tauri::Builder`:
-   ```rust
-   .invoke_handler(tauri::generate_handler![
-       start_recording,
-       mi_comando,  // Agregar aquí
-   ])
-   ```
-3. Llamar desde el frontend:
-   ```typescript
-   const result = await invoke<string>('mi_comando', { arg: 'valor' });
-   ```
-
-### Modificar Comportamiento del Pipeline de Audio
-
-**Ubicación**: `frontend/src-tauri/src/audio/pipeline.rs`
-
-Componentes clave:
-- `AudioMixerRingBuffer`: Gestiona sincronización de audio mic + sistema
-- `ProfessionalAudioMixer`: Ducking basado en RMS y mezcla (reservado para posible uso futuro en mono)
-- `AudioPipelineManager`: Orquesta VAD, entrelazado stereo y distribución
-
-**Probar Cambios de Audio**:
 ```bash
 # Habilitar logging verbose de audio
-RUST_LOG=app_lib::audio=debug ./clean_run.sh
+RUST_LOG=app_lib::audio=debug ./clean_run.sh                    # macOS
+$env:RUST_LOG="debug"; ./clean_run_windows.bat                   # Windows
 
-# Monitorear métricas de audio en tiempo real
-# Revisar Consola de Desarrollador en la app (Cmd+Shift+I en macOS)
+# DevTools
+# macOS: Cmd+Shift+I  |  Windows: Ctrl+Shift+I
 ```
 
-### Desarrollo de API Backend
+**ChunkLoadError Recovery** (modo desarrollo): Script inline en `layout.tsx` (strategy `beforeInteractive`) detecta `ChunkLoadError` y recarga automaticamente (max 3 intentos). Si persiste, reiniciar `pnpm run tauri:dev`. Componente backup: `ChunkErrorRecovery.tsx`.
 
-**Agregar Nuevos Endpoints** (backend/app/main.py):
-```python
-@app.post("/api/mi-endpoint")
-async def mi_endpoint(request: MiRequest) -> MiResponse:
-    # Usar DatabaseManager para persistencia
-    db = DatabaseManager()
-    result = await db.alguna_operacion()
-    return result
-```
+**Metricas del Pipeline**: Tamanos de buffer, tasa VAD, chunks descartados, backpressure del canal de transcripcion — visibles en la consola de desarrollador durante grabacion.
 
-**Operaciones de Base de Datos** (backend/app/db.py):
-- Todos los datos de reuniones almacenados en SQLite
-- Usar la clase `DatabaseManager` para todas las operaciones de BD
-- Operaciones async con `aiosqlite`
+## Plataformas y GPU
 
-## Testing y Depuración
+| Plataforma | Captura de Audio | GPU | Dependencias Clave |
+|---|---|---|---|
+| macOS 13+ | ScreenCaptureKit + BlackHole | Metal+CoreML (auto) | Permisos mic + screen recording |
+| Windows | WASAPI loopback | CUDA (NVIDIA) o Vulkan (AMD/Intel) | VS Build Tools 2022, LLVM (`winget install LLVM.LLVM`), FFmpeg |
+| Linux | ALSA/PulseAudio | CUDA o Vulkan | cmake, llvm, libomp |
 
-### Depuración del Frontend
+**LLVM en Windows**: Requerido por `whisper-rs-sys` (bindgen necesita `libclang.dll`). Configurar `LIBCLANG_PATH=C:\Program Files\LLVM\bin`.
 
-**Habilitar Logging de Rust**:
-```bash
-# macOS
-RUST_LOG=debug ./clean_run.sh
+## Configuracion Multiplataforma
 
-# Windows (PowerShell)
-$env:RUST_LOG="debug"; ./clean_run_windows.bat
-```
-
-**Herramientas de Desarrollador**:
-- Abrir DevTools: `Cmd+Shift+I` (macOS) o `Ctrl+Shift+I` (Windows)
-- Toggle de Consola: Integrado en la UI de la app (ícono de consola)
-- Ver logs de Rust: Revisar salida del terminal
-
-**ChunkLoadError Recovery** (modo desarrollo):
-- Un script inline en `layout.tsx` se ejecuta **antes** de que React cargue
-- Detecta `ChunkLoadError`, `Loading chunk failed`, y errores de dynamic imports
-- Recarga automáticamente la página después de 2 segundos
-- Máximo 3 intentos de recarga antes de detener (evita loops infinitos)
-- Los logs en consola muestran `[ChunkErrorRecovery]` con el estado de recuperación
-- Si persiste después de 3 intentos, reiniciar el servidor dev: `pnpm run tauri:dev`
-- Implementación: Script inline con `next/script` strategy `beforeInteractive` en `layout.tsx`
-- Componente backup: `frontend/src/components/shared/ChunkErrorRecovery.tsx`
-
-### Depuración del Backend
-
-**Ver Logs de API**:
-```bash
-# Los logs del backend se muestran en terminal con formato detallado:
-# 2025-01-03 12:34:56 - INFO - [main.py:123 - nombre_endpoint()] - Mensaje
-```
-
-**Probar API Directamente**:
-- Swagger UI: http://localhost:5167/docs
-- ReDoc: http://localhost:5167/redoc
-
-### Depuración del Pipeline de Audio
-
-**Métricas Clave** (emitidas por el pipeline):
-- Tamaños de buffer (mic/sistema)
-- Conteo de ventanas de mezcla
-- Tasa de detección VAD (mic y sistema por separado)
-- Advertencias de chunks descartados
-- Estado de backpressure del canal de transcripción
-
-**Monitorear vía Consola de Desarrollador**: La app incluye visualización de métricas en tiempo real durante la grabación.
-
-## Notas por Plataforma
-
-### macOS
-- **Captura de Audio**: Usa ScreenCaptureKit para audio del sistema (macOS 13+)
-- **GPU**: Metal + CoreML habilitados automáticamente
-- **Permisos**: Requiere permisos de micrófono + grabación de pantalla
-- **Audio del Sistema**: Requiere dispositivo de audio virtual (BlackHole) para captura del sistema
-
-### Windows
-- **Captura de Audio**: Usa WASAPI (Windows Audio Session API)
-- **GPU**: CUDA (NVIDIA) o Vulkan (AMD/Intel) vía features de Cargo
-- **Herramientas de Build**: Requiere Visual Studio Build Tools 2022 con carga de trabajo C++
-- **LLVM/Clang**: Requerido por `whisper-rs-sys` (bindgen necesita `libclang.dll`):
-  ```powershell
-  # Instalar LLVM
-  winget install LLVM.LLVM
-
-  # Configurar variable de entorno (PowerShell como admin)
-  [System.Environment]::SetEnvironmentVariable("LIBCLANG_PATH", "C:\Program Files\LLVM\bin", "User")
-  ```
-- **Audio del Sistema**: Usa WASAPI loopback para captura del sistema
-- **FFmpeg**: Requerido para codificar grabaciones (busca en PATH, recursos de la app, o directorio de trabajo)
-
-### Linux
-- **Captura de Audio**: ALSA/PulseAudio
-- **GPU**: CUDA (NVIDIA) o Vulkan vía features de Cargo
-- **Dependencias**: Requiere cmake, llvm, libomp
-
-## Configuración Multiplataforma (IMPORTANTE)
-
-### Arquitectura de Configuración
-
-Tauri 2.x soporta archivos de configuración por plataforma que se **mergean** con el `tauri.conf.json` base vía JSON Merge Patch (RFC 7396):
+Tauri 2.x soporta configs por plataforma que se **mergean** con el base via JSON Merge Patch (RFC 7396):
 
 ```
 frontend/src-tauri/
 ├── tauri.conf.json              # Config BASE compartida (todas las plataformas)
-├── tauri.macos.conf.json        # Overrides para macOS (merge automático)
-├── tauri.windows.conf.json      # Overrides para Windows (si se necesita)
-├── entitlements.plist           # Entitlements para desarrollo/distribución directa
+├── tauri.macos.conf.json        # Overrides para macOS (merge automatico)
+├── entitlements.plist           # Entitlements para desarrollo/distribucion directa
 ├── entitlements-appstore.plist  # Entitlements para App Store (sandbox)
 └── Info.plist                   # Permisos macOS (NUNCA eliminar las *UsageDescription)
 ```
 
-### Reglas CRITICAS para Desarrollo Multiplataforma
+### Reglas CRITICAS
 
-1. **`tauri.conf.json` es la config BASE compartida** — NO modificar para adaptar a una sola plataforma. Usar `tauri.{platform}.conf.json` para overrides.
-2. **NUNCA cambiar el `identifier`** (`com.maity.ai`) — Cambiarlo rompe datos de usuarios existentes (SQLite, modelos, configuración) porque el OS almacena datos por identifier.
-3. **NUNCA eliminar permisos de `Info.plist`** (`NSMicrophoneUsageDescription`, `NSScreenCaptureUsageDescription`, `NSAudioCaptureUsageDescription`) — macOS los requiere para mostrar el diálogo de permisos.
-4. **NUNCA commitear artefactos de build** (`.pkg`, `.dmg`, `.msi`, `*-setup.exe`) al repositorio — usar GitHub Releases.
+1. **`tauri.conf.json` es la config BASE compartida** — NO modificar para una sola plataforma. Usar `tauri.{platform}.conf.json` para overrides.
+2. **NUNCA cambiar el `identifier`** (`com.maity.ai`) — Rompe datos de usuarios existentes (SQLite, modelos, config) porque el OS almacena datos por identifier.
+3. **NUNCA eliminar permisos de `Info.plist`** (`NSMicrophoneUsageDescription`, `NSScreenCaptureUsageDescription`, `NSAudioCaptureUsageDescription`) — macOS los requiere para mostrar el dialogo de permisos.
+4. **NUNCA commitear artefactos de build** (`.pkg`, `.dmg`, `.msi`, `*-setup.exe`) — usar GitHub Releases.
 5. **NUNCA eliminar la config `bundle.windows`** del `tauri.conf.json` base — contiene signing, idioma de instaladores, etc.
 6. **El sistema `visible: false` + `app-ready`** en `lib.rs` y `layout.tsx` es intencional — evita pantalla negra al inicio. No eliminar.
 
 ### CI/CD (GitHub Actions)
 
-Los workflows multiplataforma ya existen en `.github/workflows/`:
-- `build-windows.yml` — Build Windows con DigiCert HSM signing
-- `build-macos.yml` — Build macOS con Apple Developer Certificate + notarization
-- `build-linux.yml` — Build Linux (deb + AppImage)
-- `release.yml` — Build final para releases en GitHub
+Workflows en `.github/workflows/`: `build-windows.yml` (DigiCert HSM signing), `build-macos.yml` (Apple notarization), `build-linux.yml` (deb + AppImage), `release.yml`.
 
-### Build Local por Plataforma
+## Deepgram via Cloudflare Worker Proxy
 
-```bash
-# Windows (desarrollo principal)
-cd frontend && pnpm run tauri:build:debug
+La transcripcion en la nube usa Deepgram a traves de un Cloudflare Worker proxy. **La API key de Deepgram nunca llega al cliente**.
 
-# macOS (usa tauri.macos.conf.json automáticamente)
-cd frontend && pnpm run tauri:build:debug
+**Config por defecto**: Nova-3, idioma `es-419` (espanol latinoamericano). Persiste en tabla `transcript_settings` de SQLite.
 
-# La auto-detección de GPU selecciona el feature correcto:
-# Windows → vulkan/cuda, macOS → metal/coreml, Linux → openblas
-```
+**Modelos disponibles**: `nova-3` (recomendado), `nova-2`, `nova-2-phonecall`, `nova-2-meeting`
+**Idiomas**: `es-419` (LATAM), `es` (Espana), `en`, `multi` (auto-deteccion)
 
-## Directrices de Optimización de Rendimiento
+| Archivo | Descripcion |
+|---------|-------------|
+| `frontend/src/lib/deepgram.ts` | Cliente TS para obtener proxy config de Vercel API |
+| `frontend/src/hooks/useRecordingStart.ts` | Obtiene proxy config antes de iniciar grabacion |
+| `frontend/src-tauri/src/audio/transcription/deepgram_commands.rs` | Comandos Tauri para proxy config en cache |
+| `frontend/src-tauri/src/audio/transcription/deepgram_provider.rs` | Proveedor que conecta via proxy WebSocket |
+| `frontend/src-tauri/src/audio/transcription/engine.rs` | Inicializacion del motor de transcripcion |
 
-### Procesamiento de Audio
-- Usar `perf_debug!()` / `perf_trace!()` para logging en rutas críticas (costo cero en release)
-- Agrupar métricas de audio usando `AudioMetricsBatcher` (pipeline.rs)
-- Pre-asignar buffers con `AudioBufferPool` (buffer_pool.rs)
-- El filtrado VAD reduce la carga de Whisper en ~70% (solo procesa voz)
-- El guardado incremental con checkpoints de 30s previene pérdida de datos por crashes
+**Gotchas de seguridad**:
+- JWT tiene TTL de 5 minutos, se valida solo al conectar el WebSocket
+- Conexiones activas sobreviven mas alla del TTL (validacion solo al inicio)
+- Ambas conexiones WS (mic + system) usan el mismo JWT simultaneamente
+- Reconexion despues de expirar el JWT (>5 min) fallara gracefully
+- Usuario debe estar autenticado con Supabase (login con Google)
 
-### Transcripción Whisper
-- **Selección de Modelo**: Balance entre precisión y velocidad
-  - Desarrollo: `base` o `small` (iteración rápida)
-  - Producción: `medium` o `large-v3` (mejor calidad)
-- **Aceleración GPU**: 5-10x más rápido que CPU
-- **Procesamiento Paralelo**: Disponible en `whisper_engine/parallel_processor.rs` para cargas por lotes
+## Sistema de Roles (Developer vs Usuario Regular)
 
-### Rendimiento del Frontend
-- Actualizaciones de estado React agrupadas vía contexto del Sidebar
-- Renderizado de transcripciones virtualizado para reuniones largas
-- Monitoreo de nivel de audio limitado a 60fps
+- **Developers**: Emails con dominio `@asertio.mx` o `@maity.cloud` -> interfaz completa
+- **Usuarios regulares**: Interfaz restringida (sin Gamificacion/Conversaciones en sidebar, settings limitados, transcripcion forzada a Deepgram nova-3 es-419)
+- Archivos: `lib/roles.ts`, `hooks/useUserRole.ts`, `Sidebar/index.tsx`, `settings/page.tsx`, `ConfigContext.tsx`
 
-## Restricciones Importantes y Consideraciones
+## Restricciones Importantes
 
-1. **Tamaño de Chunk de Audio**: El pipeline espera frecuencia de muestreo consistente de 48kHz. El remuestreo ocurre al momento de la captura.
-
-2. **Particularidades de Audio por Plataforma**:
-   - macOS: ScreenCaptureKit requiere macOS 13+, necesita permiso de grabación de pantalla
-   - Windows: El modo exclusivo de WASAPI puede entrar en conflicto con otras apps
-   - Audio del sistema requiere dispositivo virtual (BlackHole en macOS, WASAPI loopback en Windows)
-
-3. **Carga de Modelos Whisper**: Los modelos se cargan una vez y se cachean. Cambiar modelos requiere reinicio de la app o descarga/recarga manual.
-
-4. **Dependencia del Backend**: El frontend puede ejecutarse standalone (Whisper local), pero la persistencia de reuniones y funcionalidades LLM requieren el backend ejecutándose.
-
-5. **Configuración CORS**: El backend permite todos los orígenes (`"*"`) para desarrollo. Restringir para despliegue en producción.
-
-6. **Rutas de Archivos**: Usar APIs de rutas de Tauri (`downloadDir`, etc.) para compatibilidad multiplataforma. Nunca hardcodear rutas.
-
-7. **Permisos de Audio**: Solicitar permisos tempranamente. macOS requiere tanto micrófono COMO grabación de pantalla para audio del sistema.
-
-8. **Grabación Stereo**: Las grabaciones se guardan como audio stereo entrelazado (L=micrófono, R=sistema). El `IncrementalAudioSaver` maneja checkpoints cada 30 segundos con `channels=2`.
-
-9. **Seguridad de Mutex**: Todos los locks de mutex en el motor de transcripción usan `.lock().map_err()` en lugar de `.lock().unwrap()` para evitar panics por envenenamiento de mutex.
+1. **Frecuencia de muestreo**: El pipeline espera 48kHz consistente. El remuestreo ocurre al momento de la captura.
+2. **Audio por plataforma**: macOS requiere ScreenCaptureKit (13+) + permiso de screen recording. Windows WASAPI modo exclusivo puede conflictuar con otras apps.
+3. **Grabacion stereo**: Se guarda como audio stereo entrelazado (L=mic, R=sistema). El `IncrementalAudioSaver` maneja checkpoints cada 30s con `channels=2`.
+4. **Rutas de archivos**: Usar APIs de rutas de Tauri (`downloadDir`, etc.) para compatibilidad multiplataforma. Nunca hardcodear rutas.
+5. **Permisos de audio**: macOS requiere tanto microfono COMO grabacion de pantalla para audio del sistema.
 
 ## Convenciones del Repositorio
 
-- **Formato de Logging**: El backend usa formato detallado con filename:line:function
-- **Manejo de Errores**: Rust usa `anyhow::Result`, el frontend usa try-catch con mensajes amigables para el usuario
-- **Nomenclatura**: Los dispositivos de audio usan "microphone" y "system" consistentemente (no "input"/"output")
-- **Ramas de Git**:
-  - `main`: Releases estables
-  - `fix/*`: Correcciones de bugs
-  - `enhance/*`: Mejoras de funcionalidades
-  - `feat/*`: Funcionalidades nuevas
-
-## Deepgram via Cloudflare Worker Proxy (Transcripción en la Nube)
-
-El sistema de transcripción en la nube usa Deepgram como proveedor a través de un **Cloudflare Worker proxy**. **La API key de Deepgram nunca llega al cliente** — el proxy la mantiene del lado del servidor.
-
-### Modelos y Idiomas Soportados
-
-**Modelos Deepgram disponibles**:
-- `nova-3` (Recomendado) - Modelo más reciente con soporte mejorado para español latinoamericano
-- `nova-2` - Modelo estable de propósito general
-- `nova-2-phonecall` - Optimizado para audio de llamadas telefónicas
-- `nova-2-meeting` - Optimizado para transcripción de reuniones
-
-**Idiomas soportados**:
-- `es-419` - Español Latinoamericano (Recomendado para usuarios en LATAM)
-- `es` - Español (España)
-- `en` - Inglés
-- `multi` - Multilingüe (detección automática)
-
-**Configuración por defecto**: Nova-3 con idioma `es-419` (español latinoamericano).
-
-La configuración de modelo e idioma se guarda en la tabla `transcript_settings` de SQLite y persiste entre sesiones.
-
-### Arquitectura
-
-```
-┌─────────────────────┐     ┌──────────────────────────┐     ┌───────────────────┐
-│   App Tauri/Rust    │────>│  Vercel API              │     │ Cloudflare Worker │
-│                     │     │  GET /api/deepgram-token  │     │ (maity-deepgram-  │
-│  1. Usuario inicia  │     │                          │     │  proxy)           │
-│     grabación       │     │  2. Valida JWT Supabase  │     │                   │
-│                     │<────│  3. Retorna proxy URL +  │     │  5. Valida JWT    │
-│                     │     │     JWT (5 min TTL)       │     │  6. Conecta a     │
-│  4. Conecta WS al  │     └──────────────────────────┘     │     Deepgram      │
-│     Worker proxy    │─────────────────────────────────────>│  7. Relay bidirec.│
-│     con JWT como    │                                      │                   │
-│     query param     │<─────────────────────────────────────│  (transcripciones)│
-└─────────────────────┘                                      └───────────────────┘
-```
-
-### Flujo de Autenticación
-
-1. **Usuario inicia grabación** con provider "deepgram"
-2. **Frontend** (`useRecordingStart.ts`):
-   - Llama a `getDeepgramProxyConfig()` de `frontend/src/lib/deepgram.ts`
-   - Esto hace GET a `https://www.maity.com.mx/api/deepgram-token` con el JWT de Supabase
-3. **Vercel API** (`/api/deepgram-token`):
-   - Valida el JWT del usuario via Supabase
-   - Genera un JWT de 5 minutos para el proxy
-   - Retorna `{ mode: "proxy", ws_url: "wss://proxy.workers.dev?token=JWT&...", config: {...} }`
-4. **Frontend** extrae `proxy_base_url` y `jwt` del `ws_url` y los pasa a Rust via `set_deepgram_proxy_config`
-5. **Rust** (`engine.rs`) crea el transcriber con `DeepgramRealtimeTranscriber::with_proxy(proxy_base_url, jwt)`
-6. **Rust** conecta al WebSocket del Worker con `?token=JWT&model=...&language=...` (sin header Authorization)
-7. **Worker** valida el JWT, conecta a Deepgram, y relay bidireccional de mensajes
-
-### Archivos Relevantes
-
-| Archivo | Descripción |
-|---------|-------------|
-| `frontend/src/lib/deepgram.ts` | Cliente TypeScript para obtener proxy config de Vercel API |
-| `frontend/src/hooks/useRecordingStart.ts` | Hook que obtiene proxy config antes de iniciar grabación |
-| `frontend/src-tauri/src/audio/transcription/deepgram_commands.rs` | Comandos Tauri para gestionar proxy config en cache |
-| `frontend/src-tauri/src/audio/transcription/deepgram_provider.rs` | Proveedor de transcripción que conecta via proxy |
-| `frontend/src-tauri/src/audio/transcription/engine.rs` | Lógica de inicialización del motor de transcripción |
-
-### Notas de Seguridad
-
-- La API key de Deepgram **nunca** llega al cliente — solo existe en el Cloudflare Worker
-- El JWT tiene TTL de 5 minutos y se valida solo al conectar el WebSocket
-- Conexiones activas sobreviven más allá del TTL del JWT (validación solo al inicio)
-- Ambas conexiones WS (mic + system) usan el mismo JWT simultáneamente
-- Si hay reconexión después de expirar el JWT (>5 min), fallará gracefully
-
-### Requisitos para el Usuario
-
-- Debe estar autenticado con Supabase (login con Google)
-- NO necesita configurar su propia API key de Deepgram
-- La proxy config se obtiene automáticamente al iniciar grabación (TTL: 5 min)
-
-## Referencia de Archivos Clave
-
-**Coordinación Principal**:
-- [frontend/src-tauri/src/lib.rs](frontend/src-tauri/src/lib.rs) - Punto de entrada principal de Tauri, registro de comandos
-- [frontend/src-tauri/src/audio/mod.rs](frontend/src-tauri/src/audio/mod.rs) - Exportaciones del módulo de audio
-- [backend/app/main.py](backend/app/main.py) - Aplicación FastAPI, endpoints de API
-
-**Sistema de Audio**:
-- [frontend/src-tauri/src/audio/recording_manager.rs](frontend/src-tauri/src/audio/recording_manager.rs) - Orquestación de grabación
-- [frontend/src-tauri/src/audio/pipeline.rs](frontend/src-tauri/src/audio/pipeline.rs) - Mezcla de audio, VAD dual-canal y distribución
-- [frontend/src-tauri/src/audio/recording_saver.rs](frontend/src-tauri/src/audio/recording_saver.rs) - Escritura de archivos de audio
-- [frontend/src-tauri/src/audio/incremental_saver.rs](frontend/src-tauri/src/audio/incremental_saver.rs) - Guardado incremental con checkpoints
-- [frontend/src-tauri/src/audio/encode.rs](frontend/src-tauri/src/audio/encode.rs) - Codificación FFmpeg
-
-**Sistema de Transcripción**:
-- [frontend/src-tauri/src/audio/transcription/engine.rs](frontend/src-tauri/src/audio/transcription/engine.rs) - Gestión de motores de transcripción
-- [frontend/src-tauri/src/audio/transcription/worker.rs](frontend/src-tauri/src/audio/transcription/worker.rs) - Pool de workers de transcripción
-- [frontend/src-tauri/src/audio/transcription/deepgram_provider.rs](frontend/src-tauri/src/audio/transcription/deepgram_provider.rs) - Proveedor Deepgram (nube, WebSocket streaming)
-- [frontend/src-tauri/src/audio/transcription/deepgram_commands.rs](frontend/src-tauri/src/audio/transcription/deepgram_commands.rs) - Comandos Tauri para gestión de tokens cloud
-- [frontend/src/lib/deepgram.ts](frontend/src/lib/deepgram.ts) - Cliente TypeScript para obtener tokens del cloud proxy
-
-**Componentes UI**:
-- [frontend/src/app/page.tsx](frontend/src/app/page.tsx) - Interfaz principal de grabación
-- [frontend/src/components/Sidebar/SidebarProvider.tsx](frontend/src/components/Sidebar/SidebarProvider.tsx) - Gestión de estado global
-- [frontend/src/components/shared/ChunkErrorRecovery.tsx](frontend/src/components/shared/ChunkErrorRecovery.tsx) - Recuperación automática de ChunkLoadError en desarrollo
-
-**Feature: Gamificación** (Volcán de progreso):
-- [frontend/src/features/gamification/components/GamifiedDashboard.tsx](frontend/src/features/gamification/components/GamifiedDashboard.tsx) - Dashboard principal gamificado
-- [frontend/src/features/gamification/components/MountainMap.tsx](frontend/src/features/gamification/components/MountainMap.tsx) - Visualización SVG del volcán con nodos de progreso
-- [frontend/src/features/gamification/components/MetricsPanel.tsx](frontend/src/features/gamification/components/MetricsPanel.tsx) - Panel de métricas (XP, racha, competencias)
-- [frontend/src/features/gamification/components/InfoPanel.tsx](frontend/src/features/gamification/components/InfoPanel.tsx) - Panel de ranking y muletillas
-- [frontend/src/features/gamification/hooks/useGamifiedDashboardData.ts](frontend/src/features/gamification/hooks/useGamifiedDashboardData.ts) - Hook para cargar datos de conversaciones y calcular nodos
-- [frontend/src/app/gamification/page.tsx](frontend/src/app/gamification/page.tsx) - Página /gamification
-
-**Feature: Conversaciones OMI**:
-- [frontend/src/features/conversations/components/ConversationsList.tsx](frontend/src/features/conversations/components/ConversationsList.tsx) - Lista de conversaciones con Cards clickeables
-- [frontend/src/features/conversations/components/ConversationDetail.tsx](frontend/src/features/conversations/components/ConversationDetail.tsx) - Detalle de conversación (análisis, transcripción)
-- [frontend/src/features/conversations/services/conversations.service.ts](frontend/src/features/conversations/services/conversations.service.ts) - Servicio para CRUD de conversaciones OMI desde Supabase
-- [frontend/src/app/conversations/page.tsx](frontend/src/app/conversations/page.tsx) - Página /conversations
-
-**Sistema de Evaluación de Comunicación** (análisis de habilidades de comunicación post-reunión):
-- [frontend/src-tauri/src/summary/communication_types.rs](frontend/src-tauri/src/summary/communication_types.rs) - Tipos Rust para CommunicationFeedback
-- [frontend/src-tauri/src/summary/communication_evaluator.rs](frontend/src-tauri/src/summary/communication_evaluator.rs) - Evaluador que genera puntuaciones vía LLM
-- [frontend/src-tauri/src/summary/service.rs](frontend/src-tauri/src/summary/service.rs) - Integración en el flujo de generación de resumen (líneas 267-301)
-- [frontend/src/types/communication.ts](frontend/src/types/communication.ts) - Tipos TypeScript para CommunicationFeedback
-- [frontend/src/components/MeetingDetails/CommunicationFeedbackPanel.tsx](frontend/src/components/MeetingDetails/CommunicationFeedbackPanel.tsx) - Panel UI de evaluación
-
-**Flujo de Evaluación de Comunicación**:
-1. Usuario genera resumen de reunión via `api_process_transcript`
-2. `SummaryService::process_transcript_background` genera primero el markdown del resumen
-3. Después llama a `evaluate_communication` con la transcripción completa
-4. El LLM evalúa claridad, engagement, estructura (0-10) + fortalezas/áreas de mejora
-5. El resultado se guarda en `summary_processes.result` como JSON con `markdown` + `communication_feedback`
-6. El frontend extrae `communication_feedback` en `page.tsx` y lo pasa a `CommunicationFeedbackPanel`
-7. El panel muestra puntuaciones, fortalezas, áreas de mejora e insights
-
-**Integración Whisper**:
-- [frontend/src-tauri/src/whisper_engine/whisper_engine.rs](frontend/src-tauri/src/whisper_engine/whisper_engine.rs) - Gestión de modelos Whisper y transcripción
-
-**Motor Moonshine** (transcripción ultra-rápida alternativa):
-- [frontend/src-tauri/src/moonshine_engine/moonshine_engine.rs](frontend/src-tauri/src/moonshine_engine/moonshine_engine.rs) - Gestión de modelos Moonshine y descarga
-- [frontend/src-tauri/src/moonshine_engine/model.rs](frontend/src-tauri/src/moonshine_engine/model.rs) - Implementación del modelo ONNX con encoder + decoder separados
-
-**Arquitectura Moonshine**:
-Moonshine usa dos modelos de decoder separados en lugar de un modelo merged para evitar errores de MatMul en cross-attention:
-- `decoder_model.onnx` (~158 MB) - Para el primer paso de decodificación (sin KV cache)
-- `decoder_with_past_model.onnx` (~147 MB) - Para pasos subsecuentes (con KV cache)
-
-Este enfoque es el recomendado por HuggingFace para modelos encoder-decoder ONNX.
-
-**Scripts de Evaluación**:
-- [scripts/test_moonshine_spanish.py](scripts/test_moonshine_spanish.py) - Script para probar Moonshine base-es en español
-- [scripts/generate_test_audio.py](scripts/generate_test_audio.py) - Grabador de audios de prueba para evaluación
-- [scripts/requirements_moonshine.txt](scripts/requirements_moonshine.txt) - Dependencias Python para pruebas de Moonshine
-- [scripts/moonshine_evaluation_results.md](scripts/moonshine_evaluation_results.md) - Plantilla para documentar resultados de evaluación
-
-**Sistema de Roles (Developer vs Usuario Regular)**:
-- [frontend/src/lib/roles.ts](frontend/src/lib/roles.ts) - Utilidad pura para determinar rol por email (`getUserRole`, `isDeveloper`, `DEVELOPER_DOMAINS`)
-- [frontend/src/hooks/useUserRole.ts](frontend/src/hooks/useUserRole.ts) - Hook React que combina `useAuth()` con roles
-
-**Lógica de Roles**:
-- **Developers**: Emails con dominio `@asertio.mx` o `@maity.cloud` → ven toda la interfaz
-- **Usuarios regulares**: Cualquier otro dominio → interfaz restringida:
-  - Sidebar oculta "Gamificación" y "Conversaciones"
-  - Settings solo muestra tabs "General" y "Grabaciones" (no "Transcripción" ni "Resumen")
-  - Navegar a `/gamification` o `/conversations` redirige a `/`
-  - Provider de transcripción forzado a Deepgram (nova-3, es-419) via `ConfigContext`
-- Archivos modificados: `Sidebar/index.tsx`, `settings/page.tsx`, `ConfigContext.tsx`, `gamification/page.tsx`, `conversations/page.tsx`
+- **Manejo de Errores**: Rust usa `anyhow::Result`, frontend usa try-catch con mensajes amigables
+- **Nomenclatura audio**: Siempre "microphone" y "system" (no "input"/"output")
+- **Ramas de Git**: `main` (releases), `fix/*`, `enhance/*`, `feat/*`
+- **Commits**: Prefijos estandar (`feat:`, `fix:`, `docs:`, `refactor:`, `style:`, `test:`, `chore:`) con descripcion en espanol
 
 ---
 
 ## Protocolo Guardian - Modo Protegido
 
-Este protocolo establece reglas de seguridad para el desarrollo del proyecto. Se activa automáticamente al trabajar con este repositorio.
-
 ### 1. Respaldo Pre-Cambio (Solo Alto Riesgo)
 
 Crear rama de backup **antes** de cambios de alto riesgo:
-- Refactoring grande (>3 archivos o >200 líneas)
-- Cambios en el pipeline de audio (`pipeline.rs`, `recording_manager.rs`)
-- Cambios en el motor de transcripción (`engine.rs`, `worker.rs`)
+- Refactoring grande (>3 archivos o >200 lineas)
+- Cambios en pipeline de audio (`pipeline.rs`, `recording_manager.rs`)
+- Cambios en motor de transcripcion (`engine.rs`, `worker.rs`)
 - Modificaciones a `lib.rs` o al sistema de comandos Tauri
-- Eliminación o reescritura de módulos completos
 
 ```bash
-# Formato de rama de backup
 git checkout -b backup/{fecha}-{descripcion-corta}
 git checkout -    # Volver a la rama de trabajo
 ```
 
-**NO se requiere backup para**: edits menores, correcciones de bugs puntuales, cambios de UI, actualizaciones de dependencias, cambios en documentación.
+**NO se requiere backup para**: edits menores, correcciones puntuales, cambios de UI, actualizaciones de dependencias.
 
-### 2. Protocolo de Compilación (OBLIGATORIO — SIN EXCEPCIONES)
+### 2. Protocolo de Compilacion (OBLIGATORIO — SIN EXCEPCIONES)
 
-**REGLA ABSOLUTA**: Después de CADA cambio de código, se DEBE ejecutar el build completo integrado de Tauri. NUNCA se debe entregar, hacer commit, ni reportar completado sin que el build haya pasado con exit code 0.
+**REGLA ABSOLUTA**: Despues de CADA cambio de codigo, se DEBE ejecutar el build completo integrado de Tauri. NUNCA se debe entregar, hacer commit, ni reportar completado sin que el build haya pasado con exit code 0.
 
-**Build obligatorio después de cada cambio**:
 ```bash
 cd frontend && pnpm run tauri:build:debug     # OBLIGATORIO - Build integrado Tauri (debug)
 ```
-Este comando ejecuta la cadena completa: `pnpm build` (Next.js) → `cargo build` (Rust, debug) → empaqueta frontend + backend en un ejecutable funcional. Es más rápido que el build release y permite al usuario probar el .exe directamente.
 
-**Criterio de éxito del build**: El proceso DEBE terminar con exit code 0. Si termina con exit code 1 o cualquier otro error, el build NO pasó y se debe corregir antes de entregar.
+Este comando ejecuta: `pnpm build` (Next.js) -> `cargo build` (Rust, debug) -> empaqueta frontend + backend en un ejecutable funcional.
 
-**Nota sobre firma local**: El script `tauri-auto.js` maneja correctamente la ausencia de `TAURI_SIGNING_PRIVATE_KEY` en desarrollo local. Si la compilación y empaquetado son exitosos pero falta la clave de firma (solo necesaria en CI/CD), el script reporta un warning y sale con code 0. Esto es el comportamiento esperado en desarrollo local.
+**Criterio de exito**: Exit code 0. Si termina con exit code != 0, el build NO paso — corregir antes de entregar.
+
+**Nota sobre firma local**: El script `tauri-auto.js` maneja la ausencia de `TAURI_SIGNING_PRIVATE_KEY` en desarrollo local. Si la compilacion es exitosa pero falta la clave de firma, el script reporta un warning y sale con code 0 (comportamiento esperado).
 
 **PROHIBIDO**:
-- Usar `cargo build` o `cargo build --release` como build final (solo compilan Rust, no integran frontend)
+- Usar `cargo build` como build final (solo compila Rust, no integra frontend)
 - Hacer commit sin build exitoso (exit code 0)
 - Reportar tarea completada sin build exitoso
-- Decir "el build pasó" si el exit code no fue 0
-- Entregar código con build que retorne exit code distinto de 0
 
-**Para desarrollo interactivo** (probar la app en modo dev):
-```bash
-cd frontend && pnpm run tauri:dev       # Inicia servidor Next.js + backend Rust en modo debug
-```
+**Artefactos debug**: `target/debug/maity-desktop.exe`, `target/debug/bundle/msi/Maity_*.msi`, `target/debug/bundle/nsis/Maity_*-setup.exe`
 
-**Ubicación de los artefactos generados (debug)**:
-- Ejecutable: `target/debug/maity-desktop.exe`
-- Instalador MSI: `target/debug/bundle/msi/Maity_*.msi`
-- Instalador NSIS: `target/debug/bundle/nsis/Maity_*-setup.exe`
-
-**Para build de producción (release)** (solo cuando se prepara un release):
-```bash
-cd frontend && pnpm run tauri:build     # Build release optimizado + instaladores
-```
-
-**Reportar resultado obligatoriamente**:
-- **pnpm run tauri:build:debug**: EXIT CODE 0 (OK) / EXIT CODE != 0 (FALLO) + errores completos
-- Si FALLO: NO hacer commit, NO reportar completado, CORREGIR primero
-
-**Si el build falla**: Corregir INMEDIATAMENTE antes de hacer cualquier otra cosa. Un cambio con build roto no es un cambio terminado. NUNCA hacer commit con build fallido.
+**Build de produccion** (solo para releases): `cd frontend && pnpm run tauri:build`
 
 ### 3. Alerta de Cambios Peligrosos
 
 Si el usuario solicita alguna de estas acciones, **advertir y proponer enfoque incremental**:
 - Eliminar archivos completos del sistema de audio
-- Reescribir módulos enteros desde cero
+- Reescribir modulos enteros desde cero
 - Cambiar la arquitectura del pipeline de audio
-- Modificar el formato de comunicación Rust ↔ Frontend
-- Eliminar o reemplazar sistemas de seguridad existentes (manejo de errores, logging)
+- Modificar el formato de comunicacion Rust <-> Frontend
 
-Formato de advertencia:
-> **Cambio de alto riesgo detectado**: [descripción]. Este cambio afecta [componentes]. Propongo un enfoque incremental: [pasos].
+Formato: > **Cambio de alto riesgo detectado**: [descripcion]. Este cambio afecta [componentes]. Propongo un enfoque incremental: [pasos].
 
 ### 4. Formato de Commits
 
-Usar prefijos estándar con descripción en español:
+Prefijos estandar con descripcion en espanol: `feat:`, `fix:`, `docs:`, `refactor:`, `style:`, `test:`, `chore:`
 
-```
-feat: descripción de nueva funcionalidad
-fix: descripción de corrección de bug
-docs: descripción de cambio en documentación
-refactor: descripción de refactorización
-style: cambios de formato/estilo (sin cambio funcional)
-test: agregar o modificar tests
-chore: tareas de mantenimiento
-```
-
-Ejemplo: `feat: agregar grabación stereo dual-canal (L=mic, R=sistema)`
-
-### 5. Git Seguro
-
-Reglas estrictas de seguridad en git:
-- **NUNCA** ejecutar `git push --force` sin permiso explícito del usuario
-- **NUNCA** ejecutar `git reset --hard` sin permiso explícito
-- **NUNCA** hacer merge directo a `main` sin permiso explícito
-- **NUNCA** ejecutar `git clean -f` sin permiso explícito
-- Preferir `git add` con archivos específicos en lugar de `git add -A`
-- No incluir archivos sensibles (.env, credenciales, claves API)
-
-### 6. Estado del Proyecto (Inicio de Sesión)
-
-Al inicio de cada sesión de trabajo, verificar y mostrar:
-- Rama actual de git
-- Último commit (hash corto + mensaje)
-- Si hay cambios sin commit
-- Si hay archivos sin rastrear relevantes
-
-### 7. Resumen de Sesión
-
-Al terminar trabajo significativo, listar:
-- Archivos modificados y naturaleza del cambio
-- Resultado de compilación (los 3 builds)
-- Tareas completadas vs pendientes
-- Cualquier advertencia o problema encontrado
+Ejemplo: `feat: agregar grabacion stereo dual-canal (L=mic, R=sistema)`
