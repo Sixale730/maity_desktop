@@ -714,12 +714,13 @@ export function mergeConversations(
 
   // For each local, try to find a matching cloud entry
   for (const loc of local) {
-    // Check if any cloud entry matches by title + timestamp proximity
+    // Match by started_at proximity (immutable, not affected by AI title changes)
+    // Title matching was removed because the cloud title changes after analysis,
+    // breaking dedup and causing duplicate entries in the list.
     const match = cloud.find((c) => {
-      if (c.title !== loc.title) return false;
-      const cloudTime = new Date(c.created_at).getTime();
-      const localTime = new Date(loc.created_at).getTime();
-      return Math.abs(cloudTime - localTime) < 5 * 60 * 1000; // 5 minutes
+      const cloudTime = new Date(c.started_at || c.created_at).getTime();
+      const localTime = new Date(loc.started_at || loc.created_at).getTime();
+      return Math.abs(cloudTime - localTime) < 2 * 60 * 1000; // 2 minutes
     });
 
     if (match) {
