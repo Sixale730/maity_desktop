@@ -54,7 +54,7 @@ openmp = ["whisper-rs/openmp"]     # OpenMP parallel processing
 
 [build-dependencies]
 tauri-build = { version = "2.3.0", features = [] }
-reqwest = { version = "0.11", features = ["blocking", "multipart", "json", "stream"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "multipart", "json", "stream", "rustls-tls-native-roots"] }
 which = "6.0.1"
 
 
@@ -120,10 +120,10 @@ tokio-util = "0.7"  # Utilities for tokio including CancellationToken
 async-trait = "0.1"  # Trait abstraction for async methods
 
 # WebSocket for cloud transcription providers (Deepgram)
-tokio-tungstenite = { version = "0.21", features = ["native-tls"] }
+tokio-tungstenite = { version = "0.21", features = ["rustls-tls-native-roots"] }
 futures = "0.3"  # Stream utilities for WebSocket
 
-reqwest = { version = "0.11", features = ["blocking", "multipart", "json", "stream"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "multipart", "json", "stream", "rustls-tls-native-roots"] }
 
 # crossbeam
 crossbeam = "0.8.4"
@@ -174,7 +174,7 @@ objc = "0.2.7"
 tauri-plugin-log = { version = "2.6.0", features = ["colored"] }
 anyhow = "1.0"
 time = { version = "0.3", features = ["formatting"] }
-reqwest = { version = "0.11", features = ["multipart", "json"] }
+reqwest = { version = "0.12", default-features = false, features = ["multipart", "json", "rustls-tls-native-roots"] }
 core-graphics = "0.24"
 cidre = { git = "https://github.com/yury/cidre", rev = "a9587fa", features = ["av"] }
 dasp = "0.11.0"
