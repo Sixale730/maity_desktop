@@ -262,6 +262,14 @@ export function useRecordingStart(
 
     // Show recording notification if enabled
     await showRecordingNotification();
+
+    // Native OS notification
+    import('@/lib/nativeNotification').then(({ sendNativeNotification }) =>
+      sendNativeNotification({
+        title: 'Grabación iniciada',
+        body: `Reunión: ${title}`,
+      })
+    ).catch(() => {});
   }, [generateMeetingTitle, selectedDevices, transcriptModelConfig, setStatus, setMeetingTitle, setIsRecording, clearTranscripts, setIsMeetingActive]);
 
   /**

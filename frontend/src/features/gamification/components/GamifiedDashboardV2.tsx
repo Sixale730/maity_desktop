@@ -103,16 +103,12 @@ export function GamifiedDashboardV2() {
 
   const firstName = maityUser?.first_name || 'Usuario';
 
-  if (data.loading) {
-    return (
-      <div className="flex items-center justify-center h-[60vh]">
-        <div className="w-10 h-10 border-2 border-[#ff0050] border-t-transparent rounded-full animate-spin" />
-      </div>
-    );
-  }
-
-  const strongest = data.competencies.reduce((max, c) => c.value > max.value ? c : max, data.competencies[0]);
-  const weakest = data.competencies.reduce((min, c) => c.value < min.value ? c : min, data.competencies[0]);
+  const strongest = data.competencies.length > 0
+    ? data.competencies.reduce((max, c) => c.value > max.value ? c : max, data.competencies[0])
+    : { name: '—', value: 0, color: '#485df4' };
+  const weakest = data.competencies.length > 0
+    ? data.competencies.reduce((min, c) => c.value < min.value ? c : min, data.competencies[0])
+    : { name: '—', value: 0, color: '#ef4444' };
   const xpProgress = Math.min((data.xp / data.nextLevelXP) * 100, 100);
 
   return (

@@ -222,6 +222,14 @@ export function useRecordingStop(
             duration: 5000,
           });
 
+          // Native OS notification (visible even if app is in background)
+          import('@/lib/nativeNotification').then(({ sendNativeNotification }) =>
+            sendNativeNotification({
+              title: 'Grabación guardada',
+              body: `${freshTranscripts.length} segmentos de transcripción guardados.`,
+            })
+          ).catch(() => {});
+
           // Set current meeting and refetch (non-blocking)
           refetchMeetings().catch(() => {});
           try {

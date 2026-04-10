@@ -23,7 +23,6 @@ import { useRouter } from 'next/navigation';
 import { useParakeetAutoDownloadContext } from '@/contexts/ParakeetAutoDownloadContext';
 import { useRecordingLevels } from '@/hooks/useRecordingLevels';
 import { usePreviewLevels } from '@/hooks/usePreviewLevels';
-import { TranscriptionLagIndicator } from '@/components/recording/TranscriptionLagIndicator';
 import { GamifiedDashboardV2 } from '@/features/gamification';
 
 export default function Home() {
@@ -70,19 +69,10 @@ export default function Home() {
     Analytics.trackPageView('home');
   }, []);
 
-  // Startup recovery check
+  // Startup recovery check — runs once on mount only
   useEffect(() => {
     const performStartupChecks = async () => {
       try {
-        // Skip recovery check if currently recording or processing stop
-        if (isRecording ||
-          status === RecordingStatus.STOPPING ||
-          status === RecordingStatus.PROCESSING_TRANSCRIPTS ||
-          status === RecordingStatus.SAVING) {
-          console.log('Skipping recovery check - recording in progress or processing');
-          return;
-        }
-
         // 1. Clean up old meetings (7+ days)
         try {
           await indexedDBService.deleteOldMeetings(7);
@@ -97,7 +87,7 @@ export default function Home() {
           console.warn('Failed to clean up saved meetings:', error);
         }
 
-        // 3. Always check for recoverable meetings on startup
+        // 3. Check for recoverable meetings on startup
         await checkForRecoverableTranscripts();
       } catch (error) {
         console.error('Failed to perform startup checks:', error);
@@ -105,7 +95,8 @@ export default function Home() {
     };
 
     performStartupChecks();
-  }, [checkForRecoverableTranscripts, isRecording, status]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Watch for recoverable meetings changes and show dialog once per session
   useEffect(() => {
@@ -222,8 +213,7 @@ export default function Home() {
                   marginLeft: sidebarCollapsed ? '4rem' : '16rem'
                 }}
               >
-                <div className="w-2/3 max-w-[750px] min-w-[200px] flex flex-col items-center gap-2">
-                  <TranscriptionLagIndicator />
+                <div className="w-2/3 max-w-[750px] min-w-[200px] flex justify-center">
                   <div className="bg-white dark:bg-gray-900 rounded-full shadow-lg flex items-center overflow-visible">
                     <RecordingControls
                       isRecording={isRecording}

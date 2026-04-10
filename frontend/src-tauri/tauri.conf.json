@@ -1,7 +1,7 @@
 {
     "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
     "productName": "Maity",
-    "version": "0.2.31",
+    "version": "0.2.32",
     "identifier": "com.maity.ai",
     "build": {
         "frontendDist": "../out",
@@ -83,14 +83,7 @@
     },
     "bundle": {
         "active": true,
-        "targets": [
-            "deb",
-            "appimage",
-            "msi",
-            "nsis",
-            "app",
-            "dmg"
-        ],
+        "targets": "all",
         "createUpdaterArtifacts": true,
         "icon": [
             "icons/icon.png",
@@ -102,8 +95,9 @@
         ],
         "externalBin": [],
         "macOS": {
-            "entitlements": "entitlements.plist",
-            "signingIdentity": "-",
+            "entitlements": "entitlements-appstore.plist",
+            "signingIdentity": "0544FB2C7D06554BE285D837D96880A91781E0B7",
+            "minimumSystemVersion": "12.0",
             "hardenedRuntime": true
         },
         "windows": {

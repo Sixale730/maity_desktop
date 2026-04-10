@@ -154,6 +154,12 @@ pub async fn initialize_recording<R: Runtime>(
     // Create new recording manager
     let mut manager = RecordingManager::new();
 
+    // Load system audio gain from preferences
+    if let Ok(prefs) = super::recording_preferences::load_recording_preferences(app).await {
+        manager.system_audio_gain = prefs.system_audio_gain.clamp(0.5, 3.0);
+        log::info!("🔊 System audio gain from preferences: {:.1}x", manager.system_audio_gain);
+    }
+
     // Generate effective meeting name
     let effective_meeting_name = meeting_name.unwrap_or_else(|| {
         let now = chrono::Local::now();
