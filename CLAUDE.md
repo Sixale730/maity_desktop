@@ -11,10 +11,12 @@ Este archivo proporciona orientacion a Claude Code al trabajar con este reposito
 
 ### Stack Tecnologico
 - **App de Escritorio**: Tauri 2.x (Rust) + Next.js 14 + React 18
-- **Procesamiento de Audio**: Rust (cpal, whisper-rs, mezcla de audio profesional)
-- **Transcripcion**: Whisper.cpp (local, GPU) + Deepgram (nube, opcional)
+- **Procesamiento de Audio**: Rust (cpal, whisper-rs, ONNX Runtime, mezcla de audio profesional)
+- **Transcripcion**: Whisper.cpp (local, GPU) + Parakeet (local, ONNX) + Moonshine (local, ultra-rapido) + Deepgram (nube, proxy)
 - **Backend API**: FastAPI + SQLite (aiosqlite) — modulo DB en `backend/app/db/`
-- **Integracion LLM**: Ollama (local), Claude, Groq, OpenRouter
+- **Integracion LLM**: Ollama (local), Claude, Groq, OpenRouter, Custom OpenAI
+- **Cloud**: Supabase (schema `maity`) + Vercel API + Cloudflare Workers
+- **Auth**: Google OAuth -> Supabase Auth
 
 ## Skills (Slash Commands)
 
@@ -73,19 +75,47 @@ clean_start_backend.cmd               # Iniciar servidor
 ## Arquitectura de Alto Nivel
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                Frontend (App de Escritorio Tauri)                │
-│  ┌──────────────────┐  ┌─────────────────┐  ┌────────────────┐ │
-│  │   UI Next.js     │  │  Backend Rust   │  │ Motor Whisper  │ │
-│  │  (React/TS)      │<->│  (Audio + IPC)  │<->│  (STT Local)   │ │
-│  └──────────────────┘  └─────────────────┘  └────────────────┘ │
-└─────────┬──────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────┐
+│                   Frontend (App de Escritorio Tauri)                     │
+│  ┌──────────────┐  ┌──────────────┐  ┌─────────────┐  ┌────────────┐  │
+│  │  UI Next.js  │  │ Backend Rust │  │ Motores STT │  │  Meeting   │  │
+│  │  (React/TS)  │<>│ (Audio+IPC)  │<>│ Whisper/    │  │  Detector  │  │
+│  │  9 contextos │  │ 16 modulos   │  │ Parakeet/   │  │ Zoom/Teams │  │
+│  └──────────────┘  └──────────────┘  │ Moonshine   │  │ Meet       │  │
+│         |                  |         └─────────────┘  └────────────┘  │
+│  ┌──────────────┐  ┌──────────────┐  ┌─────────────┐  ┌────────────┐  │
+│  │ Sync Queue   │  │  SQLite DB   │  │ Notificac.  │  │  Logging   │  │
+│  │ (offline-1st)│  │ 7 reposit.   │  │  DND/mgr    │  │  rotativo  │  │
+│  └──────────────┘  └──────────────┘  └─────────────┘  └────────────┘  │
+└─────────┬────────────────────────────────────────────────────────────── ┘
           │ HTTP/WebSocket (opcional)
           ↓
-┌─────────────────────────────────────────────────────────────────┐
-│              Backend (FastAPI + SQLite + LLM providers)          │
-└─────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────┐
+│   Backend (FastAPI + SQLite)     │     Cloud (Supabase + Vercel API)    │
+│   Persistencia local + LLM      │     Auth, sync, analysis, proxy      │
+└─────────────────────────────────────────────────────────────────────────┘
 ```
+
+### Modulos Rust (16 modulos en `src-tauri/src/`)
+
+| Modulo | Descripcion |
+|--------|-------------|
+| `audio/` | Pipeline de audio completo (46 archivos): captura, VAD, mezcla, grabacion, transcripcion |
+| `whisper_engine/` | Motor Whisper.cpp con procesamiento paralelo y aceleracion GPU |
+| `parakeet_engine/` | Motor Parakeet ONNX (~150MB, rapido on-device) |
+| `moonshine_engine/` | Motor Moonshine ONNX (ultra-rapido, dual decoder) |
+| `canary_engine/` | Motor NVIDIA NeMo Canary (mejor espanol, **existe pero NO expuesto en lib.rs**) |
+| `summary/` | Generacion de resumenes: LLM client, templates, communication evaluator |
+| `database/` | SQLite con 7 repositorios: meeting, transcript, transcript_chunk, summary, setting, recording_log, sync_queue |
+| `api/` | Cliente HTTP para backend + endpoints + finalizacion cloud |
+| `meeting_detector/` | Detecta Zoom/Teams/Meet activos, auto-record opcional |
+| `notifications/` | Sistema de notificaciones con DND, consent, y sistema nativo |
+| `logging/` | Logger rotativo a archivo con export y limpieza |
+| `analytics/` | Event tracking (PostHog) |
+| `ollama/` | Cliente Ollama (modelos locales) |
+| `openrouter/` | Cliente OpenRouter API |
+| `auth_server.rs` | Servidor OAuth localhost para Supabase auth |
+| `state.rs`, `tray.rs`, `onboarding.rs`, `utils.rs` | Estado global, tray, onboarding, utilidades |
 
 ### Pipeline de Procesamiento de Audio (Comprension Critica)
 
@@ -109,7 +139,7 @@ RecordingSaver WhisperEngine DeepgramProvider
 - **Atribucion de hablante**: `DeviceType` (Microphone/System) se captura ANTES de enviar al motor de transcripcion, mapeando `Microphone->"user"` y `System->"interlocutor"`
 - **Ring Buffer de mezcla**: Acumula muestras hasta ventanas alineadas de 50ms; ducking RMS evita que audio del sistema ahogue al microfono
 
-### Estructura del Modulo de Audio
+### Estructura del Modulo de Audio (46 archivos)
 
 ```
 audio/
@@ -118,6 +148,7 @@ audio/
 │   ├── microphone.rs          # default_input_device
 │   ├── speakers.rs            # default_output_device
 │   ├── configuration.rs       # Tipos AudioDevice, parsing
+│   ├── fallback.rs            # Seleccion de dispositivo fallback
 │   └── platform/              # Implementaciones por plataforma
 │       ├── windows.rs         # Logica WASAPI
 │       ├── macos.rs           # Logica ScreenCaptureKit
@@ -125,18 +156,48 @@ audio/
 ├── capture/                   # Captura de streams de audio
 │   ├── microphone.rs          # Stream de captura de microfono
 │   ├── system.rs              # Stream de captura de audio del sistema
-│   └── core_audio.rs          # Integracion ScreenCaptureKit macOS
-├── transcription/             # Motor de transcripcion
-│   ├── engine.rs              # Gestion de motores (Whisper + Parakeet)
-│   ├── worker.rs              # Pool de workers de transcripcion
-│   ├── deepgram_provider.rs   # Proveedor Deepgram (nube, WebSocket)
+│   ├── core_audio.rs          # Integracion ScreenCaptureKit macOS
+│   ├── wasapi_loopback.rs     # Windows WASAPI loopback
+│   └── backend_config.rs      # Configuracion de backend de audio
+├── transcription/             # Motor de transcripcion (12 archivos)
+│   ├── engine.rs              # Gestion de motores (Whisper + Parakeet + Moonshine)
+│   ├── worker.rs              # Pool de workers de transcripcion (54KB, el mas grande)
+│   ├── provider.rs            # Interfaz abstracta de proveedores
+│   ├── whisper_provider.rs    # Proveedor Whisper
+│   ├── parakeet_provider.rs   # Proveedor Parakeet
+│   ├── canary_provider.rs     # Proveedor Canary (existe, canary_engine no expuesto)
+│   ├── deepgram_provider.rs   # Proveedor Deepgram (nube, WebSocket, 33KB)
 │   └── deepgram_commands.rs   # Comandos Tauri para proxy config
 ├── pipeline.rs                # Mezcla de audio, VAD y distribucion
 ├── recording_manager.rs       # Coordinacion de grabacion de alto nivel
 ├── recording_commands.rs      # Interfaz de comandos Tauri
+├── recording_lifecycle.rs     # Lifecycle: start, stop, pause, resume
+├── recording_state.rs         # Estado compartido de grabacion
 ├── recording_saver.rs         # Escritura de archivos de audio
+├── recording_helpers.rs       # Funciones auxiliares
+├── recording_preferences.rs   # Preferencias de grabacion
 ├── incremental_saver.rs       # Guardado incremental con checkpoints (30s)
-└── encode.rs                  # Codificacion FFmpeg (PCM -> AAC/MP4)
+├── stream.rs                  # StreamBackend abstraction (CPAL + CoreAudio)
+├── encode.rs                  # Codificacion FFmpeg (PCM -> AAC/MP4)
+├── ffmpeg.rs                  # Wrapper FFmpeg CLI
+├── ffmpeg_mixer.rs            # Mezcla con FFmpeg + adaptive ducking (19KB)
+├── device_monitor.rs          # Monitoreo de dispositivos (connect/disconnect)
+├── device_detection.rs        # Deteccion de tipo de dispositivo
+├── hardware_detector.rs       # Deteccion de hardware (GPU, CPU)
+├── playback_monitor.rs        # Deteccion de Bluetooth (warnings)
+├── vad.rs                     # Voice Activity Detection
+├── level_monitor.rs           # Monitor de niveles de audio en tiempo real
+├── simple_level_monitor.rs    # Monitor simplificado
+├── audio_processing.rs        # Normalizacion y efectos
+├── buffer_pool.rs             # Pool pre-asignado de buffers
+├── batch_processor.rs         # Procesamiento por lotes
+├── post_processor.rs          # Post-procesamiento
+├── diagnostics.rs             # Logging de diagnostico
+├── async_logger.rs            # Logger asincrono
+├── system_audio_commands.rs   # Comandos Tauri para audio del sistema
+├── system_audio_stream.rs     # Stream de audio del sistema
+├── system_detector.rs         # Deteccion de eventos de audio del sistema
+└── permissions.rs             # Permisos de screen recording
 ```
 
 **Al trabajar en funcionalidades de audio**:
@@ -144,13 +205,79 @@ audio/
 - Microfono/altavoces -> `devices/microphone.rs` o `devices/speakers.rs`
 - Captura de audio -> `capture/microphone.rs` o `capture/system.rs`
 - Mezcla/procesamiento -> `pipeline.rs`
-- Flujo de grabacion -> `recording_manager.rs` + `recording_saver.rs` + `incremental_saver.rs`
+- Flujo de grabacion -> `recording_manager.rs` + `recording_lifecycle.rs` + `recording_state.rs`
+- Guardado -> `recording_saver.rs` + `incremental_saver.rs`
 - Transcripcion local -> `transcription/engine.rs` + `transcription/worker.rs`
 - Transcripcion nube -> `transcription/deepgram_provider.rs`
+- Hot-swap de dispositivos -> `device_monitor.rs` + `recording_lifecycle.rs`
+- Codificacion -> `encode.rs` + `ffmpeg.rs` + `ffmpeg_mixer.rs`
+
+### Motores de Transcripcion (4 locales + 1 nube)
+
+| Motor | Tipo | Archivos | Caracteristicas |
+|-------|------|----------|-----------------|
+| **Whisper** | Local, GPU | `whisper_engine/` (6 archivos) | Procesamiento paralelo, Metal/CUDA/Vulkan, modelos tiny→large-v3 |
+| **Parakeet** | Local, ONNX | `parakeet_engine/` (4 archivos) | ~150MB, rapido on-device, auto-download |
+| **Moonshine** | Local, ONNX | `moonshine_engine/` (4 archivos) | Ultra-rapido, dual decoder (encoder-only + with-past) |
+| **Canary** | Local, ONNX | `canary_engine/` (5 archivos) | NVIDIA NeMo, mejor espanol (2.69% WER), **NO EXPUESTO en lib.rs** |
+| **Deepgram** | Nube, WS | `transcription/deepgram_*.rs` | Via Cloudflare Worker proxy, Nova-3 |
+
+### Sistema de Resumen (`summary/`, 11 archivos)
+
+```
+summary/
+├── service.rs                 # Servicio principal: chunking, LLM orchestration
+├── processor.rs               # Chunking y generacion de resumen
+├── llm_client.rs              # Multi-provider (Claude, OpenAI, Groq, Ollama, OpenRouter, Custom)
+├── communication_evaluator.rs # Evaluacion de comunicacion post-reunion
+├── communication_types.rs     # Tipos para CommunicationFeedback
+├── commands.rs                # api_process_transcript, api_get_summary, etc.
+├── template_commands.rs       # api_list_templates, api_get_template_details, etc.
+├── templates/                 # Plantillas de resumen
+│   ├── loader.rs, defaults.rs, types.rs
+└── summary_engine/            # Motor AI built-in para resumenes
+    ├── model_manager.rs, sidecar.rs, client.rs, models.rs, commands.rs
+```
+
+### Base de Datos Local (`database/`, 9 archivos)
+
+```
+database/
+├── manager.rs                 # DatabaseManager (SQLite connection pool)
+├── setup.rs                   # Schema init y migraciones
+├── models.rs                  # Tipos Rust para entidades DB
+├── commands.rs                # Comandos Tauri (legacy import, event logging)
+├── sync_queue_commands.rs     # Comandos de sync queue offline-first
+└── repositories/              # Data access layers
+    ├── meeting.rs             # MeetingsRepository
+    ├── transcript.rs          # TranscriptRepository
+    ├── transcript_chunk.rs    # TranscriptChunkRepository
+    ├── summary.rs             # SummaryProcessesRepository
+    ├── setting.rs             # SettingsRepository
+    ├── recording_log.rs       # RecordingLogRepository
+    └── sync_queue.rs          # SyncQueueRepository (offline-first cloud)
+```
+
+### Sistema de Sync Queue (Offline-First)
+
+Cola de trabajos para sincronizacion con la nube que funciona offline. Cada grabacion genera jobs (meeting, transcripts, summary) con dependencias. Comandos Tauri: `sync_queue_enqueue`, `sync_queue_claim_job`, `sync_queue_complete_job`, `sync_queue_fail_job`, `sync_queue_get_all_statuses`, etc.
 
 ### Comunicacion Rust <-> Frontend
 
-Comandos via `invoke()` (Frontend->Rust), Eventos via `emit()`/`listen()` (Rust->Frontend). Todos los comandos registrados en `lib.rs`. La implementacion delega a modulos en `audio/recording_commands.rs`, `audio/transcription/deepgram_commands.rs`, etc.
+Comandos via `invoke()` (Frontend->Rust), Eventos via `emit()`/`listen()` (Rust->Frontend). Todos los comandos registrados en `lib.rs`.
+
+**Grupos de comandos Tauri principales**:
+- **Grabacion**: `start_recording`, `stop_recording`, `pause_recording`, `resume_recording`, `is_recording_paused`, `get_recording_state`, `get_meeting_folder_path`
+- **Dispositivos**: `list_audio_devices`, `switch_audio_device`, `poll_audio_device_events`, `attempt_device_reconnect`, `get_reconnection_status`, `get_active_audio_output`
+- **Transcripcion**: `cancel_pending_transcription`, `recover_audio_from_checkpoints`, `cleanup_checkpoints`, `has_audio_checkpoints`
+- **Whisper paralelo**: `initialize_parallel_processor`, `start_parallel_processing`, `pause/resume/stop_parallel_processing`, `get_parallel_processing_status`, `get_system_resources`
+- **Deepgram proxy**: `fetch_deepgram_proxy_config`, `set/get/clear_deepgram_proxy_config`, `has_valid_deepgram_proxy_config`
+- **Sync queue**: `sync_queue_enqueue`, `sync_queue_claim_job`, `sync_queue_complete_job`, `sync_queue_fail_job`, `sync_queue_get_all_statuses`, `sync_queue_cancel_meeting`, etc.
+- **Meeting detector**: `start/stop_meeting_detector`, `is_meeting_detector_running`, `get_active_meetings`, `check_for_meetings_now`, `respond_to_meeting_detection`, `set_meeting_auto_record`, etc.
+- **Notificaciones**: `get/set_notification_settings`, `show_notification`, DND status
+- **Logging**: `get_log_info`, `export_logs`, `open_log_directory`, `clear_old_logs`
+- **OAuth**: `start_oauth_server`, `get_pending_auth_code`, `get_pending_auth_tokens`
+- **Sistema audio**: `start_system_audio_capture_command`, `list_system_audio_devices_command`, `check_system_audio_permissions_command`, `start/stop_system_audio_monitoring`
 
 **Patron de estado**: Comandos Tauri actualizan estado Rust -> Emiten eventos -> Listeners del frontend actualizan estado React -> El contexto se propaga a los componentes.
 
@@ -162,6 +289,119 @@ Comandos via `invoke()` (Frontend->Rust), Eventos via `emit()`/`listen()` (Rust-
 - **Produccion (Windows)**: `%APPDATA%\com.maity.ai\models\`
 
 Los modelos se cargan una vez y se cachean. Cambiar modelos requiere reinicio de la app o descarga/recarga manual. Auto-deteccion de GPU (Metal/CUDA/Vulkan) con fallback a CPU.
+
+## Arquitectura Frontend
+
+### Paginas (Routes)
+
+| Ruta | Archivo | Descripcion |
+|------|---------|-------------|
+| `/` | `app/page.tsx` | Interfaz principal de grabacion |
+| `/conversations` | `app/conversations/page.tsx` | Lista de conversaciones (local-first) |
+| `/meeting-details` | `app/meeting-details/page.tsx` | Detalle de reunion con auto-summary |
+| `/gamification` | `app/gamification/page.tsx` | Dashboard gamificado (volcan de progreso) |
+| `/notes` | `app/notes/page.tsx` | Notas extraidas de conversaciones |
+| `/tasks` | `app/tasks/page.tsx` | Tareas extraidas de conversaciones |
+| `/settings` | `app/settings/page.tsx` | Configuracion de la app |
+
+### Context Providers (9, en `layout.tsx`)
+
+Stack de providers (de exterior a interior):
+1. `ThemeProvider` — Tema claro/oscuro
+2. `QueryClientProvider` — React Query (5 min stale time)
+3. `AuthProvider` — Google OAuth + Supabase
+4. `OnboardingProvider` — Flujo de onboarding
+5. `ConfigProvider` — Config de app (dispositivos, provider, idioma)
+6. `RecordingPostProcessingProvider` — Procesamiento post-grabacion
+7. `TranscriptProvider` — Estado de transcripciones
+8. `OllamaDownloadProvider` — Descarga de modelos Ollama
+9. `ParakeetAutoDownloadProvider` — Auto-descarga Parakeet
++ `RecordingStateProvider`, `AnalyticsProvider`, `UpdateCheckProvider`
+
+**Componentes globales en layout**: `SplashScreen`, `AuthGate`, `ChunkErrorRecovery`, `ErrorBoundary`, `MeetingDetectionDialog`, `OfflineIndicator`, `CloudSyncInitializer`, `AnalysisPollingInitializer`
+
+### Hooks (23 en `hooks/`)
+
+| Hook | Proposito |
+|------|-----------|
+| `useRecordingStart` | Iniciar grabacion (logica compartida extraida) |
+| `useRecordingStop` | Detener grabacion + sync cloud (fire-and-forget) |
+| `useRecordingLevels` | Niveles de audio en tiempo real |
+| `useRecordingStateSync` | Sincronizar estado de grabacion con Rust |
+| `usePreviewLevels` | Preview de niveles antes de grabar |
+| `useTranscriptStreaming` | Streaming de transcripciones en tiempo real |
+| `useTranscriptionProgress` | Progreso de transcripcion con tiempo estimado |
+| `useTranscriptionLag` | Profundidad de cola y lag de transcripcion |
+| `useTranscriptRecovery` | Recuperacion de errores de transcripcion |
+| `usePaginatedTranscripts` | Lazy-load de segmentos de transcripcion |
+| `useCloudSyncStatuses` | Estado de sync cloud por conversacion |
+| `useParakeetAutoDownload` | Auto-descarga de modelos Parakeet |
+| `useUserRole` | Rol de usuario (developer vs regular) |
+| `useNetworkStatus` | Deteccion online/offline |
+| `useUpdateCheck` | Verificar actualizaciones de la app |
+| `usePermissionCheck` | Verificar permisos de dispositivos |
+| `usePlatform` | Detectar OS (macOS/Windows/Linux) |
+| `useWindowCloseGuard` | Prevenir cierre accidental durante grabacion |
+| `useAudioPlayer` | Play/pause/seek con Web Audio API |
+| `useAutoScroll` | Auto-scroll con deteccion de scroll manual |
+| `useNavigation` | Helpers de navegacion |
+| `useProcessingProgress` | Progreso de procesamiento |
+| `useModalState` | Estado de modales |
+
+### Servicios Frontend
+
+| Servicio | Descripcion |
+|----------|-------------|
+| `conversations.service.ts` | CRUD conversaciones OMI, merge local+Supabase, 40+ tipos exportados |
+| `analysisPollingService.ts` | Singleton global de polling de analisis (sobrevive navegacion) |
+| `cloudSyncWorker.ts` | Worker de sync cloud en background |
+| `recordingLogService.ts` | Gestion de logs de grabacion |
+| `configService.ts` | Servicio de configuracion |
+| `transcriptService.ts` | Servicio de transcripciones |
+| `updateService.ts` | Servicio de actualizaciones |
+
+### Utilidades (`lib/`)
+
+| Archivo | Proposito |
+|---------|-----------|
+| `deepgram.ts` | `getDeepgramProxyConfig()` — obtener proxy config de Vercel API |
+| `roles.ts` | `getUserRole()`, `isDeveloper()`, `DEVELOPER_DOMAINS` |
+| `supabase.ts` | Cliente Supabase proxy |
+| `analytics.ts` | Analytics tracking |
+| `canary.ts` | Estado y config de modelos Canary |
+| `logger.ts` | Utilidad de logging |
+| `invokeWithRetry.ts` | Wrapper de retry para invocaciones Tauri |
+| `retry.ts` | Logica generica de retry con exponential backoff |
+| `engines/` | Configs de motores STT: `whisper.ts`, `parakeet.ts`, `moonshine.ts`, `builtin-ai.ts`, `ollama-helpers.ts` |
+
+### Features
+
+**Conversaciones** (`features/conversations/`):
+- `ConversationsList.tsx` — Lista local-first (SQLite primero, merge Supabase en background)
+- `ConversationDetail.tsx` — Soporta `?id=` (cloud) y `?localId=` (local), polling de analisis
+- `analysis/` — 12+ componentes de visualizacion (KPI, radar, emociones, patrones, insights)
+- `charts/` — Graficas Recharts (emocion, gauge, participacion, timeline)
+- `minuta/` — 7 componentes de minuta de reunion (acciones, decisiones, seguimiento, efectividad)
+- `useAnalysisPolling.ts` — Hook de polling con fases: idle -> polling -> retrying -> completed
+
+**Gamificacion** (`features/gamification/`):
+- `GamifiedDashboard.tsx` — Dashboard principal
+- `MountainMap.tsx` — SVG de volcan con nodos de progreso
+- `MetricsPanel.tsx` — XP, racha, competencias
+- `InfoPanel.tsx` — Ranking y muletillas
+
+**Notas** (`features/notes/`) y **Tareas** (`features/tasks/`):
+- Extraccion automatica desde analisis de conversaciones
+
+### Sistema de Analisis V4 (Tipos Clave)
+
+El analisis de conversaciones usa un sistema V4 con multiples dimensiones:
+- `CommunicationFeedbackV4` — Estructura completa de analisis
+- `AnalysisSkipped` — Marcador para analisis omitidos (palabras insuficientes)
+- `MeetingMinutesData` — Minuta completa con 8 subsecciones
+- Dimensiones: Objetivo, Emociones, Muletillas, Adaptacion
+- Perfiles por hablante: palabras, claridad, persuasion, formalidad, emociones
+- Type guards: `isAnalysisSkipped()`, `isFullAnalysis()`
 
 ## Patrones Criticos de Desarrollo
 
@@ -179,6 +419,22 @@ Los modelos se cargan una vez y se cachean. Cambiar modelos requiere reinicio de
 - El filtrado VAD reduce la carga de Whisper en ~70% (solo procesa voz)
 - El guardado incremental con checkpoints de 30s previene perdida de datos por crashes
 - Features de Cargo para GPU: `--features cuda`, `--features vulkan`, `--features metal`
+- EBU R128 loudness normalization via `ebur128`
+- Noise suppression via `nnnoiseless` (RNNoise)
+
+### Flujo Local-First de Grabacion
+
+```
+Usuario detiene grabacion
+    ↓
+flush buffer (500ms) → Guardar en SQLite local
+    ↓
+Navegar a /meeting-details?localId=XXX (instantaneo)
+    ↓
+Fire-and-forget: sync cloud via sync_queue (background)
+    ↓
+ConversationDetail: muestra datos locales, poll cloud analysis
+```
 
 ## Depuracion
 
@@ -189,6 +445,10 @@ $env:RUST_LOG="debug"; ./clean_run_windows.bat                   # Windows
 
 # DevTools
 # macOS: Cmd+Shift+I  |  Windows: Ctrl+Shift+I
+
+# Exportar logs
+# Desde la app: Settings -> Logging -> Export
+# Desde Rust: invoke('export_logs')
 ```
 
 **ChunkLoadError Recovery** (modo desarrollo): Script inline en `layout.tsx` (strategy `beforeInteractive`) detecta `ChunkLoadError` y recarga automaticamente (max 3 intentos). Si persiste, reiniciar `pnpm run tauri:dev`. Componente backup: `ChunkErrorRecovery.tsx`.
@@ -204,6 +464,15 @@ $env:RUST_LOG="debug"; ./clean_run_windows.bat                   # Windows
 | Linux | ALSA/PulseAudio | CUDA o Vulkan | cmake, llvm, libomp |
 
 **LLVM en Windows**: Requerido por `whisper-rs-sys` (bindgen necesita `libclang.dll`). Configurar `LIBCLANG_PATH=C:\Program Files\LLVM\bin`.
+
+**Features de Cargo.toml**:
+```
+metal, coreml      → macOS (auto)
+cuda               → Windows/Linux NVIDIA
+vulkan             → Windows/Linux AMD/Intel
+hipblas            → Linux AMD ROCm
+openblas, openmp   → Optimizacion CPU
+```
 
 ## Configuracion Multiplataforma
 
@@ -229,7 +498,14 @@ frontend/src-tauri/
 
 ### CI/CD (GitHub Actions)
 
-Workflows en `.github/workflows/`: `build-windows.yml` (DigiCert HSM signing), `build-macos.yml` (Apple notarization), `build-linux.yml` (deb + AppImage), `release.yml`.
+Workflows en `.github/workflows/`:
+- `build-windows.yml` — Build Windows con DigiCert HSM signing
+- `build-macos.yml` — Build macOS con Apple notarization
+- `build-linux.yml` — Build Linux (deb + AppImage)
+- `build-devtest.yml` — Builds de prueba para desarrollo
+- `build-test.yml` — Builds de prueba simples
+- `pr-main-check.yml` — Checks para PRs a main
+- `release.yml` — Build final para releases
 
 ## Deepgram via Cloudflare Worker Proxy
 
@@ -254,6 +530,18 @@ La transcripcion en la nube usa Deepgram a traves de un Cloudflare Worker proxy.
 - Ambas conexiones WS (mic + system) usan el mismo JWT simultaneamente
 - Reconexion despues de expirar el JWT (>5 min) fallara gracefully
 - Usuario debe estar autenticado con Supabase (login con Google)
+
+## Meeting Detector (Auto-Record)
+
+Detecta Zoom, Teams y Google Meet en ejecucion. Puede auto-iniciar grabacion.
+
+| Archivo | Descripcion |
+|---------|-------------|
+| `meeting_detector/detector.rs` | Logica principal de deteccion |
+| `meeting_detector/process_monitor.rs` | Monitor de procesos activos |
+| `meeting_detector/settings.rs` | Configuracion del detector |
+| `meeting_detector/commands.rs` | Comandos Tauri |
+| `components/meeting-detection/` | UI de dialogo y settings |
 
 ## Sistema de Roles (Developer vs Usuario Regular)
 
