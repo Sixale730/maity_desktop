@@ -102,13 +102,44 @@ fn toggle_recording_handler<R: Runtime>(app: &AppHandle<R>) {
                 }
             }
         } else {
-            // Immediately show starting state
+            // UX-007: Start recording directly via native Rust call, bypassing the
+            // webview entirely. The old approach (eval sessionStorage + location.assign)
+            // broke when the window was minimized because Chromium suspends JS in
+            // off-screen webviews.
             set_tray_state(&app_clone, RecordingState::Starting);
+            log::info!("Tray toggle: Starting recording directly via native start_recording_with_meeting_name (no eval)");
 
-            log::info!("Emitting start recording event from tray");
-            if let Some(window) = app_clone.get_webview_window("main") {
-                let _ = window.eval("sessionStorage.setItem('autoStartRecording', 'true')"); // Set the flag to start recording automatically
-                let _ = window.eval("window.location.assign('/')");
+            match crate::audio::recording_commands::start_recording_with_meeting_name(
+                app_clone.clone(),
+                None, // meeting_name: uses default "Meeting DD/MM HH:MM"
+            )
+            .await
+            {
+                Ok(_) => {
+                    log::info!("Tray toggle: Recording started successfully (native path)");
+
+                    // Notify frontend so it updates the UI when the window is restored
+                    if let Err(e) = app_clone.emit("recording-start-complete", true) {
+                        log::warn!("Tray toggle: failed to emit recording-start-complete: {}", e);
+                    }
+
+                    // Show system notification (best-effort, no-op on failure)
+                    let notif_state = app_clone.state::<crate::NotificationManagerState<R>>();
+                    if let Err(e) =
+                        crate::notifications::commands::show_recording_started_notification(
+                            &app_clone,
+                            &notif_state,
+                            None,
+                        )
+                        .await
+                    {
+                        log::warn!("Tray toggle: notification failed: {}", e);
+                    }
+                }
+                Err(e) => {
+                    log::error!("Tray toggle: Failed to start recording (native): {}", e);
+                    update_tray_menu_async(&app_clone).await;
+                }
             }
         }
     });
@@ -225,12 +256,12 @@ pub fn update_tray_menu<R: Runtime>(app: &AppHandle<R>) {
 fn tooltip_for_state(state: &RecordingState) -> &'static str {
     match state {
         RecordingState::Stopped => "Maity",
-        RecordingState::Starting => "Maity • iniciando grabación...",
-        RecordingState::Recording => "Maity • GRABANDO",
-        RecordingState::Pausing => "Maity • pausando...",
-        RecordingState::Paused => "Maity • PAUSADO",
-        RecordingState::Resuming => "Maity • reanudando...",
-        RecordingState::Stopping => "Maity • deteniendo...",
+        RecordingState::Starting => "Maity \u{2022} \u{1f504} iniciando grabaci\u{f3}n...",
+        RecordingState::Recording => "Maity \u{2022} \u{1f534} GRABANDO",
+        RecordingState::Pausing => "Maity \u{2022} \u{23f8} pausando...",
+        RecordingState::Paused => "Maity \u{2022} \u{23f8} PAUSADO",
+        RecordingState::Resuming => "Maity \u{2022} \u{25b6} reanudando...",
+        RecordingState::Stopping => "Maity \u{2022} \u{23f9} deteniendo...",
     }
 }
 
