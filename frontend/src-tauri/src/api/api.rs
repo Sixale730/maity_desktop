@@ -1,7 +1,7 @@
 use log::{debug as log_debug, error as log_error, info as log_info, warn as log_warn};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use tauri::{AppHandle, Runtime};
+use tauri::{AppHandle, Emitter, Runtime};
 
 use crate::{
     database::{
@@ -546,6 +546,9 @@ pub async fn api_save_model_config<R: Runtime>(
     }
 
     log_info!("✅ Successfully saved model configuration to database");
+    if let Err(e) = _app.emit("model-config-updated", ()) {
+        log::warn!("Failed to emit model-config-updated: {}", e);
+    }
     Ok(
         serde_json::json!({ "status": "success", "message": "Model configuration saved successfully" }),
     )
@@ -659,6 +662,9 @@ pub async fn api_save_transcript_config<R: Runtime>(
     }
 
     log_info!("Successfully saved transcript configuration.");
+    if let Err(e) = _app.emit("model-config-updated", ()) {
+        log::warn!("Failed to emit model-config-updated: {}", e);
+    }
     Ok(
         serde_json::json!({ "status": "success", "message": "Transcript configuration saved successfully" }),
     )

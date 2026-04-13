@@ -198,6 +198,7 @@ pub mod validation_helpers {
 pub mod analytics;
 pub mod api;
 pub mod audio;
+pub mod builtin_ai;
 pub mod coach;
 pub mod console_utils;
 pub mod database;
@@ -1008,6 +1009,7 @@ pub fn run() {
             canary_engine::commands::canary_is_model_loaded,
             canary_engine::commands::canary_unload_model,
             canary_engine::commands::canary_validate_model_ready,
+            canary_engine::commands::canary_validate_model_ready_with_config,
             canary_engine::commands::canary_is_ready,
             canary_engine::commands::canary_transcribe_audio,
             canary_engine::commands::canary_download_model,
@@ -1096,6 +1098,8 @@ pub fn run() {
             summary::summary_engine::builtin_ai_cancel_download,
             summary::summary_engine::builtin_ai_delete_model,
             summary::summary_engine::builtin_ai_is_model_ready,
+            builtin_ai::builtin_ai_get_models_directory,
+            builtin_ai::open_models_folder,
             summary::summary_engine::builtin_ai_get_available_summary_model,
             summary::summary_engine::builtin_ai_get_recommended_model,
             openrouter::get_openrouter_models,

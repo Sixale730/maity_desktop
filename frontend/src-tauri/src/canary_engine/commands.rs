@@ -208,8 +208,9 @@ pub async fn canary_validate_model_ready() -> Result<String, String> {
 }
 
 /// Internal validation with config awareness
+#[command]
 pub async fn canary_validate_model_ready_with_config<R: Runtime>(
-    app: &AppHandle<R>,
+    app: AppHandle<R>,
 ) -> Result<String, String> {
     let engine = {
         let guard = CANARY_ENGINE.lock().map_err(|e| format!("Lock poisoned: {}", e))?;

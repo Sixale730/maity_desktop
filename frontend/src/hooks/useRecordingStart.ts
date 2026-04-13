@@ -79,7 +79,7 @@ export function useRecordingStart(
       if (provider === 'canary') {
         try {
           await invoke('canary_init');
-          await invoke<string>('canary_validate_model_ready');
+          await invoke<string>('canary_validate_model_ready_with_config');
           logger.debug('Canary model reloaded successfully');
           return { ready: true, isDownloading: false };
         } catch (reloadError) {

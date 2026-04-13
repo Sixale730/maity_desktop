@@ -144,7 +144,7 @@ pub async fn validate_transcription_model_ready<R: Runtime>(app: &AppHandle<R>) 
                 ));
             }
 
-            match crate::canary_engine::commands::canary_validate_model_ready_with_config(app).await {
+            match crate::canary_engine::commands::canary_validate_model_ready_with_config(app.clone()).await {
                 Ok(model_name) => {
                     info!("✅ Canary model validation successful: {} is ready", model_name);
                     Ok(())

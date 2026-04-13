@@ -166,6 +166,7 @@ export default function PageContent({
           onOpenMeetingFolder={meetingOperations.handleOpenMeetingFolder}
           isRecording={isRecording}
           disableAutoScroll={true}
+          meetingId={meeting.id}
           // Pagination props for efficient loading
           usePagination={true}
           segments={segments}
