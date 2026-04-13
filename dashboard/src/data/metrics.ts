@@ -69,7 +69,7 @@ export interface SessionSummary {
 
 export const projectInfo = {
   name: 'Maity Desktop',
-  version: '0.2.1',
+  version: '0.3.0',
   description: 'Asistente de reuniones con IA, privacidad local',
   stack: 'Tauri 2.x + Next.js 14 + Rust + Python',
   repo: 'github.com/ponchovillalobos/maity-desktop',
@@ -163,6 +163,18 @@ export const testModules: TestModule[] = [
   { name: 'Coach Triggers', module: 'coach::trigger', total: 13, passed: 13, failed: 0, category: 'coach' },
   { name: 'Coach Meeting Type', module: 'coach::meeting_type', total: 6, passed: 6, failed: 0, category: 'coach' },
   { name: 'Spanish Postprocess', module: 'spanish_postprocess', total: 18, passed: 18, failed: 0, category: 'postprocess' },
+  { name: 'Database Models', module: 'database::models', total: 15, passed: 15, failed: 0, category: 'other' },
+  { name: 'Database Settings', module: 'database::repositories::setting', total: 12, passed: 12, failed: 0, category: 'other' },
+  { name: 'Database Transcript Chunks', module: 'database::repositories::transcript_chunk', total: 15, passed: 15, failed: 0, category: 'other' },
+  { name: 'Database Summary', module: 'database::repositories::summary', total: 16, passed: 16, failed: 0, category: 'other' },
+  { name: 'Database Setup', module: 'database::setup', total: 9, passed: 9, failed: 0, category: 'other' },
+  { name: 'Summary Processor', module: 'summary::processor', total: 28, passed: 28, failed: 0, category: 'other' },
+  { name: 'Audio Pipeline', module: 'audio::pipeline', total: 13, passed: 13, failed: 0, category: 'audio' },
+  { name: 'VAD Processor', module: 'audio::vad', total: 12, passed: 12, failed: 0, category: 'audio' },
+  { name: 'Onboarding', module: 'onboarding', total: 6, passed: 6, failed: 0, category: 'other' },
+  { name: 'Validation Helpers', module: 'validation_helpers', total: 14, passed: 14, failed: 0, category: 'other' },
+  { name: 'Export Module', module: 'export', total: 14, passed: 14, failed: 0, category: 'other' },
+  { name: 'Secure Storage', module: 'secure_storage', total: 6, passed: 3, failed: 0, category: 'other' },
 ];
 
 export const buildSnapshots: BuildSnapshot[] = [
@@ -204,6 +216,16 @@ export const buildSnapshots: BuildSnapshot[] = [
     buildTime: 7.3,
     warnings: 1,
     testsTotal: 51,
+    exitCode: 0,
+  },
+  {
+    date: '2026-04-12',
+    version: '0.3.0',
+    exeSize: 55.0,
+    msiSize: 31.0,
+    buildTime: 9.3,
+    warnings: 2,
+    testsTotal: 291,
     exitCode: 0,
   },
 ];
@@ -296,6 +318,23 @@ export const sessionSummaries: SessionSummary[] = [
       'Connection thermometer (visual feedback)',
       '8 suggestion categories',
       '33 new tests (all passing)',
+    ],
+  },
+  {
+    date: '2026-04-12',
+    cyclesCompleted: 3,
+    totalLoc: 17671,
+    totalTests: 291,
+    highlights: [
+      'Enterprise P0: secure storage (keyring), export (JSON/CSV/MD/PDF), auto-updater',
+      'Performance: -8-12% CPU (clone eliminado, logging optimizado)',
+      'Input validation + path traversal fix en comandos Tauri',
+      '291 tests unitarios (de 13 originales) — 17 agentes paralelos',
+      'Dashboard dev: 4 simulaciones + feedback + conferencia enterprise',
+      'Enterprise docs: SCCM/Intune/GPO deployment guide (819 lineas)',
+      'i18n infraestructura (es/en/pt), skeleton loaders, accessibility WCAG',
+      'Fix hydration: patron mounted para Tauri+Next.js',
+      'Commit v0.3.0: 100 archivos, +17,671 LOC',
     ],
   },
 ];
