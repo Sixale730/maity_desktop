@@ -82,7 +82,7 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
 
 # Default environment variables
 ENV WHISPER_MODEL=models/ggml-base.en.bin
-ENV WHISPER_HOST=0.0.0.0
+ENV WHISPER_HOST=127.0.0.1
 ENV WHISPER_PORT=8178
 ENV WHISPER_THREADS=0
 ENV WHISPER_USE_GPU=true
