@@ -913,6 +913,41 @@ pub fn run() {
                 } else {
                     log::info!("Skipping Summary ModelManager - using cloud provider: {}", summary_provider);
                 }
+
+                // Warm-up Ollama: send minimal prompt so model loads into memory
+                // This eliminates cold-start latency for coach suggestions
+                tauri::async_runtime::spawn(async {
+                    let model = {
+                        crate::coach::commands::get_current_model()
+                            .unwrap_or_else(|_| "gemma4:latest".to_string())
+                    };
+                    log::info!("🔥 Warming up Ollama model: {}", model);
+                    let client = match reqwest::Client::builder()
+                        .timeout(std::time::Duration::from_secs(120))
+                        .build() {
+                        Ok(c) => c,
+                        Err(e) => { log::warn!("Failed to create warm-up client: {}", e); return; }
+                    };
+                    match client.post("http://localhost:11434/api/generate")
+                        .json(&serde_json::json!({
+                            "model": model,
+                            "prompt": "hello",
+                            "stream": false,
+                            "options": { "num_predict": 1 }
+                        }))
+                        .send().await {
+                        Ok(_) => log::info!("✅ Ollama warm-up complete: {} is ready", model),
+                        Err(e) => log::warn!("⚠️ Ollama warm-up failed (not running?): {}", e),
+                    }
+                });
+
+                // Keep Ollama model warm — ping every 3 minutes
+                tauri::async_runtime::spawn(async {
+                    loop {
+                        tokio::time::sleep(std::time::Duration::from_secs(180)).await;
+                        let _ = reqwest::get("http://localhost:11434/api/tags").await;
+                    }
+                });
             });
 
             // Initialize bundled templates directory for dynamic template discovery

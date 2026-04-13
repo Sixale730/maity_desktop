@@ -492,6 +492,23 @@ export function CoachProvider({ children }: { children: ReactNode }) {
       // Analyze triggers for BOTH user and interlocutor speech
       const isInterlocutor = u.source_type === 'interlocutor';
 
+      // Detect user profanity and generate immediate feedback
+      const profanityRegex = /\b(mierda|carajo|puta|chingad|joder|estúpido|estupido|idiota|imbécil|imbecil|maldito|maldita|hijueputa|pendej|cabron|cabrón|verga|pinche)\b/i;
+      if (!isInterlocutor && profanityRegex.test(u.text)) {
+        const feedbackTip = {
+          tip: "Cuidado con el tono. El lenguaje agresivo reduce la confianza y daña la relacion profesional.",
+          category: "rapport",
+          confidence: 0.95,
+          priority: "critical",
+          timestamp: Date.now(),
+          model: "heuristic",
+          latency_ms: 0,
+        };
+        setSuggestions(prev => [feedbackTip, ...prev].slice(0, MAX_SUGGESTIONS));
+        lastTipTimestampRef.current = Date.now();
+        return; // Don't also trigger LLM tip for this
+      }
+
       try {
         const signals = await invoke<Array<{ category: string; priority: string; signal: string }>>(
           'coach_analyze_trigger',
@@ -619,13 +636,14 @@ export function CoachProvider({ children }: { children: ReactNode }) {
           const ts = sessionStartRef.current ? (Date.now() - sessionStartRef.current) : 0;
           questionEntries.push({ text: text.substring(0, 200), speaker, timestamp: ts });
         }
+        // Count satisfaction/frustration for BOTH speakers (affects connection score)
+        if (satisfactionWords.test(text)) satisfactionSignals++;
+        if (frustrationWords.test(text)) frustrationSignals++;
         if ((t as any).source_type === 'interlocutor') {
           interlocutorWords += wordCount;
           interlocutorQuestions += questionCount;
           if (currentUserRun > longestUserRun) longestUserRun = currentUserRun;
           currentUserRun = 0;
-          if (satisfactionWords.test(text)) satisfactionSignals++;
-          if (frustrationWords.test(text)) frustrationSignals++;
         } else {
           userWords += wordCount;
           userQuestions += questionCount;
@@ -732,6 +750,24 @@ export function CoachProvider({ children }: { children: ReactNode }) {
     const id = setInterval(computeMetrics, 3_000);
     return () => clearInterval(id);
   }, [isRecording, transcriptsRef]);
+
+  /**
+   * Effect 5.5: Periodic tips — generate tip every 15s regardless of triggers
+   */
+  useEffect(() => {
+    if (!enabled || !isRecording) return;
+    const timer = setInterval(async () => {
+      const age = Date.now() - lastTipTimestampRef.current;
+      if (age >= 15_000) {
+        try {
+          await triggerNow(undefined);
+        } catch (e) {
+          // Silent - periodic tip failed, will retry next interval
+        }
+      }
+    }, 10_000);
+    return () => clearInterval(timer);
+  }, [enabled, isRecording, triggerNow]);
 
   /**
    * Setter público para cambiar meeting type manualmente (override).

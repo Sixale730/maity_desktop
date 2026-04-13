@@ -17,6 +17,7 @@ import { Switch } from '@/components/ui/switch'
 import { Video, Mic, X, Clock, Settings } from 'lucide-react'
 import { toast } from 'sonner'
 import { logger } from '@/lib/logger'
+import { useRecordingState } from '@/contexts/RecordingStateContext'
 
 interface DetectedMeeting {
   app: string | { Unknown: string }
@@ -61,6 +62,7 @@ function getAppIcon(app: string | { Unknown: string }): string {
 }
 
 export function MeetingDetectionDialog() {
+  const recordingState = useRecordingState()
   const [isOpen, setIsOpen] = useState(false)
   const [currentMeeting, setCurrentMeeting] = useState<DetectedMeeting | null>(null)
   const [meetingName, setMeetingName] = useState('')
@@ -76,6 +78,12 @@ export function MeetingDetectionDialog() {
       unlisten = await listen<MeetingDetectedEvent>('meeting-detected', (event) => {
         const { meeting, action } = event.payload
         logger.debug('[MeetingDetection] Detected:', meeting, 'Action:', action)
+
+        // Check if already recording - don't show popup during active recording
+        if (recordingState.isRecording) {
+          logger.debug('[MeetingDetection] Skip: already recording')
+          return
+        }
 
         if (action === 'ask') {
           // Show dialog for user to decide
@@ -100,7 +108,7 @@ export function MeetingDetectionDialog() {
         unlisten()
       }
     }
-  }, [])
+  }, [recordingState.isRecording])
 
   // Handle auto-record countdown
   useEffect(() => {

@@ -17,11 +17,28 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::Manager;
 
 /// Modelo activo (mutable, defaulteado a Phi-3.5).
-static CURRENT_MODEL: LazyLock<Mutex<String>> =
+pub static CURRENT_MODEL: LazyLock<Mutex<String>> =
     LazyLock::new(|| Mutex::new(DEFAULT_MODEL.to_string()));
 
 /// Latencia del último request (ms). 0 = aún no medido.
 static LAST_LATENCY_MS: AtomicU64 = AtomicU64::new(0);
+
+/// Shared HTTP client for Ollama requests (eliminates cold-start per-request overhead).
+static SHARED_CLIENT: LazyLock<Client> = LazyLock::new(|| {
+    Client::builder()
+        .timeout(Duration::from_secs(45))
+        .pool_max_idle_per_host(2)
+        .build()
+        .expect("Failed to create shared HTTP client for Ollama")
+});
+
+/// Get current model without locking (for startup warm-up).
+pub fn get_current_model() -> Result<String, String> {
+    CURRENT_MODEL
+        .lock()
+        .map(|g| g.clone())
+        .map_err(|e| format!("Failed to get current model: {}", e))
+}
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct CoachSuggestion {
@@ -157,15 +174,12 @@ pub async fn coach_suggest(
         validated_category
     );
 
-    let client = Client::builder()
-        .timeout(Duration::from_secs(45)) // v2: gemma4 con prompt largo puede tardar
-        .build()
-        .map_err(|e| format!("Error creando cliente HTTP: {}", e))?;
+    let client = &*SHARED_CLIENT;
 
     let start = Instant::now();
 
     let raw = generate_summary(
-        &client,
+        client,
         &LLMProvider::Ollama,
         &model,
         "",
