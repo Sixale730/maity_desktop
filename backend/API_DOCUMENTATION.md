@@ -1,46 +1,48 @@
-# Maity API Documentation
+# Documentacion de la API de Maity
 
-## Prerequisites
+## Requisitos Previos
 
-### System Requirements
-- Python 3.8 or higher
-- pip (Python package installer)
+### Requisitos del Sistema
+- Python 3.8 o superior
+- pip (instalador de paquetes de Python)
 - SQLite 3
-- Sufficient disk space for database and transcript storage
+- Espacio en disco suficiente para la base de datos y almacenamiento de transcripciones
 
-### Required Environment Variables
-Create a `.env` file in the backend directory with the following variables:
+### Variables de Entorno Requeridas
+Crear un archivo `.env` en el directorio backend con las siguientes variables:
 ```env
-# API Keys
-ANTHROPIC_API_KEY=your_anthropic_api_key    # Required for Claude model
-GROQ_API_KEY=your_groq_api_key              # Optional, for Groq model
+# Claves de API
+ANTHROPIC_API_KEY=tu_clave_api_anthropic    # Requerida para modelo Claude
+GROQ_API_KEY=tu_clave_api_groq              # Opcional, para modelo Groq
 
-# Database Configuration
-DB_PATH=./meetings.db                        # SQLite database path
+# Configuracion de Base de Datos
+DB_PATH=./meetings.db                        # Ruta de la base de datos SQLite
 
-# Server Configuration
-HOST=0.0.0.0                                # Server host
-PORT=5167                                   # Server port
+# Configuracion del Servidor
+HOST=0.0.0.0                                # Host del servidor
+PORT=5167                                   # Puerto del servidor
 
-# Processing Configuration
-CHUNK_SIZE=5000                             # Default chunk size for processing
-CHUNK_OVERLAP=1000                          # Default overlap between chunks
+# Configuracion de Procesamiento
+CHUNK_SIZE=5000                             # Tamano de fragmento por defecto para procesamiento
+CHUNK_OVERLAP=1000                          # Superposicion por defecto entre fragmentos
 ```
 
-### Installation
+> **Nota**: Los proveedores LLM disponibles son: Ollama (local), Claude (Anthropic), Groq, OpenRouter. No se requiere clave de API para Ollama ya que se ejecuta localmente.
 
-1. Create and activate a virtual environment:
+### Instalacion
+
+1. Crear y activar un entorno virtual:
 ```bash
 python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+source venv/bin/activate  # En Windows: venv\Scripts\activate
 ```
 
-2. Install required packages:
+2. Instalar paquetes requeridos:
 ```bash
 pip install -r requirements.txt
 ```
 
-Required packages:
+Paquetes requeridos:
 - pydantic
 - pydantic-ai==0.0.19
 - pandas
@@ -52,64 +54,70 @@ Required packages:
 - python-multipart
 - aiosqlite
 
-3. Initialize the database:
+3. Inicializar la base de datos:
 ```bash
 python -c "from app.db import init_db; import asyncio; asyncio.run(init_db())"
 ```
 
-### Running the Server
+### Ejecutar el Servidor
 
-Start the server using uvicorn:
+Iniciar el servidor usando uvicorn:
 ```bash
 uvicorn app.main:app --host 0.0.0.0 --port 5167 --reload
 ```
 
-The API will be available at `http://localhost:5167`
+La API estara disponible en `http://localhost:5167`
 
-## Project Structure
+## Estructura del Proyecto
 ```
 backend/
 ├── app/
 │   ├── __init__.py
-│   ├── main.py              # Main FastAPI application
-│   ├── db.py               # Database operations
-│   └── transcript_processor.py.py # Transcript processing logic
-├── requirements.txt         # Python dependencies
-└── meeting_minutes.db             # SQLite database
+│   ├── main.py              # Aplicacion principal FastAPI
+│   ├── db.py               # Operaciones de base de datos
+│   └── transcript_processor.py # Logica de procesamiento de transcripciones
+├── requirements.txt         # Dependencias de Python
+└── meeting_minutes.db       # Base de datos SQLite
 ```
 
-## Overview
-This API provides endpoints for processing meeting transcripts and generating structured summaries. It uses AI models to analyze transcripts and extract key information such as action items, decisions, and deadlines.
+## Descripcion General
+Esta API proporciona endpoints para procesar transcripciones de reuniones y generar resumenes estructurados. Utiliza modelos de IA para analizar transcripciones y extraer informacion clave como elementos de accion, decisiones y plazos.
 
-## Base URL
+Los proveedores LLM soportados para generacion de resumenes son:
+- **Ollama** - Ejecucion local, sin clave de API requerida
+- **Claude** (Anthropic) - Requiere `ANTHROPIC_API_KEY`
+- **Groq** - Requiere `GROQ_API_KEY`
+- **OpenRouter** - Requiere clave de API de OpenRouter
+
+## URL Base
 ```
 http://localhost:5167
 ```
 
-## Authentication
-Currently, no authentication is required for API endpoints.
+## Autenticacion
+Actualmente no se requiere autenticacion para los endpoints de la API.
 
 ## Endpoints
 
-### 1. Process Transcript
-Process a transcript text directly.
+### 1. Procesar Transcripcion
+Procesar un texto de transcripcion directamente.
 
-**Endpoint:** `/process-transcript`  
-**Method:** POST  
+**Endpoint:** `/process-transcript`
+**Metodo:** POST
 **Content-Type:** `application/json`
 
-#### Request Body
+#### Cuerpo de la Solicitud
 ```json
 {
-    "text": "string",           // Required: The transcript text
-    "model": "string",          // Required: AI model to use (e.g., "ollama")
-    "model_name": "string",     // Required: Model version (e.g., "qwen2.5:14b")
-    "chunk_size": 40000,         // Optional: Size of text chunks (default: 80000)
-    "overlap": 1000             // Optional: Overlap between chunks (default: 1000)
+    "text": "string",           // Requerido: El texto de la transcripcion
+    "model": "string",          // Requerido: Proveedor de IA a usar (ej., "ollama", "claude", "groq")
+    "model_name": "string",     // Requerido: Version del modelo (ej., "qwen2.5:14b", "claude-3-5-sonnet-latest")
+    "chunk_size": 40000,         // Opcional: Tamano de fragmentos de texto (por defecto: 80000)
+    "overlap": 1000             // Opcional: Superposicion entre fragmentos (por defecto: 1000)
 }
 ```
 
-#### Response
+#### Respuesta
 ```json
 {
     "process_id": "string",
@@ -117,23 +125,23 @@ Process a transcript text directly.
 }
 ```
 
-### 2. Upload Transcript
-Upload and process a transcript file. This endpoint provides the same functionality as `/process-transcript` but accepts a file upload instead of raw text.
+### 2. Subir Transcripcion
+Subir y procesar un archivo de transcripcion. Este endpoint proporciona la misma funcionalidad que `/process-transcript` pero acepta la subida de un archivo en lugar de texto sin formato.
 
-**Endpoint:** `/upload-transcript`  
-**Method:** POST  
+**Endpoint:** `/upload-transcript`
+**Metodo:** POST
 **Content-Type:** `multipart/form-data`
 
-#### Request Parameters
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| file | File | Yes | The transcript file to upload |
-| model | String | No | AI model to use (default: "claude") |
-| model_name | String | No | Specific model version (default: "claude-3-5-sonnet-latest") |
-| chunk_size | Integer | No | Size of text chunks (default: 5000) |
-| overlap | Integer | No | Overlap between chunks (default: 1000) |
+#### Parametros de la Solicitud
+| Parametro | Tipo | Requerido | Descripcion |
+|-----------|------|-----------|-------------|
+| file | Archivo | Si | El archivo de transcripcion a subir |
+| model | String | No | Proveedor de IA a usar (por defecto: "claude"). Opciones: "ollama", "claude", "groq" |
+| model_name | String | No | Version especifica del modelo (por defecto: "claude-3-5-sonnet-latest") |
+| chunk_size | Integer | No | Tamano de fragmentos de texto (por defecto: 5000) |
+| overlap | Integer | No | Superposicion entre fragmentos (por defecto: 1000) |
 
-#### Response
+#### Respuesta
 ```json
 {
     "process_id": "string",
@@ -141,33 +149,33 @@ Upload and process a transcript file. This endpoint provides the same functional
 }
 ```
 
-### 3. Get Summary
-Retrieve the generated summary for a specific process.
+### 3. Obtener Resumen
+Obtener el resumen generado para un proceso especifico.
 
-**Endpoint:** `/get-summary/{process_id}`  
-**Method:** GET
+**Endpoint:** `/get-summary/{process_id}`
+**Metodo:** GET
 
-#### Path Parameters
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| process_id | String | Yes | ID of the process to retrieve |
+#### Parametros de Ruta
+| Parametro | Tipo | Requerido | Descripcion |
+|-----------|------|-----------|-------------|
+| process_id | String | Si | ID del proceso a consultar |
 
-#### Response Codes
-| Code | Description |
-|------|-------------|
-| 200 | Success - Summary completed |
-| 202 | Accepted - Processing in progress |
-| 400 | Bad Request - Failed or unknown status |
-| 404 | Not Found - Process ID not found |
-| 500 | Internal Server Error - Server-side error |
+#### Codigos de Respuesta
+| Codigo | Descripcion |
+|--------|-------------|
+| 200 | Exito - Resumen completado |
+| 202 | Aceptado - Procesamiento en progreso |
+| 400 | Solicitud Invalida - Estado fallido o desconocido |
+| 404 | No Encontrado - ID de proceso no encontrado |
+| 500 | Error Interno del Servidor - Error del lado del servidor |
 
-#### Response Body
+#### Cuerpo de la Respuesta
 ```json
 {
     "status": "string",       // "completed", "processing", "error"
-    "meetingName": "string",  // Name of the meeting (null if not available)
-    "process_id": "string",   // Process ID
-    "data": {                 // Summary data (null if not completed)
+    "meetingName": "string",  // Nombre de la reunion (null si no esta disponible)
+    "process_id": "string",   // ID del proceso
+    "data": {                 // Datos del resumen (null si no esta completado)
         "MeetingName": "string",
         "SectionSummary": {
             "title": "string",
@@ -205,32 +213,33 @@ Retrieve the generated summary for a specific process.
             "blocks": []
         }
     },
-    "start": "string",      // Start time in ISO format (null if not started)
-    "end": "string",        // End time in ISO format (null if not completed)
-    "error": "string"       // Error message if status is "error"
-}
-
-## Data Models
-
-### Block
-Represents a single block of content in a section.
-
-```json
-{
-    "id": "string",      // Unique identifier
-    "type": "string",    // Type of block (text, action, decision, etc.)
-    "content": "string", // Content text
-    "color": "string"    // Color for UI display
+    "start": "string",      // Hora de inicio en formato ISO (null si no ha iniciado)
+    "end": "string",        // Hora de fin en formato ISO (null si no ha completado)
+    "error": "string"       // Mensaje de error si el estado es "error"
 }
 ```
 
-### Section
-Represents a section in the meeting summary.
+## Modelos de Datos
+
+### Bloque (Block)
+Representa un bloque individual de contenido en una seccion.
 
 ```json
 {
-    "title": "string",   // Section title
-    "blocks": [          // Array of Block objects
+    "id": "string",      // Identificador unico
+    "type": "string",    // Tipo de bloque (texto, accion, decision, etc.)
+    "content": "string", // Texto del contenido
+    "color": "string"    // Color para visualizacion en la interfaz
+}
+```
+
+### Seccion (Section)
+Representa una seccion en el resumen de la reunion.
+
+```json
+{
+    "title": "string",   // Titulo de la seccion
+    "blocks": [          // Array de objetos Block
         {
             "id": "string",
             "type": "string",
@@ -241,18 +250,18 @@ Represents a section in the meeting summary.
 }
 ```
 
-## Status Codes
+## Codigos de Estado
 
-| Code | Description |
-|------|-------------|
-| 200 | Success - Request completed successfully |
-| 202 | Accepted - Processing in progress |
-| 400 | Bad Request - Invalid request or parameters |
-| 404 | Not Found - Process ID not found |
-| 500 | Internal Server Error - Server-side error |
+| Codigo | Descripcion |
+|--------|-------------|
+| 200 | Exito - Solicitud completada correctamente |
+| 202 | Aceptado - Procesamiento en progreso |
+| 400 | Solicitud Invalida - Solicitud o parametros invalidos |
+| 404 | No Encontrado - ID de proceso no encontrado |
+| 500 | Error Interno del Servidor - Error del lado del servidor |
 
-## Error Handling
-All error responses follow this format:
+## Manejo de Errores
+Todas las respuestas de error siguen este formato:
 ```json
 {
     "status": "error",
@@ -261,25 +270,34 @@ All error responses follow this format:
     "data": null,
     "start": null,
     "end": null,
-    "error": "Error message describing what went wrong"
+    "error": "Mensaje de error describiendo lo que salio mal"
 }
 ```
 
-## Example Usage
+## Ejemplo de Uso
 
-### 1. Upload and Process a Transcript
+### 1. Subir y Procesar una Transcripcion
 ```bash
 curl -X POST -F "file=@transcript.txt" http://localhost:5167/upload-transcript
 ```
 
-### 2. Check Processing Status
+### 2. Procesar con un Proveedor LLM Especifico
+```bash
+curl -X POST http://localhost:5167/process-transcript \
+  -H "Content-Type: application/json" \
+  -d '{"text": "Contenido de la transcripcion...", "model": "ollama", "model_name": "qwen2.5:14b"}'
+```
+
+### 3. Verificar Estado del Procesamiento
 ```bash
 curl http://localhost:5167/get-summary/1a2e5c9c-a35f-452f-9f92-be66620fcb3f
 ```
 
-## Notes
-1. Large transcripts are automatically chunked for processing
-2. Processing times may vary based on transcript length
-3. All timestamps are in ISO format
-4. Colors in blocks can be used for UI styling
-5. The API supports concurrent processing of multiple transcripts
+## Notas
+1. Las transcripciones grandes se dividen automaticamente en fragmentos para su procesamiento
+2. Los tiempos de procesamiento pueden variar segun la longitud de la transcripcion y el proveedor LLM seleccionado
+3. Todas las marcas de tiempo estan en formato ISO
+4. Los colores en los bloques pueden usarse para estilizar la interfaz de usuario
+5. La API soporta procesamiento concurrente de multiples transcripciones
+6. Los proveedores LLM disponibles son: Ollama (local), Claude (Anthropic), Groq, OpenRouter
+7. Para usar Ollama, asegurate de que el servicio Ollama este ejecutandose localmente con el modelo deseado descargado

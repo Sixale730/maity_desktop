@@ -1,14 +1,16 @@
-## 🐧 Building on Linux
+# Compilar en Linux
 
-This guide helps you build Maity on Linux with **automatic GPU acceleration**. The build system detects your hardware and configures the best performance automatically.
+Esta guia te ayuda a compilar Maity en Linux con **aceleracion GPU automatica**. El sistema de compilacion detecta tu hardware y configura el mejor rendimiento automaticamente.
+
+> **Nota:** La aceleracion GPU aplica al sidecar `llama-helper` (inferencia local de LLM). La transcripcion (Parakeet/Canary) usa ONNX Runtime en CPU y no requiere configuracion GPU adicional.
 
 ---
 
-## 🚀 Quick Start (Recommended for Beginners)
+## Inicio Rapido (Recomendado para Principiantes)
 
-If you're new to building on Linux, start here. These simple commands work for most users:
+Si eres nuevo compilando en Linux, empieza aqui. Estos comandos simples funcionan para la mayoria de usuarios:
 
-### 1. Install Basic Dependencies
+### 1. Instalar Dependencias Basicas
 
 ```bash
 # Ubuntu/Debian
@@ -22,82 +24,82 @@ sudo dnf install gcc-c++ cmake git
 sudo pacman -S base-devel cmake git
 ```
 
-### 2. Build and Run
+### 2. Compilar y Ejecutar
 
 ```bash
-# Development mode (with hot reload)
+# Modo desarrollo (con hot reload)
 ./dev-gpu.sh
 
-# Production build
+# Build de produccion
 ./build-gpu.sh
 ```
 
-**That's it!** The scripts automatically detect your GPU and configure acceleration.
+**Eso es todo!** Los scripts detectan automaticamente tu GPU y configuran la aceleracion.
 
-### What Happens Automatically?
+### Que Sucede Automaticamente?
 
-- ✅ **NVIDIA GPU** → CUDA acceleration (if toolkit installed)
-- ✅ **AMD GPU** → ROCm acceleration (if ROCm installed)
-- ✅ **No GPU** → Optimized CPU mode (still works great!)
+- **GPU NVIDIA** -> Aceleracion CUDA (si el toolkit esta instalado)
+- **GPU AMD** -> Aceleracion ROCm (si ROCm esta instalado)
+- **Sin GPU** -> Modo CPU optimizado (funciona igual de bien!)
 
-> 💡 **Tip:** If you have an NVIDIA or AMD GPU but want better performance, jump to the [GPU Setup](#-gpu-setup-guides-intermediate) section below.
-
----
-
-## 🧠 Understanding Auto-Detection
-
-The build scripts (`dev-gpu.sh` and `build-gpu.sh`) orchestrate the entire build process. They first call `scripts/auto-detect-gpu.js` to identify your hardware, then build the `llama-helper` sidecar with the appropriate features, and finally launch the Tauri application.
-
-### Detection Priority
-
-| Priority | Hardware        | What It Checks                                               | Result                  |
-| -------- | --------------- | ------------------------------------------------------------ | ----------------------- |
-| 1️⃣       | **NVIDIA CUDA** | `nvidia-smi` exists + (`CUDA_PATH` or `nvcc` found)          | `--features cuda`       |
-| 2️⃣       | **AMD ROCm**    | `rocm-smi` exists + (`ROCM_PATH` or `hipcc` found)           | `--features hipblas`    |
-| 3️⃣       | **Vulkan**      | `vulkaninfo` exists + `VULKAN_SDK` + `BLAS_INCLUDE_DIRS` set | `--features vulkan`     |
-| 4️⃣       | **OpenBLAS**    | `BLAS_INCLUDE_DIRS` set                                      | `--features openblas`   |
-| 5️⃣       | **CPU-only**    | None of the above                                            | (no features, pure CPU) |
-
-### Common Scenarios
-
-| Your System               | Auto-Detection Result       | Why                          |
-| ------------------------- | --------------------------- | ---------------------------- |
-| Clean Linux install       | CPU-only                    | No GPU SDK detected          |
-| NVIDIA GPU + drivers only | CPU-only                    | CUDA toolkit not installed   |
-| NVIDIA GPU + CUDA toolkit | **CUDA acceleration** ✅    | Full detection successful    |
-| AMD GPU + ROCm            | **HIPBlas acceleration** ✅ | Full detection successful    |
-| Vulkan drivers only       | CPU-only                    | Vulkan SDK + env vars needed |
-| Vulkan SDK configured     | **Vulkan acceleration** ✅  | All requirements met         |
-
-> 💡 **Key Insight:** Having GPU drivers alone isn't enough. You need the **development SDK** (CUDA toolkit, ROCm, or Vulkan SDK) for acceleration.
+> **Consejo:** Si tienes una GPU NVIDIA o AMD pero quieres mejor rendimiento, ve a la seccion de [Configuracion de GPU](#guias-de-configuracion-de-gpu-intermedio) mas abajo.
 
 ---
 
-## 🔧 GPU Setup Guides (Intermediate)
+## Entendiendo la Auto-Deteccion
 
-Want better performance? Follow these guides to enable GPU acceleration.
+Los scripts de compilacion (`dev-gpu.sh` y `build-gpu.sh`) orquestan todo el proceso de compilacion. Primero llaman a `scripts/auto-detect-gpu.js` para identificar tu hardware, luego compilan el sidecar `llama-helper` con las features apropiadas, y finalmente lanzan la aplicacion Tauri.
 
-### 🟢 NVIDIA CUDA Setup
+### Prioridad de Deteccion
 
-**Prerequisites:** NVIDIA GPU with compute capability 5.0+ (check: `nvidia-smi --query-gpu=compute_cap --format=csv`)
+| Prioridad | Hardware        | Que Verifica                                                  | Resultado               |
+| --------- | --------------- | ------------------------------------------------------------- | ----------------------- |
+| 1         | **NVIDIA CUDA** | `nvidia-smi` existe + (`CUDA_PATH` o `nvcc` encontrado)      | `--features cuda`       |
+| 2         | **AMD ROCm**    | `rocm-smi` existe + (`ROCM_PATH` o `hipcc` encontrado)       | `--features hipblas`    |
+| 3         | **Vulkan**      | `vulkaninfo` existe + `VULKAN_SDK` + `BLAS_INCLUDE_DIRS` set | `--features vulkan`     |
+| 4         | **OpenBLAS**    | `BLAS_INCLUDE_DIRS` configurado                               | `--features openblas`   |
+| 5         | **Solo CPU**    | Ninguno de los anteriores                                     | (sin features, CPU puro)|
 
-#### Step 1: Install CUDA Toolkit
+### Escenarios Comunes
+
+| Tu Sistema                     | Resultado de Auto-Deteccion      | Razon                              |
+| ------------------------------ | -------------------------------- | ---------------------------------- |
+| Instalacion limpia de Linux    | Solo CPU                         | No se detecto SDK de GPU           |
+| GPU NVIDIA + solo drivers      | Solo CPU                         | CUDA toolkit no instalado          |
+| GPU NVIDIA + CUDA toolkit      | **Aceleracion CUDA**             | Deteccion completa exitosa         |
+| GPU AMD + ROCm                 | **Aceleracion HIPBlas**          | Deteccion completa exitosa         |
+| Solo drivers Vulkan            | Solo CPU                         | Se necesitan Vulkan SDK + env vars |
+| Vulkan SDK configurado         | **Aceleracion Vulkan**           | Todos los requisitos cumplidos     |
+
+> **Dato clave:** Tener solo los drivers de GPU no es suficiente. Necesitas el **SDK de desarrollo** (CUDA toolkit, ROCm o Vulkan SDK) para la aceleracion.
+
+---
+
+## Guias de Configuracion de GPU (Intermedio)
+
+Quieres mejor rendimiento? Sigue estas guias para habilitar aceleracion GPU.
+
+### Configuracion NVIDIA CUDA
+
+**Prerrequisitos:** GPU NVIDIA con compute capability 5.0+ (verificar: `nvidia-smi --query-gpu=compute_cap --format=csv`)
+
+#### Paso 1: Instalar CUDA Toolkit
 
 ```bash
 # Ubuntu/Debian (CUDA 12.x)
 sudo apt install nvidia-driver-550 nvidia-cuda-toolkit
 
-# Verify installation
-nvidia-smi          # Shows GPU info
-nvcc --version      # Shows CUDA version
+# Verificar instalacion
+nvidia-smi          # Muestra info de GPU
+nvcc --version      # Muestra version de CUDA
 ```
 
-#### Step 2: Build with CUDA
+#### Paso 2: Compilar con CUDA
 
 ```bash
-# Set your GPU's compute capability
-# Example: RTX 3080 = 8.6 → use "86"
-# Example: GTX 1080 = 6.1 → use "61"
+# Configura la compute capability de tu GPU
+# Ejemplo: RTX 3080 = 8.6 -> usa "86"
+# Ejemplo: GTX 1080 = 6.1 -> usa "61"
 
 CMAKE_CUDA_ARCHITECTURES=75 \
 CMAKE_CUDA_STANDARD=17 \
@@ -105,27 +107,27 @@ CMAKE_POSITION_INDEPENDENT_CODE=ON \
 ./build-gpu.sh
 ```
 
-> 💡 **Finding Your Compute Capability:**
+> **Encontrar tu Compute Capability:**
 >
 > ```bash
 > nvidia-smi --query-gpu=compute_cap --format=csv
 > ```
 >
-> Convert `7.5` → `75`, `8.6` → `86`, etc.
+> Convierte `7.5` -> `75`, `8.6` -> `86`, etc.
 
-**Why these flags?**
+**Por que estos flags?**
 
-- `CMAKE_CUDA_ARCHITECTURES`: Optimizes for your specific GPU
-- `CMAKE_CUDA_STANDARD=17`: Ensures C++17 compatibility
-- `CMAKE_POSITION_INDEPENDENT_CODE=ON`: Fixes linking issues on modern systems
+- `CMAKE_CUDA_ARCHITECTURES`: Optimiza para tu GPU especifica
+- `CMAKE_CUDA_STANDARD=17`: Asegura compatibilidad con C++17
+- `CMAKE_POSITION_INDEPENDENT_CODE=ON`: Corrige problemas de enlace en sistemas modernos
 
 ---
 
-### 🔵 Vulkan Setup (Cross-Platform Fallback)
+### Configuracion Vulkan (Alternativa Multiplataforma)
 
-Vulkan works on NVIDIA, AMD, and Intel GPUs. Good choice if CUDA/ROCm don't work.
+Vulkan funciona en GPUs NVIDIA, AMD e Intel. Buena opcion si CUDA/ROCm no funcionan.
 
-#### Step 1: Install Vulkan SDK and BLAS
+#### Paso 1: Instalar Vulkan SDK y BLAS
 
 ```bash
 # Ubuntu/Debian
@@ -138,80 +140,80 @@ sudo dnf install vulkan-devel openblas-devel
 sudo pacman -S vulkan-devel openblas
 ```
 
-#### Step 2: Configure Environment
+#### Paso 2: Configurar Entorno
 
 ```bash
-# Add to ~/.bashrc or ~/.zshrc
+# Agregar a ~/.bashrc o ~/.zshrc
 export VULKAN_SDK=/usr
 export BLAS_INCLUDE_DIRS=/usr/include/x86_64-linux-gnu
 
-# Apply changes
+# Aplicar cambios
 source ~/.bashrc
 ```
 
-#### Step 3: Build
+#### Paso 3: Compilar
 
 ```bash
 ./build-gpu.sh
 ```
 
-The script will automatically detect Vulkan and build with `--features vulkan`.
+El script detectara automaticamente Vulkan y compilara con `--features vulkan`.
 
 ---
 
-### 🔴 AMD ROCm Setup (AMD GPUs Only)
+### Configuracion AMD ROCm (Solo GPUs AMD)
 
-**Prerequisites:** AMD GPU with ROCm support (RX 5000+, Radeon VII, etc.)
+**Prerrequisitos:** GPU AMD con soporte ROCm (RX 5000+, Radeon VII, etc.)
 
 ```bash
 # Ubuntu/Debian
-# Add ROCm repository (see https://rocm.docs.amd.com for latest)
+# Agregar repositorio ROCm (ver https://rocm.docs.amd.com para lo mas reciente)
 sudo apt install rocm-smi hipcc
 
-# Set environment
+# Configurar entorno
 export ROCM_PATH=/opt/rocm
 
-# Verify
-rocm-smi            # Shows GPU info
-hipcc --version     # Shows ROCm version
+# Verificar
+rocm-smi            # Muestra info de GPU
+hipcc --version     # Muestra version de ROCm
 
-# Build
+# Compilar
 ./build-gpu.sh
 ```
 
 ---
 
-## 🎯 Advanced Usage
+## Uso Avanzado
 
-### Manual Feature Override
+### Sobreescritura Manual de Feature
 
-Want to force a specific acceleration method? Use the `TAURI_GPU_FEATURE` environment variable with the shell scripts:
+Quieres forzar un metodo de aceleracion especifico? Usa la variable de entorno `TAURI_GPU_FEATURE` con los scripts de shell:
 
 ```bash
-# Force CUDA (ignore auto-detection)
+# Forzar CUDA (ignorar auto-deteccion)
 TAURI_GPU_FEATURE=cuda ./dev-gpu.sh
 TAURI_GPU_FEATURE=cuda ./build-gpu.sh
 
-# Force Vulkan
+# Forzar Vulkan
 TAURI_GPU_FEATURE=vulkan ./dev-gpu.sh
 TAURI_GPU_FEATURE=vulkan ./build-gpu.sh
 
-# Force ROCm (HIPBlas)
+# Forzar ROCm (HIPBlas)
 TAURI_GPU_FEATURE=hipblas ./dev-gpu.sh
 TAURI_GPU_FEATURE=hipblas ./build-gpu.sh
 
-# Force CPU-only (for testing)
+# Forzar solo CPU (para pruebas)
 TAURI_GPU_FEATURE="" ./dev-gpu.sh
 TAURI_GPU_FEATURE="" ./build-gpu.sh
 
-# Force OpenBLAS (CPU-optimized)
+# Forzar OpenBLAS (CPU optimizado)
 TAURI_GPU_FEATURE=openblas ./dev-gpu.sh
 TAURI_GPU_FEATURE=openblas ./build-gpu.sh
 ```
 
-### Build Output Location
+### Ubicacion del Build de Salida
 
-After successful build:
+Despues de un build exitoso:
 
 ```
 src-tauri/target/release/bundle/appimage/Maity_<version>_amd64.AppImage
@@ -219,17 +221,17 @@ src-tauri/target/release/bundle/appimage/Maity_<version>_amd64.AppImage
 
 ---
 
-## 🧭 Troubleshooting
+## Solucion de Problemas
 
 ### "CUDA toolkit not found"
 
-- **Fix:** Install `nvidia-cuda-toolkit` or set `CUDA_PATH` environment variable
-- **Check:** `nvcc --version` should work
+- **Solucion:** Instala `nvidia-cuda-toolkit` o configura la variable de entorno `CUDA_PATH`
+- **Verificar:** `nvcc --version` deberia funcionar
 
 ### "Vulkan detected but missing dependencies"
 
-- **Fix:** Set both `VULKAN_SDK` and `BLAS_INCLUDE_DIRS` environment variables
-- **Example:**
+- **Solucion:** Configura ambas variables de entorno `VULKAN_SDK` y `BLAS_INCLUDE_DIRS`
+- **Ejemplo:**
   ```bash
   export VULKAN_SDK=/usr
   export BLAS_INCLUDE_DIRS=/usr/include/x86_64-linux-gnu
@@ -237,105 +239,105 @@ src-tauri/target/release/bundle/appimage/Maity_<version>_amd64.AppImage
 
 ### "AppImage build stripping symbols"
 
-- **Fix:** Already handled! `build-gpu.sh` sets `NO_STRIP=true` automatically
-- **Why:** Prevents runtime errors from missing symbols
+- **Solucion:** Ya esta manejado! `build-gpu.sh` configura `NO_STRIP=true` automaticamente
+- **Razon:** Previene errores en tiempo de ejecucion por simbolos faltantes
 
-### Build works but no GPU acceleration
+### El build funciona pero no hay aceleracion GPU
 
-- **Check detection:** Look at the build output for GPU detection messages
-- **Verify:** `nvidia-smi` (NVIDIA) or `rocm-smi` (AMD) should work
-- **Missing SDK:** Install the development toolkit, not just drivers
+- **Verificar deteccion:** Revisa la salida del build para mensajes de deteccion de GPU
+- **Verificar:** `nvidia-smi` (NVIDIA) o `rocm-smi` (AMD) deberian funcionar
+- **SDK faltante:** Instala el toolkit de desarrollo, no solo los drivers
 
 ---
 
-## 📊 Technical Reference
+## Referencia Tecnica
 
-### Complete Feature Matrix
+### Matriz Completa de Features
 
-| Mode     | Feature Flag          | Requirements                                      | Acceleration  | Speed Boost   |
-| -------- | --------------------- | ------------------------------------------------- | ------------- | ------------- |
-| CUDA     | `--features cuda`     | `nvidia-smi` + (`CUDA_PATH` or `nvcc`)            | GPU           | 5-10x         |
-| ROCm     | `--features hipblas`  | `rocm-smi` + (`ROCM_PATH` or `hipcc`)             | GPU           | 4-8x          |
-| Vulkan   | `--features vulkan`   | `vulkaninfo` + `VULKAN_SDK` + `BLAS_INCLUDE_DIRS` | GPU           | 3-6x          |
-| OpenBLAS | `--features openblas` | `BLAS_INCLUDE_DIRS`                               | CPU-optimized | 1.5-2x        |
-| CPU      | (none)                | (none)                                            | CPU-only      | 1x (baseline) |
+| Modo     | Feature Flag          | Requisitos                                        | Aceleracion   | Mejora de Velocidad |
+| -------- | --------------------- | ------------------------------------------------- | ------------- | ------------------- |
+| CUDA     | `--features cuda`     | `nvidia-smi` + (`CUDA_PATH` o `nvcc`)             | GPU           | 5-10x               |
+| ROCm     | `--features hipblas`  | `rocm-smi` + (`ROCM_PATH` o `hipcc`)              | GPU           | 4-8x                |
+| Vulkan   | `--features vulkan`   | `vulkaninfo` + `VULKAN_SDK` + `BLAS_INCLUDE_DIRS` | GPU           | 3-6x                |
+| OpenBLAS | `--features openblas` | `BLAS_INCLUDE_DIRS`                                | CPU optimizado| 1.5-2x              |
+| CPU      | (ninguno)             | (ninguno)                                         | Solo CPU      | 1x (linea base)     |
 
-### Build Scripts Internals
+### Internos de los Scripts de Compilacion
 
-Both `dev-gpu.sh` and `build-gpu.sh` work the same way:
+Tanto `dev-gpu.sh` como `build-gpu.sh` funcionan de la misma manera:
 
-1. **Detect location:** Find `package.json` (works from project root or `frontend/`)
-2. **Choose package manager:** Prefer `pnpm`, fallback to `npm`
-3. **Call npm script:** Run `tauri:dev` or `tauri:build`
-4. **Auto-detect GPU:** The npm script calls `scripts/tauri-auto.js`
-5. **Feature selection:** `scripts/auto-detect-gpu.js` checks hardware
-6. **Build with features:** Tauri builds with detected `--features` flag
+1. **Detectar ubicacion:** Encuentra `package.json` (funciona desde la raiz del proyecto o `frontend/`)
+2. **Elegir gestor de paquetes:** Prefiere `pnpm`, alternativa `npm`
+3. **Llamar script npm:** Ejecuta `tauri:dev` o `tauri:build`
+4. **Auto-detectar GPU:** El script npm llama a `scripts/tauri-auto.js`
+5. **Seleccion de feature:** `scripts/auto-detect-gpu.js` verifica el hardware
+6. **Compilar con features:** Tauri compila con la flag `--features` detectada
 
-### Environment Variables Reference
+### Referencia de Variables de Entorno
 
-| Variable                          | Purpose                             | Example                         |
+| Variable                          | Proposito                           | Ejemplo                         |
 | --------------------------------- | ----------------------------------- | ------------------------------- |
-| `CUDA_PATH`                       | CUDA installation directory         | `/usr/local/cuda`               |
-| `ROCM_PATH`                       | ROCm installation directory         | `/opt/rocm`                     |
-| `VULKAN_SDK`                      | Vulkan SDK directory                | `/usr`                          |
-| `BLAS_INCLUDE_DIRS`               | BLAS headers location               | `/usr/include/x86_64-linux-gnu` |
-| `CMAKE_CUDA_ARCHITECTURES`        | GPU compute capability              | `75` (for compute 7.5)          |
-| `CMAKE_CUDA_STANDARD`             | C++ standard for CUDA               | `17`                            |
-| `CMAKE_POSITION_INDEPENDENT_CODE` | Enable PIC for linking              | `ON`                            |
-| `NO_STRIP`                        | Prevent symbol stripping (AppImage) | `true`                          |
+| `CUDA_PATH`                       | Directorio de instalacion de CUDA   | `/usr/local/cuda`               |
+| `ROCM_PATH`                       | Directorio de instalacion de ROCm   | `/opt/rocm`                     |
+| `VULKAN_SDK`                      | Directorio del Vulkan SDK           | `/usr`                          |
+| `BLAS_INCLUDE_DIRS`               | Ubicacion de headers BLAS           | `/usr/include/x86_64-linux-gnu` |
+| `CMAKE_CUDA_ARCHITECTURES`        | Compute capability de la GPU        | `75` (para compute 7.5)         |
+| `CMAKE_CUDA_STANDARD`             | Estandar C++ para CUDA              | `17`                            |
+| `CMAKE_POSITION_INDEPENDENT_CODE` | Habilitar PIC para enlace           | `ON`                            |
+| `NO_STRIP`                        | Prevenir strip de simbolos (AppImage)| `true`                         |
 
 ---
 
-## ✅ Complete Example Builds
+## Ejemplos Completos de Compilacion
 
-### NVIDIA GPU (CUDA)
+### GPU NVIDIA (CUDA)
 
 ```bash
-# Install
+# Instalar
 sudo apt install nvidia-driver-550 nvidia-cuda-toolkit
 
-# Verify
+# Verificar
 nvidia-smi --query-gpu=compute_cap --format=csv
 
-# Build (adjust architecture for your GPU)
-CMAKE_CUDA_ARCHITECTURES=86 \ # (86 may change in your case)
+# Compilar (ajustar arquitectura para tu GPU)
+CMAKE_CUDA_ARCHITECTURES=86 \ # (86 puede cambiar en tu caso)
 CMAKE_CUDA_STANDARD=17 \
 CMAKE_POSITION_INDEPENDENT_CODE=ON \
 ./build-gpu.sh
 ```
 
-### AMD GPU (ROCm)
+### GPU AMD (ROCm)
 
 ```bash
-# Install ROCm (see AMD docs for your distro)
+# Instalar ROCm (ver documentacion de AMD para tu distro)
 sudo apt install rocm-smi hipcc
 export ROCM_PATH=/opt/rocm
 
-# Build
+# Compilar
 ./build-gpu.sh
 ```
 
-### Any GPU (Vulkan)
+### Cualquier GPU (Vulkan)
 
 ```bash
-# Install
+# Instalar
 sudo apt install vulkan-sdk libopenblas-dev
 
-# Configure
+# Configurar
 export VULKAN_SDK=/usr
 export BLAS_INCLUDE_DIRS=/usr/include/x86_64-linux-gnu
 
-# Build
+# Compilar
 ./build-gpu.sh
 ```
 
-### No GPU (CPU-only)
+### Sin GPU (Solo CPU)
 
 ```bash
-# Just build - works out of the box
+# Solo compila - funciona directamente
 ./build-gpu.sh
 ```
 
 ---
 
-**Need help?** Open an issue on GitHub with your GPU type, distro, and the output from `./build-gpu.sh`.
+**Necesitas ayuda?** Abre un issue en GitHub con tu tipo de GPU, distribucion, y la salida de `./build-gpu.sh`.

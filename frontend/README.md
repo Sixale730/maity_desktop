@@ -1,182 +1,192 @@
 # Maity - Frontend
 
-A modern desktop application for recording, transcribing, and analyzing meetings with AI assistance. Built with Next.js and Tauri for a native desktop experience.
+Aplicacion de escritorio moderna para grabar, transcribir y analizar reuniones con asistencia de IA. Construida con Next.js y Tauri para una experiencia de escritorio nativa.
 
-## Features
+## Caracteristicas
 
-- Real-time audio recording from both microphone and system audio
-- Live transcription using Whisper ASR (locally running)
-- Native desktop integration using Tauri
-- Speaker diarization support
-- Rich text editor for note-taking
-- Privacy-focused: All processing happens locally
+- Grabacion de audio en tiempo real desde microfono y audio del sistema
+- Transcripcion en vivo usando Parakeet (ONNX, por defecto) o Canary (ONNX, opcional) - completamente local
+- Integracion nativa de escritorio con Tauri 2.x
+- Grabacion stereo dual-canal (L=microfono, R=sistema)
+- Editor de texto enriquecido para tomar notas
+- Enfocado en privacidad: todo el procesamiento ocurre localmente
 
-## Prerequisites
+## Requisitos Previos
 
-### For macOS:
-- Node.js (v18 or later)
-- Rust (latest stable)
-- pnpm (v8 or later)
+### Para macOS:
+- Node.js (v18 o posterior)
+- Rust (ultima version estable)
+- pnpm (v8 o posterior)
 - [Xcode Command Line Tools](https://developer.apple.com/download/all/?q=xcode)
 
-### For Windows:
-- Node.js (v18 or later)
-- Rust (latest stable)
-- pnpm (v8 or later)
-- Visual Studio Build Tools with C++ development tools
-- Windows 10 or later
+### Para Windows:
+- Node.js (v18 o posterior)
+- Rust (ultima version estable)
+- pnpm (v8 o posterior)
+- Visual Studio Build Tools con herramientas de desarrollo C++
+- Windows 10 o posterior
 
-
-## Project Structure
+## Estructura del Proyecto
 
 ```
 /frontend
-├── src/                   # Next.js frontend code
-├── src-tauri/             # Rust backend for Tauri
-├── whisper-server-package/ # Local transcription server
-│   ├── models/            # Whisper models
-│   ├── whisper-server     # Pre-built server binary
-│   └── run-server.sh      # Script to start the server
-├── public/                # Static assets
-└── package.json           # Project dependencies
+├── src/                   # Codigo frontend Next.js/React/TypeScript
+├── src-tauri/             # Backend Rust para Tauri
+│   ├── src/audio/         # Pipeline de audio, VAD, grabacion
+│   ├── src/parakeet_engine/ # Motor de transcripcion Parakeet (ONNX)
+│   ├── src/canary_engine/ # Motor de transcripcion Canary (ONNX)
+│   └── src/database/      # Base de datos SQLite local
+├── public/                # Recursos estaticos
+└── package.json           # Dependencias del proyecto
 ```
 
-## Installation
+## Instalacion
 
-### For macOS:
+### Para macOS:
 
-1. Install prerequisites:
+1. Instalar requisitos previos:
    ```bash
-   # Install Homebrew if not already installed
+   # Instalar Homebrew si no esta instalado
    /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-   
-   # Install Node.js
+
+   # Instalar Node.js
    brew install node
-   
-   # Install Rust
+
+   # Instalar Rust
    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-   
-   # Install pnpm
+
+   # Instalar pnpm
    npm install -g pnpm
-   
-   # Install Xcode Command Line Tools
+
+   # Instalar Xcode Command Line Tools
    xcode-select --install
    ```
 
-2. Clone the repository and navigate to the frontend directory:
+2. Clonar el repositorio y navegar al directorio frontend:
    ```bash
-   git clone https://github.com/Zackriya-Solutions/meeting-minutes
-   cd meeting-minutes/frontend
+   git clone https://github.com/ponchovillalobos/maity-desktop
+   cd maity-desktop/frontend
    ```
-  
 
-3. Install dependencies:
+3. Instalar dependencias:
    ```bash
    pnpm install
    ```
 
-### For Windows:
+### Para Windows:
 
-1. Install prerequisites:
-   - Install [Node.js](https://nodejs.org/) (v18 or later)
-   - Install [Rust](https://www.rust-lang.org/tools/install)
-   - Install pnpm: `npm install -g pnpm`
-   - Install [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) with C++ development tools
+1. Instalar requisitos previos:
+   - Instalar [Node.js](https://nodejs.org/) (v18 o posterior)
+   - Instalar [Rust](https://www.rust-lang.org/tools/install)
+   - Instalar pnpm: `npm install -g pnpm`
+   - Instalar [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) con herramientas de desarrollo C++
 
-2. Clone the repository and navigate to the frontend directory:
+2. Clonar el repositorio y navegar al directorio frontend:
    ```cmd
-   git clone https://github.com/Zackriya-Solutions/meeting-minutes
-   cd meeting-minutes/frontend
+   git clone https://github.com/ponchovillalobos/maity-desktop
+   cd maity-desktop/frontend
    ```
 
-3. Install dependencies:
+3. Instalar dependencias:
    ```cmd
    pnpm install
    ```
 
-## Running the App
+## Ejecutar la Aplicacion
 
-### For macOS:
+### Para macOS:
 
-Use the provided script to run the app in development mode:
+Usar el script proporcionado para ejecutar la app en modo desarrollo:
 ```bash
 ./clean_run.sh
 ```
 
-To build a production version:
+Para compilar una version de produccion:
 ```bash
 ./clean_build.sh
 ```
 
-You can specify the log level (info, debug, trace):
+Puedes especificar el nivel de log (info, debug, trace):
 ```bash
 ./clean_run.sh debug
 ```
 
-### For Windows:
+### Para Windows:
 
-Use the provided script to run the app in development mode:
+Usar el script proporcionado para ejecutar la app en modo desarrollo:
 ```cmd
 clean_run_windows.bat
 ```
 
-To build a production version:
+Para compilar una version de produccion:
 ```cmd
 clean_build_windows.bat
 ```
 
-## Whisper Transcription Server
-
-The application includes a pre-built Whisper server for real-time speech recognition:
-
-- Located in `whisper-server-package/`
-- Supports speaker diarization
-- Runs locally for privacy
-- Uses Metal acceleration on macOS
-
-To run the Whisper server manually:
-```bash
-cd whisper-server-package
-./run-server.sh
-```
-
-The server will be available at http://localhost:8178
-
-## Development
+## Desarrollo
 
 ### Frontend (Next.js)
-- The frontend is built with Next.js and Tailwind CSS
-- Source code is in the `src/` directory
-- To run only the frontend: `pnpm run dev`
+- El frontend esta construido con Next.js y Tailwind CSS
+- El codigo fuente esta en el directorio `src/`
+- Para ejecutar solo el frontend: `pnpm run dev`
 
-### Backend (Tauri)
-- The Rust backend is in the `src-tauri/` directory
-- Handles audio capture, file system access, and native integrations
-- To run only the Tauri development server: `pnpm run tauri dev`
+### Backend (Tauri/Rust)
+- El backend Rust esta en el directorio `src-tauri/`
+- Maneja la captura de audio, acceso al sistema de archivos e integraciones nativas
+- Incluye los motores de transcripcion Parakeet y Canary (ONNX)
+- Para ejecutar el servidor de desarrollo Tauri completo: `pnpm run tauri dev`
 
-## Troubleshooting
+### Builds Especificos por GPU
+```bash
+pnpm run tauri:dev:metal    # macOS Metal GPU
+pnpm run tauri:dev:cuda     # NVIDIA CUDA
+pnpm run tauri:dev:vulkan   # AMD/Intel Vulkan
+pnpm run tauri:dev:cpu      # Solo CPU (sin GPU)
+```
 
-### Common Issues on macOS
-- If you encounter permission issues with scripts, make them executable:
+### Motores de Transcripcion
+
+**Parakeet (Por Defecto)**
+- Modelo: `parakeet-tdt-0.6b-v3-int8` (~670MB)
+- Arquitectura: Transducer (TDT) basado en ONNX
+- Rendimiento: 3.45% WER en espanol en CPU
+- Se inicializa automaticamente al inicio de la aplicacion
+
+**Canary (Opcional)**
+- Modelo: `canary-1b-flash-int8` (~939MB)
+- Arquitectura: Encoder-decoder (autoregresivo) basado en ONNX
+- Rendimiento: 2.69% WER en espanol (MLS)
+- Se inicializa solo si esta seleccionado en la configuracion
+- Idiomas soportados: en, es, de, fr
+
+## Solucion de Problemas
+
+### Problemas Comunes en macOS
+- Si encuentras problemas de permisos con los scripts, hacerlos ejecutables:
   ```bash
-  chmod +x clean_run.sh clean_build.sh whisper-server-package/run-server.sh
+  chmod +x clean_run.sh clean_build.sh
   ```
-- For microphone access issues, ensure the app has microphone permissions in System Preferences
-- If the Whisper server fails to start, check if port 8178 is already in use
+- Para problemas de acceso al microfono, asegurar que la app tenga permisos de microfono en Preferencias del Sistema
+- Para captura de audio del sistema, se requiere permiso de grabacion de pantalla y un dispositivo de audio virtual (ej., BlackHole)
 
-### Common Issues on Windows
-- If you encounter build errors, ensure Visual Studio Build Tools are properly installed
-- For audio capture issues, check Windows privacy settings for microphone access
-- If the app fails to start, try running Command Prompt as administrator
+### Problemas Comunes en Windows
+- Si encuentras errores de build, asegurar que Visual Studio Build Tools estan correctamente instalados con la carga de trabajo C++
+- Para problemas de captura de audio, verificar la configuracion de privacidad de Windows para acceso al microfono
+- Si la app falla al iniciar, intentar ejecutar el Command Prompt como administrador
+- Para aceleracion GPU, asegurar que los drivers NVIDIA (CUDA) o AMD/Intel (Vulkan) estan actualizados
 
-## Contributing
+## Contribuir
 
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add some amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
+1. Hacer fork del repositorio
+2. Crear tu rama de funcionalidad (`git checkout -b feat/funcionalidad-nueva`)
+3. Hacer commit de tus cambios (`git commit -m 'feat: agregar funcionalidad nueva'`)
+4. Hacer push a la rama (`git push origin feat/funcionalidad-nueva`)
+5. Abrir un Pull Request
 
-## License
+## Repositorio
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+https://github.com/ponchovillalobos/maity-desktop
+
+## Licencia
+
+Este proyecto esta licenciado bajo la Licencia MIT - ver el archivo LICENSE para mas detalles.

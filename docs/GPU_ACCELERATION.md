@@ -1,57 +1,59 @@
-# GPU Acceleration Guide
+# Guia de Aceleracion GPU
 
-Maity supports GPU acceleration for transcription, which can significantly improve performance. This guide provides detailed information on how to set up and configure GPU acceleration for your system.
+Maity soporta aceleracion GPU para inferencia de modelos locales de IA, lo cual puede mejorar significativamente el rendimiento. Esta guia proporciona informacion detallada sobre como configurar la aceleracion GPU en tu sistema.
 
-## Supported Backends
+> **Nota sobre transcripcion:** La transcripcion en Maity (Parakeet/Canary) utiliza ONNX Runtime en CPU y no requiere configuracion GPU adicional. La aceleracion GPU descrita en esta guia aplica al sidecar `llama-helper`, utilizado para inferencia local de LLM (resumenes, analisis de reuniones, etc.).
 
-Maity uses the `whisper-rs` library, which supports several GPU acceleration backends:
+## Backends Soportados
 
-*   **CUDA:** For NVIDIA GPUs.
-*   **Metal:** For Apple Silicon and modern Intel-based Macs.
-*   **Core ML:** An additional acceleration layer for Apple Silicon.
-*   **Vulkan:** A cross-platform solution for modern AMD and Intel GPUs.
-*   **OpenBLAS:** A CPU-based optimization that can provide a significant speed-up over standard CPU processing.
+El sidecar `llama-helper` soporta varios backends de aceleracion GPU:
 
-## Automatic GPU Detection
+*   **CUDA:** Para GPUs NVIDIA.
+*   **Metal:** Para Apple Silicon y Macs modernos basados en Intel.
+*   **Core ML:** Una capa de aceleracion adicional para Apple Silicon.
+*   **Vulkan:** Una solucion multiplataforma para GPUs modernas de AMD e Intel.
+*   **OpenBLAS:** Una optimizacion basada en CPU que puede proporcionar una mejora significativa de velocidad respecto al procesamiento CPU estandar.
 
-The build scripts (`dev-gpu.sh`, `build-gpu.sh`) are designed to automatically detect your GPU and enable the appropriate feature flag during the build process. The detection is handled by the `scripts/auto-detect-gpu.js` script.
+## Deteccion Automatica de GPU
 
-Here's the detection priority:
+Los scripts de compilacion (`dev-gpu.sh`, `build-gpu.sh`) estan disenados para detectar automaticamente tu GPU y habilitar la feature flag apropiada durante el proceso de compilacion. La deteccion es manejada por el script `scripts/auto-detect-gpu.js`.
+
+Esta es la prioridad de deteccion:
 
 1.  **CUDA (NVIDIA)**
 2.  **Metal (Apple)**
 3.  **Vulkan (AMD/Intel)**
 4.  **OpenBLAS (CPU)**
 
-If no GPU is detected, the application will fall back to CPU-only processing.
+Si no se detecta GPU, la aplicacion usara procesamiento solo en CPU.
 
-## Manual Configuration
+## Configuracion Manual
 
-If you want to manually configure the GPU acceleration backend, you can do so by enabling the corresponding feature flag in the `frontend/src-tauri/Cargo.toml` file.
+Si deseas configurar manualmente el backend de aceleracion GPU, puedes hacerlo habilitando la feature flag correspondiente en el archivo `frontend/src-tauri/Cargo.toml`.
 
-For example, to enable CUDA, you would modify the `[features]` section as follows:
+Por ejemplo, para habilitar CUDA, modificarias la seccion `[features]` de la siguiente manera:
 
 ```toml
 [features]
 default = ["cuda"]
 
-# ... other features
+# ... otras features
 
 cuda = ["whisper-rs/cuda"]
 ```
 
-Then, you would build the application using the standard `pnpm tauri:build` command.
+Luego, compilarias la aplicacion usando el comando estandar `pnpm tauri:build`.
 
-## Platform-Specific Instructions
+## Instrucciones Especificas por Plataforma
 
 ### Linux
 
-For detailed instructions on setting up GPU acceleration on Linux, please refer to the [Linux build instructions](BUILDING.md#--building-on-linux).
+Para instrucciones detalladas sobre como configurar la aceleracion GPU en Linux, consulta las [instrucciones de compilacion en Linux](BUILDING.md).
 
 ### macOS
 
-On macOS, Metal GPU acceleration is enabled by default. No additional configuration is required.
+En macOS, la aceleracion GPU Metal esta habilitada por defecto. No se requiere configuracion adicional.
 
 ### Windows
 
-To enable GPU acceleration on Windows, you will need to install the appropriate toolkit for your GPU (e.g., the CUDA Toolkit for NVIDIA GPUs) and then build the application with the corresponding feature flag enabled.
+Para habilitar la aceleracion GPU en Windows, necesitaras instalar el toolkit apropiado para tu GPU (por ejemplo, el CUDA Toolkit para GPUs NVIDIA) y luego compilar la aplicacion con la feature flag correspondiente habilitada.

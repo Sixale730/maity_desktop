@@ -1,44 +1,47 @@
 # Maity Backend
 
-FastAPI backend for meeting transcription and analysis with **Docker distribution system** for easy deployment.
+Backend FastAPI para almacenamiento de reuniones y analisis con IA. Incluye un sistema de distribucion Docker para despliegue sencillo.
 
-## 📋 Table of Contents
-- [⚠️ Important Notes](#️-important-notes)
-- [🚀 Quick Start](#-quick-start)
-- [🐳 Docker Deployment (Recommended)](#-docker-deployment-recommended)
-- [💻 Native Development](#-native-development)
-- [🔧 Manual Installation](#-manual-installation)
-- [📚 API Documentation](#-api-documentation)
-- [🛠️ Troubleshooting](#️-troubleshooting)
-- [📖 Complete Script Reference](#-complete-script-reference)
-
----
-
-## ⚠️ Important Notes
-
-### Audio Processing Requirements
-When running in Docker containers, audio processing can drop chunks due to resource limitations:
-
-**Symptoms:**
-- Log messages: "Dropped old audio chunk X due to queue overflow"
-- Missing or incomplete transcriptions
-- Processing delays
-
-**Prevention:**
-- Allocate **8GB+ RAM** to Docker containers
-- Ensure adequate CPU allocation
-- Use appropriate Whisper model size for your hardware
-- Monitor container resource usage
+## Tabla de Contenidos
+- [Notas Importantes](#notas-importantes)
+- [Inicio Rapido](#inicio-rapido)
+- [Despliegue con Docker (Recomendado)](#despliegue-con-docker-recomendado)
+- [Desarrollo Nativo](#desarrollo-nativo)
+- [Instalacion Manual](#instalacion-manual)
+- [Documentacion de la API](#documentacion-de-la-api)
+- [Solucion de Problemas](#solucion-de-problemas)
+- [Referencia Completa de Scripts](#referencia-completa-de-scripts)
 
 ---
 
-## 🚀 Quick Start
+## Notas Importantes
 
-Choose your preferred deployment method:
+### Requisitos de Procesamiento de Audio (Servidor Whisper Legacy)
 
-### Option 1: Docker (Recommended - Easiest)
+> **Nota**: El servidor Whisper es un componente legacy/opcional. Maity Desktop ahora utiliza motores de transcripcion integrados (Parakeet y Canary, basados en ONNX) directamente en la aplicacion de escritorio. El servidor Whisper solo es necesario si se desea usar la transcripcion por servidor separado.
+
+Cuando se ejecuta en contenedores Docker, el procesamiento de audio puede perder fragmentos debido a limitaciones de recursos:
+
+**Sintomas:**
+- Mensajes en los logs: "Dropped old audio chunk X due to queue overflow"
+- Transcripciones incompletas o faltantes
+- Retrasos en el procesamiento
+
+**Prevencion:**
+- Asignar **8GB+ de RAM** a los contenedores Docker
+- Asegurar asignacion adecuada de CPU
+- Usar un tamano de modelo Whisper apropiado para tu hardware
+- Monitorear el uso de recursos del contenedor
+
+---
+
+## Inicio Rapido
+
+Elige tu metodo de despliegue preferido:
+
+### Opcion 1: Docker (Recomendado - Mas Facil)
 ```bash
-# Navigate to backend directory
+# Navegar al directorio backend
 cd backend
 
 # Windows (PowerShell)
@@ -50,13 +53,13 @@ cd backend
 ./run-docker.sh start --interactive
 ```
 
-### Option 2: Native Development (Fastest Performance)
+### Opcion 2: Desarrollo Nativo (Mejor Rendimiento)
 ```bash
-# Navigate to backend directory
+# Navegar al directorio backend
 cd backend
 
-# Windows - Install dependencies first, then build
-.\install_dependancies_for_windows.ps1  # Run as Administrator
+# Windows - Instalar dependencias primero, luego compilar
+.\install_dependancies_for_windows.ps1  # Ejecutar como Administrador
 build_whisper.cmd small
 start_with_output.ps1
 
@@ -65,120 +68,122 @@ start_with_output.ps1
 ./clean_start_backend.sh
 ```
 
-**After startup, access:**
-- **Whisper Server**: http://localhost:8178
-- **Meeting App**: http://localhost:5167 (with API docs at `/docs`)
+**Despues del inicio, acceder a:**
+- **Servidor Whisper (Legacy)**: http://localhost:8178
+- **Aplicacion de Reuniones**: http://localhost:5167 (con documentacion de la API en `/docs`)
 
 ---
 
-## 🐳 Docker Deployment (Recommended)
+## Despliegue con Docker (Recomendado)
 
-Docker provides the easiest setup with automatic dependency management, GPU detection, and cross-platform compatibility.
+Docker proporciona la configuracion mas sencilla con gestion automatica de dependencias, deteccion de GPU y compatibilidad multiplataforma.
 
-### Prerequisites
-- Docker Desktop (Windows/Mac) or Docker Engine (Linux)
-- 8GB+ RAM allocated to Docker
-- For GPU: NVIDIA drivers + nvidia-container-toolkit
+### Requisitos Previos
+- Docker Desktop (Windows/Mac) o Docker Engine (Linux)
+- 8GB+ de RAM asignados a Docker
+- Para GPU: Controladores NVIDIA + nvidia-container-toolkit
 
 ### Windows (PowerShell)
 
-#### Basic Setup
+#### Configuracion Basica
 ```powershell
-# Build images
+# Construir imagenes
 .\build-docker.ps1 cpu
 
-# Interactive setup (recommended for first-time users)
+# Configuracion interactiva (recomendado para usuarios nuevos)
 .\run-docker.ps1 start -Interactive
 
-# Quick start with defaults
+# Inicio rapido con valores por defecto
 .\run-docker.ps1 start -Detach
 ```
 
-#### Advanced Configuration
+#### Configuracion Avanzada
 ```powershell
-# GPU acceleration
+# Aceleracion GPU
 .\build-docker.ps1 gpu
 .\run-docker.ps1 start -Model large-v3 -Gpu -Language en -Detach
 
-# Custom ports and features
+# Puertos y funcionalidades personalizadas
 .\run-docker.ps1 start -Port 8081 -AppPort 5168 -Translate -Diarize
 
-# Monitor services
+# Monitorear servicios
 .\run-docker.ps1 logs -Service whisper -Follow
 .\run-docker.ps1 status
 ```
 
 ### macOS/Linux (Bash)
 
-#### Basic Setup
+#### Configuracion Basica
 ```bash
-# Build images
+# Construir imagenes
 ./build-docker.sh cpu
 
-# Interactive setup (recommended)
+# Configuracion interactiva (recomendado)
 ./run-docker.sh start --interactive
 
-# Quick start with defaults
+# Inicio rapido con valores por defecto
 ./run-docker.sh start --detach
 ```
 
-#### Advanced Configuration
+#### Configuracion Avanzada
 ```bash
-# With specific model and language
+# Con modelo e idioma especificos
 ./run-docker.sh start --model base --language es --detach
 
-# View logs and status
+# Ver logs y estado
 ./run-docker.sh logs --service whisper --follow
 ./run-docker.sh status
 
-# Database migration from existing installation
+# Migracion de base de datos desde instalacion existente
 ./run-docker.sh setup-db --auto
 ```
 
-### Interactive Setup Features
+### Funcionalidades del Modo Interactivo
 
-The interactive mode guides you through:
+El modo interactivo te guia a traves de:
 
-1. **Model Selection** - Choose from 20+ models with size/accuracy guidance
-2. **Language Settings** - Select from 40+ supported languages  
-3. **Port Configuration** - Automatic conflict detection and resolution
-4. **Database Setup** - Migrate from existing installations or start fresh
-5. **GPU Configuration** - Auto-detection and setup
-6. **Advanced Features** - Translation, diarization, progress display
-7. **Settings Persistence** - Saves preferences for future runs
+1. **Seleccion de Modelo** - Elige entre 20+ modelos con orientacion sobre tamano/precision
+2. **Configuracion de Idioma** - Selecciona entre 40+ idiomas soportados
+3. **Configuracion de Puertos** - Deteccion automatica de conflictos y resolucion
+4. **Configuracion de Base de Datos** - Migrar desde instalaciones existentes o iniciar nueva
+5. **Configuracion de GPU** - Auto-deteccion y configuracion
+6. **Funcionalidades Avanzadas** - Traduccion, diarizacion, barra de progreso
+7. **Persistencia de Configuracion** - Guarda preferencias para futuras ejecuciones
 
-### Model Size Guide
+### Guia de Tamanos de Modelo (Whisper Legacy)
 
-| Model | Size | Accuracy | Speed | Best For |
-|-------|------|----------|-------|----------|
-| tiny | ~39 MB | Basic | Fastest | Testing, low resources |
-| base | ~142 MB | Good | Fast | General use (recommended) |
-| small | ~244 MB | Better | Medium | Better accuracy needed |
-| medium | ~769 MB | High | Slow | High accuracy requirements |
-| large-v3 | ~1550 MB | Best | Slowest | Maximum accuracy |
+| Modelo | Tamano | Precision | Velocidad | Mejor Para |
+|--------|--------|-----------|-----------|------------|
+| tiny | ~39 MB | Basica | Mas rapida | Pruebas, recursos limitados |
+| base | ~142 MB | Buena | Rapida | Uso general (recomendado) |
+| small | ~244 MB | Mejor | Media | Cuando se necesita mejor precision |
+| medium | ~769 MB | Alta | Lenta | Requisitos de alta precision |
+| large-v3 | ~1550 MB | Optima | Mas lenta | Maxima precision |
 
-### Docker vs Native Comparison
+> **Nota**: Para transcripcion local en la aplicacion de escritorio, Maity utiliza Parakeet (por defecto, ~670MB) o Canary (opcional, ~939MB), ambos basados en ONNX.
 
-| Aspect | Docker | Native |
-|--------|--------|--------|
-| **Setup** | Easy (automated) | Manual (requires dependencies) |
-| **Performance** | Good (5-10% overhead) | Optimal (direct hardware) |
-| **GPU Support** | NVIDIA only | Full native support |
-| **Isolation** | Complete | Shared environment |
-| **Portability** | Universal | Platform-specific |
-| **Updates** | Container replacement | Manual updates |
+### Comparacion Docker vs Nativo
+
+| Aspecto | Docker | Nativo |
+|---------|--------|--------|
+| **Configuracion** | Facil (automatizada) | Manual (requiere dependencias) |
+| **Rendimiento** | Bueno (5-10% de overhead) | Optimo (acceso directo al hardware) |
+| **Soporte GPU** | Solo NVIDIA | Soporte nativo completo |
+| **Aislamiento** | Completo | Entorno compartido |
+| **Portabilidad** | Universal | Especifico por plataforma |
+| **Actualizaciones** | Reemplazo de contenedor | Actualizaciones manuales |
 
 ---
 
-## 💻 Native Development
+## Desarrollo Nativo
 
-Native deployment offers optimal performance by running directly on the host system.
+El despliegue nativo ofrece rendimiento optimo al ejecutarse directamente en el sistema anfitrion.
 
-### Prerequisites
+### Requisitos Previos
 
 #### Windows
-- Python 3.8+ (in PATH)
-- Visual Studio Build Tools (C++ workload)
+- Python 3.8+ (en PATH)
+- Visual Studio Build Tools (carga de trabajo C++)
 - CMake
 - Git
 - PowerShell 5.0+
@@ -187,183 +192,183 @@ Native deployment offers optimal performance by running directly on the host sys
 - Xcode Command Line Tools: `xcode-select --install`
 - Homebrew: `/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"`
 - Python 3.8+: `brew install python3`
-- Dependencies: `brew install cmake llvm libomp`
+- Dependencias: `brew install cmake llvm libomp`
 
-### Windows Setup
+### Configuracion en Windows
 
-**📦 Option 1: Pre-built Release (Recommended - Easiest)**
+**Opcion 1: Release Pre-compilado (Recomendado - Mas Facil)**
 
-The simplest and fastest way to get started is using the pre-built backend release:
+La forma mas sencilla y rapida de comenzar es usando el release pre-compilado del backend:
 
-**Prerequisites:**
-- No additional dependencies required
+**Requisitos previos:**
+- No se requieren dependencias adicionales
 
-**Installation Steps:**
-1. Download the latest backend zip file from [releases](https://github.com/Zackriya-Solutions/meeting-minutes/releases/latest)
-2. Extract to a folder (e.g., `C:\meetily_backend\`)
-3. Open PowerShell and navigate to the extracted folder
-4. Unblock all files (Windows security requirement):
+**Pasos de instalacion:**
+1. Descargar el archivo zip mas reciente del backend desde [releases](https://github.com/ponchovillalobos/maity-desktop/releases/latest)
+2. Extraer en una carpeta (ej., `C:\maity_backend\`)
+3. Abrir PowerShell y navegar a la carpeta extraida
+4. Desbloquear todos los archivos (requisito de seguridad de Windows):
    ```powershell
    Get-ChildItem -Path . -Recurse | Unblock-File
    ```
-5. Start the backend:
+5. Iniciar el backend:
    ```powershell
    .\start_with_output.ps1
    ```
 
-**What it includes:**
-- Pre-compiled `whisper-server.exe` binary
-- Complete Python application with virtual environment
-- All required dependencies pre-installed
-- Automatic model download and setup
-- Interactive model and language selection
+**Que incluye:**
+- Binario `whisper-server.exe` pre-compilado (legacy)
+- Aplicacion Python completa con entorno virtual
+- Todas las dependencias requeridas pre-instaladas
+- Descarga automatica de modelos y configuracion
+- Seleccion interactiva de modelo e idioma
 
-**Features:**
-- Automatic whisper-server.exe download from GitHub releases if not present
-- Interactive model selection (tiny to large-v3)
-- Language selection (40+ supported languages)
-- Port configuration with conflict detection
-- Virtual environment setup and dependency installation
-- Option to download and install the frontend application
+**Funcionalidades:**
+- Descarga automatica de whisper-server.exe desde releases de GitHub si no esta presente
+- Seleccion interactiva de modelo (tiny a large-v3)
+- Seleccion de idioma (40+ idiomas soportados)
+- Configuracion de puertos con deteccion de conflictos
+- Configuracion de entorno virtual e instalacion de dependencias
+- Opcion para descargar e instalar la aplicacion frontend
 
-✅ **Success Check:** The script will guide you through setup and start both Whisper server (port 8178) and Meeting app (port 5167) automatically.
+El script te guiara a traves de la configuracion e iniciara tanto el servidor Whisper (puerto 8178, legacy) como la aplicacion de reuniones (puerto 5167) automaticamente.
 
-**📦 Option 2: Docker Setup (Alternative - Easier)**
+**Opcion 2: Configuracion con Docker (Alternativa - Mas Facil)**
 
-Docker handles all dependencies automatically:
+Docker maneja todas las dependencias automaticamente:
 
 ```powershell
-# Navigate to backend directory
+# Navegar al directorio backend
 cd backend
 
-# Build and start (CPU version)
+# Construir e iniciar (version CPU)
 .\build-docker.ps1 cpu
 .\run-docker.ps1 start -Interactive
 ```
 
-**Prerequisites:**
-- Docker Desktop installed
-- 8GB+ RAM allocated to Docker
+**Requisitos previos:**
+- Docker Desktop instalado
+- 8GB+ de RAM asignados a Docker
 
-**🛠️ Option 3: Local Build (Best Performance)**
+**Opcion 3: Build Local (Mejor Rendimiento)**
 
-For optimal performance, build locally after installing dependencies:
+Para rendimiento optimo, compilar localmente despues de instalar dependencias:
 
-**🔧 Required Dependencies (Install First):**
-- **Python 3.9+** with pip (add to PATH)
-- **Visual Studio Build Tools** (C++ workload)
-- **CMake** (add to PATH)
-- **Git** (with submodules support)
+**Dependencias Requeridas (Instalar Primero):**
+- **Python 3.9+** con pip (agregar a PATH)
+- **Visual Studio Build Tools** (carga de trabajo C++)
+- **CMake** (agregar a PATH)
+- **Git** (con soporte de submodulos)
 - **Visual Studio Redistributables**
 
-**Step 1: Install Dependencies**
+**Paso 1: Instalar Dependencias**
 ```powershell
-# Run dependency installer (as Administrator)
+# Ejecutar instalador de dependencias (como Administrador)
 Set-ExecutionPolicy Bypass -Scope Process -Force
 .\install_dependancies_for_windows.ps1
 ```
-*⚠️ This takes 15-30 minutes and installs all required tools*
+*Nota: Esto tarda 15-30 minutos e instala todas las herramientas requeridas*
 
-**Step 2: Build Whisper**
+**Paso 2: Compilar Whisper**
 ```cmd
-# Build whisper.cpp with model (e.g., 'small', 'base.en', 'large-v3')
+# Compilar whisper.cpp con modelo (ej., 'small', 'base.en', 'large-v3')
 build_whisper.cmd small
 
-# Start services interactively
+# Iniciar servicios interactivamente
 start_with_output.ps1
 
-# Alternative: Clean start
+# Alternativa: Inicio limpio
 clean_start_backend.cmd
 ```
 
-**Build Process:**
-1. Updates git submodules (`whisper.cpp`)
-2. Copies custom server files from `whisper-custom/server/`
-3. Compiles whisper.cpp using CMake + Visual Studio
-4. Creates Python virtual environment in `venv/`
-5. Installs dependencies from `requirements.txt`
-6. Downloads specified Whisper model
-7. Creates `whisper-server-package/` with all files
+**Proceso de Build:**
+1. Actualiza submodulos git (`whisper.cpp`)
+2. Copia archivos personalizados del servidor desde `whisper-custom/server/`
+3. Compila whisper.cpp usando CMake + Visual Studio
+4. Crea entorno virtual Python en `venv/`
+5. Instala dependencias desde `requirements.txt`
+6. Descarga el modelo Whisper especificado
+7. Crea `whisper-server-package/` con todos los archivos
 
-**Dependency Installation Details:**
-The `install_dependancies_for_windows.ps1` script installs:
-- Chocolatey package manager
-- Python 3.11 (if not present)
-- Visual Studio Build Tools 2022 with C++ workload
-- CMake with PATH integration
-- Git with submodule support
+**Detalles de Instalacion de Dependencias:**
+El script `install_dependancies_for_windows.ps1` instala:
+- Gestor de paquetes Chocolatey
+- Python 3.11 (si no esta presente)
+- Visual Studio Build Tools 2022 con carga de trabajo C++
+- CMake con integracion a PATH
+- Git con soporte de submodulos
 - Visual Studio Redistributables
-- Development tools (bun, if needed)
+- Herramientas de desarrollo (bun, si es necesario)
 
-### macOS Setup
+### Configuracion en macOS
 
 ```bash
-# Navigate to backend directory
+# Navegar al directorio backend
 cd backend
 
-# Build whisper.cpp with model
+# Compilar whisper.cpp con modelo
 ./build_whisper.sh small
 
-# Start services
+# Iniciar servicios
 ./clean_start_backend.sh
 ```
 
-**macOS Optimizations:**
-- OpenMP acceleration with `libomp`
-- LLVM compiler optimizations for Apple Silicon
-- Automatic M1/M2 vs Intel detection
-- Optimized thread allocation for Apple Silicon cores
+**Optimizaciones para macOS:**
+- Aceleracion OpenMP con `libomp`
+- Optimizaciones del compilador LLVM para Apple Silicon
+- Deteccion automatica de M1/M2 vs Intel
+- Asignacion optimizada de hilos para nucleos de Apple Silicon
 
-### Service URLs
-- **Whisper Server**: http://localhost:8178
-  - Health: `GET /`
-  - Transcription: `POST /inference`
+### URLs de Servicios
+- **Servidor Whisper (Legacy)**: http://localhost:8178
+  - Salud: `GET /`
+  - Transcripcion: `POST /inference`
   - WebSocket: `ws://localhost:8178/`
-- **Meeting App**: http://localhost:5167
-  - API docs: http://localhost:5167/docs
-  - Health: `GET /get-meetings`
+- **Aplicacion de Reuniones**: http://localhost:5167
+  - Documentacion de la API: http://localhost:5167/docs
+  - Salud: `GET /get-meetings`
   - WebSocket: `ws://localhost:5167/ws`
 
 ---
 
-## 🔧 Manual Installation
+## Instalacion Manual
 
-If you prefer complete manual control over the installation process.
+Si prefieres control manual completo sobre el proceso de instalacion.
 
-### System Requirements
+### Requisitos del Sistema
 - Python 3.9+
 - FFmpeg
-- C++ compiler (Visual Studio Build Tools/Xcode)
+- Compilador C++ (Visual Studio Build Tools/Xcode)
 - CMake
-- Git (with submodules support)
-- Ollama (for LLM features)
+- Git (con soporte de submodulos)
+- Ollama (para funcionalidades LLM locales)
 - ChromaDB
-- API Keys (Claude/Groq) if using external LLMs
+- Claves de API (Claude/Groq) si se usan LLMs externos
 
-### Step-by-Step Installation
+### Instalacion Paso a Paso
 
-#### 1. Install System Dependencies
+#### 1. Instalar Dependencias del Sistema
 
 **Windows:**
 ```cmd
-# Python 3.9+ from Python.org (add to PATH)
-# Visual Studio Build Tools (Desktop C++ workload)
-# CMake from CMake.org (add to PATH)
-# FFmpeg (download or: choco install ffmpeg)
-# Git from Git-scm.com
-# Ollama from Ollama.com
+# Python 3.9+ desde Python.org (agregar a PATH)
+# Visual Studio Build Tools (carga de trabajo Desktop C++)
+# CMake desde CMake.org (agregar a PATH)
+# FFmpeg (descargar o: choco install ffmpeg)
+# Git desde Git-scm.com
+# Ollama desde Ollama.com
 ```
 
 **macOS:**
 ```bash
-# Install Homebrew if not already installed
+# Instalar Homebrew si no esta instalado
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
 
-# Install dependencies
+# Instalar dependencias
 brew install python@3.9 cmake llvm libomp ffmpeg git ollama
 ```
 
-#### 2. Install Python Dependencies
+#### 2. Instalar Dependencias de Python
 ```bash
 # Windows
 python -m pip install --upgrade pip
@@ -374,17 +379,17 @@ python3 -m pip install --upgrade pip
 python3 -m pip install -r requirements.txt
 ```
 
-#### 3. Build Whisper Server
+#### 3. Compilar Servidor Whisper (Legacy)
 ```bash
 # Windows
 ./build_whisper.cmd
 
-# macOS (make executable if needed)
+# macOS (dar permisos si es necesario)
 chmod +x build_whisper.sh
 ./build_whisper.sh
 ```
 
-#### 4. Start Services
+#### 4. Iniciar Servicios
 ```bash
 # Windows
 ./start_with_output.ps1
@@ -396,211 +401,213 @@ chmod +x clean_start_backend.sh
 
 ---
 
-## 📚 API Documentation
+## Documentacion de la API
 
-Once services are running:
+Una vez que los servicios estan ejecutandose:
 - **Swagger UI**: http://localhost:5167/docs
 - **ReDoc**: http://localhost:5167/redoc
 
-### Core Services
-1. **Whisper.cpp Server** (Port 8178)
-   - Real-time audio transcription
-   - WebSocket support for streaming
-   - Multiple model support
+### Servicios Principales
 
-2. **FastAPI Backend** (Port 5167)
-   - Meeting management APIs
-   - LLM integration (Claude, Groq, Ollama)
-   - Data storage and retrieval
-   - WebSocket for real-time updates
+1. **Servidor Whisper.cpp (Legacy)** (Puerto 8178)
+   - Transcripcion de audio en tiempo real
+   - Soporte WebSocket para streaming
+   - Soporte para multiples modelos
+   - **Nota**: La aplicacion de escritorio Maity ahora usa Parakeet/Canary integrados para transcripcion local
+
+2. **Backend FastAPI** (Puerto 5167)
+   - APIs de gestion de reuniones
+   - Integracion con LLM (Ollama local, Claude, Groq, OpenRouter)
+   - Almacenamiento y consulta de datos
+   - WebSocket para actualizaciones en tiempo real
 
 ---
 
-## 🛠️ Troubleshooting
+## Solucion de Problemas
 
-### Common Docker Issues
+### Problemas Comunes con Docker
 
-**Port Conflicts:**
+**Conflictos de Puertos:**
 ```bash
-# Stop services
-./run-docker.sh stop  # or .\run-docker.ps1 stop
+# Detener servicios
+./run-docker.sh stop  # o .\run-docker.ps1 stop
 
-# Check port usage
+# Verificar uso de puertos
 netstat -an | grep :8178
 lsof -i :8178  # macOS/Linux
 ```
 
-**GPU Not Detected (Windows):**
-- Enable WSL2 integration in Docker Desktop
-- Install nvidia-container-toolkit
-- Verify with: `.\run-docker.ps1 gpu-test`
+**GPU No Detectada (Windows):**
+- Habilitar integracion WSL2 en Docker Desktop
+- Instalar nvidia-container-toolkit
+- Verificar con: `.\run-docker.ps1 gpu-test`
 
-**Model Download Failures:**
+**Fallos en Descarga de Modelos:**
 ```bash
-# Manual download
+# Descarga manual
 ./run-docker.sh models download base.en
-# or
+# o
 .\run-docker.ps1 models download base.en
 ```
 
-### Common Native Issues
+### Problemas Comunes Nativos
 
-**Windows Build Problems:**
+**Problemas de Build en Windows:**
 ```cmd
-# CMake not found - install Visual Studio Build Tools
-# PowerShell execution blocked:
+# CMake no encontrado - instalar Visual Studio Build Tools
+# Ejecucion de PowerShell bloqueada:
 Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process
 ```
 
-**macOS Build Problems:**
+**Problemas de Build en macOS:**
 ```bash
-# Compilation errors
+# Errores de compilacion
 brew install cmake llvm libomp
 export CC=/opt/homebrew/bin/clang
 export CXX=/opt/homebrew/bin/clang++
 
-# Permission denied
+# Permiso denegado
 chmod +x build_whisper.sh
 chmod +x clean_start_backend.sh
 
-# Port conflicts
-lsof -i :5167  # Find process using port
-kill -9 PID   # Kill process
+# Conflictos de puertos
+lsof -i :5167  # Encontrar proceso usando el puerto
+kill -9 PID   # Terminar proceso
 ```
 
-### General Issues
+### Problemas Generales
 
-**Services Won't Start:**
-1. Check if ports 8178 (Whisper) and 5167 (Backend) are available
-2. Verify all dependencies are installed
-3. Check logs for specific error messages
-4. Ensure sufficient system resources (8GB+ RAM recommended)
+**Los Servicios No Inician:**
+1. Verificar que los puertos 8178 (Whisper legacy) y 5167 (Backend) estan disponibles
+2. Verificar que todas las dependencias estan instaladas
+3. Revisar logs para mensajes de error especificos
+4. Asegurar recursos de sistema suficientes (8GB+ de RAM recomendados)
 
-**Model Issues:**
-- Verify internet connection for model downloads
-- Check available disk space (models can be 1.5GB+)
-- Validate model names against supported list
+**Problemas con Modelos:**
+- Verificar conexion a internet para descarga de modelos
+- Verificar espacio en disco disponible (los modelos pueden ser 1.5GB+)
+- Validar nombres de modelos contra la lista soportada
 
 ---
 
-## 📖 Complete Script Reference
+## Referencia Completa de Scripts
 
-### Docker Scripts
+### Scripts de Docker
 
 #### build-docker.ps1 / build-docker.sh
-Build Docker images with GPU support and cross-platform compatibility.
+Construir imagenes Docker con soporte de GPU y compatibilidad multiplataforma.
 
-**Usage:**
+**Uso:**
 ```bash
-# Build Types
+# Tipos de Build
 cpu, gpu, macos, both, test-gpu
 
-# Options
--Registry/-r REGISTRY    # Docker registry
--Push/-p                 # Push to registry
--Tag/-t TAG             # Custom tag
--Platforms PLATFORMS    # Target platforms
--BuildArgs ARGS         # Build arguments
--NoCache/--no-cache     # Build without cache
--DryRun/--dry-run       # Show commands only
+# Opciones
+-Registry/-r REGISTRY    # Registro Docker
+-Push/-p                 # Enviar al registro
+-Tag/-t TAG             # Etiqueta personalizada
+-Platforms PLATFORMS    # Plataformas destino
+-BuildArgs ARGS         # Argumentos de build
+-NoCache/--no-cache     # Construir sin cache
+-DryRun/--dry-run       # Solo mostrar comandos
 ```
 
-**Examples:**
+**Ejemplos:**
 ```bash
-# Basic builds
+# Builds basicos
 .\build-docker.ps1 cpu
 ./build-docker.sh gpu
 
-# Multi-platform with registry
+# Multi-plataforma con registro
 .\build-docker.ps1 both -Registry "ghcr.io/user" -Push
 ./build-docker.sh cpu --platforms "linux/amd64,linux/arm64" --push
 ```
 
 #### run-docker.ps1 / run-docker.sh
-Complete Docker deployment manager with interactive setup.
+Gestor de despliegue Docker completo con configuracion interactiva.
 
-**Commands:**
+**Comandos:**
 ```bash
 start, stop, restart, logs, status, shell, clean, build, models, gpu-test, setup-db, compose
 ```
 
-**Start Options:**
+**Opciones de Inicio:**
 ```bash
--Model/-m MODEL         # Whisper model (default: base.en)
--Port/-p PORT          # Whisper port (default: 8178)
--AppPort/--app-port    # Meeting app port (default: 5167)
--Gpu/-g/--gpu          # Force GPU mode
--Cpu/-c/--cpu          # Force CPU mode
--Language/--language   # Language code (default: auto)
--Translate/--translate # Enable translation
--Diarize/--diarize     # Enable diarization
--Detach/-d/--detach    # Run in background
--Interactive/-i        # Interactive setup
+-Model/-m MODEL         # Modelo Whisper (por defecto: base.en)
+-Port/-p PORT          # Puerto Whisper (por defecto: 8178)
+-AppPort/--app-port    # Puerto de la app de reuniones (por defecto: 5167)
+-Gpu/-g/--gpu          # Forzar modo GPU
+-Cpu/-c/--cpu          # Forzar modo CPU
+-Language/--language   # Codigo de idioma (por defecto: auto)
+-Translate/--translate # Habilitar traduccion
+-Diarize/--diarize     # Habilitar diarizacion
+-Detach/-d/--detach    # Ejecutar en segundo plano
+-Interactive/-i        # Configuracion interactiva
 ```
 
-**Examples:**
+**Ejemplos:**
 ```bash
-# Interactive setup
+# Configuracion interactiva
 .\run-docker.ps1 start -Interactive
 ./run-docker.sh start --interactive
 
-# Advanced configuration
+# Configuracion avanzada
 .\run-docker.ps1 start -Model large-v3 -Gpu -Language es -Detach
 ./run-docker.sh start --model base --translate --diarize --detach
 
-# Management
+# Gestion
 .\run-docker.ps1 logs -Service whisper -Follow
 ./run-docker.sh logs --service app --follow --lines 100
 ```
 
-### Native Scripts
+### Scripts Nativos
 
 #### build_whisper.cmd / build_whisper.sh
-Build whisper.cpp server with custom modifications.
+Compilar el servidor whisper.cpp con modificaciones personalizadas.
 
-**Usage:**
+**Uso:**
 ```bash
-build_whisper.cmd [MODEL_NAME]    # Windows
-./build_whisper.sh [MODEL_NAME]   # macOS/Linux
+build_whisper.cmd [NOMBRE_MODELO]    # Windows
+./build_whisper.sh [NOMBRE_MODELO]   # macOS/Linux
 ```
 
-**Available Models:**
+**Modelos Disponibles:**
 ```
 tiny, tiny.en, base, base.en, small, small.en, medium, medium.en,
-large-v1, large-v2, large-v3, large-v3-turbo, 
-*-q5_1 (5-bit quantized), *-q8_0 (8-bit quantized)
+large-v1, large-v2, large-v3, large-v3-turbo,
+*-q5_1 (cuantizado 5 bits), *-q8_0 (cuantizado 8 bits)
 ```
 
-### Environment Variables
+### Variables de Entorno
 
-**Service Configuration:**
+**Configuracion de Servicios:**
 ```bash
-WHISPER_MODEL=base.en          # Default model
-WHISPER_PORT=8178              # Whisper port
-APP_PORT=5167                  # App port
-WHISPER_LANGUAGE=auto          # Language
-WHISPER_TRANSLATE=false        # Translation
-WHISPER_DIARIZE=false          # Diarization
+WHISPER_MODEL=base.en          # Modelo por defecto
+WHISPER_PORT=8178              # Puerto Whisper
+APP_PORT=5167                  # Puerto de la app
+WHISPER_LANGUAGE=auto          # Idioma
+WHISPER_TRANSLATE=false        # Traduccion
+WHISPER_DIARIZE=false          # Diarizacion
 ```
 
-**Build Configuration:**
+**Configuracion de Build:**
 ```bash
-REGISTRY=ghcr.io/user          # Docker registry
-PUSH=true                      # Push to registry
-PLATFORMS=linux/amd64          # Target platforms
-FORCE_GPU=true                 # Force GPU mode
-DEBUG=true                     # Debug output
+REGISTRY=ghcr.io/user          # Registro Docker
+PUSH=true                      # Enviar al registro
+PLATFORMS=linux/amd64          # Plataformas destino
+FORCE_GPU=true                 # Forzar modo GPU
+DEBUG=true                     # Salida de depuracion
 ```
 
-### Database Migration
+### Migracion de Base de Datos
 
-**Supported Sources:**
-- Existing Homebrew installations
-- Manual database file paths
-- Auto-discovery in common locations
-- Fresh installation (creates new database)
+**Fuentes Soportadas:**
+- Instalaciones existentes de Homebrew
+- Rutas manuales de archivos de base de datos
+- Auto-descubrimiento en ubicaciones comunes
+- Instalacion nueva (crea nueva base de datos)
 
-**Auto-Discovery Paths (macOS/Linux):**
+**Rutas de Auto-Descubrimiento (macOS/Linux):**
 ```
 /opt/homebrew/Cellar/meetily-backend/*/backend/meeting_minutes.db
 $HOME/.meetily/meeting_minutes.db
@@ -610,31 +617,31 @@ $HOME/Desktop/meeting_minutes.db
 $SCRIPT_DIR/data/meeting_minutes.db
 ```
 
-### Advanced Features
+### Funcionalidades Avanzadas
 
-**Port Conflict Resolution:**
-- Automatic detection of port conflicts
-- Option to kill processes using required ports
-- Suggestion of alternative ports
-- Validation of port availability
+**Resolucion de Conflictos de Puertos:**
+- Deteccion automatica de conflictos de puertos
+- Opcion de terminar procesos que usan los puertos requeridos
+- Sugerencia de puertos alternativos
+- Validacion de disponibilidad de puertos
 
-**GPU Detection:**
-- Automatic NVIDIA GPU detection
-- Docker GPU support verification
-- Fallback to CPU mode when GPU unavailable
-- GPU test functionality
+**Deteccion de GPU:**
+- Deteccion automatica de GPU NVIDIA
+- Verificacion de soporte GPU en Docker
+- Fallback a modo CPU cuando GPU no esta disponible
+- Funcionalidad de prueba de GPU
 
-**Model Management:**
-- Automatic model downloading
-- Size estimation and progress display
-- Local model caching
-- Model validation and integrity checking
+**Gestion de Modelos:**
+- Descarga automatica de modelos
+- Estimacion de tamano y barra de progreso
+- Cache local de modelos
+- Validacion e integridad de modelos
 
-**Interactive Setup:**
-- Model selection with guidance
-- Language selection (40+ languages)
-- Database migration assistance
-- Settings persistence and reuse
-- Configuration validation
+**Configuracion Interactiva:**
+- Seleccion de modelo con orientacion
+- Seleccion de idioma (40+ idiomas)
+- Asistencia en migracion de base de datos
+- Persistencia y reutilizacion de configuracion
+- Validacion de configuracion
 
-This comprehensive guide covers all deployment options and provides clear instructions for getting the Maity backend running in any environment.
+Esta guia completa cubre todas las opciones de despliegue y proporciona instrucciones claras para ejecutar el backend de Maity en cualquier entorno.
