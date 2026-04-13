@@ -26,6 +26,8 @@ pub struct ContinuousVadProcessor {
     speech_start_sample: usize,
     // State tracking for smart logging
     last_logged_state: bool,
+    // Max speech duration before force-cut (real-time transcription)
+    max_speech_samples: usize,
 }
 
 impl ContinuousVadProcessor {
@@ -44,7 +46,10 @@ impl ContinuousVadProcessor {
         // MIN_SILENCE_MS 400: mantener (cierre de segmento rápido = "live feel").
         const MIN_SPEECH_MS: u64 = 100;
         const MIN_SILENCE_MS: u64 = 400;
-        const MAX_SPEECH_MS: u64 = 30_000;
+        // REAL-TIME: max 2s per segment. Habla continua se corta cada 2s
+        // para que la transcripcion aparezca en tiempo real y el Coach
+        // pueda dar tips durante la conversacion, no al final.
+        const MAX_SPEECH_MS: u64 = 2_000;
         const POS_THRESHOLD: f32 = 0.35;
         const NEG_THRESHOLD: f32 = 0.25;
 
@@ -88,6 +93,8 @@ impl ContinuousVadProcessor {
             speech_start_sample: 0,
             // Initialize state tracking
             last_logged_state: false,
+            // MAX_SPEECH_MS converted to samples at input rate
+            max_speech_samples: (input_sample_rate as f64 * MAX_SPEECH_MS as f64 / 1000.0) as usize,
         })
     }
 
@@ -214,6 +221,28 @@ impl ContinuousVadProcessor {
     fn process_chunk(&mut self, chunk: &[f32]) -> Result<()> {
         let transitions = self.session.process(chunk)
             .map_err(|e| anyhow!("VAD processing failed: {}", e))?;
+
+        // REAL-TIME: Force-cut speech segments longer than MAX_SPEECH_MS
+        // This ensures transcription gets chunks every ~2s even during continuous speech
+        if self.in_speech && !self.current_speech.is_empty() {
+            let speech_duration_samples = self.current_speech.len();
+            if speech_duration_samples >= self.max_speech_samples {
+                let speech_duration_ms = (speech_duration_samples as f64 / self.sample_rate as f64) * 1000.0;
+                let start_ms = (self.speech_start_sample as f64 / self.sample_rate as f64) * 1000.0;
+                let end_ms = start_ms + speech_duration_ms;
+                let segment = SpeechSegment {
+                    samples: self.current_speech.clone(),
+                    start_timestamp_ms: start_ms,
+                    end_timestamp_ms: end_ms,
+                    confidence: 0.85,
+                };
+                debug!("VAD: Force-cut speech at {:.0}ms (max {}ms reached)", speech_duration_ms, self.max_speech_samples * 1000 / self.sample_rate as usize);
+                self.speech_segments.push_back(segment);
+                self.current_speech.clear();
+                self.speech_start_sample = self.processed_samples;
+                // Stay in_speech = true — we're still detecting speech, just cutting for real-time
+            }
+        }
 
         // Handle VAD transitions
         for transition in transitions {
