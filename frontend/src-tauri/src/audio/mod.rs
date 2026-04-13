@@ -1,5 +1,6 @@
 // src/audio/mod.rs
 pub mod audio_processing;
+pub mod dsp;
 pub mod encode;
 pub mod ffmpeg;
 pub mod vad;
