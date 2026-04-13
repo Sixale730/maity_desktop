@@ -73,10 +73,31 @@ export function usePermissionCheck() {
     }
   };
 
-  // Check permissions on mount
+  // Check permissions on mount + listen for device changes (connect/disconnect)
   useEffect(() => {
     checkPermissions();
+
+    const handleDeviceChange = () => {
+      checkPermissions();
+    };
+
+    navigator.mediaDevices?.addEventListener('devicechange', handleDeviceChange);
+
+    return () => {
+      navigator.mediaDevices?.removeEventListener('devicechange', handleDeviceChange);
+    };
   }, []);
+
+  // Fallback polling only when no microphone detected (stops once mic is found)
+  useEffect(() => {
+    if (status.hasMicrophone || status.isChecking) return;
+
+    const interval = setInterval(() => {
+      checkPermissions();
+    }, 5000);
+
+    return () => clearInterval(interval);
+  }, [status.hasMicrophone, status.isChecking]);
 
   return {
     ...status,

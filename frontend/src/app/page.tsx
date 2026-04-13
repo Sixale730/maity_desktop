@@ -41,7 +41,7 @@ export default function Home() {
 
   // Hooks
   const { isModelReady: isParakeetModelReady, isDownloading: isParakeetDownloading } = useParakeetAutoDownloadContext();
-  const { hasMicrophone } = usePermissionCheck();
+  const { hasMicrophone, checkPermissions, isChecking: isCheckingPermissions } = usePermissionCheck();
   const { setIsMeetingActive, isCollapsed: sidebarCollapsed, refetchMeetings } = useSidebar();
   const { modals, messages, showModal, hideModal } = useModalState(transcriptModelConfig);
   const { handleRecordingStart } = useRecordingStart(isRecording, (v) => { /* no-op: RecordingStateContext is source of truth */ }, showModal);
@@ -167,6 +167,7 @@ export default function Home() {
   const isProcessingStop = status === RecordingStatus.PROCESSING_TRANSCRIPTS || isProcessing;
 
   return (
+    <>
     <motion.div
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
@@ -202,49 +203,6 @@ export default function Home() {
           </div>
         )}
 
-        {/* Recording controls - only show when permissions are granted or already recording and not showing status messages */}
-        {(hasMicrophone || isRecording) &&
-          status !== RecordingStatus.PROCESSING_TRANSCRIPTS &&
-          status !== RecordingStatus.SAVING && (
-            <div className="fixed bottom-12 left-0 right-0 z-10">
-              <div
-                className="flex justify-center pl-8 transition-[margin] duration-300"
-                style={{
-                  marginLeft: sidebarCollapsed ? '4rem' : '16rem'
-                }}
-              >
-                <div className="w-2/3 max-w-[750px] min-w-[200px] flex justify-center">
-                  <div className="bg-white dark:bg-gray-900 rounded-full shadow-lg flex items-center overflow-visible">
-                    <RecordingControls
-                      isRecording={isRecording}
-                      onRecordingStop={(callApi = true) => handleRecordingStop(callApi)}
-                      onRecordingStart={handleRecordingStart}
-                      onTranscriptReceived={() => { }}
-                      onStopInitiated={() => setIsStopping(true)}
-                      barHeights={barHeights}
-                      audioLevels={audioLevels}
-                      onTranscriptionError={(message) => {
-                        showModal('errorAlert', message);
-                      }}
-                      isRecordingDisabled={isRecordingDisabled || (isParakeetDownloading && !isParakeetModelReady)}
-                      isParentProcessing={isProcessingStop}
-                      selectedDevices={selectedDevices}
-                      meetingName={meetingTitle}
-                      onDeviceSwitched={(deviceName, deviceType) => {
-                        setSelectedDevices({
-                          ...selectedDevices,
-                          ...(deviceType === 'Microphone'
-                            ? { micDevice: deviceName }
-                            : { systemDevice: deviceName }),
-                        });
-                      }}
-                    />
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
-
         {/* Status Overlays - Processing and Saving */}
         <StatusOverlays
           isProcessing={status === RecordingStatus.PROCESSING_TRANSCRIPTS && !isRecording}
@@ -253,5 +211,89 @@ export default function Home() {
         />
       </div>
     </motion.div>
+
+    {/* Recording controls - OUTSIDE motion.div to escape stacking context */}
+    {(hasMicrophone || isRecording) &&
+      status !== RecordingStatus.PROCESSING_TRANSCRIPTS &&
+      status !== RecordingStatus.SAVING && (
+        <div className="fixed bottom-0 left-0 right-0 z-50 pb-12 pt-4 bg-gradient-to-t from-[#0a0a1a] via-[#0a0a1a]/95 to-transparent">
+          <div
+            className="flex justify-center pl-8 transition-[margin] duration-300"
+            style={{
+              marginLeft: sidebarCollapsed ? '4rem' : '16rem'
+            }}
+          >
+            <div className="w-2/3 max-w-[750px] min-w-[200px] flex justify-center">
+              <div className="bg-white dark:bg-gray-900 rounded-full shadow-lg flex items-center overflow-visible">
+                <RecordingControls
+                  isRecording={isRecording}
+                  onRecordingStop={(callApi = true) => handleRecordingStop(callApi)}
+                  onRecordingStart={handleRecordingStart}
+                  onTranscriptReceived={() => { }}
+                  onStopInitiated={() => setIsStopping(true)}
+                  barHeights={barHeights}
+                  audioLevels={audioLevels}
+                  onTranscriptionError={(message) => {
+                    showModal('errorAlert', message);
+                  }}
+                  isRecordingDisabled={isRecordingDisabled || (isParakeetDownloading && !isParakeetModelReady)}
+                  isParentProcessing={isProcessingStop}
+                  selectedDevices={selectedDevices}
+                  meetingName={meetingTitle}
+                  onDeviceSwitched={(deviceName, deviceType) => {
+                    setSelectedDevices({
+                      ...selectedDevices,
+                      ...(deviceType === 'Microphone'
+                        ? { micDevice: deviceName }
+                        : { systemDevice: deviceName }),
+                    });
+                  }}
+                />
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+    {/* No microphone detected banner - OUTSIDE motion.div to escape stacking context */}
+    {!hasMicrophone && !isRecording && !isCheckingPermissions &&
+      status !== RecordingStatus.PROCESSING_TRANSCRIPTS &&
+      status !== RecordingStatus.SAVING && (
+        <div className="fixed bottom-0 left-0 right-0 z-50 pb-12 pt-4 bg-gradient-to-t from-[#0a0a1a] via-[#0a0a1a]/95 to-transparent">
+          <div
+            className="flex justify-center pl-8 transition-[margin] duration-300"
+            style={{
+              marginLeft: sidebarCollapsed ? '4rem' : '16rem'
+            }}
+          >
+            <div className="bg-white dark:bg-gray-900 border border-yellow-500/30 rounded-2xl shadow-[0_4px_20px_rgba(0,0,0,0.3)] px-6 py-4 flex items-center gap-4 max-w-[500px]">
+              <div className="flex-shrink-0 w-10 h-10 rounded-full bg-yellow-500/10 flex items-center justify-center">
+                <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5 text-yellow-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="1" y1="1" x2="23" y2="23" />
+                  <path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6" />
+                  <path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2c0 .76-.13 1.49-.35 2.17" />
+                  <line x1="12" y1="19" x2="12" y2="23" />
+                  <line x1="8" y1="23" x2="16" y2="23" />
+                </svg>
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
+                  No se detectó micrófono
+                </p>
+                <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                  Conecta un micrófono externo (USB o Bluetooth) para grabar
+                </p>
+              </div>
+              <button
+                onClick={() => checkPermissions()}
+                className="flex-shrink-0 px-3 py-1.5 text-xs font-medium text-yellow-600 dark:text-yellow-400 bg-yellow-500/10 hover:bg-yellow-500/20 rounded-lg transition-colors"
+              >
+                Reintentar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
   );
 }
