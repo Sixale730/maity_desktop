@@ -503,14 +503,15 @@ pub fn start_transcription_task<R: Runtime>(
         // que chunks crecieran hasta 60-70s cuando el interlocutor hablaba continuo,
         // matando la sensación de "tiempo real".
         //
-        // AHORA todos los tiers usan (0.3s min, 4.0s max, 400ms flush):
-        //   - emit-sooner: 0.3s permite que segmentos cortos se transcriban casi al vuelo
-        //   - techo razonable: 4.0s evita chunks gigantes (Parakeet máx eficiente)
-        //   - flush rápido: 400ms para que silencios cortos liberen el buffer
+        // REAL-TIME TUNING: chunks cortos para transcripcion casi instantanea.
+        //   - min 0.5s: minimo contexto para que Parakeet transcriba bien
+        //   - max 2.0s: MAXIMO 2 segundos antes de forzar transcripcion
+        //   - flush 300ms: silencio de 300ms = enviar inmediatamente
         //
-        // Reduce latencia percibida ~700-1100ms.
+        // Latencia percibida: ~500-800ms (antes era ~1500-3000ms con max=8s)
+        // Esto permite que el Coach IA de tips casi en tiempo real.
         let hw_profile = crate::audio::HardwareProfile::detect();
-        let (min_dur, max_dur, flush_timeout) = (0.3_f64, 8.0_f64, 400_u64);
+        let (min_dur, max_dur, flush_timeout) = (0.5_f64, 2.0_f64, 300_u64);
         info!(
             "[WORKER] ChunkAccumulator (real-time tuned): min={:.1}s, max={:.1}s, flush={}ms (tier detectado: {:?}, valor uniforme)",
             min_dur, max_dur, flush_timeout, hw_profile.performance_tier
