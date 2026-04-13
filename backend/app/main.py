@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
+import os
 import logging
 from dotenv import load_dotenv
 from db import DatabaseManager
@@ -40,14 +41,23 @@ app = FastAPI(
 from errors import AppError, app_error_handler
 app.add_exception_handler(AppError, app_error_handler)
 
-# Configure CORS
+# Security: restrict CORS origins (SEC-001)
+_default_origins = [
+    "tauri://localhost",
+    "https://tauri.localhost",
+    "http://localhost:3118",
+    "http://127.0.0.1:3118",
+]
+_cors_origins = os.getenv("MAITY_CORS_ORIGINS")
+allowed_origins = _cors_origins.split(",") if _cors_origins else _default_origins
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],     # Allow all origins for testing
+    allow_origins=allowed_origins,
     allow_credentials=True,
-    allow_methods=["*"],     # Allow all methods
-    allow_headers=["*"],     # Allow all headers
-    max_age=3600,            # Cache preflight requests for 1 hour
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization", "X-Requested-With"],
+    max_age=3600,
 )
 
 # Global database manager instance for meeting management endpoints
@@ -134,4 +144,15 @@ async def shutdown_event():
 if __name__ == "__main__":
     import multiprocessing
     multiprocessing.freeze_support()
-    uvicorn.run("main:app", host="0.0.0.0", port=5167, reload=True)
+
+    host = os.getenv("MAITY_HOST", "127.0.0.1")
+    port = int(os.getenv("MAITY_PORT", "5167"))
+    reload_enabled = os.getenv("MAITY_RELOAD", "0") == "1"
+
+    if host == "0.0.0.0":
+        logger.warning(
+            "MAITY_HOST=0.0.0.0 — backend expuesto a la LAN. "
+            "Asegurate de tener un firewall o bind a 127.0.0.1."
+        )
+
+    uvicorn.run("main:app", host=host, port=port, reload=reload_enabled)
