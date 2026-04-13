@@ -483,7 +483,13 @@ mod tests {
             3840,
             48000,
         );
-        assert_eq!(timeout, Duration::from_millis(160));
+        // Allow small floating point precision difference (mul_f32 can have rounding)
+        let diff = if timeout > Duration::from_millis(160) {
+            timeout - Duration::from_millis(160)
+        } else {
+            Duration::from_millis(160) - timeout
+        };
+        assert!(diff < Duration::from_micros(100), "Expected ~160ms, got {:?}", timeout);
     }
 
     #[test]

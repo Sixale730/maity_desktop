@@ -1,0 +1,62 @@
+{
+  "app": {
+    "title": "Maity Desktop",
+    "recording": "Recording",
+    "idle": "Ready to record"
+  },
+  "recording": {
+    "start": "Start recording",
+    "stop": "Stop recording",
+    "pause": "Pause",
+    "resume": "Resume",
+    "saving": "Saving..."
+  },
+  "transcript": {
+    "title": "Transcript",
+    "empty": "No transcript yet. Start a recording.",
+    "copy": "Copy transcript",
+    "copied": "Copied!"
+  },
+  "sidebar": {
+    "meetings": "Meetings",
+    "search": "Search meetings...",
+    "noMeetings": "No saved meetings",
+    "settings": "Settings",
+    "about": "About"
+  },
+  "coach": {
+    "title": "AI Copilot",
+    "noSuggestions": "No suggestions yet",
+    "thinking": "Analyzing conversation..."
+  },
+  "settings": {
+    "title": "Settings",
+    "general": "General",
+    "recording": "Recording",
+    "transcription": "Transcription",
+    "summary": "Summary",
+    "language": "Language",
+    "theme": "Theme",
+    "dark": "Dark",
+    "light": "Light"
+  },
+  "export": {
+    "title": "Export",
+    "json": "Export JSON",
+    "csv": "Export CSV",
+    "markdown": "Export Markdown",
+    "pdf": "Export PDF",
+    "success": "Exported successfully",
+    "error": "Export failed"
+  },
+  "common": {
+    "cancel": "Cancel",
+    "save": "Save",
+    "delete": "Delete",
+    "confirm": "Confirm",
+    "loading": "Loading...",
+    "error": "Error",
+    "success": "Success",
+    "close": "Close"
+  }
+}

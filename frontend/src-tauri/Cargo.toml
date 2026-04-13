@@ -109,9 +109,15 @@ ndarray = "0.16"
 rustfft = "6.2"  # FFT for Canary log-mel spectrogram (no ONNX preprocessor)
 bytes = { version = "1.9.0", features = ["serde"] }
 
+# Secure API key storage using OS keyring (Windows Credential Manager / macOS Keychain / Linux Secret Service)
+keyring = "3"
+
 rand = "0.8.5"
 rubato = "0.15.0"
 ringbuf = "0.4.8"
+
+# PDF export for transcripts
+printpdf = "0.7"
 
 ffmpeg-sidecar = { git = "https://github.com/nathanbabcock/ffmpeg-sidecar", branch = "main" }
 

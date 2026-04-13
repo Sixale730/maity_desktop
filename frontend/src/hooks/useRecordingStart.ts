@@ -63,41 +63,67 @@ export function useRecordingStart(
     logger.debug(`Checking transcription readiness for provider: ${provider}`);
 
     try {
-      switch (provider) {
-        case 'parakeet': {
-          // For Parakeet, check if local models are available
-          try {
-            await invoke('parakeet_init');
-            const hasModels = await invoke<boolean>('parakeet_has_available_models');
-            if (hasModels) {
-              logger.debug('✅ Parakeet models available, ready to record');
-              return { ready: true, isDownloading: false };
-            }
+      // Lightweight check: just ask if the model is loaded in memory (~0ms)
+      const command = provider === 'canary' ? 'canary_is_ready' : 'parakeet_is_ready';
+      const isReady = await invoke<boolean>(command);
 
-            // Check if downloading
+      if (isReady) {
+        logger.debug(`${provider} model loaded and ready`);
+        return { ready: true, isDownloading: false };
+      }
+
+      // Model not loaded in memory — try to auto-reload before giving up.
+      // This handles the case where a previous recording unloaded the model,
+      // or where startup pre-load failed silently.
+      logger.debug(`${provider} model not ready, attempting auto-reload...`);
+      if (provider === 'canary') {
+        try {
+          await invoke('canary_init');
+          await invoke<string>('canary_validate_model_ready');
+          logger.debug('Canary model reloaded successfully');
+          return { ready: true, isDownloading: false };
+        } catch (reloadError) {
+          logger.debug(`Canary auto-reload failed: ${reloadError}`);
+          try {
+            const models = await invoke<any[]>('canary_get_available_models');
+            const isDownloading = models.some(m =>
+              m.status && typeof m.status === 'object' && 'Downloading' in m.status
+            );
+            return {
+              ready: false,
+              isDownloading,
+              error: 'Modelo de transcripción Canary no disponible. Descarga el modelo desde Configuración.'
+            };
+          } catch {
+            return { ready: false, isDownloading: false, error: 'Error al verificar Canary' };
+          }
+        }
+      } else {
+        try {
+          await invoke('parakeet_init');
+          await invoke<string>('parakeet_validate_model_ready');
+          logger.debug('Parakeet model reloaded successfully');
+          return { ready: true, isDownloading: false };
+        } catch (reloadError) {
+          logger.debug(`Parakeet auto-reload failed: ${reloadError}`);
+          try {
             const models = await invoke<ParakeetModelInfo[]>('parakeet_get_available_models');
             const isDownloading = models.some(m =>
               m.status && typeof m.status === 'object' && 'Downloading' in m.status
             );
-
             return {
               ready: false,
               isDownloading,
               error: 'Modelo de transcripción Parakeet no disponible.'
             };
-          } catch (error) {
-            console.error('Failed to check Parakeet status:', error);
+          } catch {
             return { ready: false, isDownloading: false, error: 'Error al verificar Parakeet' };
           }
         }
-
-        default:
-          console.warn(`Unknown provider: ${provider}, defaulting to ready`);
-          return { ready: true, isDownloading: false };
       }
     } catch (error) {
       console.error('Failed to check transcription readiness:', error);
-      return { ready: false, isDownloading: false, error: 'Error al verificar el estado de transcripción' };
+      return { ready: false, isDownloading: false, error: 'Error al verificar transcripción' };
     }
   }, [transcriptModelConfig]);
 

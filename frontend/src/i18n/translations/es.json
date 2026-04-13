@@ -1,0 +1,62 @@
+{
+  "app": {
+    "title": "Maity Desktop",
+    "recording": "Grabando",
+    "idle": "Listo para grabar"
+  },
+  "recording": {
+    "start": "Iniciar grabación",
+    "stop": "Detener grabación",
+    "pause": "Pausar",
+    "resume": "Reanudar",
+    "saving": "Guardando..."
+  },
+  "transcript": {
+    "title": "Transcripción",
+    "empty": "No hay transcripción aún. Inicia una grabación.",
+    "copy": "Copiar transcripción",
+    "copied": "¡Copiado!"
+  },
+  "sidebar": {
+    "meetings": "Reuniones",
+    "search": "Buscar reuniones...",
+    "noMeetings": "No hay reuniones guardadas",
+    "settings": "Configuración",
+    "about": "Acerca de"
+  },
+  "coach": {
+    "title": "Copiloto IA",
+    "noSuggestions": "Sin sugerencias todavía",
+    "thinking": "Analizando conversación..."
+  },
+  "settings": {
+    "title": "Configuración",
+    "general": "General",
+    "recording": "Grabación",
+    "transcription": "Transcripción",
+    "summary": "Resumen",
+    "language": "Idioma",
+    "theme": "Tema",
+    "dark": "Oscuro",
+    "light": "Claro"
+  },
+  "export": {
+    "title": "Exportar",
+    "json": "Exportar JSON",
+    "csv": "Exportar CSV",
+    "markdown": "Exportar Markdown",
+    "pdf": "Exportar PDF",
+    "success": "Exportado exitosamente",
+    "error": "Error al exportar"
+  },
+  "common": {
+    "cancel": "Cancelar",
+    "save": "Guardar",
+    "delete": "Eliminar",
+    "confirm": "Confirmar",
+    "loading": "Cargando...",
+    "error": "Error",
+    "success": "Éxito",
+    "close": "Cerrar"
+  }
+}

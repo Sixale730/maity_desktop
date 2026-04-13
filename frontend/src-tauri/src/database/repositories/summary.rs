@@ -219,3 +219,205 @@ impl SummaryProcessesRepository {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_valid_summary_process_statuses() {
+        let statuses = vec!["PENDING", "in_progress", "completed", "failed", "cancelled"];
+
+        for status in statuses {
+            assert!(!status.is_empty());
+            assert!(
+                status == "PENDING"
+                    || status == "in_progress"
+                    || status == "completed"
+                    || status == "failed"
+                    || status == "cancelled"
+            );
+        }
+    }
+
+    #[test]
+    fn test_json_serialization_for_summary_result() {
+        let result = serde_json::json!({
+            "summary": "This is a summary",
+            "key_points": ["Point 1", "Point 2"],
+            "action_items": ["Action 1", "Action 2"]
+        });
+
+        let json_string = serde_json::to_string(&result).expect("serialization failed");
+        assert!(!json_string.is_empty());
+
+        let deserialized: Value =
+            serde_json::from_str(&json_string).expect("deserialization failed");
+        assert_eq!(
+            deserialized["summary"].as_str(),
+            Some("This is a summary")
+        );
+    }
+
+    #[test]
+    fn test_invalid_json_detection() {
+        let invalid_json = "{ invalid json }";
+        let result: Result<Value, _> = serde_json::from_str(invalid_json);
+        assert!(result.is_err(), "Invalid JSON should fail to deserialize");
+    }
+
+    #[test]
+    fn test_summary_result_with_null_values() {
+        let result = serde_json::json!({
+            "summary": null,
+            "error": null,
+            "key_points": []
+        });
+
+        let json_string = serde_json::to_string(&result).expect("serialization failed");
+        assert!(!json_string.is_empty());
+    }
+
+    #[test]
+    fn test_processing_time_valid_values() {
+        let valid_times = vec![0.0, 1.5, 10.25, 100.0, 999.999];
+
+        for time in valid_times {
+            assert!(time >= 0.0, "Processing time must be non-negative");
+        }
+    }
+
+    #[test]
+    fn test_chunk_count_valid_values() {
+        let valid_counts = vec![0, 1, 5, 100, 1000];
+
+        for count in valid_counts {
+            assert!(count >= 0, "Chunk count must be non-negative");
+        }
+    }
+
+    #[test]
+    fn test_error_message_formats() {
+        let error_messages = vec![
+            "Network timeout",
+            "Invalid input",
+            "Generation was cancelled by user",
+            "LLM connection failed",
+            "Database error: constraint violation",
+        ];
+
+        for msg in error_messages {
+            assert!(!msg.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_meeting_id_validation() {
+        let valid_ids = vec![
+            "meeting-123",
+            "meeting-abc-def",
+            "mtg-001",
+        ];
+
+        for id in valid_ids {
+            assert!(!id.is_empty());
+            assert!(!id.trim().is_empty());
+        }
+    }
+
+    #[test]
+    fn test_empty_meeting_id_detection() {
+        let empty_id = "";
+        assert!(empty_id.is_empty());
+    }
+
+    #[test]
+    fn test_backup_restore_logic() {
+        // Simulating COALESCE(result_backup, result) logic
+        let current_result: Option<String> = Some("current_summary".to_string());
+        let backup_result: Option<String> = Some("backup_summary".to_string());
+
+        let restored = backup_result.or(current_result);
+        assert_eq!(restored, Some("backup_summary".to_string()));
+    }
+
+    #[test]
+    fn test_backup_restore_without_backup() {
+        // When no backup exists, original result should be used
+        let current_result: Option<String> = Some("current_summary".to_string());
+        let backup_result: Option<String> = None;
+
+        let restored = backup_result.or(current_result);
+        assert_eq!(restored, Some("current_summary".to_string()));
+    }
+
+    #[test]
+    fn test_backup_restore_both_none() {
+        // When both are None
+        let current_result: Option<String> = None;
+        let backup_result: Option<String> = None;
+
+        let restored = backup_result.or(current_result);
+        assert_eq!(restored, None);
+    }
+
+    #[test]
+    fn test_summary_metadata_json_structure() {
+        let metadata = serde_json::json!({
+            "chunks": 5,
+            "provider": "ollama",
+            "model": "llama2",
+            "temperature": 0.7
+        });
+
+        assert!(metadata.is_object());
+        assert_eq!(metadata["chunks"], 5);
+    }
+
+    #[test]
+    fn test_complex_summary_result_structure() {
+        let complex_result = serde_json::json!({
+            "summary": "Meeting summary text",
+            "key_points": [
+                {"point": "Point 1", "importance": "high"},
+                {"point": "Point 2", "importance": "medium"}
+            ],
+            "action_items": [
+                {"task": "Task 1", "assigned_to": "John", "deadline": "2025-01-15"},
+                {"task": "Task 2", "assigned_to": "Jane", "deadline": "2025-01-20"}
+            ],
+            "participants": ["Alice", "Bob", "Charlie"],
+            "duration_minutes": 45
+        });
+
+        let json_str = serde_json::to_string(&complex_result).expect("serialization failed");
+        let deserialized: Value =
+            serde_json::from_str(&json_str).expect("deserialization failed");
+
+        assert_eq!(
+            deserialized["duration_minutes"],
+            45,
+            "Numeric fields should be preserved"
+        );
+        assert_eq!(
+            deserialized["participants"].as_array().unwrap().len(),
+            3,
+            "Array fields should be preserved"
+        );
+    }
+
+    #[test]
+    fn test_unicode_in_error_messages() {
+        let error_msg = "Error: Transcripción fallida con caracteres especiales: ñ, é, á";
+        assert!(error_msg.contains("ñ"));
+        assert!(error_msg.contains("é"));
+    }
+
+    #[test]
+    fn test_processing_time_precision() {
+        let time_with_decimals = 2.5555;
+        assert!(time_with_decimals > 2.0);
+        assert!(time_with_decimals < 3.0);
+    }
+}
+

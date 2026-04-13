@@ -196,12 +196,14 @@ pub async fn initialize_fresh_database(app: AppHandle) -> Result<(), String> {
     // Set default model configuration for fresh installs
     let pool = db_manager.pool();
     
-    // Default Summary Model: OpenAI API (cloud)
+    // Default Summary Model: Ollama local (gemma4:latest) — privacidad first,
+    // sin cloud, sin API keys. Cambiado de custom-openai/gpt-4o-mini (2026-04-11)
+    // por requisito explícito del usuario: la app NO debe llamar a APIs externas.
     if let Err(e) = crate::database::repositories::setting::SettingsRepository::save_model_config(
         pool,
-        "custom-openai",  // Changed from "builtin-ai" for cloud-only mode
-        "gpt-4o-mini",    // Default OpenAI model
-        "large-v3",       // Default whisper model (unused for cloud but required)
+        "ollama",
+        "gemma4:latest",
+        "large-v3",       // Default whisper model (unused for Ollama but required)
         None,
     ).await {
         error!("Failed to set default summary model config: {}", e);

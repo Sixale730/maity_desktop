@@ -175,6 +175,20 @@ pub async fn parakeet_has_available_models() -> Result<bool, String> {
     }
 }
 
+/// Lightweight check: is the Parakeet model loaded and ready to transcribe?
+/// This is a fast O(1) check (Arc<RwLock> read) with no filesystem or DB I/O.
+#[command]
+pub async fn parakeet_is_ready() -> Result<bool, String> {
+    let engine = {
+        let guard = PARAKEET_ENGINE.lock().map_err(|e| format!("Lock poisoned: {}", e))?;
+        guard.as_ref().cloned()
+    };
+    match engine {
+        Some(engine) => Ok(engine.is_model_loaded().await),
+        None => Ok(false),
+    }
+}
+
 #[command]
 pub async fn parakeet_validate_model_ready() -> Result<String, String> {
     let engine = {

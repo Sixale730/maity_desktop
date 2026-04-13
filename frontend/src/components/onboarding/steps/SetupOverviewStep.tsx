@@ -5,10 +5,11 @@ import { OnboardingContainer } from '../OnboardingContainer';
 import { useOnboarding } from '@/contexts/OnboardingContext';
 
 /**
- * Setup Overview Step - Local-First Mode
+ * Setup Overview Step - 100% Local, 100% Privado
  *
- * Explains that Maity uses local Whisper for transcription (privacy-first)
- * and cloud APIs for summaries. Whisper model downloads on first use.
+ * Transcripción: Parakeet ONNX (CPU-optimizado, ~670 MB).
+ * Resúmenes + Coach IA: Ollama local (gemma4:latest).
+ * Ninguna llamada a cloud APIs.
  */
 export function SetupOverviewStep() {
   const { goNext } = useOnboarding();
@@ -31,12 +32,12 @@ export function SetupOverviewStep() {
     {
       icon: <Mic className="w-5 h-5 text-[#3a4ac3]" />,
       title: 'Transcripción Local',
-      description: 'Whisper - privada y sin internet',
+      description: 'Parakeet ONNX - optimizado CPU, tiempo real',
     },
     {
       icon: <FileText className="w-5 h-5 text-[#16bb7b]" />,
-      title: 'Resúmenes Inteligentes',
-      description: 'Impulsado por OpenAI GPT-4o',
+      title: 'Coach IA + Resúmenes',
+      description: 'Ollama local (gemma4) - sin API keys',
     },
     {
       icon: <Zap className="w-5 h-5 text-[#3a4ac3]" />,
@@ -52,7 +53,7 @@ export function SetupOverviewStep() {
   return (
     <OnboardingContainer
       title="Resumen de Configuración"
-      description="Maity transcribe tus reuniones localmente con Whisper para máxima privacidad, y genera resúmenes inteligentes con IA en la nube."
+      description="Maity transcribe tus reuniones con Parakeet local y te da sugerencias en vivo con Ollama. 100% en tu equipo, sin cloud, sin API keys."
       step={2}
       totalSteps={isMac ? 4 : 3}
     >
@@ -85,8 +86,8 @@ export function SetupOverviewStep() {
         {/* Model Download Note */}
         <div className="w-full max-w-md bg-blue-50 border border-blue-200 rounded-lg p-4">
           <p className="text-sm text-blue-800 text-center">
-            El modelo de transcripción Whisper (~466 MB) se descargará automáticamente
-            la primera vez que inicies una grabación.
+            El modelo Parakeet (~670 MB) se descargará la primera vez que grabes.
+            Para el Coach IA necesitas Ollama con gemma4:latest instalado.
           </p>
         </div>
 

@@ -149,11 +149,18 @@ impl CanaryEngine {
         let mut models = Vec::new();
 
         // Canary model configuration
-        let model_configs = [(
-            "canary-1b-flash-int8",
-            939u32,
-            "Canary 1B Flash Int8 — Best Spanish accuracy (2.69% WER), encoder-decoder architecture",
-        )];
+        let model_configs = [
+            (
+                "canary-1b-flash-int8",
+                939u32,
+                "Canary 1B Flash Int8 — Best Spanish accuracy (2.69% WER), encoder-decoder architecture",
+            ),
+            (
+                "canary-180m-flash-int8",
+                213u32,
+                "Canary 180M Flash Int8 — Fast & lightweight (3.17% WER), ideal for low-resource systems",
+            ),
+        ];
 
         let active_downloads = self.active_downloads.read().await;
 
@@ -172,7 +179,7 @@ impl CanaryEngine {
                 let all_files_exist = required_files.iter().all(|file| model_path.join(file).exists());
 
                 if all_files_exist {
-                    match self.validate_model_directory(&model_path).await {
+                    match self.validate_model_directory(&model_path, name).await {
                         Ok(_) => ModelStatus::Available,
                         Err(_) => {
                             log::warn!("Canary model directory {} appears corrupted", name);
@@ -214,12 +221,19 @@ impl CanaryEngine {
         Ok(models)
     }
 
-    async fn validate_model_directory(&self, model_dir: &PathBuf) -> Result<()> {
-        let expected_sizes: Vec<(&str, u64)> = vec![
-            ("encoder-model.int8.onnx", 750_000_000), // ~859 MB, min 750 MB
-            ("decoder-model.int8.onnx", 60_000_000),   // ~79.5 MB, min 60 MB
-            ("vocab.txt", 10_000),                     // ~53.6 KB, min 10 KB
-        ];
+    async fn validate_model_directory(&self, model_dir: &PathBuf, model_name: &str) -> Result<()> {
+        let expected_sizes: Vec<(&str, u64)> = match model_name {
+            "canary-180m-flash-int8" => vec![
+                ("encoder-model.int8.onnx", 100_000_000), // ~128 MB, min 100 MB
+                ("decoder-model.int8.onnx", 60_000_000),  // ~76 MB, min 60 MB
+                ("vocab.txt", 10_000),                     // ~52 KB, min 10 KB
+            ],
+            _ => vec![
+                ("encoder-model.int8.onnx", 750_000_000), // ~859 MB, min 750 MB
+                ("decoder-model.int8.onnx", 60_000_000),  // ~79.5 MB, min 60 MB
+                ("vocab.txt", 10_000),                     // ~53.6 KB, min 10 KB
+            ],
+        };
 
         for (filename, min_size) in expected_sizes {
             let file_path = model_dir.join(filename);
@@ -245,12 +259,12 @@ impl CanaryEngine {
         Ok(())
     }
 
-    async fn clean_incomplete_model_directory(&self, model_dir: &PathBuf) -> Result<()> {
+    async fn clean_incomplete_model_directory(&self, model_dir: &PathBuf, model_name: &str) -> Result<()> {
         if !model_dir.exists() {
             return Ok(());
         }
 
-        match self.validate_model_directory(model_dir).await {
+        match self.validate_model_directory(model_dir, model_name).await {
             Ok(_) => {
                 log::info!("Canary model directory is valid, no cleanup needed");
                 Ok(())
@@ -462,8 +476,12 @@ impl CanaryEngine {
             }
         }
 
-        let base_url =
-            "https://huggingface.co/istupakov/canary-1b-flash-onnx/resolve/main";
+        let base_url = match model_name {
+            "canary-180m-flash-int8" =>
+                "https://huggingface.co/istupakov/canary-180m-flash-onnx/resolve/main",
+            _ =>
+                "https://huggingface.co/istupakov/canary-1b-flash-onnx/resolve/main",
+        };
 
         let files_to_download = vec![
             "encoder-model.int8.onnx",
@@ -481,7 +499,7 @@ impl CanaryEngine {
         }
 
         // Clean incomplete files
-        if let Err(e) = self.clean_incomplete_model_directory(model_dir).await {
+        if let Err(e) = self.clean_incomplete_model_directory(model_dir, model_name).await {
             log::warn!("Failed to clean incomplete Canary directory: {}", e);
         }
 
@@ -493,11 +511,18 @@ impl CanaryEngine {
             .build()
             .map_err(|e| anyhow!("Failed to create HTTP client: {}", e))?;
 
-        let file_sizes: HashMap<&str, u64> = [
-            ("encoder-model.int8.onnx", 859_000_000u64),
-            ("decoder-model.int8.onnx", 79_500_000u64),
-            ("vocab.txt", 53_600u64),
-        ]
+        let file_sizes: HashMap<&str, u64> = match model_name {
+            "canary-180m-flash-int8" => [
+                ("encoder-model.int8.onnx", 133_710_896u64),
+                ("decoder-model.int8.onnx", 79_520_211u64),
+                ("vocab.txt", 53_555u64),
+            ],
+            _ => [
+                ("encoder-model.int8.onnx", 859_000_000u64),
+                ("decoder-model.int8.onnx", 79_500_000u64),
+                ("vocab.txt", 53_600u64),
+            ],
+        }
         .iter()
         .cloned()
         .collect();

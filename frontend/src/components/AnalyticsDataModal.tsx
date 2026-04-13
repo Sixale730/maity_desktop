@@ -50,9 +50,9 @@ export default function AnalyticsDataModal({ isOpen, onClose, onConfirmDisable }
             <div className="border border-[#e7e7e9] dark:border-gray-700 rounded-lg p-4">
               <h4 className="font-semibold text-[#000000] dark:text-white mb-2">1. Preferencias de Modelo</h4>
               <ul className="text-sm text-[#3a3a3c] dark:text-gray-200 space-y-1 ml-4">
-                <li>• Modelo de transcripción (ej., "Whisper large-v3", "Parakeet")</li>
-                <li>• Modelo de resumen (ej., "Llama 3.2", "Claude Sonnet")</li>
-                <li>• Proveedor de modelo (ej., "Local", "Ollama", "OpenRouter")</li>
+                <li>• Modelo de transcripción (ej., &ldquo;Parakeet&rdquo;, &ldquo;Canary&rdquo;)</li>
+                <li>• Modelo de Coach IA (ej., &ldquo;gemma4&rdquo;, &ldquo;gemma3&rdquo;)</li>
+                <li>• Proveedor: Ollama local (sin cloud)</li>
               </ul>
               <p className="text-xs text-[#6a6a6d] dark:text-gray-400 mt-2 italic">Nos ayuda a entender qué modelos prefieren los usuarios</p>
             </div>

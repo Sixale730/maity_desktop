@@ -13,6 +13,7 @@ use crate::{
     },
     state::AppState,
     summary::CustomOpenAIConfig,
+    validation_helpers,
 };
 
 // Hardcoded server URL
@@ -764,25 +765,28 @@ pub async fn api_get_meeting<R: Runtime>(
     state: tauri::State<'_, AppState>,
     auth_token: Option<String>,
 ) -> Result<MeetingDetails, String> {
+    // Validate input parameter
+    let validated_meeting_id = validation_helpers::validate_meeting_id(&meeting_id)?;
+
     log_info!(
         "api_get_meeting called(native) for meeting_id: {}, auth_token: {}",
-        meeting_id,
+        validated_meeting_id,
         auth_token.is_some()
     );
 
     let pool = state.db_manager.pool();
 
-    match MeetingsRepository::get_meeting(pool, &meeting_id).await {
+    match MeetingsRepository::get_meeting(pool, &validated_meeting_id).await {
         Ok(Some(meeting)) => {
-            log_info!("Successfully retrieved meeting {}", meeting_id);
+            log_info!("Successfully retrieved meeting {}", validated_meeting_id);
             Ok(meeting)
         }
         Ok(None) => {
-            log_warn!("Meeting not found: {}", meeting_id);
-            Err(format!("Meeting not found: {}", meeting_id))
+            log_warn!("Meeting not found: {}", validated_meeting_id);
+            Err(format!("Meeting not found: {}", validated_meeting_id))
         }
         Err(e) => {
-            log_error!("Error retrieving meeting {}: {}", meeting_id, e);
+            log_error!("Error retrieving meeting {}: {}", validated_meeting_id, e);
             Err(format!("Failed to retrieve meeting: {}", e))
         }
     }

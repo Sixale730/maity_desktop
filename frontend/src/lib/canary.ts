@@ -24,10 +24,15 @@ export interface CanaryModelDisplayInfo {
 
 export const CANARY_MODEL_DISPLAY_CONFIG: Record<string, CanaryModelDisplayInfo> = {
   'canary-1b-flash-int8': {
-    friendlyName: 'Canary Flash',
+    friendlyName: 'Canary 1B Flash',
     icon: '🐦',
-    tagline: 'Mejor precisión en español • 2.69% WER • Encoder-Decoder',
+    tagline: 'Mejor precisión en español • 2.69% WER • 939 MB',
     recommended: true,
+  },
+  'canary-180m-flash-int8': {
+    friendlyName: 'Canary 180M Flash',
+    icon: '🐦',
+    tagline: 'Rápido y ligero • 3.17% WER • 213 MB',
   },
 };
 

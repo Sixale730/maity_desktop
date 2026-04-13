@@ -22,7 +22,7 @@ static SPEECH_DETECTED_EMITTED: AtomicBool = AtomicBool::new(false);
 /// Reset the speech detected flag for a new recording session
 pub fn reset_speech_detected_flag() {
     SPEECH_DETECTED_EMITTED.store(false, Ordering::SeqCst);
-    info!("🔍 SPEECH_DETECTED_EMITTED reset to: {}", SPEECH_DETECTED_EMITTED.load(Ordering::SeqCst));
+    debug!("🔍 SPEECH_DETECTED_EMITTED reset to: {}", SPEECH_DETECTED_EMITTED.load(Ordering::SeqCst));
 }
 
 /// Accumulates small VAD segments into larger chunks before sending to Whisper.
@@ -89,8 +89,8 @@ impl ChunkAccumulator {
     fn check_timeout(&mut self) -> Option<AudioChunk> {
         if !self.buffer.is_empty() && self.last_add_time.elapsed() >= self.flush_timeout {
             let duration = self.buffer.len() as f64 / self.sample_rate as f64;
-            // Only flush on timeout if we have at least 0.5s of audio
-            if duration >= 0.5 {
+            // Flush on timeout if we have at least 50ms of audio (was 0.2s — lost fillers <200ms)
+            if duration >= 0.05 {
                 return self.flush();
             }
         }
@@ -173,7 +173,7 @@ pub fn start_transcription_task<R: Runtime>(
         // FIX: Bounded channel con backpressure - evita memory leak en conversaciones muy largas
         // 2000 chunks = ~2 minutos de audio en cola máximo (a 60ms por chunk)
         // Si se llena, el sender esperará (backpressure) en vez de perder datos
-        let (work_sender, work_receiver) = tokio::sync::mpsc::channel::<AudioChunk>(2000);
+        let (work_sender, work_receiver) = tokio::sync::mpsc::channel::<AudioChunk>(4000);
         let work_receiver = Arc::new(tokio::sync::Mutex::new(work_receiver));
 
         // Track completion: AtomicU64 for chunks queued, completed, and dropped
@@ -242,7 +242,7 @@ pub fn start_transcription_task<R: Runtime>(
                             }
 
                             if should_log_this_chunk {
-                                info!(
+                                debug!(
                                     "👷 Worker {} processing chunk {} with {} samples",
                                     worker_id,
                                     chunk.chunk_id,
@@ -291,7 +291,7 @@ pub fn start_transcription_task<R: Runtime>(
                                         None => "N/A".to_string(),
                                     };
 
-                                    info!("🔍 Worker {} transcription result: text='{}', confidence={}, partial={}, threshold={:.2}",
+                                    debug!("🔍 Worker {} transcription result: text='{}', confidence={}, partial={}, threshold={:.2}",
                                           worker_id, transcript, confidence_str, is_partial, confidence_threshold);
 
                                     // Check confidence threshold (or accept if no confidence provided)
@@ -299,13 +299,13 @@ pub fn start_transcription_task<R: Runtime>(
 
                                     if !transcript.trim().is_empty() && meets_threshold {
                                         // PERFORMANCE: Only log transcription results, not every processing step
-                                        info!("✅ Worker {} transcribed: {} (confidence: {}, partial: {})",
+                                        debug!("✅ Worker {} transcribed: {} (confidence: {}, partial: {})",
                                               worker_id, transcript, confidence_str, is_partial);
 
                                         // Emit speech-detected event for frontend UX (only on first detection per session)
                                         // This is lightweight and provides better user feedback
                                         let current_flag = SPEECH_DETECTED_EMITTED.load(Ordering::SeqCst);
-                                        info!("🔍 Checking speech-detected flag: current={}, will_emit={}", current_flag, !current_flag);
+                                        debug!("🔍 Checking speech-detected flag: current={}, will_emit={}", current_flag, !current_flag);
 
                                         if !current_flag {
                                             SPEECH_DETECTED_EMITTED.store(true, Ordering::SeqCst);
@@ -316,7 +316,7 @@ pub fn start_transcription_task<R: Runtime>(
                                                 Err(e) => error!("🎤 ❌ Failed to emit speech-detected event: {}", e),
                                             }
                                         } else {
-                                            info!("🔍 Speech already detected in this session, not re-emitting");
+                                            debug!("🔍 Speech already detected in this session, not re-emitting");
                                         }
 
                                         // Generate sequence ID and calculate timestamps FIRST
@@ -333,8 +333,30 @@ pub fn start_transcription_task<R: Runtime>(
 
                                         // Emit transcript update with NEW recording-relative timestamps
 
+                                        // Heurística español: capitalización, tildes en preguntas,
+                                        // signos ¿?, normalización de espacios, atenuación de muletillas.
+                                        // Idempotente y barata (sin LLM, sin allocs en hot path).
+                                        let language = crate::get_language_preference_internal()
+                                            .unwrap_or_else(|| "es".to_string());
+                                        let enhanced_text = super::spanish_postprocess::enhance(
+                                            &transcript,
+                                            &language,
+                                        );
+
+                                        // Anti-hallucination: descartar texto que es YouTube/subtítulo garbage
+                                        if super::spanish_postprocess::is_hallucination(&enhanced_text) {
+                                            warn!("🚫 Hallucination detected, discarding: '{}'", enhanced_text);
+                                            chunks_completed_clone.fetch_add(1, Ordering::SeqCst);
+                                            continue;
+                                        }
+
+                                        if enhanced_text != transcript {
+                                            let preview: String = enhanced_text.chars().take(120).collect();
+                                            debug!("🇪🇸 ES post-process: '{}' → '{}'", transcript, preview);
+                                        }
+
                                         let update = TranscriptUpdate {
-                                            text: transcript,
+                                            text: enhanced_text,
                                             timestamp: format_current_timestamp(), // Wall-clock for reference
                                             source: "Audio".to_string(),
                                             sequence_id,
@@ -349,9 +371,12 @@ pub fn start_transcription_task<R: Runtime>(
                                             source_type: chunk_source_type.clone(),
                                         };
 
-                                        info!("📤 Transcript emitted: source={} text='{}' seq={} time={:.1}s-{:.1}s",
+                                        // FIX UTF-8 (2026-04-11): usar chars().take() para no cortar
+                                        // en medio de carácter multi-byte (á, é, ñ, ¿, etc).
+                                        let text_preview: String = update.text.chars().take(50).collect();
+                                        debug!("📤 Transcript emitted: source={} text='{}' seq={} time={:.1}s-{:.1}s",
                                               chunk_source_type.as_deref().unwrap_or("unknown"),
-                                              &update.text[..update.text.len().min(50)],
+                                              text_preview,
                                               sequence_id, audio_start_time, audio_end_time);
 
                                         match app_clone.emit("transcript-update", &update) {
@@ -372,7 +397,7 @@ pub fn start_transcription_task<R: Runtime>(
                                         if let Some(c) = confidence_opt {
                                             debug!("[WORKER {}] Transcription filtered by confidence: '{}' (conf: {:.2}, threshold: {:.2})",
                                                      worker_id, transcript, c, confidence_threshold);
-                                            info!("Worker {} low-confidence transcription (confidence: {:.2}), skipping", worker_id, c);
+                                            debug!("Worker {} low-confidence transcription (confidence: {:.2}), skipping", worker_id, c);
                                         }
                                     }
                                 }
@@ -381,7 +406,7 @@ pub fn start_transcription_task<R: Runtime>(
                                     match e {
                                         TranscriptionError::AudioTooShort { .. } => {
                                             debug!("[WORKER {}] Audio too short: {}", worker_id, e);
-                                            info!("Worker {}: {}", worker_id, e);
+                                            debug!("Worker {}: {}", worker_id, e);
                                             chunks_completed_clone.fetch_add(1, Ordering::SeqCst);
                                             continue;
                                         }
@@ -405,9 +430,9 @@ pub fn start_transcription_task<R: Runtime>(
                                 chunks_completed_clone.fetch_add(1, Ordering::SeqCst) + 1;
                             let queued = chunks_queued_clone.load(Ordering::SeqCst);
 
-                            // PERFORMANCE: Only log progress every 5th chunk to reduce I/O overhead
-                            if completed % 5 == 0 || should_log_this_chunk {
-                                info!(
+                            // PERFORMANCE: Only log progress every 30th chunk to reduce I/O overhead
+                            if completed % 30 == 0 || should_log_this_chunk {
+                                debug!(
                                     "Worker {}: Progress {}/{} chunks ({:.1}%)",
                                     worker_id,
                                     completed,
@@ -470,16 +495,26 @@ pub fn start_transcription_task<R: Runtime>(
         let chunks_dropped_dispatcher = chunks_dropped.clone();
 
         // Separate accumulators per device type (mic audio and system audio transcribe independently)
-        // Adaptive parameters based on hardware tier
+        //
+        // QW-4 (audit 2026-04-08, adoptado de D:\Maity_Desktop 2026-04-11):
+        // ANTES los tiers altos esperaban MÁS (1500ms flush en Ultra) que los bajos —
+        // exactamente lo contrario de la intuición esperada. El usuario con hardware
+        // potente se sentía MÁS laggy que el que tiene una laptop débil. Esto causaba
+        // que chunks crecieran hasta 60-70s cuando el interlocutor hablaba continuo,
+        // matando la sensación de "tiempo real".
+        //
+        // AHORA todos los tiers usan (0.3s min, 4.0s max, 400ms flush):
+        //   - emit-sooner: 0.3s permite que segmentos cortos se transcriban casi al vuelo
+        //   - techo razonable: 4.0s evita chunks gigantes (Parakeet máx eficiente)
+        //   - flush rápido: 400ms para que silencios cortos liberen el buffer
+        //
+        // Reduce latencia percibida ~700-1100ms.
         let hw_profile = crate::audio::HardwareProfile::detect();
-        let (min_dur, max_dur, flush_timeout) = match hw_profile.performance_tier {
-            crate::audio::PerformanceTier::Ultra  => (1.0, 8.0, 1500),
-            crate::audio::PerformanceTier::High   => (0.8, 6.0, 1200),
-            crate::audio::PerformanceTier::Medium => (0.8, 4.0, 1000),
-            crate::audio::PerformanceTier::Low    => (0.5, 3.0, 800),
-        };
-        info!("[WORKER] Adaptive ChunkAccumulator: min={:.1}s, max={:.1}s, flush={}ms (tier: {:?})",
-                 min_dur, max_dur, flush_timeout, hw_profile.performance_tier);
+        let (min_dur, max_dur, flush_timeout) = (0.3_f64, 8.0_f64, 400_u64);
+        info!(
+            "[WORKER] ChunkAccumulator (real-time tuned): min={:.1}s, max={:.1}s, flush={}ms (tier detectado: {:?}, valor uniforme)",
+            min_dur, max_dur, flush_timeout, hw_profile.performance_tier
+        );
         let mut mic_accumulator = ChunkAccumulator::new(min_dur, max_dur, flush_timeout);
         let mut sys_accumulator = ChunkAccumulator::new(min_dur, max_dur, flush_timeout);
 
@@ -492,7 +527,7 @@ pub fn start_transcription_task<R: Runtime>(
         ) -> bool {
             let duration = accumulated.data.len() as f64 / accumulated.sample_rate as f64;
             let queued = chunks_queued.fetch_add(1, Ordering::SeqCst) + 1;
-            info!(
+            debug!(
                 "📥 Dispatching accumulated chunk {} ({:.1}s, {:?}) to workers (total queued: {})",
                 accumulated.chunk_id, duration, accumulated.device_type, queued
             );

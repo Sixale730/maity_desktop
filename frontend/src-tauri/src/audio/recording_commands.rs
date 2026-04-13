@@ -735,30 +735,12 @@ pub async fn stop_recording<R: Runtime>(
             }
         }
         _ => {
-            // Default to Parakeet
-            info!("🦜 Unloading Parakeet model...");
-            let engine_clone = {
-                let engine_guard = crate::parakeet_engine::commands::PARAKEET_ENGINE
-                    .lock()
-                    .map_err(|e| format!("Parakeet engine lock poisoned: {}", e)).ok();
-                engine_guard.and_then(|g| g.as_ref().cloned())
-            };
-
-            if let Some(engine) = engine_clone {
-                let current_model = engine
-                    .get_current_model()
-                    .await
-                    .unwrap_or_else(|| "unknown".to_string());
-                info!("Current Parakeet model before unload: '{}'", current_model);
-
-                if engine.unload_model().await {
-                    info!("✅ Parakeet model '{}' unloaded successfully", current_model);
-                } else {
-                    warn!("⚠️ Failed to unload Parakeet model '{}'", current_model);
-                }
-            } else {
-                warn!("⚠️ No Parakeet engine found to unload model");
-            }
+            // Parakeet is the default provider and is pre-loaded at app startup.
+            // Keep the model resident between recordings so the user can start a
+            // new recording instantly without a 2-5s reload cycle. Unloading here
+            // caused `parakeet_is_ready` to return false on the next attempt and
+            // blocked consecutive recordings with "Modelo de transcripción no listo".
+            info!("🦜 Keeping Parakeet model resident for next recording (pre-loaded at startup)");
         }
     }
 

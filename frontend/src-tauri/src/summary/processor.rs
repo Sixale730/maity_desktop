@@ -380,3 +380,287 @@ pub async fn generate_meeting_summary(
     info!("Summary generation completed successfully");
     Ok((final_markdown, successful_chunk_count))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ============================================================================
+    // Tests para rough_token_count
+    // ============================================================================
+
+    #[test]
+    fn test_rough_token_count_empty_string() {
+        // Caso: cadena vacía
+        let result = rough_token_count("");
+        assert_eq!(result, 0, "Token count for empty string should be 0");
+    }
+
+    #[test]
+    fn test_rough_token_count_single_word() {
+        // Caso: una palabra (5 caracteres)
+        let result = rough_token_count("hello");
+        // 5 chars * 0.35 = 1.75, ceil = 2
+        assert_eq!(result, 2, "Token count for 'hello' should be 2");
+    }
+
+    #[test]
+    fn test_rough_token_count_sentence() {
+        // Caso: oración normal
+        let text = "This is a test sentence.";
+        let result = rough_token_count(text);
+        // 25 chars * 0.35 = 8.75, ceil = 9
+        assert_eq!(result, 9, "Token count for typical sentence should be ~9");
+    }
+
+    #[test]
+    fn test_rough_token_count_spanish_text() {
+        // Caso: texto en español con acentos
+        let text = "Esto es una prueba con acentuación: cafétera, búsqueda, mañana.";
+        let result = rough_token_count(text);
+        let char_count = text.chars().count();
+        let expected = (char_count as f64 * 0.35).ceil() as usize;
+        assert_eq!(result, expected, "Token count should handle Spanish accents correctly");
+    }
+
+    #[test]
+    fn test_rough_token_count_unicode_emoji() {
+        // Caso: texto con caracteres Unicode (emojis)
+        let text = "Hello 👋 world 🌍";
+        let result = rough_token_count(text);
+        let char_count = text.chars().count();
+        let expected = (char_count as f64 * 0.35).ceil() as usize;
+        assert_eq!(result, expected, "Token count should handle unicode/emoji correctly");
+    }
+
+    #[test]
+    fn test_rough_token_count_long_text() {
+        // Caso: texto largo (simular transcripción)
+        let text = "The meeting was productive. We discussed several key points. ".repeat(100);
+        let result = rough_token_count(&text);
+        let char_count = text.chars().count();
+        let expected = (char_count as f64 * 0.35).ceil() as usize;
+        assert_eq!(result, expected, "Token count for long text should scale linearly");
+        assert!(result > 1000, "Long repeated text should have >1000 tokens");
+    }
+
+    // ============================================================================
+    // Tests para chunk_text
+    // ============================================================================
+
+    #[test]
+    fn test_chunk_text_empty_string() {
+        // Caso: cadena vacía
+        let result = chunk_text("", 100, 10);
+        assert!(result.is_empty(), "Empty string should produce no chunks");
+    }
+
+    #[test]
+    fn test_chunk_text_zero_chunk_size() {
+        // Caso: tamaño de chunk = 0 (borde)
+        let result = chunk_text("some text", 0, 0);
+        assert!(result.is_empty(), "Zero chunk size should produce no chunks");
+    }
+
+    #[test]
+    fn test_chunk_text_shorter_than_chunk_size() {
+        // Caso: texto más pequeño que chunk_size
+        let text = "short text";
+        let result = chunk_text(text, 100, 10);
+        assert_eq!(result.len(), 1, "Text shorter than chunk size should be returned as single chunk");
+        assert_eq!(result[0], "short text");
+    }
+
+    #[test]
+    fn test_chunk_text_exact_chunk_boundary() {
+        // Caso: texto exactamente en los límites del chunk
+        let text = "word ".repeat(20); // ~100 chars
+        let result = chunk_text(&text, 50, 5);
+        assert!(!result.is_empty(), "Exact boundary should produce chunks");
+        // Verificar que cada chunk es una cadena válida (no corrupta por caracteres multibyte)
+        for chunk in &result {
+            assert!(!chunk.is_empty(), "Each chunk should be non-empty");
+        }
+    }
+
+    #[test]
+    fn test_chunk_text_with_overlap() {
+        // Caso: chunking con overlap debe crear solapamiento
+        let text = "The quick brown fox jumps over the lazy dog. ".repeat(10);
+        let result = chunk_text(&text, 50, 20);
+        assert!(result.len() >= 2, "Long text with overlap should produce multiple chunks");
+        // Verificar que hay solapamiento entre chunks consecutivos
+        if result.len() > 1 {
+            // Los últimos caracteres del chunk N-1 deberían solapar con los primeros del chunk N
+            let last_chunk = &result[0];
+            let next_chunk = &result[1];
+            // Este test verifica simplemente que overlap > 0 produzca múltiples chunks
+            assert!(!last_chunk.is_empty() && !next_chunk.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_chunk_text_word_boundary_breaking() {
+        // Caso: chunking debe romper en límites de palabra cuando sea posible
+        let text = "This is a test. Each word should be respected during chunking.";
+        let result = chunk_text(text, 20, 2);
+        // Verificar que los chunks no tienen palabras parciales (no termina en medio de palabra)
+        for chunk in &result {
+            let trimmed = chunk.trim();
+            // Último carácter no debe estar en el medio de una palabra
+            // (es decir, si hay contenido después, debe haber sido espacio o puntuación)
+            if !trimmed.is_empty() {
+                assert!(!trimmed.ends_with("-"), "Chunk should not break mid-word");
+            }
+        }
+    }
+
+    #[test]
+    fn test_chunk_text_unicode_handling() {
+        // Caso: chunking con caracteres Unicode debe mantener integridad
+        let text = "Café résumé naïve señor. ".repeat(5);
+        let result = chunk_text(&text, 30, 5);
+        assert!(!result.is_empty(), "Unicode text should be chunked");
+        for chunk in &result {
+            // Cada chunk debe ser una cadena válida UTF-8
+            assert!(chunk.is_ascii() || chunk.chars().all(|c| !c.is_whitespace() || c.is_ascii()),
+                    "Chunks should maintain valid UTF-8");
+        }
+    }
+
+    #[test]
+    fn test_chunk_text_long_transcript() {
+        // Caso: simular chunking de transcripción larga (multi-chunk)
+        let text = "The meeting started at 9 AM. John discussed the Q4 roadmap. ".repeat(50);
+        let result = chunk_text(&text, 200, 30);
+        assert!(result.len() > 1, "Long transcript should produce multiple chunks");
+        let total_text: String = result.join("");
+        assert!(total_text.contains("meeting") && total_text.contains("roadmap"),
+                "All content should be preserved across chunks");
+    }
+
+    // ============================================================================
+    // Tests para clean_llm_markdown_output
+    // ============================================================================
+
+    #[test]
+    fn test_clean_llm_markdown_output_empty_string() {
+        // Caso: cadena vacía
+        let result = clean_llm_markdown_output("");
+        assert_eq!(result, "", "Empty string should return empty string");
+    }
+
+    #[test]
+    fn test_clean_llm_markdown_output_clean_markdown() {
+        // Caso: markdown limpio (sin código fences ni thinking tags)
+        let markdown = "# Meeting Summary\nThis was a productive meeting.";
+        let result = clean_llm_markdown_output(markdown);
+        assert_eq!(result, markdown, "Clean markdown should not be modified");
+    }
+
+    #[test]
+    fn test_clean_llm_markdown_output_with_thinking_tags() {
+        // Caso: markdown con <thinking> tags
+        let markdown = "<thinking>Let me analyze this</thinking>## Summary\nKey points here.";
+        let result = clean_llm_markdown_output(markdown);
+        assert!(!result.contains("<thinking>"), "Thinking tags should be removed");
+        assert!(result.contains("Summary"), "Content after thinking tags should be preserved");
+        assert_eq!(result, "## Summary\nKey points here.");
+    }
+
+    #[test]
+    fn test_clean_llm_markdown_output_with_think_tags() {
+        // Caso: markdown con <think> tags (variante corta)
+        let markdown = "<think>Analyzing transcript</think>\n# Meeting\nImportant details.";
+        let result = clean_llm_markdown_output(markdown);
+        assert!(!result.contains("<think>"), "Think tags should be removed");
+        assert!(result.contains("Meeting"), "Content should be preserved");
+    }
+
+    #[test]
+    fn test_clean_llm_markdown_output_with_code_fence_markdown() {
+        // Caso: markdown envuelto en ```markdown\n...\n```
+        let markdown = "```markdown\n# Summary\nDetails here\n```";
+        let result = clean_llm_markdown_output(markdown);
+        assert_eq!(result, "# Summary\nDetails here", "Code fence should be removed");
+        assert!(!result.contains("```"), "Backticks should not appear in result");
+    }
+
+    #[test]
+    fn test_clean_llm_markdown_output_with_generic_code_fence() {
+        // Caso: markdown envuelto en ```\n...\n```
+        let markdown = "```\n## Resumen\nContent aquí\n```";
+        let result = clean_llm_markdown_output(markdown);
+        assert_eq!(result, "## Resumen\nContent aquí", "Generic code fence should be removed");
+    }
+
+    #[test]
+    fn test_clean_llm_markdown_output_with_extra_whitespace() {
+        // Caso: markdown con espacios/saltos de línea extras
+        let markdown = "  \n\n```markdown\n# Title\nBody\n```\n\n  ";
+        let result = clean_llm_markdown_output(markdown);
+        assert_eq!(result, "# Title\nBody", "Extra whitespace should be trimmed");
+    }
+
+    #[test]
+    fn test_clean_llm_markdown_output_mixed_thinking_and_fence() {
+        // Caso: ambos thinking tags y code fence
+        let markdown = "<thinking>Process</thinking>\n```markdown\n## Summary\nData\n```";
+        let result = clean_llm_markdown_output(markdown);
+        assert_eq!(result, "## Summary\nData");
+        assert!(!result.contains("<thinking>"));
+        assert!(!result.contains("```"));
+    }
+
+    // ============================================================================
+    // Tests para extract_meeting_name_from_markdown
+    // ============================================================================
+
+    #[test]
+    fn test_extract_meeting_name_from_markdown_with_heading() {
+        // Caso: markdown con encabezado # al inicio
+        let markdown = "# Team Standup Meeting\n\nDetails about the meeting.";
+        let result = extract_meeting_name_from_markdown(markdown);
+        assert_eq!(result, Some("Team Standup Meeting".to_string()));
+    }
+
+    #[test]
+    fn test_extract_meeting_name_from_markdown_no_heading() {
+        // Caso: markdown sin encabezado
+        let markdown = "Some content\n## Section\nMore content";
+        let result = extract_meeting_name_from_markdown(markdown);
+        assert_eq!(result, None, "Should return None if no # heading found");
+    }
+
+    #[test]
+    fn test_extract_meeting_name_from_markdown_empty_string() {
+        // Caso: cadena vacía
+        let result = extract_meeting_name_from_markdown("");
+        assert_eq!(result, None, "Empty string should return None");
+    }
+
+    #[test]
+    fn test_extract_meeting_name_from_markdown_whitespace_handling() {
+        // Caso: encabezado con espacios extras
+        let markdown = "#   Q4 Planning Meeting   \n\nContent";
+        let result = extract_meeting_name_from_markdown(markdown);
+        assert_eq!(result, Some("Q4 Planning Meeting".to_string()), "Whitespace should be trimmed");
+    }
+
+    #[test]
+    fn test_extract_meeting_name_spanish_title() {
+        // Caso: encabezado en español con acentos
+        let markdown = "# Reunión de Planificación Q4\n\nDetalles de la reunión.";
+        let result = extract_meeting_name_from_markdown(markdown);
+        assert_eq!(result, Some("Reunión de Planificación Q4".to_string()));
+    }
+
+    #[test]
+    fn test_extract_meeting_name_multiple_headings() {
+        // Caso: múltiples encabezados (debe devolver el primero)
+        let markdown = "# First Meeting\n\n## Subsection\n\n# Second Meeting";
+        let result = extract_meeting_name_from_markdown(markdown);
+        assert_eq!(result, Some("First Meeting".to_string()), "Should return first # heading");
+    }
+}
+

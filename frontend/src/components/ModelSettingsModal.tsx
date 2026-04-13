@@ -719,13 +719,11 @@ export function ModelSettingsModal({
                 <SelectValue placeholder="Seleccionar proveedor" />
               </SelectTrigger>
               <SelectContent className="max-h-64 overflow-y-auto">
-                <SelectItem value="builtin-ai">IA Integrada (Sin conexión, sin API)</SelectItem>
-                <SelectItem value="claude">Claude</SelectItem>
-                <SelectItem value="custom-openai">Servidor Personalizado (OpenAI)</SelectItem>
-                <SelectItem value="groq">Groq</SelectItem>
-                <SelectItem value="ollama">Ollama</SelectItem>
-                <SelectItem value="openai">OpenAI</SelectItem>
-                <SelectItem value="openrouter">OpenRouter</SelectItem>
+                {/* Privacidad first (asamblea 2026-04-11): solo proveedores
+                    locales. Cloud providers (claude, openai, groq, openrouter,
+                    custom-openai) ocultos del selector. La migración al startup
+                    los reemplaza automáticamente con ollama+gemma4:latest. */}
+                <SelectItem value="ollama">Ollama (local, recomendado)</SelectItem>
               </SelectContent>
             </Select>
 

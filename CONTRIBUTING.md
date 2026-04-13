@@ -32,7 +32,7 @@ Gracias por tu interes en contribuir a Maity Desktop. Este documento explica com
 3. Haz tus cambios
 4. Asegurate de que compile:
    ```bash
-   pnpm build
+   cd frontend && pnpm run tauri:build
    ```
 5. Haz commit:
    ```bash
@@ -48,19 +48,18 @@ Gracias por tu interes en contribuir a Maity Desktop. Este documento explica com
 
 ```
 maity-desktop/
-├── frontend/           # Aplicacion principal
-│   ├── src/           # Codigo React/Next.js
-│   └── src-tauri/     # Codigo Rust/Tauri
-├── backend/           # Scripts auxiliares
-├── docs/              # Documentacion e imagenes
-└── scripts/           # Scripts de build
+├── frontend/           # Aplicacion de escritorio Tauri
+│   ├── src/            # Codigo React/Next.js/TypeScript
+│   └── src-tauri/      # Backend Rust (audio, transcripcion, DB)
+├── backend/            # Servidor FastAPI (resumenes LLM, opcional)
+└── docs/               # Documentacion e imagenes
 ```
 
 ## Requisitos de Desarrollo
 
 - Node.js 18+
-- Rust 1.70+
-- pnpm
+- Rust 1.75+
+- pnpm 8+
 - Visual Studio Build Tools (Windows)
 
 ## Comandos Utiles
@@ -74,7 +73,7 @@ pnpm install
 pnpm tauri dev
 
 # Compilar release
-pnpm tauri build
+pnpm run tauri:build
 
 # Solo frontend
 pnpm dev

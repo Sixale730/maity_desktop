@@ -12,6 +12,7 @@ import { StatusOverlays } from '@/app/_components/StatusOverlays';
 import Analytics from '@/lib/analytics';
 import { SettingsModals } from './_components/SettingsModal';
 import { TranscriptPanel } from './_components/TranscriptPanel';
+import { CoachPanel } from '@/components/Coach/CoachPanel';
 import { useModalState } from '@/hooks/useModalState';
 import { useRecordingStateSync } from '@/hooks/useRecordingStateSync';
 import { useRecordingStart } from '@/hooks/useRecordingStart';
@@ -212,19 +213,22 @@ export default function Home() {
           isStopping={isStopping}
           showModal={showModal}
         />
+        <CoachPanel />
 
         {/* Recording controls - only show when permissions are granted or already recording and not showing status messages */}
+        {/* Fix 2026-04-11: right-[340px] para NO invadir el CoachPanel lateral (340px).
+            Antes cubría el chat input impidiendo escribir en el coach. */}
         {(hasMicrophone || isRecording) &&
           status !== RecordingStatus.PROCESSING_TRANSCRIPTS &&
           status !== RecordingStatus.SAVING && (
-            <div className="fixed bottom-12 left-0 right-0 z-10">
+            <div className="fixed bottom-12 left-0 right-[340px] z-10 pointer-events-none">
               <div
-                className="flex justify-center pl-8 transition-[margin] duration-300"
+                className="flex justify-center pl-8 transition-[margin] duration-300 pointer-events-none"
                 style={{
                   marginLeft: sidebarCollapsed ? '4rem' : '16rem'
                 }}
               >
-                <div className="w-2/3 max-w-[750px] flex justify-center">
+                <div className="w-2/3 max-w-[750px] flex justify-center pointer-events-auto">
                   <div className="bg-white dark:bg-gray-800 rounded-full shadow-lg flex items-center">
                     <RecordingControls
                       isRecording={recordingState.isRecording}

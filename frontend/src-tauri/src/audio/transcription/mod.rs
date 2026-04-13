@@ -6,6 +6,7 @@ pub mod provider;
 pub mod parakeet_provider;
 pub mod canary_provider;
 pub mod engine;
+pub mod spanish_postprocess;
 pub mod worker;
 
 // Re-export commonly used types

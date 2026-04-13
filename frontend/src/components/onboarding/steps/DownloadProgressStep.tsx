@@ -6,13 +6,13 @@ import { useOnboarding } from '@/contexts/OnboardingContext';
 import { toast } from 'sonner';
 
 /**
- * Local Setup Step - Confirms local-first configuration
+ * Local Setup Step - 100% Local Configuration
  *
- * This step informs the user that Maity uses:
- * - Whisper for local transcription (privacy-first)
- * - OpenAI for meeting summaries (cloud)
+ * Maity usa stack 100% local:
+ * - Parakeet ONNX para transcripción (CPU, tiempo real)
+ * - Ollama local (gemma4:latest) para coach IA y resúmenes
  *
- * Whisper model will be downloaded on first use.
+ * Parakeet se descarga la primera vez. Ollama debe estar instalado por el usuario.
  */
 export function DownloadProgressStep() {
   const {
@@ -62,23 +62,23 @@ export function DownloadProgressStep() {
 
   const providers = [
     {
-      name: 'Whisper Local',
-      description: 'Transcripción local y privada',
+      name: 'Parakeet ONNX',
+      description: 'Transcripción local en tiempo real',
       icon: <Mic className="w-5 h-5 text-[#3a4ac3]" />,
-      model: 'Small',
+      model: 'TDT 0.6B',
     },
     {
-      name: 'OpenAI',
-      description: 'Resúmenes de reuniones',
+      name: 'Ollama (local)',
+      description: 'Coach IA + resúmenes, sin API keys',
       icon: <Sparkles className="w-5 h-5 text-[#16bb7b]" />,
-      model: 'GPT-4o',
+      model: 'gemma4',
     },
   ];
 
   return (
     <OnboardingContainer
-      title="Transcripción Local y Privada"
-      description="Maity transcribe tus reuniones localmente usando Whisper, garantizando total privacidad. Los resúmenes usan IA en la nube."
+      title="100% Local y Privado"
+      description="Maity transcribe tus reuniones con Parakeet local y usa Ollama para el coach IA. Nada sale de tu equipo. Cero API keys."
       step={3}
       totalSteps={isMac ? 4 : 3}
     >
@@ -119,8 +119,8 @@ export function DownloadProgressStep() {
         {/* Benefits */}
         <div className="w-full max-w-md bg-[#f5f5f6] rounded-lg p-4">
           <p className="text-sm text-[#4a4a4c] text-center">
-            El modelo de transcripción se descargará automáticamente la primera vez que grabes
-            (~466 MB). Tu audio nunca sale de tu computadora.
+            Parakeet (~670 MB) se descarga automáticamente la primera vez que grabes.
+            Para el Coach IA necesitas Ollama instalado con <code className="font-mono text-xs">gemma4:latest</code>.
           </p>
         </div>
 

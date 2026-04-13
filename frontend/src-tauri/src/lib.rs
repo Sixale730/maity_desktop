@@ -18,14 +18,190 @@ macro_rules! perf_debug {
 // Make these macros available to other modules
 pub(crate) use perf_debug;
 
+// Input validation module for Tauri commands
+pub mod validation_helpers {
+    //! Input validation helpers for Tauri commands.
+    //! Provides validation functions for common string parameters across Tauri commands.
+
+    pub fn validate_string_length(value: &str, field: &str, max: usize) -> Result<String, String> {
+        let trimmed = value.trim().to_string();
+        if trimmed.is_empty() {
+            return Err(format!("{} cannot be empty", field));
+        }
+        if trimmed.len() > max {
+            return Err(format!(
+                "{} exceeds maximum length of {} characters (got {})",
+                field,
+                max,
+                trimmed.len()
+            ));
+        }
+        Ok(trimmed)
+    }
+
+    pub fn validate_no_path_traversal(value: &str, field: &str) -> Result<(), String> {
+        if value.contains("..") || value.contains('/') || value.contains('\\') {
+            return Err(format!(
+                "{} contains invalid path characters (.., /, \\)",
+                field
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn validate_meeting_name(name: &str) -> Result<String, String> {
+        let trimmed = validate_string_length(name, "meeting_name", 500)?;
+        validate_no_path_traversal(&trimmed, "meeting_name")?;
+        Ok(trimmed)
+    }
+
+    pub fn validate_device_name(name: &str) -> Result<String, String> {
+        validate_string_length(name, "device_name", 200)
+    }
+
+    pub fn validate_model_id(id: &str) -> Result<String, String> {
+        let trimmed = validate_string_length(id, "model_id", 100)?;
+        validate_no_path_traversal(&trimmed, "model_id")?;
+        Ok(trimmed)
+    }
+
+    pub fn validate_meeting_id(id: &str) -> Result<String, String> {
+        let trimmed = validate_string_length(id, "meeting_id", 100)?;
+        if !trimmed
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+        {
+            return Err(
+                "meeting_id contains invalid characters (only alphanumeric, -, _ allowed)"
+                    .to_string(),
+            );
+        }
+        Ok(trimmed)
+    }
+
+    pub fn validate_language(lang: &str) -> Result<String, String> {
+        validate_string_length(lang, "language", 10)
+    }
+
+    pub fn validate_provider(provider: &str) -> Result<String, String> {
+        let trimmed = validate_string_length(provider, "provider", 50)?;
+        validate_no_path_traversal(&trimmed, "provider")?;
+        Ok(trimmed)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn test_validate_string_length_valid() {
+            let result = validate_string_length("Hello World", "test_field", 20);
+            assert!(result.is_ok());
+            assert_eq!(result.unwrap(), "Hello World");
+        }
+
+        #[test]
+        fn test_validate_string_length_trims_whitespace() {
+            let result = validate_string_length("  Hello World  ", "test_field", 20);
+            assert!(result.is_ok());
+            assert_eq!(result.unwrap(), "Hello World");
+        }
+
+        #[test]
+        fn test_validate_string_length_empty_after_trim() {
+            let result = validate_string_length("   ", "test_field", 20);
+            assert!(result.is_err());
+            assert!(result.unwrap_err().contains("cannot be empty"));
+        }
+
+        #[test]
+        fn test_validate_string_length_exceeds_max() {
+            let result = validate_string_length("This is a very long string", "test_field", 10);
+            assert!(result.is_err());
+            assert!(result
+                .unwrap_err()
+                .contains("exceeds maximum length of 10 characters"));
+        }
+
+        #[test]
+        fn test_validate_no_path_traversal_valid() {
+            let result = validate_no_path_traversal("MyDocument-v1", "test_field");
+            assert!(result.is_ok());
+        }
+
+        #[test]
+        fn test_validate_no_path_traversal_parent_directory() {
+            let result = validate_no_path_traversal("../sensitive_file", "test_field");
+            assert!(result.is_err());
+            assert!(result.unwrap_err().contains("invalid path characters"));
+        }
+
+        #[test]
+        fn test_validate_no_path_traversal_forward_slash() {
+            let result = validate_no_path_traversal("dir/file", "test_field");
+            assert!(result.is_err());
+        }
+
+        #[test]
+        fn test_validate_no_path_traversal_backslash() {
+            let result = validate_no_path_traversal("dir\\file", "test_field");
+            assert!(result.is_err());
+        }
+
+        #[test]
+        fn test_validate_meeting_id_valid() {
+            let result = validate_meeting_id("meeting-123_abc");
+            assert!(result.is_ok());
+            assert_eq!(result.unwrap(), "meeting-123_abc");
+        }
+
+        #[test]
+        fn test_validate_meeting_id_invalid_characters() {
+            let result = validate_meeting_id("meeting@123");
+            assert!(result.is_err());
+            assert!(result
+                .unwrap_err()
+                .contains("invalid characters (only alphanumeric, -, _ allowed)"));
+        }
+
+        #[test]
+        fn test_validate_meeting_id_exceeds_max() {
+            let long_id = "a".repeat(101);
+            let result = validate_meeting_id(&long_id);
+            assert!(result.is_err());
+        }
+
+        #[test]
+        fn test_validate_meeting_name_with_path_traversal() {
+            let result = validate_meeting_name("../admin");
+            assert!(result.is_err());
+        }
+
+        #[test]
+        fn test_validate_model_id_path_traversal() {
+            let result = validate_model_id("..\\sensitive\\model");
+            assert!(result.is_err());
+        }
+
+        #[test]
+        fn test_validate_device_name_max_length() {
+            let long_name = "a".repeat(201);
+            let result = validate_device_name(&long_name);
+            assert!(result.is_err());
+        }
+    }
+}
+
 // Re-export async logging macros for external use (removed due to macro conflicts)
 
 // Declare audio module
 pub mod analytics;
 pub mod api;
 pub mod audio;
+pub mod coach;
 pub mod console_utils;
 pub mod database;
+pub mod export;
 pub mod logging;
 pub mod meeting_detector;
 pub mod notifications;
@@ -34,6 +210,7 @@ pub mod onboarding;
 pub mod openrouter;
 pub mod canary_engine;
 pub mod parakeet_engine;
+pub mod secure_storage;
 pub mod state;
 pub mod summary;
 pub mod tray;
@@ -44,7 +221,7 @@ use audio::{list_audio_devices, AudioDevice, trigger_audio_permission};
 use log::{error as log_error, info as log_info};
 use notifications::commands::NotificationManagerState;
 use std::sync::Arc;
-use tauri::{AppHandle, Manager, Runtime};
+use tauri::{AppHandle, Emitter, Manager, Runtime};
 use tokio::sync::RwLock;
 
 // Global language preference storage (initialized with detected system language)
@@ -126,12 +303,34 @@ async fn start_recording<R: Runtime>(
     system_device_name: Option<String>,
     meeting_name: Option<String>,
 ) -> Result<(), String> {
-    log_info!("🔥 CALLED start_recording with meeting: {:?}", meeting_name);
+    // Validate input parameters
+    let validated_mic = if let Some(mic) = mic_device_name {
+        Some(validation_helpers::validate_device_name(&mic)?)
+    } else {
+        None
+    };
+
+    let validated_system = if let Some(sys) = system_device_name {
+        Some(validation_helpers::validate_device_name(&sys)?)
+    } else {
+        None
+    };
+
+    let validated_meeting = if let Some(name) = meeting_name {
+        Some(validation_helpers::validate_meeting_name(&name)?)
+    } else {
+        None
+    };
+
+    log_info!(
+        "🔥 CALLED start_recording with meeting: {:?}",
+        validated_meeting
+    );
     log_info!(
         "📋 Backend received parameters - mic: {:?}, system: {:?}, meeting: {:?}",
-        mic_device_name,
-        system_device_name,
-        meeting_name
+        validated_mic,
+        validated_system,
+        validated_meeting
     );
 
     if is_recording().await {
@@ -141,9 +340,9 @@ async fn start_recording<R: Runtime>(
     // Call the actual audio recording system with meeting name
     match audio::recording_commands::start_recording_with_devices_and_meeting(
         app.clone(),
-        mic_device_name,
-        system_device_name,
-        meeting_name.clone(),
+        validated_mic,
+        validated_system,
+        validated_meeting.clone(),
     )
     .await
     {
@@ -158,7 +357,7 @@ async fn start_recording<R: Runtime>(
             if let Err(e) = notifications::commands::show_recording_started_notification(
                 &app,
                 &notification_manager_state,
-                meeting_name.clone(),
+                validated_meeting.clone(),
             )
             .await
             {
@@ -283,6 +482,8 @@ fn get_system_specs() -> Result<SystemSpecs, String> {
 
 #[tauri::command]
 fn read_audio_file(file_path: String) -> Result<Vec<u8>, String> {
+    // Security: validate path to prevent traversal attacks
+    validation_helpers::validate_no_path_traversal(&file_path, "file_path")?;
     match std::fs::read(&file_path) {
         Ok(data) => Ok(data),
         Err(e) => Err(format!("Failed to read audio file: {}", e)),
@@ -291,6 +492,8 @@ fn read_audio_file(file_path: String) -> Result<Vec<u8>, String> {
 
 #[tauri::command]
 async fn save_transcript(file_path: String, content: String) -> Result<(), String> {
+    // Security: validate path to prevent traversal attacks
+    validation_helpers::validate_no_path_traversal(&file_path, "file_path")?;
     log_info!("Saving transcript to: {}", file_path);
 
     // Ensure parent directory exists
@@ -457,6 +660,27 @@ pub fn get_language_preference_internal() -> Option<String> {
     LANGUAGE_PREFERENCE.lock().ok().map(|lang| lang.clone())
 }
 
+// Secure storage commands for API keys
+#[tauri::command]
+fn secure_store_api_key(provider: String, api_key: String) -> Result<(), String> {
+    secure_storage::store_api_key(&provider, &api_key)
+}
+
+#[tauri::command]
+fn secure_get_api_key(provider: String) -> Result<Option<String>, String> {
+    secure_storage::get_api_key(&provider)
+}
+
+#[tauri::command]
+fn secure_delete_api_key(provider: String) -> Result<(), String> {
+    secure_storage::delete_api_key(&provider)
+}
+
+#[tauri::command]
+fn is_secure_storage_available() -> bool {
+    secure_storage::is_keyring_available()
+}
+
 pub fn run() {
     log::set_max_level(log::LevelFilter::Info);
 
@@ -464,7 +688,11 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_updater::Builder::new().build())
+        // Updater plugin DESHABILITADO (asamblea UX 2026-04-11): el endpoint
+        // por defecto devuelve 404 en cada arranque, generando ruido en logs
+        // y un ERROR visible al usuario sin valor. Reactivar cuando exista
+        // un endpoint real de updates en producción.
+        // .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .manage(Arc::new(RwLock::new(
             None::<notifications::manager::NotificationManager<tauri::Wry>>,
@@ -545,10 +773,15 @@ pub fn run() {
             let app_handle_for_config = _app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 // Migration: if DB has localWhisper, migrate to parakeet automatically
+                // Migration: si DB tiene cualquier provider cloud (openai/claude/groq/openrouter/
+                // custom-openai), migrar a ollama+gemma4:latest. Requisito de privacidad:
+                // la app NO debe llamar a APIs externas (2026-04-11).
                 {
                     let state = app_handle_for_config.try_state::<crate::state::AppState>();
                     if let Some(app_state) = state {
                         let pool = app_state.db_manager.pool();
+
+                        // Migración 1: transcripción localWhisper → parakeet
                         match crate::database::repositories::setting::SettingsRepository::get_transcript_config(pool).await {
                             Ok(Some(config)) if config.provider == "localWhisper" => {
                                 log::info!("Migrating transcript provider from localWhisper to parakeet...");
@@ -560,7 +793,32 @@ pub fn run() {
                                     log::info!("Migrated provider from localWhisper to parakeet automatically");
                                 }
                             }
-                            _ => {} // Already parakeet or no config — nothing to migrate
+                            _ => {}
+                        }
+
+                        // Migración 2: summary cloud → ollama+gemma4 (privacidad)
+                        match crate::database::repositories::setting::SettingsRepository::get_model_config(pool).await {
+                            Ok(Some(config)) => {
+                                let provider = config.provider.as_str();
+                                let is_cloud = matches!(
+                                    provider,
+                                    "openai" | "claude" | "groq" | "openrouter" | "custom-openai"
+                                );
+                                if is_cloud {
+                                    log::info!(
+                                        "🔒 Migrating summary provider from '{}' to 'ollama' (privacidad)",
+                                        provider
+                                    );
+                                    if let Err(e) = crate::database::repositories::setting::SettingsRepository::save_model_config(
+                                        pool, "ollama", "gemma4:latest", "small", None
+                                    ).await {
+                                        log::error!("Failed to migrate summary provider: {}", e);
+                                    } else {
+                                        log::info!("✅ Migrated summary provider to ollama+gemma4:latest");
+                                    }
+                                }
+                            }
+                            _ => {}
                         }
                     }
                 }
@@ -569,6 +827,21 @@ pub fn run() {
                 log::info!("Initializing Parakeet engine (always-on local transcription)");
                 if let Err(e) = parakeet_engine::commands::parakeet_init().await {
                     log::error!("Failed to initialize Parakeet engine: {}", e);
+                } else {
+                    // Pre-load Parakeet ONNX model for instant recording start
+                    log::info!("Pre-loading Parakeet ONNX model for instant recording...");
+                    let preload_start = std::time::Instant::now();
+                    match parakeet_engine::commands::parakeet_validate_model_ready().await {
+                        Ok(model_name) => {
+                            let elapsed = preload_start.elapsed();
+                            log::info!("Parakeet model '{}' pre-loaded in {:.2}s", model_name, elapsed.as_secs_f64());
+                            let _ = app_handle_for_config.emit("transcription-model-ready",
+                                serde_json::json!({ "provider": "parakeet", "model": model_name }));
+                        }
+                        Err(e) => {
+                            log::warn!("Failed to pre-load Parakeet model: {} (will load on first recording)", e);
+                        }
+                    }
                 }
 
                 // Initialize Canary engine if configured as the transcript provider
@@ -588,6 +861,21 @@ pub fn run() {
                         log::info!("Initializing Canary engine (configured as transcript provider)");
                         if let Err(e) = canary_engine::commands::canary_init().await {
                             log::error!("Failed to initialize Canary engine: {}", e);
+                        } else {
+                            // Pre-load Canary ONNX model for instant recording start
+                            log::info!("Pre-loading Canary ONNX model for instant recording...");
+                            let preload_start = std::time::Instant::now();
+                            match canary_engine::commands::canary_validate_model_ready().await {
+                                Ok(model_name) => {
+                                    let elapsed = preload_start.elapsed();
+                                    log::info!("Canary model '{}' pre-loaded in {:.2}s", model_name, elapsed.as_secs_f64());
+                                    let _ = app_handle_for_config.emit("transcription-model-ready",
+                                        serde_json::json!({ "provider": "canary", "model": model_name }));
+                                }
+                                Err(e) => {
+                                    log::warn!("Failed to pre-load Canary model: {} (will load on first recording)", e);
+                                }
+                            }
                         }
                     }
                 }
@@ -704,6 +992,7 @@ pub fn run() {
             parakeet_engine::commands::parakeet_is_model_loaded,
             parakeet_engine::commands::parakeet_has_available_models,
             parakeet_engine::commands::parakeet_validate_model_ready,
+            parakeet_engine::commands::parakeet_is_ready,
             parakeet_engine::commands::parakeet_transcribe_audio,
             parakeet_engine::commands::parakeet_get_models_directory,
             parakeet_engine::commands::parakeet_download_model,
@@ -719,6 +1008,7 @@ pub fn run() {
             canary_engine::commands::canary_is_model_loaded,
             canary_engine::commands::canary_unload_model,
             canary_engine::commands::canary_validate_model_ready,
+            canary_engine::commands::canary_is_ready,
             canary_engine::commands::canary_transcribe_audio,
             canary_engine::commands::canary_download_model,
             canary_engine::commands::canary_cancel_download,
@@ -767,6 +1057,11 @@ pub fn run() {
             // api::api_get_auto_generate_setting,
             // api::api_save_auto_generate_setting,
             api::api_get_transcript_config,
+            // Secure storage commands for API keys
+            secure_store_api_key,
+            secure_get_api_key,
+            secure_delete_api_key,
+            is_secure_storage_available,
             api::api_save_transcript_config,
             api::api_get_transcript_api_key,
             api::api_delete_meeting,
@@ -779,6 +1074,8 @@ pub fn run() {
             api::test_backend_connection,
             api::debug_backend_connection,
             api::open_external_url,
+            // Export commands
+            export::export_meeting,
             // Custom OpenAI commands
             api::api_save_custom_openai_config,
             api::api_get_custom_openai_config,
@@ -879,6 +1176,15 @@ pub fn run() {
             health_check,
             // System specs for model recommendation
             get_system_specs,
+            // Coach (copiloto IA en tiempo real)
+            coach::commands::coach_suggest,
+            coach::commands::coach_set_model,
+            coach::commands::coach_get_status,
+            coach::evaluator::coach_evaluate_communication,
+            coach::chat::coach_chat,
+            coach::trigger::coach_analyze_trigger,
+            coach::meeting_type::coach_detect_meeting_type,
+            coach::meeting_type::coach_clear_meeting_type_cache,
             // System settings commands
             #[cfg(target_os = "macos")]
             utils::open_system_settings,

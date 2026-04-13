@@ -1,234 +1,227 @@
-# Bluetooth Headphone Playback Notice
+# Aviso sobre Reproduccion con Auriculares Bluetooth
 
-## Important Information for Recording Review
+## Informacion Importante para Revisar Grabaciones
 
-When **reviewing recordings** in Maity, we recommend using **computer speakers** or **wired headphones** rather than Bluetooth headphones for accurate playback.
-
----
-
-## The Issue
-
-Recordings may sound **distorted, sped up, or have clarity issues** when played through Bluetooth headphones, even though the recording file itself is perfectly fine.
-
-### Symptoms
-- Audio plays too fast or too slow
-- Voice sounds higher/lower pitched than normal
-- Quality seems degraded or "chipmunk-like"
-- **Different Bluetooth devices cause different playback speeds**
-
-### What's Actually Happening
-**Your recording is fine!** The issue occurs during **playback**, not recording.
+Al **revisar grabaciones** en Maity, recomendamos usar **parlantes de la computadora** o **audifonos con cable** en lugar de audifonos Bluetooth para una reproduccion precisa.
 
 ---
 
-## Technical Explanation
+## El Problema
 
-### Why This Happens
+Las grabaciones pueden sonar **distorsionadas, aceleradas o con problemas de claridad** al reproducirlas a traves de audifonos Bluetooth, aunque el archivo de grabacion en si esta perfectamente bien.
 
-1. **Maity records at 48kHz** (professional audio standard)
-2. **Bluetooth headphones use various sample rates**: 8kHz, 16kHz, 24kHz, 44.1kHz, or 48kHz
-3. **macOS resamples audio** when sending 48kHz content to Bluetooth devices
-4. **Resampling can fail** if macOS:
-   - Negotiates the wrong Bluetooth codec (SBC vs AAC vs LDAC)
-   - Misidentifies the device's playback capability
-   - Uses low-quality resampling for power efficiency
+### Sintomas
+- El audio se reproduce demasiado rapido o demasiado lento
+- La voz suena mas aguda o mas grave de lo normal
+- La calidad parece degradada o tipo "ardilla"
+- **Diferentes dispositivos Bluetooth causan diferentes velocidades de reproduccion**
 
-### Device-Specific Behavior
-
-Different Bluetooth headphones report different capabilities:
-
-| Device Type | Typical Playback Rate | Result When Playing 48kHz |
-|------------|----------------------|---------------------------|
-| Sony WH-1000XM4 | 16-44.1kHz (varies) | May sound 1.5-3x faster |
-| AirPods Pro | 24kHz or 48kHz | Usually OK, but can vary |
-| Cheap BT Headset | 8-16kHz | Often sounds very fast |
-| High-end BT (LDAC) | 44.1-48kHz | Usually works correctly |
-
-The rate depends on:
-- **Bluetooth profile** (A2DP for music vs HFP for calls)
-- **Active codec** (SBC, AAC, aptX, LDAC)
-- **Battery mode** (power-saving modes may reduce quality)
-- **macOS version** and audio driver quirks
+### Lo que Realmente Sucede
+**Tu grabacion esta bien!** El problema ocurre durante la **reproduccion**, no durante la grabacion.
 
 ---
 
-## Solution: Use Computer Speakers
+## Explicacion Tecnica
 
-### For Accurate Review
+### Por que Sucede Esto
 
-✅ **Computer speakers** (built-in or external)
-✅ **Wired headphones** (3.5mm jack or USB)
-✅ **High-quality DAC** (digital audio converter)
+1. **Maity graba a 48kHz** (estandar de audio profesional)
+2. **Los audifonos Bluetooth usan varias tasas de muestreo**: 8kHz, 16kHz, 24kHz, 44.1kHz o 48kHz
+3. **macOS re-muestrea el audio** al enviar contenido de 48kHz a dispositivos Bluetooth
+4. **El re-muestreo puede fallar** si macOS:
+   - Negocia el codec Bluetooth incorrecto (SBC vs AAC vs LDAC)
+   - Identifica incorrectamente la capacidad de reproduccion del dispositivo
+   - Usa re-muestreo de baja calidad para eficiencia energetica
 
-❌ **Bluetooth headphones** (for reviewing recordings)
-❌ **Bluetooth speakers** (same resampling issues)
+### Comportamiento Especifico por Dispositivo
 
-### Bluetooth Headphones Are Fine For
+Diferentes audifonos Bluetooth reportan diferentes capacidades:
 
-- ✅ **Recording** (microphone input) - We handle sample rate conversion correctly
-- ✅ **Live monitoring** during recording - macOS handles real-time audio
-- ✅ **General computer use** - Normal audio playback
-- ❌ **Reviewing Maity recordings** - Use wired/speakers instead
+| Tipo de Dispositivo | Tasa de Reproduccion Tipica | Resultado al Reproducir 48kHz |
+|---------------------|----------------------------|-------------------------------|
+| Sony WH-1000XM4 | 16-44.1kHz (varia) | Puede sonar 1.5-3x mas rapido |
+| AirPods Pro | 24kHz o 48kHz | Generalmente OK, pero puede variar |
+| Audifonos BT baratos | 8-16kHz | Frecuentemente suena muy rapido |
+| BT de alta gama (LDAC) | 44.1-48kHz | Generalmente funciona correctamente |
+
+La tasa depende de:
+- **Perfil Bluetooth** (A2DP para musica vs HFP para llamadas)
+- **Codec activo** (SBC, AAC, aptX, LDAC)
+- **Modo de bateria** (modos de ahorro de energia pueden reducir calidad)
+- **Version de macOS** y particularidades del driver de audio
 
 ---
 
-## Verification Steps
+## Solucion: Usar Parlantes de la Computadora
 
-To confirm your recording is actually fine:
+### Para una Revision Precisa
 
-1. **Play recording through computer speakers**
-   - If it sounds normal → Recording is good, BT playback is the issue ✅
-   - If it still sounds wrong → May be a different issue ❌
+**Recomendado:**
+- Parlantes de la computadora (integrados o externos)
+- Audifonos con cable (jack 3.5mm o USB)
+- DAC de alta calidad (convertidor digital a analogico)
 
-2. **Check file properties**
+**No recomendado para revisar grabaciones:**
+- Audifonos Bluetooth (problemas de re-muestreo)
+- Parlantes Bluetooth (mismos problemas de re-muestreo)
+
+### Los Audifonos Bluetooth Funcionan Bien Para
+
+- **Grabacion** (entrada de microfono) - Manejamos la conversion de tasa de muestreo correctamente
+- **Monitoreo en vivo** durante grabacion - macOS maneja el audio en tiempo real
+- **Uso general de la computadora** - Reproduccion normal de audio
+- **NO para revisar grabaciones de Maity** - Usa con cable o parlantes
+
+---
+
+## Pasos de Verificacion
+
+Para confirmar que tu grabacion esta realmente bien:
+
+1. **Reproduce la grabacion a traves de parlantes de la computadora**
+   - Si suena normal: la grabacion esta bien, la reproduccion por BT es el problema
+   - Si aun suena mal: puede ser un problema diferente
+
+2. **Verifica las propiedades del archivo**
    ```bash
-   # In terminal:
-   ffprobe path/to/recording/audio.mp4
+   # En terminal:
+   ffprobe ruta/a/la/grabacion/audio.mp4
    ```
-   Should show:
-   - `sample_rate=48000` ✅
-   - `channels=1` ✅
-   - `codec_name=aac` ✅
+   Deberia mostrar:
+   - `sample_rate=48000`
+   - `channels=2` (stereo: canal izquierdo = microfono, canal derecho = sistema)
+   - `codec_name=aac`
 
-3. **Try different playback devices**
-   - Computer speakers: Should sound normal
-   - Wired headphones: Should sound normal
-   - Bluetooth device A: Might sound wrong
-   - Bluetooth device B: Might sound differently wrong
-
----
-
-## Why We Don't "Fix" This
-
-### This is Not a Maity Bug
-
-The issue is in **macOS's Bluetooth audio stack**, not in Maity's recording engine.
-
-**Evidence:**
-- Recordings play perfectly on computer speakers
-- File metadata shows correct 48kHz encoding
-- Other professional audio apps have the same limitation
-- Issue varies by Bluetooth device (different devices = different problems)
-
-### Industry Standard Practice
-
-Professional audio software **always** recommends:
-- Monitor through studio monitors (speakers) or wired headphones
-- Avoid Bluetooth for critical listening
-- Use wired connections for audio work
-
-Examples:
-- **Logic Pro X**: Warns against BT monitoring
-- **Audacity**: Recommends wired headphones
-- **GarageBand**: Disables BT for recording/monitoring
+3. **Prueba con diferentes dispositivos de reproduccion**
+   - Parlantes de la computadora: deberia sonar normal
+   - Audifonos con cable: deberia sonar normal
+   - Dispositivo Bluetooth A: podria sonar mal
+   - Dispositivo Bluetooth B: podria sonar diferente mal
 
 ---
 
-## Workarounds
+## Por que No "Arreglamos" Esto
 
-### Option 1: Use Computer Speakers (Recommended)
-**Best**: Most accurate, no resampling issues
+### Esto No Es un Bug de Maity
 
-### Option 2: Export at Different Sample Rate
-If you **must** use Bluetooth for playback:
+El problema esta en el **stack de audio Bluetooth de macOS**, no en el motor de grabacion de Maity.
 
-1. **Export recording** at lower sample rate (future feature)
-2. **Transcode manually** using ffmpeg:
+**Evidencia:**
+- Las grabaciones se reproducen perfectamente en parlantes de la computadora
+- Los metadatos del archivo muestran codificacion correcta a 48kHz
+- Otras aplicaciones de audio profesional tienen la misma limitacion
+- El problema varia por dispositivo Bluetooth (diferentes dispositivos = diferentes problemas)
+
+### Practica Estandar de la Industria
+
+El software de audio profesional **siempre** recomienda:
+- Monitorear a traves de monitores de estudio (parlantes) o audifonos con cable
+- Evitar Bluetooth para escucha critica
+- Usar conexiones con cable para trabajo de audio
+
+Ejemplos:
+- **Logic Pro X**: Advierte contra monitoreo por BT
+- **Audacity**: Recomienda audifonos con cable
+- **GarageBand**: Deshabilita BT para grabacion/monitoreo
+
+---
+
+## Soluciones Alternativas
+
+### Opcion 1: Usar Parlantes de la Computadora (Recomendado)
+**Mejor opcion**: Mas preciso, sin problemas de re-muestreo
+
+### Opcion 2: Exportar a Diferente Tasa de Muestreo
+Si **necesitas** usar Bluetooth para reproduccion:
+
+1. **Transcodificar manualmente** usando ffmpeg:
    ```bash
    ffmpeg -i audio.mp4 -ar 44100 audio_44k.mp4
    ```
-3. **Try 44.1kHz** (better BT compatibility than 48kHz)
+2. **Probar 44.1kHz** (mejor compatibilidad con BT que 48kHz)
 
-### Option 3: Use High-Quality Bluetooth
-Devices with **LDAC** or **aptX HD** codecs:
-- Sony WH-1000XM5 (LDAC mode)
+### Opcion 3: Usar Bluetooth de Alta Calidad
+Dispositivos con codecs **LDAC** o **aptX HD**:
+- Sony WH-1000XM5 (modo LDAC)
 - Sennheiser Momentum 4
-- Some high-end Bose models
+- Algunos modelos Bose de alta gama
 
-These handle 48kHz better (but still not perfect).
+Estos manejan mejor 48kHz (pero aun no es perfecto).
 
 ---
 
-## Technical Details for Developers
+## Detalles Tecnicos para Desarrolladores
 
-### Sample Rate Chain
+### Cadena de Tasas de Muestreo
 
 ```
-Recording Pipeline:
-  Microphone (16kHz) → Resample to 48kHz → Pipeline (48kHz)
-  System Audio (48kHz) → No resampling → Pipeline (48kHz)
-  Mixed Audio (48kHz) → Encode → File (48kHz AAC)
+Pipeline de Grabacion:
+  Microfono (16kHz) -> Re-muestreo a 48kHz -> Pipeline (48kHz)
+  Audio del Sistema (48kHz) -> Sin re-muestreo -> Pipeline (48kHz)
+  Audio Stereo (48kHz, L=mic, R=sistema) -> Codificar -> Archivo (48kHz AAC, stereo)
 
-Playback (Computer Speakers):
-  File (48kHz) → macOS CoreAudio → Speakers (48kHz) ✅
+Reproduccion (Parlantes de la Computadora):
+  Archivo (48kHz) -> macOS CoreAudio -> Parlantes (48kHz) [OK]
 
-Playback (Bluetooth):
-  File (48kHz) → macOS CoreAudio → Bluetooth Stack → Resample → BT Device (16-48kHz) ⚠️
-                                                      ↑
-                                                This step can fail!
+Reproduccion (Bluetooth):
+  Archivo (48kHz) -> macOS CoreAudio -> Stack Bluetooth -> Re-muestreo -> Dispositivo BT (16-48kHz) [Advertencia]
+                                                           ^
+                                                   Este paso puede fallar!
 ```
 
-### Why macOS Resampling Fails
+### Por que Falla el Re-muestreo de macOS
 
-1. **Codec negotiation**: BT device claims 48kHz support but actually uses 16kHz
-2. **Profile switching**: Device switches from A2DP (music) to HFP (call) mid-playback
-3. **Power management**: macOS downsamples to save battery
-4. **Driver bugs**: CoreAudio → Bluetooth handoff has known issues
+1. **Negociacion de codec**: El dispositivo BT declara soporte para 48kHz pero realmente usa 16kHz
+2. **Cambio de perfil**: El dispositivo cambia de A2DP (musica) a HFP (llamada) durante la reproduccion
+3. **Gestion de energia**: macOS reduce la tasa de muestreo para ahorrar bateria
+4. **Bugs de driver**: La transferencia CoreAudio a Bluetooth tiene problemas conocidos
 
-### Apple's Documentation
+### Documentacion de Apple
 
-From [Apple Technical Note TN2321](https://developer.apple.com/library/archive/technotes/tn2321/):
-> "Bluetooth audio devices may report supported sample rates that differ from
-> their actual playback rates. Applications should not rely on Bluetooth
-> devices for accurate audio monitoring."
-
----
-
-## FAQ
-
-### Q: Will this be fixed in a future update?
-**A**: This is a macOS/Bluetooth limitation, not a Maity bug. We've correctly recorded at 48kHz.
-
-### Q: Why not record at 16kHz if that's what Bluetooth uses?
-**A**: Because:
-1. System audio is 48kHz (can't be changed)
-2. 48kHz is professional quality (16kHz is phone-call quality)
-3. Most users play back on computer speakers
-4. Recording at 16kHz would degrade quality for 95% of users
-
-### Q: Can you detect my Bluetooth device and warn me?
-**A**: Yes! Maity now shows a warning when Bluetooth headphones are active during playback.
-
-### Q: Does this affect recording quality?
-**A**: **No**. Recording quality is perfect. Only **playback** through Bluetooth has issues.
-
-### Q: What about AirPods? They're supposed to be high quality.
-**A**: AirPods handle 48kHz better than most BT devices, but can still have issues depending on:
-- Codec negotiation (AAC vs SBC)
-- Battery level (power-saving mode)
-- Connection quality (Bluetooth interference)
-- macOS audio driver quirks
+De [Apple Technical Note TN2321](https://developer.apple.com/library/archive/technotes/tn2321/):
+> "Los dispositivos de audio Bluetooth pueden reportar tasas de muestreo soportadas que
+> difieren de sus tasas de reproduccion reales. Las aplicaciones no deberian depender de
+> dispositivos Bluetooth para monitoreo preciso de audio."
 
 ---
 
-## Summary
+## Preguntas Frecuentes
 
-✅ **Recordings are perfect** - 48kHz, high quality
-✅ **Computer playback works** - Use speakers or wired headphones
-⚠️ **Bluetooth playback may sound wrong** - macOS resampling issue
-✅ **Recording through BT mic works** - We handle resampling correctly
+### P: Se arreglara esto en una futura actualizacion?
+**R**: Esta es una limitacion de macOS/Bluetooth, no un bug de Maity. Hemos grabado correctamente a 48kHz.
 
-**Bottom line**: Review your recordings through computer speakers, not Bluetooth headphones.
+### P: Por que no grabar a 16kHz si eso es lo que usa Bluetooth?
+**R**: Porque:
+1. El audio del sistema es de 48kHz (no se puede cambiar)
+2. 48kHz es calidad profesional (16kHz es calidad de llamada telefonica)
+3. La mayoria de usuarios reproducen en parlantes de la computadora
+4. Grabar a 16kHz degradaria la calidad para el 95% de los usuarios
+
+### P: Pueden detectar mi dispositivo Bluetooth y advertirme?
+**R**: Si! Maity muestra una advertencia cuando hay audifonos Bluetooth activos durante la reproduccion.
+
+### P: Esto afecta la calidad de grabacion?
+**R**: **No**. La calidad de grabacion es perfecta. Solo la **reproduccion** a traves de Bluetooth tiene problemas.
+
+### P: Que pasa con los AirPods? Se supone que son de alta calidad.
+**R**: Los AirPods manejan 48kHz mejor que la mayoria de dispositivos BT, pero aun pueden tener problemas dependiendo de:
+- Negociacion de codec (AAC vs SBC)
+- Nivel de bateria (modo de ahorro de energia)
+- Calidad de conexion (interferencia Bluetooth)
+- Particularidades del driver de audio de macOS
 
 ---
 
-## Related Documentation
+## Resumen
 
-- [AIRPODS_BLUETOOTH_FIX.md](AIRPODS_BLUETOOTH_FIX.md) - Bluetooth device reconnection handling
-- [BLUETOOTH_SAMPLE_RATE_FIX.md](BLUETOOTH_SAMPLE_RATE_FIX.md) - Microphone sample rate resampling
-- [Apple Technical Note TN2321](https://developer.apple.com/library/archive/technotes/tn2321/) - Bluetooth Audio Best Practices
+- **Las grabaciones son perfectas** - 48kHz stereo, alta calidad
+- **La reproduccion en computadora funciona** - Usa parlantes o audifonos con cable
+- **La reproduccion por Bluetooth puede sonar mal** - Problema de re-muestreo de macOS
+- **Grabar a traves de microfono BT funciona** - Manejamos el re-muestreo correctamente
+
+**Conclusion**: Revisa tus grabaciones a traves de parlantes de la computadora, no de audifonos Bluetooth.
 
 ---
 
-**Last Updated**: October 10, 2025
-**Applies To**: Maity v0.0.5+ on macOS
+**Ultima Actualizacion**: Febrero 2026
+**Aplica a**: Maity v0.2.1+ en macOS y Windows

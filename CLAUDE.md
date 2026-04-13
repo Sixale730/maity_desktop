@@ -594,3 +594,66 @@ Al terminar trabajo significativo, listar:
 - Resultado de compilación (los 3 builds)
 - Tareas completadas vs pendientes
 - Cualquier advertencia o problema encontrado
+
+### 8. Optimización de Terminal (Perfil Agilidad Experto)
+
+**Regla**: No utilices prefijos `cd && ` si ya estás en la ruta correcta. Ejecuta comandos de forma directa para no disparar el sistema de permisos innecesariamente.
+
+- Si el cwd ya es `D:\Proyectos de Kiro\Maity-desktop\frontend`, ejecutar `pnpm run tauri:build` directamente en lugar de `cd frontend && pnpm run tauri:build`.
+- Usar rutas absolutas en argumentos cuando sea necesario, no `cd` encadenados.
+- Un comando directo atraviesa el allowlist con una sola regla; un `cd && X` requiere match compuesto y puede fallar más veces.
+- Preferir herramientas dedicadas (Read/Edit/Grep/Glob) sobre Bash cuando aplica — no disparan el sistema de permisos.
+
+**Protocolo de Terminal**: Ya estás en la raíz del proyecto. No uses prefijos de `cd` innecesarios. Ejecuta comandos de forma directa para maximizar velocidad y evitar redundancia.
+
+### 9. Tests Obligatorios (SIN EXCEPCIONES)
+
+**REGLA ABSOLUTA**: NO se puede entregar código nuevo sin tests reales que prueben el comportamiento. NO se puede reportar una tarea completada sin haber ejecutado los tests y verificado que pasan.
+
+**Para cada cambio de código:**
+
+1. **Tests unitarios Rust**: si añades código en `frontend/src-tauri/src/`, escribir `#[cfg(test)] mod tests` con casos:
+   - Camino feliz
+   - Casos borde (input vacío, input máximo, valores nulos)
+   - Caso de error (input inválido)
+   - Idempotencia cuando aplique
+2. **Ejecutar**: `cargo test --lib <nombre_modulo>` debe terminar con `test result: ok`.
+3. **Tests de UI/integración**: si añades componente React, validar manualmente en `pnpm run tauri:dev` que el comportamiento es el esperado.
+4. **Reportar resultado**: incluir en el resumen `tests: N/N PASS` o `tests: M/N FAIL` (con detalles del fallo).
+
+**PROHIBIDO**:
+- Reportar "implementado" sin tests
+- Marcar tarea como completed con `cargo test` fallando
+- Decir "el código compila" como sustituto de tests funcionales
+- Entregar UI sin haber abierto la app y haber visto la feature funcionar
+
+### 10. Build Completo (Backend Rust + Frontend Next.js)
+
+**REGLA**: El comando obligatorio `pnpm run tauri:build` ya ejecuta la cadena completa **backend Rust + frontend Next.js + bundling integrado**:
+
+```
+corepack pnpm build (Next.js → out/)
+    ↓
+cargo build --release (Rust → maity-desktop.exe)
+    ↓
+tauri bundle (MSI + NSIS installers)
+```
+
+**Verificación obligatoria de los DOS layers**:
+- **Frontend Next.js**: la salida debe incluir `Route (app)` y `First Load JS` con todas las rutas pre-renderizadas.
+- **Backend Rust**: debe terminar con `Finished` y producir `target/release/maity-desktop.exe` con timestamp reciente.
+- **Bundles**: deben listarse `Maity_*.msi` y `Maity_*-setup.exe` con timestamp reciente.
+
+**Si falta cualquiera de los tres, el build NO está completo aunque exit code sea 0.** Verificar con `ls -la target/release/maity-desktop.exe target/release/bundle/msi/ target/release/bundle/nsis/`.
+
+**Nota sobre `corepack pnpm`**: el config `tauri.conf.json` usa `corepack pnpm` (no `pnpm` directo) porque pnpm no está en el PATH de bash en este entorno Windows. NO cambiar a `pnpm` directo.
+
+### 11. Documentación Continua
+
+**REGLA**: Cada feature nueva o cambio significativo DEBE actualizar:
+1. `memory/IMPROVEMENT_LOG.md` — entrada con fecha, archivos, LOC, build status, tests
+2. `memory/METRICS_HISTORY.md` — fila nueva con métricas (build time, .exe size, tests count)
+3. `docs/<FEATURE>_FEATURE.md` — si es feature visible al usuario, doc dedicada en español
+4. Docstrings Rust `///` para funciones públicas nuevas
+
+Esto NO es opcional. Una feature sin doc no está terminada.

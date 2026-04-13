@@ -21,7 +21,7 @@ const ECHO_TIME_OVERLAP_WINDOW: f64 = 0.5;
 /// 0.3 means: if mic RMS is less than 30% of system RMS, it's likely echo
 const ECHO_ENERGY_RATIO_THRESHOLD: f32 = 0.3;
 /// Absolute RMS threshold - segments below this are too weak to be direct speech
-const ECHO_ABSOLUTE_RMS_THRESHOLD: f32 = 0.02;
+const ECHO_ABSOLUTE_RMS_THRESHOLD: f32 = 0.005;
 
 // Global audio level atomics for UI emission (updated by pipeline, read by emitter task)
 // Using AtomicU32 with f32::to_bits/from_bits for lock-free level sharing
@@ -78,7 +78,7 @@ impl AudioMixerRingBuffer {
         static SAMPLE_COUNTER: AtomicU64 = AtomicU64::new(0);
         let count = SAMPLE_COUNTER.fetch_add(1, Ordering::Relaxed);
         if count % 200 == 0 {
-            debug!("📊 Ring buffer status: mic={} samples, sys={} samples (max={})",
+            perf_debug!("📊 Ring buffer status: mic={} samples, sys={} samples (max={})",
                    self.mic_buffer.len(), self.system_buffer.len(), self.max_buffer_size);
         }
 
@@ -566,6 +566,21 @@ impl AudioCapture {
             }
         }
 
+        // SYSTEM AUDIO NORMALIZATION: Apply gain so VAD can detect speech.
+        // Without this, low-volume system audio (e.g. Bluetooth headphones) never
+        // passes VAD thresholds and 90%+ of interlocutor speech is lost.
+        // No noise suppression needed (system audio is clean digital signal).
+        if matches!(self.device_type, DeviceType::System) && !mono_data.is_empty() {
+            let rms = (mono_data.iter().map(|&x| x * x).sum::<f32>() / mono_data.len() as f32).sqrt();
+            if rms > 0.0001 && rms < 0.15 {
+                let target_rms: f32 = 0.20;
+                let gain = (target_rms / rms).min(6.0); // cap 6x to prevent distortion
+                for sample in mono_data.iter_mut() {
+                    *sample = (*sample * gain).clamp(-1.0, 1.0);
+                }
+            }
+        }
+
         // Create audio chunk with stream-specific timestamp (get ID first for logging)
         let chunk_id = self.chunk_counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
@@ -703,6 +718,9 @@ pub struct AudioPipeline {
     echo_suppressed_mic: u64,
     echo_suppressed_sys: u64,
     last_echo_report_time: std::time::Instant,
+    // Heartbeat: force transcription if no system VAD speech for too long
+    last_sys_vad_emit: std::time::Instant,
+    sys_raw_buffer: Vec<f32>,
 }
 
 impl AudioPipeline {
@@ -785,6 +803,8 @@ impl AudioPipeline {
             echo_suppressed_mic: 0,
             echo_suppressed_sys: 0,
             last_echo_report_time: std::time::Instant::now(),
+            last_sys_vad_emit: std::time::Instant::now(),
+            sys_raw_buffer: Vec::with_capacity(16000 * 10), // 10s @ 16kHz
         })
     }
 
@@ -870,7 +890,7 @@ impl AudioPipeline {
                                 Ok(speech_segments) => {
                                     for segment in speech_segments {
                                         let duration_ms = segment.end_timestamp_ms - segment.start_timestamp_ms;
-                                        if segment.samples.len() >= 400 {  // Minimum 25ms at 16kHz
+                                        if segment.samples.len() >= 160 {  // Minimum 25ms at 16kHz
                                             // Calculate RMS for echo detection
                                             let segment_rms = (segment.samples.iter().map(|&x| x * x).sum::<f32>()
                                                               / segment.samples.len() as f32).sqrt();
@@ -884,7 +904,7 @@ impl AudioPipeline {
                                                 continue;
                                             }
 
-                                            info!("🎤 Mic VAD segment: {:.1}ms, {} samples (RMS={:.4})",
+                                            perf_debug!("🎤 Mic VAD segment: {:.1}ms, {} samples (RMS={:.4})",
                                                   duration_ms, segment.samples.len(), segment_rms);
                                             let transcription_chunk = AudioChunk {
                                                 data: segment.samples,
@@ -910,42 +930,74 @@ impl AudioPipeline {
                             }
                         }
                         DeviceType::System => {
+                            // Accumulate raw 16kHz system audio for heartbeat fallback.
+                            // VAD resamples internally so we resample here too (simple linear).
+                            if chunk.sample_rate != 16000 {
+                                let ratio = chunk.sample_rate as f64 / 16000.0;
+                                let out_len = (chunk.data.len() as f64 / ratio) as usize;
+                                let raw_16k: Vec<f32> = (0..out_len).map(|i| {
+                                    let src = i as f64 * ratio;
+                                    let idx = src as usize;
+                                    let frac = (src - idx as f64) as f32;
+                                    let s0 = chunk.data.get(idx).copied().unwrap_or(0.0);
+                                    let s1 = chunk.data.get(idx + 1).copied().unwrap_or(s0);
+                                    s0 + frac * (s1 - s0)
+                                }).collect();
+                                // Cap buffer at ~12s to prevent memory growth
+                                if self.sys_raw_buffer.len() + raw_16k.len() > 16000 * 12 {
+                                    let drain = self.sys_raw_buffer.len() + raw_16k.len() - 16000 * 12;
+                                    self.sys_raw_buffer.drain(..drain);
+                                }
+                                self.sys_raw_buffer.extend_from_slice(&raw_16k);
+                            } else {
+                                // No resampling needed: directly extend from chunk data (zero-copy)
+                                if self.sys_raw_buffer.len() + chunk.data.len() > 16000 * 12 {
+                                    let drain = self.sys_raw_buffer.len() + chunk.data.len() - 16000 * 12;
+                                    self.sys_raw_buffer.drain(..drain);
+                                }
+                                self.sys_raw_buffer.extend_from_slice(&chunk.data);
+                            }
+
                             match self.sys_vad_processor.process_audio(&chunk.data) {
                                 Ok(speech_segments) => {
+                                    let mut emitted_in_batch = false;
                                     for segment in speech_segments {
                                         let duration_ms = segment.end_timestamp_ms - segment.start_timestamp_ms;
-                                        if segment.samples.len() >= 400 {  // Minimum 25ms at 16kHz
-                                            // Calculate RMS for echo detection
+                                        if segment.samples.len() >= 160 {
                                             let segment_rms = (segment.samples.iter().map(|&x| x * x).sum::<f32>()
                                                               / segment.samples.len() as f32).sqrt();
                                             self.sys_recent_rms = segment_rms;
                                             self.sys_last_speech_time = self.current_timestamp;
 
-                                            // Check if this is echo from microphone audio
                                             if self.is_likely_echo(DeviceType::System, segment_rms) {
                                                 self.echo_suppressed_sys += 1;
                                                 debug!("Suppressing system echo segment: {:.1}ms (RMS={:.4})", duration_ms, segment_rms);
                                                 continue;
                                             }
 
-                                            info!("🔊 System VAD segment: {:.1}ms, {} samples (RMS={:.4})",
+                                            perf_debug!("🔊 System VAD segment: {:.1}ms, {} samples (RMS={:.4})",
                                                   duration_ms, segment.samples.len(), segment_rms);
                                             let transcription_chunk = AudioChunk {
                                                 data: segment.samples,
                                                 sample_rate: 16000,
                                                 timestamp: segment.start_timestamp_ms / 1000.0,
                                                 chunk_id: self.chunk_id_counter,
-                                                device_type: DeviceType::System,  // STRUCTURAL: always system
+                                                device_type: DeviceType::System,
                                             };
                                             if let Err(e) = self.transcription_sender.send(transcription_chunk) {
                                                 warn!("Failed to send system VAD segment: {}", e);
                                             } else {
                                                 self.chunk_id_counter += 1;
+                                                emitted_in_batch = true;
                                             }
                                         } else {
-                                            debug!("Dropping short system VAD segment: {:.1}ms ({} samples < 400)",
+                                            debug!("Dropping short system VAD segment: {:.1}ms ({} samples < 160)",
                                                    duration_ms, segment.samples.len());
                                         }
+                                    }
+                                    if emitted_in_batch {
+                                        self.last_sys_vad_emit = std::time::Instant::now();
+                                        self.sys_raw_buffer.clear();
                                     }
                                 }
                                 Err(e) => {
@@ -995,7 +1047,37 @@ impl AudioPipeline {
                     break;
                 }
                 Err(_) => {
-                    // Timeout - just continue, VAD handles all segmentation
+                    // HEARTBEAT: If system VAD hasn't emitted for 8s and we have
+                    // buffered audio with enough energy, force-send to transcription.
+                    // This prevents 90s gaps when VAD misses low-volume system audio.
+                    if self.last_sys_vad_emit.elapsed().as_secs() >= 5
+                        && self.sys_raw_buffer.len() >= 1600 // at least 100ms @ 16kHz
+                    {
+                        let buf_rms = (self.sys_raw_buffer.iter().map(|&x| x * x).sum::<f32>()
+                            / self.sys_raw_buffer.len() as f32).sqrt();
+                        if buf_rms > 0.001 { // not pure silence
+                            let duration_s = self.sys_raw_buffer.len() as f64 / 16000.0;
+                            debug!("💓 HEARTBEAT: Forcing {}s of system audio to transcription (VAD silent for {}s, RMS={:.4})",
+                                  duration_s as u32, self.last_sys_vad_emit.elapsed().as_secs(), buf_rms);
+                            let heartbeat_chunk = AudioChunk {
+                                data: std::mem::take(&mut self.sys_raw_buffer),
+                                sample_rate: 16000,
+                                timestamp: self.current_timestamp,
+                                chunk_id: self.chunk_id_counter,
+                                device_type: DeviceType::System,
+                            };
+                            if let Err(e) = self.transcription_sender.send(heartbeat_chunk) {
+                                warn!("Failed to send heartbeat chunk: {}", e);
+                            } else {
+                                self.chunk_id_counter += 1;
+                            }
+                            self.last_sys_vad_emit = std::time::Instant::now();
+                        } else {
+                            // Pure silence, discard buffer
+                            self.sys_raw_buffer.clear();
+                            self.last_sys_vad_emit = std::time::Instant::now();
+                        }
+                    }
                     continue;
                 }
             }
@@ -1043,7 +1125,7 @@ impl AudioPipeline {
             Ok(final_segments) => {
                 for segment in final_segments {
                     let duration_ms = segment.end_timestamp_ms - segment.start_timestamp_ms;
-                    if segment.samples.len() >= 400 {
+                    if segment.samples.len() >= 160 {
                         info!("🎤 Sending final mic VAD segment: {:.1}ms, {} samples",
                               duration_ms, segment.samples.len());
                         let transcription_chunk = AudioChunk {
@@ -1074,7 +1156,7 @@ impl AudioPipeline {
             Ok(final_segments) => {
                 for segment in final_segments {
                     let duration_ms = segment.end_timestamp_ms - segment.start_timestamp_ms;
-                    if segment.samples.len() >= 400 {
+                    if segment.samples.len() >= 160 {
                         info!("🔊 Sending final system VAD segment: {:.1}ms, {} samples",
                               duration_ms, segment.samples.len());
                         let transcription_chunk = AudioChunk {
@@ -1241,5 +1323,298 @@ impl AudioPipelineManager {
 impl Default for AudioPipelineManager {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Genera una onda sinusoidal para tests
+    fn generate_sine_wave(frequency: f32, sample_rate: f32, duration_samples: usize) -> Vec<f32> {
+        (0..duration_samples)
+            .map(|i| {
+                let t = i as f32 / sample_rate;
+                (2.0 * std::f32::consts::PI * frequency * t).sin()
+            })
+            .collect()
+    }
+
+    /// Genera silencio (ceros)
+    fn generate_silence(sample_count: usize) -> Vec<f32> {
+        vec![0.0; sample_count]
+    }
+
+    /// Calcula el RMS de una ventana de audio
+    fn calculate_rms(samples: &[f32]) -> f32 {
+        if samples.is_empty() {
+            return 0.0;
+        }
+        let sum_sq: f32 = samples.iter().map(|s| s * s).sum();
+        (sum_sq / samples.len() as f32).sqrt()
+    }
+
+    #[test]
+    fn test_ring_buffer_initialization() {
+        // Arrange
+        let sample_rate = 48000; // 48kHz typical sample rate
+
+        // Act
+        let buffer = AudioMixerRingBuffer::new(sample_rate);
+
+        // Assert
+        assert_eq!(buffer.mic_buffer.len(), 0, "Mic buffer debe estar vacío al inicializar");
+        assert_eq!(buffer.system_buffer.len(), 0, "System buffer debe estar vacío al inicializar");
+
+        // Window size must be 100ms at 48kHz = 4800 samples
+        let expected_window = (sample_rate as f32 * 100.0 / 1000.0) as usize;
+        assert_eq!(buffer.window_size_samples, expected_window, "Window debe ser 100ms");
+
+        // Max buffer must be 400ms = window_size * 8
+        let expected_max = expected_window * 8;
+        assert_eq!(buffer.max_buffer_size, expected_max, "Max buffer debe ser 400ms (window*8)");
+    }
+
+    #[test]
+    fn test_add_mic_samples() {
+        // Arrange
+        let mut buffer = AudioMixerRingBuffer::new(48000);
+        let samples = generate_sine_wave(440.0, 48000.0, 1000); // 440Hz sine, 1000 samples
+
+        // Act
+        buffer.add_samples(DeviceType::Microphone, samples.clone());
+
+        // Assert
+        assert_eq!(buffer.mic_buffer.len(), 1000, "Mic buffer debe contener 1000 samples");
+        assert_eq!(buffer.system_buffer.len(), 0, "System buffer debe estar vacío");
+    }
+
+    #[test]
+    fn test_add_system_samples() {
+        // Arrange
+        let mut buffer = AudioMixerRingBuffer::new(48000);
+        let samples = generate_sine_wave(880.0, 48000.0, 500); // 880Hz sine, 500 samples
+
+        // Act
+        buffer.add_samples(DeviceType::System, samples.clone());
+
+        // Assert
+        assert_eq!(buffer.system_buffer.len(), 500, "System buffer debe contener 500 samples");
+        assert_eq!(buffer.mic_buffer.len(), 0, "Mic buffer debe estar vacío");
+    }
+
+    #[test]
+    fn test_add_mixed_samples_ignored() {
+        // Arrange
+        let mut buffer = AudioMixerRingBuffer::new(48000);
+        let samples = generate_sine_wave(1000.0, 48000.0, 100);
+
+        // Act
+        buffer.add_samples(DeviceType::Mixed, samples);
+
+        // Assert
+        // Mixed chunks no deben agregarse a los buffers
+        assert_eq!(buffer.mic_buffer.len(), 0, "Mic buffer debe estar vacío");
+        assert_eq!(buffer.system_buffer.len(), 0, "System buffer debe estar vacío");
+    }
+
+    #[test]
+    fn test_can_mix_returns_false_initially() {
+        // Arrange
+        let buffer = AudioMixerRingBuffer::new(48000);
+
+        // Act
+        let can_mix = buffer.can_mix();
+
+        // Assert
+        assert!(!can_mix, "can_mix debe retornar false cuando buffers están vacíos");
+    }
+
+    #[test]
+    fn test_can_mix_returns_true_with_sufficient_samples() {
+        // Arrange
+        let mut buffer = AudioMixerRingBuffer::new(48000);
+        let expected_window = (48000 as f32 * 100.0 / 1000.0) as usize; // 4800 samples
+        let samples = generate_silence(expected_window);
+
+        // Act
+        buffer.add_samples(DeviceType::Microphone, samples);
+        let can_mix = buffer.can_mix();
+
+        // Assert
+        assert!(can_mix, "can_mix debe retornar true cuando tenemos suficientes samples");
+    }
+
+    #[test]
+    fn test_extract_window_pads_missing_mic_data() {
+        // Arrange
+        let mut buffer = AudioMixerRingBuffer::new(48000);
+        let expected_window = (48000 as f32 * 100.0 / 1000.0) as usize; // 4800 samples
+
+        // Add system audio completo, mic audio parcial
+        let sys_samples = generate_silence(expected_window);
+        let mic_samples = generate_silence(500); // Menos que lo requerido
+
+        buffer.add_samples(DeviceType::System, sys_samples);
+        buffer.add_samples(DeviceType::Microphone, mic_samples);
+
+        // Act
+        let result = buffer.extract_window();
+
+        // Assert
+        assert!(result.is_some(), "extract_window debe retornar Some cuando can_mix es true");
+
+        let (mic_window, sys_window) = result.unwrap();
+        assert_eq!(mic_window.len(), expected_window, "Mic window debe tener tamaño de ventana");
+        assert_eq!(sys_window.len(), expected_window, "Sys window debe tener tamaño de ventana");
+
+        // Verificar que los primeros 500 samples son ceros (del audio original) y el resto son padding
+        // (En realidad, verificamos que el primero tiene amplitud baja de un sine de 500 samples)
+        let padding_start = 500;
+        for i in padding_start..expected_window {
+            assert_eq!(mic_window[i], 0.0, "Samples de padding deben ser cero en índice {}", i);
+        }
+    }
+
+    #[test]
+    fn test_extract_window_drains_buffers() {
+        // Arrange
+        let mut buffer = AudioMixerRingBuffer::new(48000);
+        let expected_window = (48000 as f32 * 100.0 / 1000.0) as usize; // 4800 samples
+
+        let mic_samples = generate_sine_wave(440.0, 48000.0, expected_window);
+        let sys_samples = generate_sine_wave(880.0, 48000.0, expected_window);
+
+        buffer.add_samples(DeviceType::Microphone, mic_samples);
+        buffer.add_samples(DeviceType::System, sys_samples);
+
+        // Act
+        let result = buffer.extract_window();
+        let mic_len_after = buffer.mic_buffer.len();
+        let sys_len_after = buffer.system_buffer.len();
+
+        // Assert
+        assert!(result.is_some(), "extract_window debe retornar Some");
+        assert_eq!(mic_len_after, 0, "Mic buffer debe estar vacío después de extract");
+        assert_eq!(sys_len_after, 0, "System buffer debe estar vacío después de extract");
+    }
+
+    #[test]
+    fn test_buffer_overflow_drops_oldest_samples() {
+        // Arrange
+        let mut buffer = AudioMixerRingBuffer::new(48000);
+        let max_buffer = buffer.max_buffer_size;
+        let overflow_size = max_buffer + 1000; // Exceder max_buffer_size
+
+        // Generar muchas samples para forzar overflow
+        let large_samples = generate_silence(overflow_size);
+
+        // Act
+        buffer.add_samples(DeviceType::Microphone, large_samples);
+
+        // Assert
+        // Después de overflow, el buffer debe estar limitado al máximo
+        assert!(
+            buffer.mic_buffer.len() <= max_buffer,
+            "Mic buffer nunca debe exceder max_buffer_size. Got {}, max {}",
+            buffer.mic_buffer.len(),
+            max_buffer
+        );
+    }
+
+    #[test]
+    fn test_extract_window_returns_none_when_insufficient_samples() {
+        // Arrange
+        let mut buffer = AudioMixerRingBuffer::new(48000);
+        let small_samples = generate_silence(100); // Muy pocas samples
+
+        // Act
+        buffer.add_samples(DeviceType::Microphone, small_samples);
+        let result = buffer.extract_window();
+
+        // Assert
+        assert!(result.is_none(), "extract_window debe retornar None cuando no hay suficientes datos");
+    }
+
+    #[test]
+    fn test_extract_window_preserves_signal_energy() {
+        // Arrange
+        let mut buffer = AudioMixerRingBuffer::new(48000);
+        let expected_window = (48000 as f32 * 100.0 / 1000.0) as usize;
+
+        // Generar audio con amplitud conocida
+        let original_mic = generate_sine_wave(440.0, 48000.0, expected_window);
+        let original_rms = calculate_rms(&original_mic);
+
+        buffer.add_samples(DeviceType::Microphone, original_mic.clone());
+        buffer.add_samples(DeviceType::System, generate_silence(expected_window));
+
+        // Act
+        let (mic_window, _) = buffer.extract_window().unwrap();
+        let extracted_rms = calculate_rms(&mic_window);
+
+        // Assert
+        // La energía debe ser preservada (máximo 1% de diferencia por redondeo)
+        let tolerance = original_rms * 0.01;
+        assert!(
+            (extracted_rms - original_rms).abs() <= tolerance,
+            "RMS debe preservarse. Original: {:.6}, Extracted: {:.6}",
+            original_rms,
+            extracted_rms
+        );
+    }
+
+    #[test]
+    fn test_reset_audio_levels() {
+        // Arrange - Simular que los niveles ya están configurados
+        MIC_RMS_LEVEL.store(f32::to_bits(0.5), AtomicOrdering::Relaxed);
+        MIC_PEAK_LEVEL.store(f32::to_bits(0.8), AtomicOrdering::Relaxed);
+        SYS_RMS_LEVEL.store(f32::to_bits(0.3), AtomicOrdering::Relaxed);
+        SYS_PEAK_LEVEL.store(f32::to_bits(0.9), AtomicOrdering::Relaxed);
+
+        // Act
+        reset_audio_levels();
+
+        // Assert
+        assert_eq!(
+            MIC_RMS_LEVEL.load(AtomicOrdering::Relaxed),
+            0,
+            "MIC_RMS_LEVEL debe resetear a 0"
+        );
+        assert_eq!(
+            MIC_PEAK_LEVEL.load(AtomicOrdering::Relaxed),
+            0,
+            "MIC_PEAK_LEVEL debe resetear a 0"
+        );
+        assert_eq!(
+            SYS_RMS_LEVEL.load(AtomicOrdering::Relaxed),
+            0,
+            "SYS_RMS_LEVEL debe resetear a 0"
+        );
+        assert_eq!(
+            SYS_PEAK_LEVEL.load(AtomicOrdering::Relaxed),
+            0,
+            "SYS_PEAK_LEVEL debe resetear a 0"
+        );
+    }
+
+    #[test]
+    fn test_extract_window_fills_silent_buffer_with_zeros() {
+        // Arrange
+        let mut buffer = AudioMixerRingBuffer::new(48000);
+        let expected_window = (48000 as f32 * 100.0 / 1000.0) as usize;
+
+        // Agregar SOLO audio del sistema, sin audio de micrófono
+        let sys_samples = generate_sine_wave(1000.0, 48000.0, expected_window);
+        buffer.add_samples(DeviceType::System, sys_samples);
+
+        // Act
+        let (mic_window, _) = buffer.extract_window().unwrap();
+
+        // Assert
+        // Como no hay audio de micrófono, todo debe ser silencio (ceros)
+        for (i, &sample) in mic_window.iter().enumerate() {
+            assert_eq!(sample, 0.0, "Mic window debe ser silencio cuando no hay data en índice {}", i);
+        }
     }
 }

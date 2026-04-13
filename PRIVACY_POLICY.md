@@ -1,125 +1,141 @@
-# Maity Privacy Policy
+# Politica de Privacidad de Maity
 
-*Last updated: [Current Date]*
+*Ultima actualizacion: Febrero 2026 - v0.2.1*
 
-## Our Privacy-First Commitment
+## 1. Nuestro Compromiso con la Privacidad
 
-Maity is built on the principle that your meeting data should remain private and under your control. This privacy policy explains how we handle data in our open-source meeting assistant.
+Maity esta construido sobre el principio de que los datos de tus reuniones deben permanecer privados y bajo tu control. Esta politica de privacidad explica como manejamos los datos en nuestro asistente de reuniones open source.
 
-## Data Processing Philosophy
+**Maity es local primero**: toda la transcripcion de audio se procesa completamente en tu dispositivo. Ningun audio de reunion sale de tu computadora.
 
-### Local-First Processing
-- **Meeting transcription**: Processed entirely on your device using local Whisper models
-- **Audio recordings**: Never transmitted to external servers
-- **Meeting content**: Remains on your infrastructure
-- **AI summaries**: Generated locally or through your chosen LLM provider
+## 2. Filosofia de Procesamiento de Datos - Local Primero
 
-### Your Data Ownership
-- You own all meeting data, transcripts, and recordings
-- Data is stored locally on your device
-- No vendor lock-in - export your data anytime
-- Complete control over data retention and deletion
+### Transcripcion 100% Local
+- **Parakeet (predeterminado)**: Motor de transcripcion local basado en ONNX que se ejecuta completamente en tu dispositivo
+- **Canary (opcional)**: Motor de transcripcion local alternativo, tambien basado en ONNX, sin conexion a internet
+- **Sin transcripcion en la nube**: No se envia audio a ningun servidor externo para transcripcion
+- **Grabaciones de audio**: Nunca se transmiten a servidores externos
+- **Contenido de reuniones**: Permanece en tu infraestructura local
 
-## Usage Analytics
+### Resumenes con IA (Opcional)
+- **Ollama (local)**: Procesamiento completamente en tu dispositivo, sin datos enviados a internet
+- **Claude (Anthropic)**: Si eliges usar Claude, el texto de la transcripcion se envia a los servidores de Anthropic
+- **Groq**: Si eliges usar Groq, el texto de la transcripcion se envia a los servidores de Groq
+- **OpenRouter**: Si eliges usar OpenRouter, el texto de la transcripcion se envia a los servidores de OpenRouter
 
-### What We Collect
-To improve Maity and ensure optimal performance, we collect minimal, anonymized usage data:
+**Nota**: Los resumenes con LLM son completamente opcionales. Puedes usar Maity solo para transcripcion local sin conectarte a ningun servicio externo.
 
-**Application Usage:**
-- Feature usage patterns (which tools you use most)
-- Session duration and frequency
-- Performance metrics (transcription success rates, error frequencies)
-- UI interaction patterns (button clicks, navigation flows)
+## 3. Propiedad de tus Datos
 
-**Technical Metrics:**
-- Application version and platform information
-- Error logs and crash reports (anonymized)
-- Performance benchmarks (processing times, resource usage)
+- Tu eres dueno de todos los datos de reuniones, transcripciones y grabaciones
+- Los datos se almacenan localmente en tu dispositivo
+- Sin dependencia de proveedor - exporta tus datos en cualquier momento
+- Control completo sobre retencion y eliminacion de datos
+- La base de datos SQLite local es accesible y portable
 
-### What We DON'T Collect
-We never collect:
-- ❌ Meeting content, transcripts, or recordings
-- ❌ Personal information or identifiable data
-- ❌ File names, meeting titles, or metadata
-- ❌ Audio data or voice patterns
-- ❌ Participant names or contact information
-- ❌ LLM conversations or AI-generated content
+## 4. Analiticas de Uso
 
-### Why We Collect This Data
-This analytics collection is necessary for:
-- **Product Quality**: Identifying and fixing bugs that impact user experience
-- **Performance Optimization**: Understanding resource usage and system bottlenecks
-- **Security**: Detecting potential security issues and vulnerabilities
-- **Feature Development**: Making data-driven decisions about new features
-- **Open Source Sustainability**: Ensuring the project meets user needs effectively
+### Lo que Recopilamos
+Para mejorar Maity y asegurar un rendimiento optimo, recopilamos datos de uso minimos y anonimizados:
 
-### Analytics Implementation
-- **Provider**: PostHog (privacy-focused analytics platform)
-- **Anonymization**: All data linked to generated user IDs only - no personal identification
-- **Data retention**: 12 months maximum, then automatically deleted
-- **Encryption**: All data encrypted in transit using industry-standard protocols
-- **Location**: Data processed in accordance with PostHog's privacy policy
-- **Access Control**: Strictly limited to core development team members
+**Uso de la Aplicacion:**
+- Patrones de uso de funcionalidades (que herramientas usas mas)
+- Duracion y frecuencia de sesiones
+- Metricas de rendimiento (tasas de exito de transcripcion, frecuencia de errores)
+- Patrones de interaccion de UI (clics en botones, flujos de navegacion)
 
-## Third-Party Services
+**Metricas Tecnicas:**
+- Version de la aplicacion e informacion de plataforma
+- Logs de errores y reportes de crashes (anonimizados)
+- Benchmarks de rendimiento (tiempos de procesamiento, uso de recursos)
 
-### LLM Providers (Optional)
-If you choose to use external LLM providers:
-- **Anthropic Claude**: Subject to Anthropic's privacy policy
-- **Groq**: Subject to Groq's privacy policy
-- **Local Ollama**: Processed entirely on your device
+### Lo que NO Recopilamos
+Nunca recopilamos:
+- Contenido de reuniones, transcripciones o grabaciones
+- Informacion personal o datos identificables
+- Nombres de archivos, titulos de reuniones o metadatos
+- Datos de audio o patrones de voz
+- Nombres de participantes o informacion de contacto
+- Conversaciones con LLM o contenido generado por IA
+- Claves de API o credenciales de servicios
 
-### Analytics Service (Optional)
-- **PostHog**: Used for usage analytics when enabled
-- **Data**: Only anonymized usage patterns, no meeting content
-- **Control**: Completely optional and user-controlled
+### Por que Recopilamos estos Datos
+Esta recopilacion de analiticas es necesaria para:
+- **Calidad del Producto**: Identificar y corregir bugs que impactan la experiencia del usuario
+- **Optimizacion de Rendimiento**: Entender el uso de recursos y cuellos de botella del sistema
+- **Seguridad**: Detectar posibles problemas de seguridad y vulnerabilidades
+- **Desarrollo de Funcionalidades**: Tomar decisiones basadas en datos sobre nuevas funcionalidades
+- **Sostenibilidad Open Source**: Asegurar que el proyecto satisfaga las necesidades de los usuarios
 
-## Your Privacy Rights
+### Implementacion de Analiticas
+- **Proveedor**: PostHog (plataforma de analiticas enfocada en privacidad)
+- **Anonimizacion**: Todos los datos vinculados solo a IDs de usuario generados - sin identificacion personal
+- **Retencion de datos**: Maximo 12 meses, luego se eliminan automaticamente
+- **Cifrado**: Todos los datos cifrados en transito usando protocolos estandar de la industria
+- **Control de acceso**: Estrictamente limitado a miembros del equipo core de desarrollo
+- **Opcional**: Las analiticas son completamente opcionales y controladas por el usuario
 
-### Data Control
-- **Access**: View all data stored locally on your device
-- **Export**: Export your data in standard formats
-- **Delete**: Remove all data from your device
+## 5. Servicios de Terceros
 
+### Proveedores de LLM (Opcionales)
+Si eliges usar proveedores externos de LLM para resumenes:
+- **Ollama (local)**: Procesado completamente en tu dispositivo. Sin datos enviados externamente.
+- **Claude (Anthropic)**: Sujeto a la [politica de privacidad de Anthropic](https://www.anthropic.com/privacy)
+- **Groq**: Sujeto a la [politica de privacidad de Groq](https://groq.com/privacy-policy/)
+- **OpenRouter**: Sujeto a la [politica de privacidad de OpenRouter](https://openrouter.ai/privacy)
 
-### Analytics Transparency
-- **Open source**: Full analytics implementation available for review in our source code
-- **Questions**: Contact us for any analytics-related concerns
+**Importante**: Solo el texto de la transcripcion se envia a estos proveedores cuando generas un resumen. El audio original nunca se comparte.
 
-## Data Security
+### Servicio de Analiticas (Opcional)
+- **PostHog**: Usado para analiticas de uso cuando esta habilitado
+- **Datos**: Solo patrones de uso anonimizados, sin contenido de reuniones
+- **Control**: Completamente opcional y controlado por el usuario
 
-### Local Security
-- Data encrypted at rest using your device's security features
-- No transmission of sensitive meeting data
-- Standard file system permissions protect your data
+## 6. Tus Derechos de Privacidad
 
-### Open Source Transparency
-- Full source code available for security review
-- Community-audited privacy implementations
-- No hidden data collection or tracking
+### Control de Datos
+- **Acceso**: Ve todos los datos almacenados localmente en tu dispositivo
+- **Exportacion**: Exporta tus datos en formatos estandar
+- **Eliminacion**: Elimina todos los datos de tu dispositivo
+- **Desactivacion de analiticas**: Desactiva la recopilacion de analiticas en cualquier momento
 
-## Changes to This Policy
+### Transparencia de Analiticas
+- **Open source**: La implementacion completa de analiticas esta disponible para revision en nuestro codigo fuente
+- **Preguntas**: Contactanos para cualquier inquietud relacionada con analiticas
 
-We will notify users of any material changes to this privacy policy through:
-- Updates to this document in our GitHub repository
-- Release notes for application updates
-- In-app notifications for significant privacy changes
+## 7. Seguridad de Datos
 
-## Contact Us
+### Seguridad Local
+- Los datos se almacenan usando las funcionalidades de seguridad de tu dispositivo
+- Sin transmision de datos sensibles de reuniones (a menos que elijas usar un LLM externo)
+- Permisos estandar del sistema de archivos protegen tus datos
+- La base de datos SQLite local no requiere credenciales de red
 
-For privacy-related questions or concerns:
-- **GitHub Issues**: [Create an issue](https://github.com/Zackriya-Solutions/meeting-minutes/issues)
-- **Email**: [Contact form](https://www.zackriya.com/service-interest-form/)
-- **Community**: [Discord](https://discord.gg/crRymMQBFH)
+### Transparencia Open Source
+- Codigo fuente completo disponible para revision de seguridad
+- Implementaciones de privacidad auditadas por la comunidad
+- Sin recopilacion oculta de datos o rastreo
 
-## Open Source Commitment
+## 8. Cambios a esta Politica
 
-As an open-source project under MIT license, you can:
-- Review our complete privacy implementation
-- Modify data handling to meet your requirements
-- Deploy entirely on your own infrastructure
-- Contribute to privacy improvements
+Notificaremos a los usuarios sobre cualquier cambio material a esta politica de privacidad a traves de:
+- Actualizaciones a este documento en nuestro repositorio de GitHub
+- Notas de release para actualizaciones de la aplicacion
+- Notificaciones in-app para cambios significativos de privacidad
+
+## 9. Contacto
+
+Para preguntas o inquietudes relacionadas con privacidad:
+- **GitHub Issues**: [Crear un issue](https://github.com/ponchovillalobos/maity-desktop/issues)
+
+## 10. Compromiso Open Source
+
+Como proyecto open source bajo licencia MIT, puedes:
+- Revisar nuestra implementacion completa de privacidad
+- Modificar el manejo de datos para cumplir con tus requisitos
+- Desplegar completamente en tu propia infraestructura
+- Contribuir a mejoras de privacidad
 
 ---
 
-*This privacy policy applies to Maity v0.2.0 and later versions. For enterprise deployments, additional privacy controls may be available.*
+*Esta politica de privacidad aplica a Maity v0.2.1 y versiones posteriores.*

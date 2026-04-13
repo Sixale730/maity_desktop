@@ -13,11 +13,11 @@ use super::preprocessor;
 
 #[derive(thiserror::Error, Debug)]
 pub enum CanaryError {
-    #[error("ORT error")]
+    #[error("ORT error: {0}")]
     Ort(#[from] ort::Error),
-    #[error("I/O error")]
+    #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
-    #[error("ndarray shape error")]
+    #[error("ndarray shape error: {0}")]
     Shape(#[from] ndarray::ShapeError),
     #[error("Model output not found: {0}")]
     OutputNotFound(String),
@@ -31,12 +31,18 @@ pub struct CanaryModel {
     encoder: Session,
     decoder: Session,
     vocab: Vec<String>,
-    _token_to_id: HashMap<String, i64>,
+    token_to_id: HashMap<String, i64>,
+    id_to_token: HashMap<i64, String>,
     eos_token_id: i64,
-    // Special tokens for Canary
-    start_of_context_id: i64,
-    source_lang_ids: HashMap<String, i64>, // "es" -> id, "en" -> id, etc.
-    pnc_token_id: i64,
+    // Full Canary prompt (9 tokens)
+    transcribe_prompt: Vec<i64>,
+    source_lang_ids: HashMap<String, i64>,
+    source_lang_pos: usize,
+    target_lang_pos: usize,
+    // Decoder KV-cache metadata
+    decoder_mems_shape: Vec<i64>,
+    // ONNX metadata (auto-detected at init)
+    transpose_mel_input: bool,
 }
 
 impl Drop for CanaryModel {
@@ -50,20 +56,12 @@ impl CanaryModel {
         let encoder = Self::init_session(&model_dir, "encoder-model", quantized)?;
         let decoder = Self::init_session(&model_dir, "decoder-model", quantized)?;
 
-        let (vocab, token_to_id) = Self::load_vocab(&model_dir)?;
+        let (vocab, token_to_id, id_to_token) = Self::load_vocab(&model_dir)?;
 
-        // Find special token IDs
+        // Find EOS token
         let eos_token_id = *token_to_id
             .get("<|endoftext|>")
             .ok_or_else(|| CanaryError::TokenNotFound("<|endoftext|>".to_string()))?;
-
-        let start_of_context_id = *token_to_id
-            .get("<|startofcontext|>")
-            .ok_or_else(|| CanaryError::TokenNotFound("<|startofcontext|>".to_string()))?;
-
-        let pnc_token_id = *token_to_id
-            .get("<|pnc|>")
-            .ok_or_else(|| CanaryError::TokenNotFound("<|pnc|>".to_string()))?;
 
         // Build language token map
         let mut source_lang_ids = HashMap::new();
@@ -74,12 +72,100 @@ impl CanaryModel {
             }
         }
 
+        // Find all special tokens for the 9-token prompt (graceful fallback if missing)
+        let find_token = |name: &str| -> i64 {
+            match token_to_id.get(name) {
+                Some(&id) => id,
+                None => {
+                    log::warn!(
+                        "Canary special token '{}' not found in vocab, using 0 as fallback",
+                        name
+                    );
+                    0
+                }
+            }
+        };
+
+        let startofcontext_id = find_token("<|startofcontext|>");
+        let startoftranscript_id = find_token("<|startoftranscript|>");
+        let emo_undefined_id = find_token("<|emo:undefined|>");
+        let en_id = source_lang_ids
+            .get("en")
+            .copied()
+            .unwrap_or_else(|| find_token("<|en|>"));
+        let pnc_id = find_token("<|pnc|>");
+        let noitn_id = find_token("<|noitn|>");
+        let notimestamp_id = find_token("<|notimestamp|>");
+        let nodiarize_id = find_token("<|nodiarize|>");
+
+        // Build full 9-token prompt:
+        // [startofcontext, startoftranscript, emo:undefined, source_lang, target_lang, pnc, noitn, notimestamp, nodiarize]
+        let source_lang_pos = 3;
+        let target_lang_pos = 4;
+        let transcribe_prompt = vec![
+            startofcontext_id,    // 0
+            startoftranscript_id, // 1
+            emo_undefined_id,     // 2
+            en_id,                // 3 - source_lang (default: en)
+            en_id,                // 4 - target_lang (default: en)
+            pnc_id,               // 5
+            noitn_id,             // 6
+            notimestamp_id,       // 7
+            nodiarize_id,         // 8
+        ];
+
+        log::info!("Canary prompt tokens (9): {:?}", transcribe_prompt);
+
+        // Extract decoder_mems shape from decoder ONNX inputs
+        // Reference: decoder_mems_shape = [x if x > 0 else 0 for x in decoder.get_inputs()[-1].shape]
+        let decoder_mems_shape = decoder
+            .inputs
+            .iter()
+            .find(|i| i.name == "decoder_mems")
+            .and_then(|i| i.input_type.tensor_shape())
+            .map(|shape| {
+                shape
+                    .iter()
+                    .map(|&d| if d > 0 { d } else { 0 })
+                    .collect::<Vec<i64>>()
+            })
+            .unwrap_or_else(|| {
+                // Fallback: try last decoder input
+                let fallback = decoder
+                    .inputs
+                    .last()
+                    .and_then(|i| i.input_type.tensor_shape())
+                    .map(|shape| {
+                        shape
+                            .iter()
+                            .map(|&d| if d > 0 { d } else { 0 })
+                            .collect::<Vec<i64>>()
+                    })
+                    .unwrap_or_else(|| vec![0, 0, 0, 0]);
+                log::warn!(
+                    "Could not find 'decoder_mems' input by name, using last input shape: {:?}",
+                    fallback
+                );
+                fallback
+            });
+
         log::info!(
-            "Loaded Canary vocabulary with {} tokens, eos={}, start_of_context={}, pnc={}, langs={:?}",
+            "decoder_mems shape from ONNX: {:?} (0 = dynamic dim)",
+            decoder_mems_shape
+        );
+
+        // Auto-detect transpose
+        let transpose_mel_input = Self::detect_transpose_needed(&encoder);
+
+        log::info!(
+            "Canary ONNX metadata: transpose_mel={}",
+            transpose_mel_input
+        );
+
+        log::info!(
+            "Loaded Canary vocabulary with {} tokens, eos={}, langs={:?}",
             vocab.len(),
             eos_token_id,
-            start_of_context_id,
-            pnc_token_id,
             source_lang_ids.keys().collect::<Vec<_>>()
         );
 
@@ -87,11 +173,15 @@ impl CanaryModel {
             encoder,
             decoder,
             vocab,
-            _token_to_id: token_to_id,
+            token_to_id,
+            id_to_token,
             eos_token_id,
-            start_of_context_id,
+            transcribe_prompt,
             source_lang_ids,
-            pnc_token_id,
+            source_lang_pos,
+            target_lang_pos,
+            decoder_mems_shape,
+            transpose_mel_input,
         })
     }
 
@@ -145,56 +235,152 @@ impl CanaryModel {
         Ok(session)
     }
 
+    /// Detect if encoder expects [batch, mel, time] or [batch, time, mel]
+    /// by checking which axis has the fixed dimension 128 (mel bins).
+    fn detect_transpose_needed(encoder: &Session) -> bool {
+        // Find the audio signal input (float tensor, not the length input)
+        let audio_input = encoder
+            .inputs
+            .iter()
+            .find(|i| i.name == "audio_signal" || i.name == "input" || i.name == "audio")
+            .or_else(|| encoder.inputs.first());
+
+        if let Some(input) = audio_input {
+            if let Some(shape) = input.input_type.tensor_shape() {
+                log::info!(
+                    "Canary encoder input '{}' shape: {:?}",
+                    input.name,
+                    shape
+                );
+                if shape.len() >= 3 {
+                    let dim1 = shape[1];
+                    let dim2 = shape[2];
+
+                    if dim1 == 128 {
+                        // Shape is [batch, 128, time] → encoder expects [batch, mel, time]
+                        // Preprocessor outputs [batch, time, mel] → NEEDS transpose
+                        log::info!(
+                            "Canary encoder expects [batch, mel, time] → transpose needed"
+                        );
+                        return true;
+                    } else if dim2 == 128 {
+                        // Shape is [batch, time, 128] → encoder expects [batch, time, mel]
+                        // Preprocessor outputs [batch, time, mel] → NO transpose
+                        log::info!(
+                            "Canary encoder expects [batch, time, mel] → no transpose needed"
+                        );
+                        return false;
+                    }
+                    // Both dynamic: default to no transpose (Parakeet convention)
+                    log::warn!(
+                        "Canary encoder dims all dynamic ({:?}), defaulting to no transpose",
+                        shape
+                    );
+                }
+            }
+        }
+
+        // Default: no transpose (matches Parakeet convention)
+        log::warn!("Could not detect Canary encoder layout, defaulting to no transpose");
+        false
+    }
+
     fn load_vocab<P: AsRef<Path>>(
         model_dir: P,
-    ) -> Result<(Vec<String>, HashMap<String, i64>), CanaryError> {
+    ) -> Result<(Vec<String>, HashMap<String, i64>, HashMap<i64, String>), CanaryError> {
         let vocab_path = model_dir.as_ref().join("vocab.txt");
-        let content = fs::read_to_string(vocab_path)?;
+        let content = fs::read_to_string(&vocab_path)?;
 
         let mut vocab = Vec::new();
         let mut token_to_id = HashMap::new();
 
         for (idx, line) in content.lines().enumerate() {
-            let token = line.trim().to_string();
-            if !token.is_empty() {
-                token_to_id.insert(token.clone(), idx as i64);
-                vocab.push(token);
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
             }
+
+            // vocab.txt format: "token id" (e.g., "<|endoftext|> 3") or just "token"
+            let (token, id) = if let Some(last_space) = trimmed.rfind(' ') {
+                let potential_token = &trimmed[..last_space];
+                let potential_id = &trimmed[last_space + 1..];
+                if let Ok(parsed_id) = potential_id.parse::<i64>() {
+                    (potential_token.to_string(), parsed_id)
+                } else {
+                    (trimmed.to_string(), idx as i64)
+                }
+            } else {
+                (trimmed.to_string(), idx as i64)
+            };
+
+            token_to_id.insert(token.clone(), id);
+            vocab.push(token);
         }
 
-        Ok((vocab, token_to_id))
-    }
+        // Build reverse lookup: id → token (for decoding)
+        let id_to_token: HashMap<i64, String> = token_to_id
+            .iter()
+            .map(|(token, &id)| (id, token.clone()))
+            .collect();
 
-    /// Build the initial decoder input tokens for Canary.
-    /// Format: [<|startofcontext|>, <|lang|>, <|pnc|>]
-    fn build_prompt_tokens(&self, language: Option<&str>) -> Vec<i64> {
-        let lang = language.unwrap_or("es");
-        let lang_id = self
-            .source_lang_ids
-            .get(lang)
-            .copied()
-            .unwrap_or_else(|| {
-                // Fallback to Spanish
-                self.source_lang_ids
-                    .get("es")
-                    .copied()
-                    .unwrap_or(self.start_of_context_id)
-            });
+        log::info!(
+            "Loaded vocab from {:?}: {} tokens, {} unique ids",
+            vocab_path.file_name().unwrap_or_default(),
+            vocab.len(),
+            id_to_token.len()
+        );
 
-        vec![self.start_of_context_id, lang_id, self.pnc_token_id]
+        Ok((vocab, token_to_id, id_to_token))
     }
 
     /// Encode audio features using the encoder.
-    /// Input: mel spectrogram [1, n_frames, 128]
-    /// Output: encoder hidden states
+    /// Input: mel spectrogram [1, n_frames, n_mel]
+    /// Output: (encoder_embeddings, encoder_mask) — both outputs needed by decoder
     pub fn encode(
         &mut self,
         mel_features: &Array3<f32>,
-    ) -> Result<ndarray::ArrayD<f32>, CanaryError> {
-        log::trace!("Running Canary encoder...");
+    ) -> Result<(ndarray::ArrayD<f32>, ndarray::ArrayD<i64>), CanaryError> {
+        let n_frames = mel_features.shape()[1];
 
-        let mel_dyn = mel_features.clone().into_dyn();
-        let audio_length = Array1::from_vec(vec![mel_features.shape()[1] as i64]).into_dyn();
+        let mel_dyn = if self.transpose_mel_input {
+            // Encoder expects [batch, mel, time]
+            log::debug!(
+                "Transposing mel [1, {}, 128] → [1, 128, {}]",
+                n_frames,
+                n_frames
+            );
+            let transposed = mel_features.view().permuted_axes([0, 2, 1]);
+            transposed.as_standard_layout().into_owned().into_dyn()
+        } else {
+            // Encoder expects [batch, time, mel] (Parakeet convention)
+            log::debug!("Sending mel as-is [1, {}, 128]", n_frames);
+            mel_features.clone().into_dyn()
+        };
+
+        let audio_length = Array1::from_vec(vec![n_frames as i64]).into_dyn();
+
+        log::debug!(
+            "Canary encoder input: shape={:?}, length={}",
+            mel_dyn.shape(),
+            n_frames
+        );
+
+        // Collect output names before running (avoids borrow conflict with run())
+        let output_names: Vec<String> = self
+            .encoder
+            .outputs
+            .iter()
+            .map(|o| o.name.clone())
+            .collect();
+        log::debug!("Canary encoder output names: {:?}", output_names);
+
+        if output_names.len() < 2 {
+            return Err(CanaryError::OutputNotFound(format!(
+                "Expected 2 encoder outputs (embeddings + mask), got {} (names: {:?})",
+                output_names.len(),
+                output_names
+            )));
+        }
 
         let inputs = inputs![
             "audio_signal" => TensorRef::from_array_view(mel_dyn.view())?,
@@ -203,134 +389,219 @@ impl CanaryModel {
 
         let outputs = self.encoder.run(inputs)?;
 
-        let encoder_output = outputs
-            .get("outputs")
-            .or_else(|| outputs.get("encoder_output"))
-            .or_else(|| outputs.get("last_hidden_state"))
+        // First output: encoder_embeddings (float32)
+        let embeddings = outputs
+            .get(&output_names[0])
             .ok_or_else(|| {
-                let available: Vec<_> = outputs.keys().collect();
                 CanaryError::OutputNotFound(format!(
-                    "encoder output (available: {:?})",
-                    available
+                    "encoder embeddings '{}' (available: {:?})",
+                    output_names[0],
+                    outputs.keys().collect::<Vec<_>>()
                 ))
             })?
-            .try_extract_array::<f32>()?;
+            .try_extract_array::<f32>()?
+            .to_owned();
 
-        Ok(encoder_output.to_owned())
-    }
+        // Second output: encoder_mask (try f32, fallback to i64 conversion)
+        let mask_value = outputs.get(&output_names[1]).ok_or_else(|| {
+            CanaryError::OutputNotFound(format!(
+                "encoder mask '{}' (available: {:?})",
+                output_names[1],
+                outputs.keys().collect::<Vec<_>>()
+            ))
+        })?;
 
-    /// Autoregressive decoder step.
-    /// Takes encoder output and current token sequence, returns logits for next token.
-    fn decoder_step(
-        &mut self,
-        encoder_output: &ndarray::ArrayViewD<f32>,
-        decoder_input_ids: &Array2<i64>,
-    ) -> Result<ndarray::ArrayD<f32>, CanaryError> {
-        log::trace!(
-            "Canary decoder step: input_ids shape {:?}",
-            decoder_input_ids.shape()
+        let mask = match mask_value.try_extract_array::<i64>() {
+            Ok(arr) => arr.to_owned(),
+            Err(_) => {
+                log::debug!("encoder_mask is not i64, trying f32 conversion");
+                mask_value
+                    .try_extract_array::<f32>()?
+                    .mapv(|x| x as i64)
+            }
+        };
+
+        log::debug!(
+            "Canary encoder: embeddings shape={:?}, mask shape={:?}",
+            embeddings.shape(),
+            mask.shape()
         );
 
-        let decoder_ids_dyn = decoder_input_ids.clone().into_dyn();
+        Ok((embeddings, mask))
+    }
+
+    /// Autoregressive decoder step with correct 4-input signature.
+    /// Inputs: input_ids, encoder_embeddings, encoder_mask, decoder_mems (KV-cache)
+    /// Outputs: (logits, new_decoder_hidden_states)
+    fn decoder_step(
+        &mut self,
+        input_ids: &ndarray::ArrayD<i64>,
+        encoder_embeddings: &ndarray::ArrayD<f32>,
+        encoder_mask: &ndarray::ArrayD<i64>,
+        decoder_mems: &ndarray::ArrayD<f32>,
+    ) -> Result<(ndarray::ArrayD<f32>, ndarray::ArrayD<f32>), CanaryError> {
+        log::trace!(
+            "Canary decoder step: input_ids={:?}, enc={:?}, mask={:?}, mems={:?}",
+            input_ids.shape(),
+            encoder_embeddings.shape(),
+            encoder_mask.shape(),
+            decoder_mems.shape()
+        );
+
+        // Collect output names before running (avoids borrow conflict with run())
+        let decoder_output_names: Vec<String> = self
+            .decoder
+            .outputs
+            .iter()
+            .map(|o| o.name.clone())
+            .collect();
 
         let inputs = inputs![
-            "encoder_hidden_states" => TensorRef::from_array_view(encoder_output.view())?,
-            "decoder_input_ids" => TensorRef::from_array_view(decoder_ids_dyn.view())?,
+            "input_ids" => TensorRef::from_array_view(input_ids.view())?,
+            "encoder_embeddings" => TensorRef::from_array_view(encoder_embeddings.view())?,
+            "encoder_mask" => TensorRef::from_array_view(encoder_mask.view())?,
+            "decoder_mems" => TensorRef::from_array_view(decoder_mems.view())?,
         ];
 
         let outputs = self.decoder.run(inputs)?;
 
+        if decoder_output_names.len() < 2 {
+            return Err(CanaryError::OutputNotFound(format!(
+                "Expected 2 decoder outputs (logits + hidden_states), got {} (names: {:?})",
+                decoder_output_names.len(),
+                decoder_output_names
+            )));
+        }
+
+        // First output: logits [batch, seq_len, vocab_size]
         let logits = outputs
-            .get("logits")
-            .or_else(|| outputs.get("outputs"))
+            .get(&decoder_output_names[0])
             .ok_or_else(|| {
-                let available: Vec<_> = outputs.keys().collect();
                 CanaryError::OutputNotFound(format!(
-                    "decoder logits (available: {:?})",
-                    available
+                    "decoder logits '{}' (available: {:?})",
+                    decoder_output_names[0],
+                    outputs.keys().collect::<Vec<_>>()
                 ))
             })?
-            .try_extract_array::<f32>()?;
+            .try_extract_array::<f32>()?
+            .to_owned();
 
-        Ok(logits.to_owned())
+        // Second output: decoder_hidden_states (updated KV-cache for next step)
+        let new_mems = outputs
+            .get(&decoder_output_names[1])
+            .ok_or_else(|| {
+                CanaryError::OutputNotFound(format!(
+                    "decoder hidden_states '{}' (available: {:?})",
+                    decoder_output_names[1],
+                    outputs.keys().collect::<Vec<_>>()
+                ))
+            })?
+            .try_extract_array::<f32>()?
+            .to_owned();
+
+        Ok((logits, new_mems))
     }
 
-    /// Greedy autoregressive decoding.
-    /// Generates tokens one-by-one until EOS or max_tokens.
+    /// Greedy autoregressive decoding with KV-cache.
+    /// First step sends full prompt; subsequent steps send only the last token.
     pub fn greedy_decode(
         &mut self,
-        encoder_output: &ndarray::ArrayD<f32>,
+        encoder_embeddings: &ndarray::ArrayD<f32>,
+        encoder_mask: &ndarray::ArrayD<i64>,
         language: Option<&str>,
         max_tokens: usize,
     ) -> Result<String, CanaryError> {
-        let prompt_tokens = self.build_prompt_tokens(language);
-        let mut generated_ids: Vec<i64> = prompt_tokens;
+        // Build prompt with language override
+        let mut prompt = self.transcribe_prompt.clone();
+        if let Some(lang) = language {
+            if let Some(&lang_id) = self.source_lang_ids.get(lang) {
+                prompt[self.source_lang_pos] = lang_id; // source lang
+                prompt[self.target_lang_pos] = lang_id; // target lang = same
+            }
+        }
 
-        let encoder_view = encoder_output.view();
+        let prefix_len = prompt.len();
+        let mut batch_tokens: Vec<i64> = prompt;
+
+        // Initialize empty decoder_mems (KV-cache starts empty)
+        // Shape from ONNX metadata, with 0 for dynamic dims
+        let mems_shape: Vec<usize> = self
+            .decoder_mems_shape
+            .iter()
+            .map(|&d| d as usize)
+            .collect();
+        let mut decoder_mems = ndarray::ArrayD::<f32>::zeros(ndarray::IxDyn(&mems_shape));
+
+        log::debug!(
+            "Canary decode: prompt_len={}, initial_mems_shape={:?}",
+            prefix_len,
+            mems_shape
+        );
 
         for step in 0..max_tokens {
-            // Build decoder input: all tokens generated so far
-            let seq_len = generated_ids.len();
-            let decoder_input =
-                Array2::from_shape_vec((1, seq_len), generated_ids.clone())
-                    .map_err(|e| CanaryError::DecodingError(format!("Shape error: {}", e)))?;
+            // First step: send full prompt (mems is empty). After: send only last token.
+            let input_ids = if decoder_mems.shape().get(2).copied().unwrap_or(0) == 0 {
+                // First step: full prompt
+                Array2::from_shape_vec((1, batch_tokens.len()), batch_tokens.clone())?.into_dyn()
+            } else {
+                // Subsequent steps: only last token (KV cache has history)
+                let last = *batch_tokens.last().unwrap_or(&self.eos_token_id);
+                Array2::from_shape_vec((1, 1), vec![last])?.into_dyn()
+            };
 
-            let logits = self.decoder_step(&encoder_view, &decoder_input)?;
+            let (logits, new_mems) = self.decoder_step(
+                &input_ids,
+                encoder_embeddings,
+                encoder_mask,
+                &decoder_mems,
+            )?;
+            decoder_mems = new_mems;
 
-            // Get logits for the last position
+            // Greedy: argmax of last token position
             let logits_shape = logits.shape();
             let vocab_size = *logits_shape.last().unwrap_or(&0);
             let last_pos = logits_shape.get(1).copied().unwrap_or(1) - 1;
 
-            // Extract logits for last token position
-            let last_logits: Vec<f32> = (0..vocab_size)
-                .map(|v| {
-                    logits
-                        .get(IxDyn(&[0, last_pos, v]))
+            let next_token = (0..vocab_size)
+                .max_by(|&a, &b| {
+                    let va = logits
+                        .get(IxDyn(&[0, last_pos, a]))
                         .copied()
-                        .unwrap_or(f32::NEG_INFINITY)
+                        .unwrap_or(f32::NEG_INFINITY);
+                    let vb = logits
+                        .get(IxDyn(&[0, last_pos, b]))
+                        .copied()
+                        .unwrap_or(f32::NEG_INFINITY);
+                    va.partial_cmp(&vb).unwrap_or(std::cmp::Ordering::Equal)
                 })
-                .collect();
-
-            // Greedy: argmax
-            let next_token = last_logits
-                .iter()
-                .enumerate()
-                .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
-                .map(|(idx, _)| idx as i64)
+                .map(|idx| idx as i64)
                 .unwrap_or(self.eos_token_id);
 
             if next_token == self.eos_token_id {
                 log::debug!(
-                    "Canary EOS reached at step {} (total tokens: {})",
+                    "Canary EOS at step {} (total tokens: {})",
                     step,
-                    generated_ids.len()
+                    batch_tokens.len()
                 );
                 break;
             }
 
-            generated_ids.push(next_token);
+            batch_tokens.push(next_token);
         }
 
-        // Decode tokens to text (skip prompt tokens)
-        let prompt_len = self.build_prompt_tokens(language).len();
-        let output_tokens = &generated_ids[prompt_len..];
-
+        // Decode tokens to text (skip prompt, use id_to_token for correct lookup)
+        let output_tokens = &batch_tokens[prefix_len..];
         let text: String = output_tokens
             .iter()
             .filter_map(|&id| {
-                let idx = id as usize;
-                if idx < self.vocab.len() {
-                    let token = &self.vocab[idx];
+                self.id_to_token.get(&id).and_then(|token| {
                     // Skip special tokens in output
                     if token.starts_with("<|") && token.ends_with("|>") {
                         None
                     } else {
                         Some(token.replace('\u{2581}', " "))
                     }
-                } else {
-                    None
-                }
+                })
             })
             .collect();
 
@@ -351,12 +622,16 @@ impl CanaryModel {
             samples.len()
         );
 
-        // 2. Encode
-        let encoder_output = self.encode(&mel)?;
-        log::debug!("Canary encoder output shape: {:?}", encoder_output.shape());
+        // 2. Encode (returns both embeddings and mask)
+        let (encoder_embeddings, encoder_mask) = self.encode(&mel)?;
+        log::debug!(
+            "Canary encoder output: embeddings={:?}, mask={:?}",
+            encoder_embeddings.shape(),
+            encoder_mask.shape()
+        );
 
-        // 3. Greedy decode
-        let text = self.greedy_decode(&encoder_output, language, 256)?;
+        // 3. Greedy decode with KV-cache
+        let text = self.greedy_decode(&encoder_embeddings, &encoder_mask, language, 256)?;
         log::debug!("Canary transcription: '{}'", text);
 
         Ok(text)

@@ -15,6 +15,7 @@ import { TooltipProvider } from '@/components/ui/tooltip'
 import { RecordingStateProvider } from '@/contexts/RecordingStateContext'
 import { OllamaDownloadProvider } from '@/contexts/OllamaDownloadContext'
 import { TranscriptProvider } from '@/contexts/TranscriptContext'
+import { CoachProvider } from '@/contexts/CoachContext'
 import { ConfigProvider } from '@/contexts/ConfigContext'
 import { OnboardingProvider } from '@/contexts/OnboardingContext'
 import { OnboardingFlow } from '@/components/onboarding'
@@ -39,10 +40,16 @@ export default function RootLayout({
 }: {
   children: React.ReactNode
 }) {
+  const [mounted, setMounted] = useState(false)
   const [showOnboarding, setShowOnboarding] = useState(false)
   const [onboardingCompleted, setOnboardingCompleted] = useState(false)
 
+  // Prevent hydration mismatch: render nothing until client mounts.
+  // Tauri desktop apps don't benefit from SSR, so this is safe.
+  useEffect(() => { setMounted(true) }, [])
+
   useEffect(() => {
+    if (!mounted) return
     // Check onboarding status first
     invoke<{ completed: boolean } | null>('get_onboarding_status')
       .then((status) => {
@@ -103,7 +110,13 @@ export default function RootLayout({
 
   return (
     <html lang="es" className="dark">
-      <body className={`${sourceSans3.variable} font-sans antialiased`}>
+      <body className={`${sourceSans3.variable} font-sans antialiased bg-white dark:bg-gray-950`}>
+        {!mounted ? (
+          <div className="h-screen w-screen flex items-center justify-center bg-gray-950">
+            <div className="text-gray-500 text-sm">Cargando Maity...</div>
+          </div>
+        ) : (
+        <>
         <a href="#main-content"
            className="sr-only focus:not-sr-only focus:absolute focus:top-4 focus:left-4 focus:z-50 focus:bg-white focus:px-4 focus:py-2 focus:rounded focus:shadow-lg focus:text-black">
           Skip to main content
@@ -112,6 +125,7 @@ export default function RootLayout({
         <AnalyticsProvider>
           <RecordingStateProvider>
             <TranscriptProvider>
+              <CoachProvider>
               <ConfigProvider>
                 <OllamaDownloadProvider>
                   <OnboardingProvider>
@@ -146,11 +160,14 @@ export default function RootLayout({
 
                 </OllamaDownloadProvider>
               </ConfigProvider>
+              </CoachProvider>
             </TranscriptProvider>
           </RecordingStateProvider>
         </AnalyticsProvider>
         </ErrorBoundary>
         <Toaster position="bottom-center" richColors closeButton />
+        </>
+        )}
       </body>
     </html>
   )
