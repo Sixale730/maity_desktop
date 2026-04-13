@@ -3,8 +3,9 @@
     "bundle": {
         "macOS": {
             "minimumSystemVersion": "13.0",
-            "signingIdentity": null,
-            "hardenedRuntime": true
+            "signingIdentity": "Developer ID Application: Julio Alexis Gonzalez Villa (8YLD233TA2)",
+            "hardenedRuntime": true,
+            "entitlements": "entitlements.plist"
         }
     }
 }
