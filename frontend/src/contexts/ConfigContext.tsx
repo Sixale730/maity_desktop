@@ -267,9 +267,12 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const setupListener = async () => {
       const { listen } = await import('@tauri-apps/api/event');
-      const unlisten = await listen<ModelConfig>('model-config-updated', (event) => {
+      const unlisten = await listen('model-config-updated', (event) => {
         logger.debug('[ConfigContext] Received model-config-updated event:', event.payload);
-        setModelConfig(event.payload);
+        // Reload config from DB instead of using event payload (event may be empty signal)
+        configService.getModelConfig().then(config => {
+          if (config) setModelConfig(config);
+        }).catch(err => logger.error('[ConfigContext] Failed to reload config:', err));
       });
       return unlisten;
     };
