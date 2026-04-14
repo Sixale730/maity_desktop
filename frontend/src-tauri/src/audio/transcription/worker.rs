@@ -522,13 +522,17 @@ pub fn start_transcription_task<R: Runtime>(
         let lag_emit_interval = std::time::Duration::from_secs(3);
         let backpressure_threshold: u64 = 1500; // 75% of 2000 capacity
 
-        /// Helper: send an accumulated chunk to the worker channel with adaptive backpressure
-        async fn dispatch_accumulated(
+        /// Helper: send an accumulated chunk to the worker channel with adaptive backpressure.
+        /// Emits `transcription-backpressure` events to the frontend when chunks are dropped
+        /// so the user sees a visible indicator instead of silent data loss.
+        async fn dispatch_accumulated<R: Runtime>(
+            app: &AppHandle<R>,
             accumulated: AudioChunk,
             work_sender: &tokio::sync::mpsc::Sender<AudioChunk>,
             work_receiver: &Arc<tokio::sync::Mutex<tokio::sync::mpsc::Receiver<AudioChunk>>>,
             chunks_queued: &AtomicU64,
             chunks_dropped: &AtomicU64,
+            sample_rate: u32,
         ) -> bool {
             let duration = accumulated.data.len() as f64 / accumulated.sample_rate as f64;
             let queued = chunks_queued.fetch_add(1, Ordering::SeqCst) + 1;
@@ -537,12 +541,38 @@ pub fn start_transcription_task<R: Runtime>(
                 accumulated.chunk_id, duration, accumulated.device_type, queued
             );
 
+            /// Emit a backpressure event so the frontend can warn the user
+            fn emit_backpressure<R: Runtime>(
+                app: &AppHandle<R>,
+                dropped_now: u64,
+                dropped_total: u64,
+                queue_depth: u64,
+                sample_rate: u32,
+                accumulated_samples: usize,
+            ) {
+                let seconds_affected = if dropped_now > 0 && sample_rate > 0 {
+                    (accumulated_samples as f64 / sample_rate as f64) * dropped_now as f64
+                } else {
+                    0.0
+                };
+                let _ = app.emit(
+                    "transcription-backpressure",
+                    serde_json::json!({
+                        "dropped_now": dropped_now,
+                        "dropped_total": dropped_total,
+                        "queue_depth": queue_depth,
+                        "recording_seconds_affected": seconds_affected,
+                    }),
+                );
+            }
+
             // ADAPTIVE BACKPRESSURE: drop OLDEST chunks when full (not newest)
             match work_sender.try_send(accumulated) {
                 Ok(()) => true,
                 Err(tokio::sync::mpsc::error::TrySendError::Full(chunk)) => {
                     // Queue full: drain OLDEST chunks to make room for newest audio
                     let mut drained: u64 = 0;
+                    let samples_per_dropped = chunk.data.len();
                     {
                         let mut work_rx = work_receiver.lock().await;
                         for _ in 0..200 {
@@ -560,12 +590,18 @@ pub fn start_transcription_task<R: Runtime>(
                             "Backpressure: dropped {} oldest chunks to keep transcription current (chunk {})",
                             drained, chunk.chunk_id
                         );
+                        let dropped_total = chunks_dropped.load(Ordering::Relaxed);
+                        let queue_depth = chunks_queued.load(Ordering::Relaxed).saturating_sub(dropped_total);
+                        emit_backpressure(app, drained, dropped_total, queue_depth, sample_rate, samples_per_dropped);
                     }
                     match work_sender.try_send(chunk) {
                         Ok(()) => true,
-                        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                        Err(tokio::sync::mpsc::error::TrySendError::Full(c)) => {
                             warn!("Accumulated chunk dropped - queue still full after drain");
                             chunks_dropped.fetch_add(1, Ordering::SeqCst);
+                            let dropped_total = chunks_dropped.load(Ordering::Relaxed);
+                            let queue_depth = chunks_queued.load(Ordering::Relaxed).saturating_sub(dropped_total);
+                            emit_backpressure(app, 1, dropped_total, queue_depth, sample_rate, c.data.len());
                             true
                         }
                         Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
@@ -601,7 +637,7 @@ pub fn start_transcription_task<R: Runtime>(
                         };
 
                         if let Some(acc_chunk) = accumulated {
-                            if !dispatch_accumulated(acc_chunk, &work_sender, &work_receiver, &chunks_queued, &chunks_dropped_dispatcher).await {
+                            if !dispatch_accumulated(&app, acc_chunk, &work_sender, &work_receiver, &chunks_queued, &chunks_dropped_dispatcher, 16000).await {
                                 break;
                             }
                         }
@@ -626,10 +662,10 @@ pub fn start_transcription_task<R: Runtime>(
                     // Channel closed - flush remaining accumulator buffers and exit
                     info!("📭 Input channel closed, flushing accumulators...");
                     if let Some(remaining) = mic_accumulator.flush() {
-                        dispatch_accumulated(remaining, &work_sender, &work_receiver, &chunks_queued, &chunks_dropped_dispatcher).await;
+                        dispatch_accumulated(&app, remaining, &work_sender, &work_receiver, &chunks_queued, &chunks_dropped_dispatcher, 16000).await;
                     }
                     if let Some(remaining) = sys_accumulator.flush() {
-                        dispatch_accumulated(remaining, &work_sender, &work_receiver, &chunks_queued, &chunks_dropped_dispatcher).await;
+                        dispatch_accumulated(&app, remaining, &work_sender, &work_receiver, &chunks_queued, &chunks_dropped_dispatcher, 16000).await;
                     }
                     break;
                 }
@@ -637,10 +673,10 @@ pub fn start_transcription_task<R: Runtime>(
                     // Timeout — check if accumulators need flushing due to silence
                     if use_accumulator {
                         if let Some(timeout_chunk) = mic_accumulator.check_timeout() {
-                            dispatch_accumulated(timeout_chunk, &work_sender, &work_receiver, &chunks_queued, &chunks_dropped_dispatcher).await;
+                            dispatch_accumulated(&app, timeout_chunk, &work_sender, &work_receiver, &chunks_queued, &chunks_dropped_dispatcher, 16000).await;
                         }
                         if let Some(timeout_chunk) = sys_accumulator.check_timeout() {
-                            dispatch_accumulated(timeout_chunk, &work_sender, &work_receiver, &chunks_queued, &chunks_dropped_dispatcher).await;
+                            dispatch_accumulated(&app, timeout_chunk, &work_sender, &work_receiver, &chunks_queued, &chunks_dropped_dispatcher, 16000).await;
                         }
                     }
                 }
@@ -657,6 +693,23 @@ pub fn start_transcription_task<R: Runtime>(
                     "Transcription queue depth high: {} pending chunks",
                     pending
                 );
+            }
+
+            // Lag warning watermark: queue between 1000 and 1500 is the
+            // "yellow zone" where drops are imminent but haven't happened yet.
+            // Emit once every ~100 pending chunks to avoid spam.
+            const LAG_WARNING_LOW: u64 = 1000;
+            if pending >= LAG_WARNING_LOW && pending < backpressure_threshold {
+                if pending % 100 == 0 {
+                    let _ = app.emit(
+                        "transcription-lag-warning",
+                        serde_json::json!({
+                            "queue_depth": pending,
+                            "threshold_drop": backpressure_threshold,
+                            "capacity": 2000u64,
+                        }),
+                    );
+                }
             }
 
             if last_lag_emit.elapsed() >= lag_emit_interval {

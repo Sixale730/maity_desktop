@@ -1,8 +1,19 @@
 use anyhow::{anyhow, Result};
 use silero_rs::{VadConfig, VadSession, VadTransition};
-use log::{debug, info};
+use log::{debug, info, warn};
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
+
+/// Defensive cap on the resampled-input buffer size. Normal path never hits
+/// this because each call drains the buffer in 480-sample chunks, but if
+/// drain falls behind (slow resample, pathological concurrency), this prevents
+/// unbounded memory growth in long recordings.
+/// 5s of audio @ 16kHz = 80,000 samples.
+const VAD_BUFFER_MAX_SAMPLES: usize = 16_000 * 5;
+
+/// Process-wide counter of overrun events for rate-limiting the warning log.
+static VAD_BUFFER_OVERRUN_COUNT: AtomicU64 = AtomicU64::new(0);
 
 /// Represents a complete speech segment detected by VAD
 #[derive(Debug, Clone)]
@@ -92,6 +103,21 @@ impl ContinuousVadProcessor {
         };
 
         self.buffer.extend_from_slice(&resampled_audio);
+
+        // Defensive overflow guard: if buffer exceeds cap, drop oldest samples.
+        // Rate-limit warning to avoid log spam.
+        if self.buffer.len() > VAD_BUFFER_MAX_SAMPLES {
+            let to_drop = self.buffer.len() - VAD_BUFFER_MAX_SAMPLES;
+            self.buffer.drain(..to_drop);
+            let count = VAD_BUFFER_OVERRUN_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+            if count == 1 || count % 100 == 0 {
+                warn!(
+                    "VAD buffer overrun #{}: dropped {} samples (cap {} samples = {}s @16kHz)",
+                    count, to_drop, VAD_BUFFER_MAX_SAMPLES, VAD_BUFFER_MAX_SAMPLES / 16_000
+                );
+            }
+        }
+
         let mut completed_segments = Vec::new();
 
         // Process complete 30ms chunks (480 samples at 16kHz)
