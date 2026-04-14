@@ -500,10 +500,14 @@ pub fn run() {
 
             // Initialize database FIRST (handles first launch detection and conditional setup)
             // This must happen before engine initialization so we can read config
-            tauri::async_runtime::block_on(async {
+            match tauri::async_runtime::block_on(async {
                 database::setup::initialize_database_on_startup(&_app.handle()).await
-            })
-            .expect("Failed to initialize database");
+            }) {
+                Ok(_) => log::info!("Database initialization completed"),
+                Err(e) => {
+                    log::error!("Failed to initialize database: {}. App will continue but some features may not work.", e);
+                }
+            }
 
             // Reset stale sync queue jobs (in_progress > 5 min → pending)
             if let Some(app_state) = _app.try_state::<state::AppState>() {
