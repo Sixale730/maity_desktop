@@ -1,8 +1,22 @@
 use anyhow::{anyhow, Result};
 use silero_rs::{VadConfig, VadSession, VadTransition};
-use log::{debug, info};
+use log::{debug, info, warn};
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
+
+/// A.4 — Defensive cap on the resampled-input buffer size. Path normal nunca
+/// llega aquí porque cada llamada drena el buffer en chunks de 480 samples,
+/// pero si por cualquier razón (resampleo lento, llamadas concurrentes
+/// patológicas) el drenaje no se completa, esto evita que la app crezca
+/// >1GB en una grabación de 5h.
+///
+/// 5s de audio @ 16kHz = 80_000 samples. Suficiente headroom sobre los 480
+/// del chunk normal sin permitir crecimiento ilimitado.
+const VAD_BUFFER_MAX_SAMPLES: usize = 16_000 * 5;
+
+/// Process-wide counter of overrun events for rate-limiting the warning log.
+static VAD_BUFFER_OVERRUN_COUNT: AtomicU64 = AtomicU64::new(0);
 
 /// Represents a complete speech segment detected by VAD
 #[derive(Debug, Clone)]
@@ -92,6 +106,26 @@ impl ContinuousVadProcessor {
         };
 
         self.buffer.extend_from_slice(&resampled_audio);
+
+        // A.4 — Defensive overflow guard. If the buffer is over the cap,
+        // drop the oldest samples so we keep up with the most recent audio.
+        // Rate-limit the warning to 1 per 100 occurrences (avoids log spam
+        // in case the condition becomes persistent).
+        if self.buffer.len() > VAD_BUFFER_MAX_SAMPLES {
+            let to_drop = self.buffer.len() - VAD_BUFFER_MAX_SAMPLES;
+            self.buffer.drain(..to_drop);
+            let count = VAD_BUFFER_OVERRUN_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+            if count == 1 || count % 100 == 0 {
+                warn!(
+                    "VAD buffer overrun #{}: dropped {} samples (cap {} samples = {}s @16kHz)",
+                    count,
+                    to_drop,
+                    VAD_BUFFER_MAX_SAMPLES,
+                    VAD_BUFFER_MAX_SAMPLES / 16_000
+                );
+            }
+        }
+
         let mut completed_segments = Vec::new();
 
         // Process complete 30ms chunks (480 samples at 16kHz)

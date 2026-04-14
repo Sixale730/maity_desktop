@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tokio::sync::Mutex as AsyncMutex;
 use anyhow::Result;
@@ -47,13 +48,67 @@ pub struct DeviceInfo {
     pub system_audio: Option<String>,
 }
 
+/// Insertion-order Vec of segments backed by a HashMap index for O(1) upsert
+/// by `sequence_id`. A.2 — replaces the previous `Vec<TranscriptSegment>` whose
+/// upsert did a linear `find()` that became pathological in long recordings
+/// (60 min ≈ 3600 segments → 3-5ms per insert under a Mutex held by the I/O
+/// writer as well). The Vec keeps insertion order so the serialized JSON is
+/// byte-identical to the previous implementation; the frontend format does
+/// not change.
+#[derive(Debug, Default)]
+struct TranscriptStore {
+    segments: Vec<TranscriptSegment>,
+    index_by_seq: HashMap<u64, usize>,
+}
+
+impl TranscriptStore {
+    fn new() -> Self {
+        Self {
+            segments: Vec::new(),
+            index_by_seq: HashMap::new(),
+        }
+    }
+
+    /// Upsert by `sequence_id`. Returns `true` if an existing segment was
+    /// updated, `false` if the segment was newly inserted.
+    fn upsert(&mut self, segment: TranscriptSegment) -> bool {
+        if let Some(&idx) = self.index_by_seq.get(&segment.sequence_id) {
+            self.segments[idx] = segment;
+            true
+        } else {
+            let idx = self.segments.len();
+            self.index_by_seq.insert(segment.sequence_id, idx);
+            self.segments.push(segment);
+            false
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.segments.len()
+    }
+
+    fn clear(&mut self) {
+        self.segments.clear();
+        self.index_by_seq.clear();
+    }
+
+    fn last(&self) -> Option<&TranscriptSegment> {
+        self.segments.last()
+    }
+
+    fn clone_vec(&self) -> Vec<TranscriptSegment> {
+        self.segments.clone()
+    }
+}
+
 /// New recording saver using incremental saving strategy
 pub struct RecordingSaver {
     incremental_saver: Option<Arc<AsyncMutex<IncrementalAudioSaver>>>,
     meeting_folder: Option<PathBuf>,
     meeting_name: Option<String>,
     metadata: Option<MeetingMetadata>,
-    transcript_segments: Arc<Mutex<Vec<TranscriptSegment>>>,
+    /// Segment store with O(1) upsert. See `TranscriptStore` for rationale.
+    transcript_segments: Arc<Mutex<TranscriptStore>>,
     chunk_receiver: Option<mpsc::UnboundedReceiver<AudioChunk>>,
     is_saving: Arc<Mutex<bool>>,
 }
@@ -65,7 +120,7 @@ impl RecordingSaver {
             meeting_folder: None,
             meeting_name: None,
             metadata: None,
-            transcript_segments: Arc::new(Mutex::new(Vec::new())),
+            transcript_segments: Arc::new(Mutex::new(TranscriptStore::new())),
             chunk_receiver: None,
             is_saving: Arc::new(Mutex::new(false)),
         }
@@ -93,25 +148,35 @@ impl RecordingSaver {
     }
 
     /// Add or update a structured transcript segment (upserts based on sequence_id)
-    /// Also saves incrementally to disk
+    /// Also saves incrementally to disk. O(1) upsert — see `TranscriptStore`.
     pub fn add_transcript_segment(&self, segment: TranscriptSegment) {
-        if let Ok(mut segments) = self.transcript_segments.lock() {
-            // Check if segment with same sequence_id exists (update it)
-            if let Some(existing) = segments.iter_mut().find(|s| s.sequence_id == segment.sequence_id) {
-                *existing = segment.clone();
-                info!("Updated transcript segment {} (seq: {}) - total segments: {}",
-                      segment.id, segment.sequence_id, segments.len());
+        let segment_id = segment.id.clone();
+        let segment_seq = segment.sequence_id;
+        if let Ok(mut store) = self.transcript_segments.lock() {
+            let updated = store.upsert(segment);
+            if updated {
+                info!(
+                    "Updated transcript segment {} (seq: {}) - total segments: {}",
+                    segment_id,
+                    segment_seq,
+                    store.len()
+                );
             } else {
-                // New segment, add it
-                segments.push(segment.clone());
-                info!("Added new transcript segment {} (seq: {}) - total segments: {}",
-                      segment.id, segment.sequence_id, segments.len());
+                info!(
+                    "Added new transcript segment {} (seq: {}) - total segments: {}",
+                    segment_id,
+                    segment_seq,
+                    store.len()
+                );
             }
         } else {
-            error!("Failed to lock transcript segments for adding segment {}", segment.id);
+            error!(
+                "Failed to lock transcript segments for adding segment {}",
+                segment_id
+            );
         }
 
-        // NEW: Save incrementally to disk
+        // Save incrementally to disk. (B.2 will batch these to SQLite.)
         if let Some(folder) = &self.meeting_folder {
             if let Err(e) = self.write_transcripts_json(folder) {
                 warn!("Failed to write incremental transcript update: {}", e);
@@ -287,8 +352,8 @@ impl RecordingSaver {
     /// Write transcripts.json to disk (atomic write with temp file and validation)
     fn write_transcripts_json(&self, folder: &PathBuf) -> Result<()> {
         // Clone segments to avoid holding lock during I/O
-        let segments_clone = if let Ok(segments) = self.transcript_segments.lock() {
-            segments.clone()
+        let segments_clone = if let Ok(store) = self.transcript_segments.lock() {
+            store.clone_vec()
         } else {
             error!("Failed to lock transcript segments for writing");
             return Err(anyhow::anyhow!("Failed to lock transcript segments"));
@@ -423,8 +488,8 @@ impl RecordingSaver {
             // Use actual recording duration from RecordingState (more accurate than transcript segments)
             // Falls back to last transcript segment if duration not provided
             metadata.duration_seconds = recording_duration.or_else(|| {
-                if let Ok(segments) = self.transcript_segments.lock() {
-                    segments.last().map(|seg| seg.audio_end_time)
+                if let Ok(store) = self.transcript_segments.lock() {
+                    store.last().map(|seg| seg.audio_end_time)
                 } else {
                     None
                 }
@@ -453,8 +518,8 @@ impl RecordingSaver {
         }
 
         // Clean up transcript segments
-        if let Ok(mut segments) = self.transcript_segments.lock() {
-            segments.clear();
+        if let Ok(mut store) = self.transcript_segments.lock() {
+            store.clear();
         }
 
         Ok(Some(final_audio_path.to_string_lossy().to_string()))
@@ -467,8 +532,8 @@ impl RecordingSaver {
 
     /// Get accumulated transcript segments (for reload sync)
     pub fn get_transcript_segments(&self) -> Vec<TranscriptSegment> {
-        if let Ok(segments) = self.transcript_segments.lock() {
-            segments.clone()
+        if let Ok(store) = self.transcript_segments.lock() {
+            store.clone_vec()
         } else {
             Vec::new()
         }

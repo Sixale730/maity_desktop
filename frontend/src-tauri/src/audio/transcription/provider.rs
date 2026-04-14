@@ -16,6 +16,9 @@ pub enum TranscriptionError {
     AudioTooShort { samples: usize, minimum: usize },
     EngineFailed(String),
     UnsupportedLanguage(String),
+    /// Cloud provider auth token (JWT) expired and refresh did not complete in time.
+    /// Signals callers to retry after frontend has refreshed the proxy cache.
+    AuthExpired,
 }
 
 impl std::fmt::Display for TranscriptionError {
@@ -31,6 +34,10 @@ impl std::fmt::Display for TranscriptionError {
             Self::UnsupportedLanguage(lang) => {
                 write!(f, "Language '{}' is not supported by this provider", lang)
             }
+            Self::AuthExpired => write!(
+                f,
+                "Auth token expired; frontend refresh timed out"
+            ),
         }
     }
 }

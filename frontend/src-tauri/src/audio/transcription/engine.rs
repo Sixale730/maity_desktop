@@ -374,6 +374,45 @@ pub async fn get_or_init_transcription_engine<R: Runtime>(
                     let mic_arc = Arc::new(mic_dg);
                     let sys_arc = Arc::new(sys_dg);
 
+                    // A.1: wire the JWT refresh callback. When either provider
+                    // detects a stale token, it emits `deepgram-jwt-refresh-needed`
+                    // and waits up to 5s for the frontend listener to call
+                    // `set_deepgram_proxy_config` (via `getDeepgramProxyConfig`).
+                    // The frontend listener must be registered for the length of
+                    // the recording (see frontend/src/hooks/useDeepgramJwtRefresh).
+                    let app_for_refresh_mic = app.clone();
+                    mic_arc
+                        .set_refresh_jwt_request_fn(move || {
+                            use tauri::Emitter;
+                            if let Err(e) = app_for_refresh_mic
+                                .emit("deepgram-jwt-refresh-needed", serde_json::json!({
+                                    "source": "mic"
+                                }))
+                            {
+                                log::error!(
+                                    "Failed to emit deepgram-jwt-refresh-needed (mic): {}",
+                                    e
+                                );
+                            }
+                        })
+                        .await;
+                    let app_for_refresh_sys = app.clone();
+                    sys_arc
+                        .set_refresh_jwt_request_fn(move || {
+                            use tauri::Emitter;
+                            if let Err(e) = app_for_refresh_sys
+                                .emit("deepgram-jwt-refresh-needed", serde_json::json!({
+                                    "source": "sys"
+                                }))
+                            {
+                                log::error!(
+                                    "Failed to emit deepgram-jwt-refresh-needed (sys): {}",
+                                    e
+                                );
+                            }
+                        })
+                        .await;
+
                     // Set up event emitters for both instances
                     let app_for_mic = app.clone();
                     mic_arc.set_event_emitter(move |update: super::worker::TranscriptUpdate| {

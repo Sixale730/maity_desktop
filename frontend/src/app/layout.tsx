@@ -29,6 +29,7 @@ import { ParakeetAutoDownloadProvider } from '@/contexts/ParakeetAutoDownloadCon
 import { LoginScreen } from '@/components/Auth'
 import { CloudSyncInitializer } from '@/components/CloudSyncInitializer'
 import { AnalysisPollingInitializer } from '@/components/AnalysisPollingInitializer'
+import { useDeepgramJwtRefresh } from '@/hooks/useDeepgramJwtRefresh'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ThemeProvider } from '@/contexts/ThemeContext'
 import Script from 'next/script'
@@ -207,6 +208,11 @@ function AuthGate({ children }: { children: React.ReactNode }) {
 function AppContent({ children }: { children: React.ReactNode }) {
   const [showOnboarding, setShowOnboarding] = useState(false)
   const [onboardingCompleted, setOnboardingCompleted] = useState(false)
+
+  // A.1 — Listen for Rust's `deepgram-jwt-refresh-needed` event and refetch
+  // the proxy config from Vercel when the 5-min JWT is about to die. This is
+  // what prevents the mid-recording freeze reported by users on sessions >5m.
+  useDeepgramJwtRefresh()
 
   useEffect(() => {
     // Check onboarding status first

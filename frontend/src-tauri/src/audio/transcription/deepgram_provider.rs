@@ -118,6 +118,12 @@ pub struct DeepgramRealtimeTranscriber {
     connection_generation: Arc<AtomicU64>,
     /// Handle for the keep-alive task; aborted before spawning a new one on reconnect
     keepalive_handle: Arc<Mutex<Option<JoinHandle<()>>>>,
+    /// Callback invoked when the JWT is stale and a fresh one is needed.
+    /// Typically wired from `engine.rs` to emit a Tauri event that triggers
+    /// the frontend to re-fetch the proxy config from the Vercel API.
+    /// The frontend must then call `set_deepgram_proxy_config` to update the
+    /// cache; this provider polls the cache until it sees a fresh entry.
+    refresh_jwt_request: Arc<Mutex<Option<Arc<dyn Fn() + Send + Sync>>>>,
 }
 
 impl DeepgramRealtimeTranscriber {
@@ -141,6 +147,68 @@ impl DeepgramRealtimeTranscriber {
             source_label: Arc::new(Mutex::new(None)),
             connection_generation: Arc::new(AtomicU64::new(0)),
             keepalive_handle: Arc::new(Mutex::new(None)),
+            refresh_jwt_request: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    /// Set the callback that signals the frontend to refresh the Deepgram JWT.
+    /// See `refresh_jwt_if_needed` for the contract.
+    pub async fn set_refresh_jwt_request_fn<F>(&self, request_fn: F)
+    where
+        F: Fn() + Send + Sync + 'static,
+    {
+        let mut guard = self.refresh_jwt_request.lock().await;
+        *guard = Some(Arc::new(request_fn));
+    }
+
+    /// Check whether the cached proxy config is fresh. If not, invoke the
+    /// refresh callback (which should signal the frontend to re-fetch) and
+    /// poll the cache every 200ms for up to `timeout_secs` seconds.
+    ///
+    /// Returns `Ok(())` as soon as `get_cached_proxy_config()` returns Some.
+    /// Returns `Err(TranscriptionError::AuthExpired)` if the timeout elapses
+    /// without a refresh (usually meaning the frontend is offline or logged out).
+    ///
+    /// This is the core of A.1: prevents the >5 min Deepgram freeze where the
+    /// JWT expires mid-recording and reconnect attempts use a dead token.
+    async fn refresh_jwt_if_needed(&self, timeout_secs: u64) -> Result<(), TranscriptionError> {
+        // Fast path: cache already has a fresh JWT.
+        if get_cached_proxy_config().is_some() {
+            return Ok(());
+        }
+
+        // Cache is stale — invoke the refresh callback if registered.
+        let refresh_fn_opt = {
+            let guard = self.refresh_jwt_request.lock().await;
+            guard.clone()
+        };
+        if let Some(refresh_fn) = refresh_fn_opt {
+            info!("Deepgram JWT stale; requesting refresh from frontend");
+            refresh_fn();
+        } else {
+            warn!(
+                "Deepgram JWT stale but no refresh callback registered; \
+                 reconnect will likely fail"
+            );
+        }
+
+        // Poll the cache at 200ms intervals up to the timeout.
+        let poll_interval = tokio::time::Duration::from_millis(200);
+        let deadline = tokio::time::Instant::now()
+            + tokio::time::Duration::from_secs(timeout_secs);
+        loop {
+            tokio::time::sleep(poll_interval).await;
+            if get_cached_proxy_config().is_some() {
+                info!("Deepgram JWT refreshed successfully");
+                return Ok(());
+            }
+            if tokio::time::Instant::now() >= deadline {
+                error!(
+                    "Deepgram JWT refresh timed out after {}s",
+                    timeout_secs
+                );
+                return Err(TranscriptionError::AuthExpired);
+            }
         }
     }
 
@@ -302,9 +370,32 @@ impl DeepgramRealtimeTranscriber {
             }
         }
 
-        // Not connected - establish connection with retries
+        // Not connected - establish connection with retries.
+        // A.1: before every attempt, ensure the cached JWT is fresh. The
+        // cache expires CONFIG_REFRESH_BUFFER_SECS (30s) before the real TTL,
+        // so this will proactively request a new token a few seconds before
+        // the old one dies, and will also recover after a long hipo de red.
         let mut last_error = None;
         for attempt in 1..=MAX_RECONNECT_ATTEMPTS {
+            // Up to 5s waiting for the frontend to refresh. If the frontend is
+            // online and the listener is wired, refresh typically completes in
+            // <1s (one HTTP round-trip to Vercel).
+            if let Err(e) = self.refresh_jwt_if_needed(5).await {
+                warn!(
+                    "Deepgram JWT refresh failed on attempt {}/{}: {}",
+                    attempt, MAX_RECONNECT_ATTEMPTS, e
+                );
+                last_error = Some(e);
+                // Don't even try to connect with a known-stale token — waste
+                // of time and fills logs with 401s. Back off and retry.
+                if attempt < MAX_RECONNECT_ATTEMPTS {
+                    tokio::time::sleep(tokio::time::Duration::from_millis(
+                        RECONNECT_DELAY_MS,
+                    ))
+                    .await;
+                }
+                continue;
+            }
             match self.connect_websocket(language).await {
                 Ok(()) => return Ok(()),
                 Err(e) => {
