@@ -21,9 +21,10 @@ import { Sparkles, Settings, Loader2, FileText, Check, Square } from 'lucide-rea
 import Analytics from '@/lib/analytics';
 import { invoke } from '@tauri-apps/api/core';
 import { toast } from 'sonner';
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect } from 'react';
 import { isOllamaNotInstalledError } from '@/lib/utils';
 import { BuiltInModelInfo } from '@/lib/engines/builtin-ai';
+import { logger } from '@/lib/logger';
 
 interface SummaryGeneratorButtonGroupProps {
   modelConfig: ModelConfig;
@@ -65,7 +66,7 @@ export function SummaryGeneratorButtonGroup({
       // Register our open dialog function with the parent by calling the callback
       // This allows the parent to store a reference to this function
       const openDialog = () => {
-        console.log('📱 Opening model settings dialog via callback');
+        logger.debug('Opening model settings dialog via callback');
         setSettingsDialogOpen(true);
       };
 
@@ -193,7 +194,7 @@ export function SummaryGeneratorButtonGroup({
     setIsCheckingModels(true);
     try {
       const endpoint = modelConfig.ollamaEndpoint || null;
-      const models = await invoke('get_ollama_models', { endpoint }) as any[];
+      const models = await invoke('get_ollama_models', { endpoint }) as Array<{ name: string }>;
 
       if (!models || models.length === 0) {
         // No models available, show message and open settings

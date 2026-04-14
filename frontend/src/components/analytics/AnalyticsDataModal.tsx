@@ -50,9 +50,9 @@ export default function AnalyticsDataModal({ isOpen, onClose, onConfirmDisable }
             <div className="border border-[#e7e7e9] dark:border-gray-700 rounded-lg p-4">
               <h4 className="font-semibold text-[#000000] dark:text-white mb-2">1. Preferencias de Modelo</h4>
               <ul className="text-sm text-[#3a3a3c] dark:text-gray-200 space-y-1 ml-4">
-                <li>• Modelo de transcripción (ej., "Whisper large-v3", "Parakeet")</li>
-                <li>• Modelo de resumen (ej., "Llama 3.2", "Claude Sonnet")</li>
-                <li>• Proveedor de modelo (ej., "Local", "Ollama", "OpenRouter")</li>
+                <li>• Modelo de transcripción (ej., &quot;Whisper large-v3&quot;, &quot;Parakeet&quot;)</li>
+                <li>• Modelo de resumen (ej., &quot;Llama 3.2&quot;, &quot;Claude Sonnet&quot;)</li>
+                <li>• Proveedor de modelo (ej., &quot;Local&quot;, &quot;Ollama&quot;, &quot;OpenRouter&quot;)</li>
               </ul>
               <p className="text-xs text-[#6a6a6d] dark:text-gray-400 mt-2 italic">Nos ayuda a entender qué modelos prefieren los usuarios</p>
             </div>
@@ -61,8 +61,8 @@ export default function AnalyticsDataModal({ isOpen, onClose, onConfirmDisable }
             <div className="border border-[#e7e7e9] dark:border-gray-700 rounded-lg p-4">
               <h4 className="font-semibold text-[#000000] dark:text-white mb-2">2. Métricas de Reunión Anónimas</h4>
               <ul className="text-sm text-[#3a3a3c] dark:text-gray-200 space-y-1 ml-4">
-                <li>• Duración de grabación (ej., "125 segundos")</li>
-                <li>• Duración de pausa (ej., "5 segundos")</li>
+                <li>• Duración de grabación (ej., &quot;125 segundos&quot;)</li>
+                <li>• Duración de pausa (ej., &quot;5 segundos&quot;)</li>
                 <li>• Número de segmentos de transcripción</li>
                 <li>• Número de fragmentos de audio procesados</li>
               </ul>
@@ -73,8 +73,8 @@ export default function AnalyticsDataModal({ isOpen, onClose, onConfirmDisable }
             <div className="border border-[#e7e7e9] dark:border-gray-700 rounded-lg p-4">
               <h4 className="font-semibold text-[#000000] dark:text-white mb-2">3. Tipos de Dispositivo (No Nombres)</h4>
               <ul className="text-sm text-[#3a3a3c] dark:text-gray-200 space-y-1 ml-4">
-                <li>• Tipo de micrófono: "Bluetooth" o "Con cable" o "Desconocido"</li>
-                <li>• Tipo de audio del sistema: "Bluetooth" o "Con cable" o "Desconocido"</li>
+                <li>• Tipo de micrófono: &quot;Bluetooth&quot; o &quot;Con cable&quot; o &quot;Desconocido&quot;</li>
+                <li>• Tipo de audio del sistema: &quot;Bluetooth&quot; o &quot;Con cable&quot; o &quot;Desconocido&quot;</li>
               </ul>
               <p className="text-xs text-[#6a6a6d] dark:text-gray-400 mt-2 italic">Nos ayuda a mejorar compatibilidad, NO los nombres reales de dispositivos</p>
             </div>
@@ -85,7 +85,7 @@ export default function AnalyticsDataModal({ isOpen, onClose, onConfirmDisable }
               <ul className="text-sm text-[#3a3a3c] dark:text-gray-200 space-y-1 ml-4">
                 <li>• Eventos de inicio/cierre de app</li>
                 <li>• Duración de sesión</li>
-                <li>• Uso de funciones (ej., "configuración cambiada")</li>
+                <li>• Uso de funciones (ej., &quot;configuración cambiada&quot;)</li>
                 <li>• Ocurrencia de errores (nos ayuda a corregir bugs)</li>
               </ul>
               <p className="text-xs text-[#6a6a6d] dark:text-gray-400 mt-2 italic">Nos ayuda a mejorar la experiencia del usuario</p>
@@ -95,9 +95,9 @@ export default function AnalyticsDataModal({ isOpen, onClose, onConfirmDisable }
             <div className="border border-[#e7e7e9] dark:border-gray-700 rounded-lg p-4">
               <h4 className="font-semibold text-[#000000] dark:text-white mb-2">5. Información de Plataforma</h4>
               <ul className="text-sm text-[#3a3a3c] dark:text-gray-200 space-y-1 ml-4">
-                <li>• Sistema operativo (ej., "macOS", "Windows")</li>
+                <li>• Sistema operativo (ej., &quot;macOS&quot;, &quot;Windows&quot;)</li>
                 <li>• Versión de la app (incluida automáticamente en todos los eventos)</li>
-                <li>• Arquitectura (ej., "x86_64", "aarch64")</li>
+                <li>• Arquitectura (ej., &quot;x86_64&quot;, &quot;aarch64&quot;)</li>
               </ul>
               <p className="text-xs text-[#6a6a6d] dark:text-gray-400 mt-2 italic">Nos ayuda a priorizar soporte de plataformas</p>
             </div>

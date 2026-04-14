@@ -1,17 +1,19 @@
 import { useState, useCallback } from 'react';
 import { Transcript, Summary } from '@/types';
 import type { ModelConfig } from '@/types/models';
-import { CurrentMeeting, useSidebar } from '@/components/Sidebar/SidebarProvider';
+import { useSidebar } from '@/components/Sidebar/SidebarProvider';
 import { invoke as invokeTauri } from '@tauri-apps/api/core';
 import { toast } from 'sonner';
 import Analytics from '@/lib/analytics';
 import { isOllamaNotInstalledError } from '@/lib/utils';
 import { BuiltInModelInfo } from '@/lib/engines/builtin-ai';
+import { logger } from '@/lib/logger';
+import type { MeetingRecord, ProcessTranscriptResult, SummaryPollingResult, LegacySummaryBlock, LegacySummarySection, OllamaModelEntry } from './types';
 
 type SummaryStatus = 'idle' | 'processing' | 'summarizing' | 'regenerating' | 'completed' | 'error';
 
 interface UseSummaryGenerationProps {
-  meeting: any;
+  meeting: MeetingRecord;
   transcripts: Transcript[];
   modelConfig: ModelConfig;
   isModelConfigLoading: boolean;
@@ -24,7 +26,7 @@ interface UseSummaryGenerationProps {
 
 export function useSummaryGeneration({
   meeting,
-  transcripts,
+  transcripts: _transcripts,
   modelConfig,
   isModelConfigLoading,
   selectedTemplate,
@@ -79,7 +81,7 @@ export function useSummaryGeneration({
         setOriginalTranscript(transcriptText);
       }
 
-      console.log('Processing transcript with template:', selectedTemplate);
+      logger.debug('Processing transcript with template:', selectedTemplate);
 
       // Calculate time since recording
       const timeSinceRecording = (Date.now() - new Date(meeting.created_at).getTime()) / 60000; // minutes
@@ -104,7 +106,7 @@ export function useSummaryGeneration({
       });
 
       // Process transcript and get process_id
-      const result = await invokeTauri('api_process_transcript', {
+      const result = await invokeTauri<ProcessTranscriptResult>('api_process_transcript', {
         text: transcriptText,
         model: modelConfig.provider,
         modelName: modelConfig.model,
@@ -113,27 +115,28 @@ export function useSummaryGeneration({
         overlap: 1000,
         customPrompt: customPrompt,
         templateId: selectedTemplate,
-      }) as any;
+      });
 
       const process_id = result.process_id;
-      console.log('Process ID:', process_id);
+      logger.debug('Process ID:', process_id);
 
       // Start global polling via context
-      startSummaryPolling(meeting.id, process_id, async (pollingResult) => {
-        console.log('Summary status:', pollingResult);
+      startSummaryPolling(meeting.id, process_id, async (rawPollingResult) => {
+        const pollingResult = rawPollingResult as SummaryPollingResult;
+        logger.debug('Summary status:', pollingResult);
 
         // Handle cancellation
         if (pollingResult.status === 'cancelled') {
-          console.log('Summary generation was cancelled');
+          logger.debug('Summary generation was cancelled');
 
           // Reload summary from database (backend has already restored from backup)
           try {
-            const existingSummary = await invokeTauri('api_get_summary', {
+            const existingSummary = await invokeTauri<{ data?: Summary }>('api_get_summary', {
               meetingId: meeting.id
-            }) as any;
+            });
 
             if (existingSummary?.data) {
-              console.log('Restored previous summary after cancellation');
+              logger.debug('Restored previous summary after cancellation');
               setAiSummary(existingSummary.data);
               setSummaryStatus('completed');
             } else {
@@ -156,12 +159,12 @@ export function useSummaryGeneration({
           // If this was a regeneration, try to restore previous summary from database
           if (isRegeneration) {
             try {
-              const existingSummary = await invokeTauri('api_get_summary', {
+              const existingSummary = await invokeTauri<{ data?: Summary }>('api_get_summary', {
                 meetingId: meeting.id
-              }) as any;
+              });
 
               if (existingSummary?.data) {
-                console.log('Restored previous summary after regeneration failure');
+                logger.debug('Restored previous summary after regeneration failure');
                 setAiSummary(existingSummary.data);
                 setSummaryStatus('completed');
                 setSummaryError(null);
@@ -203,7 +206,7 @@ export function useSummaryGeneration({
 
           // Auto-open model settings modal if model is missing
           if (isModelRequiredError && onOpenModelSettings) {
-            console.log('🔧 Model required error detected, opening model settings...');
+            logger.debug('🔧 Model required error detected, opening model settings...');
             onOpenModelSettings();
           }
 
@@ -219,7 +222,7 @@ export function useSummaryGeneration({
 
         // Handle successful completion
         if (pollingResult.status === 'completed' && pollingResult.data) {
-          console.log('Summary generation completed:', pollingResult.data);
+          logger.debug('Summary generation completed:', pollingResult.data);
 
           // Update meeting title if available
           const meetingName = pollingResult.data.MeetingName || pollingResult.meetingName;
@@ -229,8 +232,8 @@ export function useSummaryGeneration({
 
           // Check if backend returned markdown format (new flow)
           if (pollingResult.data.markdown) {
-            console.log('Received markdown format from backend');
-            setAiSummary({ markdown: pollingResult.data.markdown } as any);
+            logger.debug('Received markdown format from backend');
+            setAiSummary({ markdown: pollingResult.data.markdown } as unknown as Summary);
             setSummaryStatus('completed');
 
             // Show success toast
@@ -253,7 +256,10 @@ export function useSummaryGeneration({
 
           // Legacy format handling
           const summarySections = Object.entries(pollingResult.data).filter(([key]) => key !== 'MeetingName');
-          const allEmpty = summarySections.every(([, section]) => !(section as any).blocks || (section as any).blocks.length === 0);
+          const allEmpty = summarySections.every(([, section]) => {
+            const s = section as LegacySummarySection;
+            return !s.blocks || s.blocks.length === 0;
+          });
 
           if (allEmpty) {
             console.error('Summary completed but all sections empty');
@@ -271,7 +277,7 @@ export function useSummaryGeneration({
           }
 
           // Remove MeetingName from data before formatting
-          const { MeetingName, ...summaryData } = pollingResult.data;
+          const { MeetingName: _MeetingName, ...summaryData } = pollingResult.data;
 
           // Format legacy summary data
           const formattedSummary: Summary = {};
@@ -281,16 +287,17 @@ export function useSummaryGeneration({
             try {
               const section = summaryData[key];
               if (section && typeof section === 'object' && 'title' in section && 'blocks' in section) {
-                const typedSection = section as { title?: string; blocks?: any[] };
+                const typedSection = section as LegacySummarySection;
 
                 if (Array.isArray(typedSection.blocks)) {
                   formattedSummary[key] = {
                     title: typedSection.title || key,
-                    blocks: typedSection.blocks.map((block: any) => ({
+                    blocks: typedSection.blocks.map((block: LegacySummaryBlock) => ({
                       ...block,
                       color: 'default',
                       content: block?.content?.trim() || ''
-                    }))
+                    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- legacy blocks may lack id/type fields
+                    })) as any[]
                   };
                 } else {
                   formattedSummary[key] = {
@@ -357,7 +364,7 @@ export function useSummaryGeneration({
   // Helper function to fetch ALL transcripts for summary generation
   const fetchAllTranscripts = useCallback(async (meetingId: string): Promise<Transcript[]> => {
     try {
-      console.log('📊 Fetching all transcripts for meeting:', meetingId);
+      logger.debug('📊 Fetching all transcripts for meeting:', meetingId);
 
       // First, get total count by fetching first page
       const firstPage = await invokeTauri('api_get_meeting_transcripts', {
@@ -367,7 +374,7 @@ export function useSummaryGeneration({
       }) as { transcripts: Transcript[]; total_count: number; has_more: boolean };
 
       const totalCount = firstPage.total_count;
-      console.log(`📊 Total transcripts in database: ${totalCount}`);
+      logger.debug(`📊 Total transcripts in database: ${totalCount}`);
 
       if (totalCount === 0) {
         return [];
@@ -380,7 +387,7 @@ export function useSummaryGeneration({
         offset: 0,
       }) as { transcripts: Transcript[]; total_count: number; has_more: boolean };
 
-      console.log(`✅ Fetched ${allData.transcripts.length} transcripts from database`);
+      logger.debug(`✅ Fetched ${allData.transcripts.length} transcripts from database`);
       return allData.transcripts;
     } catch (error) {
       console.error('❌ Error fetching all transcripts:', error);
@@ -393,25 +400,25 @@ export function useSummaryGeneration({
   const handleGenerateSummary = useCallback(async (customPrompt: string = '') => {
     // Check if model config is still loading
     if (isModelConfigLoading) {
-      console.log('⏳ Model configuration is still loading, please wait...');
+      logger.debug('⏳ Model configuration is still loading, please wait...');
       toast.info('Cargando configuración del modelo, por favor espera...');
       return;
     }
 
     // CHANGE: Fetch ALL transcripts from database, not from pagination state
-    console.log('📊 Fetching all transcripts for summary generation...');
+    logger.debug('📊 Fetching all transcripts for summary generation...');
     const allTranscripts = await fetchAllTranscripts(meeting.id);
 
     if (!allTranscripts.length) {
       const error_msg = 'No transcripts available for summary';
-      console.log(error_msg);
+      logger.debug(error_msg);
       toast.error(error_msg);
       return;
     }
 
-    console.log(`✅ Proceeding with ${allTranscripts.length} transcripts`);
+    logger.debug(`✅ Proceeding with ${allTranscripts.length} transcripts`);
 
-    console.log('🚀 Starting summary generation with config:', {
+    logger.debug('🚀 Starting summary generation with config:', {
       provider: modelConfig.provider,
       model: modelConfig.model,
       template: selectedTemplate
@@ -421,7 +428,7 @@ export function useSummaryGeneration({
     if (modelConfig.provider === 'ollama') {
       try {
         const endpoint = modelConfig.ollamaEndpoint || null;
-        const models = await invokeTauri('get_ollama_models', { endpoint }) as any[];
+        const models = await invokeTauri<OllamaModelEntry[]>('get_ollama_models', { endpoint });
 
         if (!models || models.length === 0) {
           toast.error(
@@ -579,14 +586,14 @@ export function useSummaryGeneration({
 
   // Public API: Stop ongoing summary generation
   const handleStopGeneration = useCallback(async () => {
-    console.log('Stopping summary generation for meeting:', meeting.id);
+    logger.debug('Stopping summary generation for meeting:', meeting.id);
 
     try {
       // Call backend to cancel the summary generation
       await invokeTauri('api_cancel_summary', {
         meetingId: meeting.id
       });
-      console.log('✓ Backend cancellation request sent for meeting:', meeting.id);
+      logger.debug('✓ Backend cancellation request sent for meeting:', meeting.id);
     } catch (error) {
       console.error('Failed to cancel summary generation:', error);
       // Continue with frontend cleanup even if backend call fails

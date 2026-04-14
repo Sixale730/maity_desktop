@@ -42,7 +42,7 @@ export const Section: React.FC<SectionProps> = ({
   onCreateNewBlock,
 }) => {
   const [isEditingTitle, setIsEditingTitle] = useState(false);
-  const titleInputRef = useRef<HTMLInputElement>(null);
+  const _titleInputRef = useRef<HTMLInputElement>(null);
 
   const handleTitleChange = (newTitle: string) => {
     if (onTitleChange) {
@@ -50,7 +50,7 @@ export const Section: React.FC<SectionProps> = ({
     }
   };
 
-  const handleTitleKeyDown = (e: React.KeyboardEvent) => {
+  const _handleTitleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter') {
       setIsEditingTitle(false);
     }

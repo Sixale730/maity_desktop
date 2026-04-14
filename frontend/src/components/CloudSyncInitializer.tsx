@@ -3,6 +3,7 @@
 import { useEffect } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { cloudSyncWorker } from '@/services/cloudSyncWorker';
+import { logger } from '@/lib/logger';
 
 /**
  * Starts/stops the cloud sync worker based on auth state.
@@ -26,7 +27,7 @@ export function CloudSyncInitializer() {
   // Nudge worker when network comes back
   useEffect(() => {
     const handleOnline = () => {
-      console.log('[CloudSyncInitializer] Network online, nudging sync worker');
+      logger.debug('[CloudSyncInitializer] Network online, nudging sync worker');
       cloudSyncWorker.nudge();
     };
     window.addEventListener('online', handleOnline);

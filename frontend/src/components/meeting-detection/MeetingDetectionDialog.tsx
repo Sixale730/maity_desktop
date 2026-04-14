@@ -14,9 +14,10 @@ import {
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
-import { Video, Mic, X, Clock, Settings } from 'lucide-react'
+import { Video, Mic, X, Clock } from 'lucide-react'
 import { toast } from 'sonner'
 import { useRecordingState } from '@/contexts/RecordingStateContext'
+import { logger } from '@/lib/logger'
 
 interface DetectedMeeting {
   app: string | { Unknown: string }
@@ -50,7 +51,7 @@ function getAppDisplayName(app: string | { Unknown: string }): string {
 }
 
 // Helper to get app icon
-function getAppIcon(app: string | { Unknown: string }): string {
+function _getAppIcon(app: string | { Unknown: string }): string {
   const appName = typeof app === 'string' ? app : 'Unknown'
   switch (appName) {
     case 'Zoom': return '/icons/zoom.svg'
@@ -78,6 +79,7 @@ export function MeetingDetectionDialog() {
   // Play notification sound when meeting is detected
   const playNotificationSound = useCallback(() => {
     try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- webkitAudioContext is a non-standard browser API
       const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
       const oscillator = audioCtx.createOscillator();
       const gainNode = audioCtx.createGain();
@@ -104,10 +106,10 @@ export function MeetingDetectionDialog() {
     const setupListener = async () => {
       unlisten = await listen<MeetingDetectedEvent>('meeting-detected', (event) => {
         const { meeting, action } = event.payload
-        console.log('[MeetingDetection] Detected:', meeting, 'Action:', action)
+        logger.debug('[MeetingDetection] Detected:', meeting, 'Action:', action)
 
         if (isRecordingRef.current) {
-          console.log('[MeetingDetection] Recording active, suppressing detection')
+          logger.debug('[MeetingDetection] Recording active, suppressing detection')
           return
         }
 

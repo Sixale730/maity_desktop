@@ -1,10 +1,10 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js'
 
-// Use 'any' for the schema type to allow both placeholder and real clients
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Supabase generic types require generated DB schema; using any is unavoidable without codegen
 let supabaseInstance: SupabaseClient<any, any, any> | null = null
 
 // Check if we're in a browser environment (not during SSG/SSR build)
-const isBrowser = typeof window !== 'undefined'
+const _isBrowser = typeof window !== 'undefined'
 
 function getSupabaseClient(): SupabaseClient {
   if (supabaseInstance) {

@@ -1,39 +1,28 @@
 'use client';
 
 import React, { useState, useMemo, useEffect, useCallback } from 'react';
-import { ChevronDown, ChevronRight, File, Settings, ChevronLeftCircle, ChevronRightCircle, Calendar, StickyNote, Home, Trash2, Mic, Square, Plus, Search, Pencil, NotebookPen, SearchIcon, X, MessageSquare, FileText, ListChecks } from 'lucide-react';
+import { ChevronDown, ChevronRight, File, Settings, ChevronLeftCircle, ChevronRightCircle, Calendar, Home, Trash2, Mic, Square, Plus, Pencil, SearchIcon, X, MessageSquare, FileText, ListChecks } from 'lucide-react';
 import { useRouter, usePathname } from 'next/navigation';
 import { useSidebar } from './SidebarProvider';
 import type { CurrentMeeting } from '@/components/Sidebar/SidebarProvider';
-import { ConfirmationModal } from '../ConfirmationModal/confirmation-modal';
 import type { ModelConfig } from '@/types/models';
-import { SettingTabs } from '@/components/settings/SettingTabs';
 import type { TranscriptModelProps } from '@/types/transcript';
 import Analytics from '@/lib/analytics';
+import { logger } from '@/lib/logger';
 import { invoke } from '@tauri-apps/api/core';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { toast } from 'sonner';
 import { useRecordingState } from '@/contexts/RecordingStateContext';
 import { useAuth } from '@/contexts/AuthContext';
 import { useQuery } from '@tanstack/react-query';
-import { getOmiConversations, OmiConversation } from '@/features/conversations';
+import { getOmiConversations } from '@/features/conversations';
 
 
-import {
-  Dialog,
-  DialogContent,
-  DialogFooter,
-  DialogTitle,
-} from "@/components/ui/dialog"
-import { VisuallyHidden } from "@/components/ui/visually-hidden"
 
-import { MessageToast } from '@/components/shared/MessageToast';
 import { CloudSyncBadge } from '@/components/shared/CloudSyncBadge';
 import { useCloudSyncStatuses } from '@/hooks/useCloudSyncStatuses';
 import Logo from '@/components/shared/Logo';
 import Info from '@/components/shared/Info';
-import { ComplianceNotification } from '@/components/recording/ComplianceNotification';
-import { Input } from '@/components/ui/input';
 import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupInput } from '../ui/input-group';
 import { SidebarControls } from './SidebarControls';
 
@@ -75,8 +64,8 @@ const Sidebar: React.FC = () => {
   });
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set(['meetings']));
   const [searchQuery, setSearchQuery] = useState<string>('');
-  const [showModelSettings, setShowModelSettings] = useState(false);
-  const [modelConfig, setModelConfig] = useState<ModelConfig>({
+  const [, setShowModelSettings] = useState(false);
+  const [, setModelConfig] = useState<ModelConfig>({
     provider: 'ollama',
     model: '',
     whisperModel: '',
@@ -87,7 +76,7 @@ const Sidebar: React.FC = () => {
     provider: 'parakeet',
     model: 'parakeet-tdt-0.6b-v3-int8',
   });
-  const [settingsSaveSuccess, setSettingsSaveSuccess] = useState<boolean | null>(null);
+  const [, setSettingsSaveSuccess] = useState<boolean | null>(null);
 
   // State for edit modal
   const [editModalState, setEditModalState] = useState<{ isOpen: boolean; meetingId: string | null; currentTitle: string }>({
@@ -122,12 +111,12 @@ const Sidebar: React.FC = () => {
     const fetchModelConfig = async () => {
       // Only make API call if serverAddress is loaded
       if (!serverAddress) {
-        console.log('Waiting for server address to load before fetching model config');
+        logger.debug('Waiting for server address to load before fetching model config');
         return;
       }
 
       try {
-        const data = await invoke('api_get_model_config') as any;
+        const data = await invoke<ModelConfig>('api_get_model_config');
         if (data && data.provider !== null) {
           // Fetch API key if not included and provider requires it
           if (data.provider !== 'ollama' && !data.apiKey) {
@@ -156,12 +145,12 @@ const Sidebar: React.FC = () => {
     const fetchTranscriptSettings = async () => {
       // Only make API call if serverAddress is loaded
       if (!serverAddress) {
-        console.log('Waiting for server address to load before fetching transcript settings');
+        logger.debug('Waiting for server address to load before fetching transcript settings');
         return;
       }
 
       try {
-        const data = await invoke('api_get_transcript_config') as any;
+        const data = await invoke<TranscriptModelProps>('api_get_transcript_config');
         if (data && data.provider !== null) {
           setTranscriptModelConfig(data);
         }
@@ -177,7 +166,7 @@ const Sidebar: React.FC = () => {
     const setupListener = async () => {
       const { listen } = await import('@tauri-apps/api/event');
       const unlisten = await listen<ModelConfig>('model-config-updated', (event) => {
-        console.log('Sidebar received model-config-updated event:', event.payload);
+        logger.debug('Sidebar received model-config-updated event:', event.payload);
         setModelConfig(event.payload);
       });
 
@@ -195,7 +184,7 @@ const Sidebar: React.FC = () => {
 
 
   // Handle model config save
-  const handleSaveModelConfig = async (config: ModelConfig) => {
+  const _handleSaveModelConfig = async (config: ModelConfig) => {
     try {
       await invoke('api_save_model_config', {
         provider: config.provider,
@@ -206,7 +195,7 @@ const Sidebar: React.FC = () => {
       });
 
       setModelConfig(config);
-      console.log('Model config saved successfully');
+      logger.debug('Model config saved successfully');
       setSettingsSaveSuccess(true);
 
       // Emit event to sync other components
@@ -221,7 +210,7 @@ const Sidebar: React.FC = () => {
     }
   };
 
-  const handleSaveTranscriptConfig = async (updatedConfig?: TranscriptModelProps) => {
+  const _handleSaveTranscriptConfig = async (updatedConfig?: TranscriptModelProps) => {
     try {
       const configToSave = updatedConfig || transcriptModelConfig;
       const payload = {
@@ -229,7 +218,7 @@ const Sidebar: React.FC = () => {
         model: configToSave.model,
         apiKey: configToSave.apiKey ?? null
       };
-      console.log('Saving transcript config with payload:', payload);
+      logger.debug('Saving transcript config with payload:', payload);
 
       await invoke('api_save_transcript_config', {
         provider: payload.provider,
@@ -341,17 +330,13 @@ const Sidebar: React.FC = () => {
   }, [searchQuery, omiConversations]);
 
   const handleDelete = async (itemId: string) => {
-    console.log('Deleting item:', itemId);
-    const payload = {
-      meetingId: itemId
-    };
-
+    logger.debug('Deleting item:', itemId);
     try {
       const { invoke } = await import('@tauri-apps/api/core');
       await invoke('api_delete_meeting', {
         meetingId: itemId,
       });
-      console.log('Meeting deleted successfully');
+      logger.debug('Meeting deleted successfully');
       const updatedMeetings = meetings.filter((m: CurrentMeeting) => m.id !== itemId);
       setMeetings(updatedMeetings);
 
@@ -376,7 +361,7 @@ const Sidebar: React.FC = () => {
     }
   };
 
-  const handleDeleteConfirm = () => {
+  const _handleDeleteConfirm = () => {
     if (deleteModalState.itemId) {
       handleDelete(deleteModalState.itemId);
     }
@@ -393,7 +378,7 @@ const Sidebar: React.FC = () => {
     setEditingTitle(currentTitle);
   };
 
-  const handleEditConfirm = async () => {
+  const _handleEditConfirm = async () => {
     const newTitle = editingTitle.trim();
     const meetingId = editModalState.meetingId;
 
@@ -438,7 +423,7 @@ const Sidebar: React.FC = () => {
     }
   };
 
-  const handleEditCancel = () => {
+  const _handleEditCancel = () => {
     setEditModalState({ isOpen: false, meetingId: null, currentTitle: '' });
     setEditingTitle('');
   };
@@ -456,12 +441,14 @@ const Sidebar: React.FC = () => {
 
   // Expose setShowModelSettings to window for Rust tray to call
   useEffect(() => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Rust tray calls window.openSettings
     (window as any).openSettings = () => {
       setShowModelSettings(true);
     };
 
     // Cleanup on unmount
     return () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Rust tray calls window.openSettings
       delete (window as any).openSettings;
     };
   }, []);
@@ -592,6 +579,7 @@ const Sidebar: React.FC = () => {
     return searchResults.find(result => result.id === itemId);
   };
 
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const renderItem = (item: SidebarItem, depth = 0) => {
     const isExpanded = expandedFolders.has(item.id);
     const paddingLeft = `${depth * 12 + 12}px`;

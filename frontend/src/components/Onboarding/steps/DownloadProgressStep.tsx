@@ -30,7 +30,7 @@ export function DownloadProgressStep() {
       try {
         const { platform } = await import('@tauri-apps/plugin-os');
         setIsMac(platform() === 'macos');
-      } catch (e) {
+      } catch {
         setIsMac(navigator.userAgent.includes('Mac'));
       }
     };

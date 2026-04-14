@@ -5,6 +5,8 @@
  * in network requests, API calls, and other async operations.
  */
 
+import { logger } from '@/lib/logger';
+
 export interface RetryOptions {
   /** Maximum number of retry attempts (default: 3) */
   maxRetries?: number;
@@ -165,7 +167,7 @@ function defaultIsRetryable(error: unknown): boolean {
  *     maxRetries: 5,
  *     initialDelay: 500,
  *     onRetry: (attempt, error) => {
- *       console.log(`Retry attempt ${attempt} after error:`, error);
+ *       logger.debug(`Retry attempt ${attempt} after error:`, error);
  *     }
  *   }
  * );
@@ -225,7 +227,7 @@ export async function withRetry<T>(
       }
 
       // Log retry attempt
-      console.log(`[Retry] Attempt ${attempt}/${maxRetries} failed, retrying in ${delay}ms...`, error);
+      logger.debug(`[Retry] Attempt ${attempt}/${maxRetries} failed, retrying in ${delay}ms...`, error);
 
       // Wait before retrying
       await sleep(delay, signal);
@@ -353,7 +355,7 @@ export class CircuitBreaker<T> {
     if (this.state !== newState) {
       this.state = newState;
       this.options.onStateChange?.(newState);
-      console.log(`[CircuitBreaker] State changed to: ${newState}`);
+      logger.debug(`[CircuitBreaker] State changed to: ${newState}`);
     }
   }
 

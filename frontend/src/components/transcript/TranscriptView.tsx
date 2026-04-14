@@ -6,6 +6,7 @@ import { ConfidenceIndicator } from '@/components/transcript/ConfidenceIndicator
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { RecordingStatusBar } from '@/components/recording/RecordingStatusBar';
 import { motion, AnimatePresence } from 'framer-motion';
+import { logger } from '@/lib/logger';
 
 // Speaker indicator component to show who is speaking
 const SpeakerIndicator = memo(function SpeakerIndicator({
@@ -128,10 +129,10 @@ function cleanStopWords(text: string): string {
 }
 
 export const TranscriptView: React.FC<TranscriptViewProps> = ({ transcripts, isRecording = false, isPaused = false, isProcessing = false, isStopping = false, enableStreaming = false }) => {
-  const [speechDetected, setSpeechDetected] = useState(false);
+  const [, setSpeechDetected] = useState(false);
 
   // Debug: Log the props to understand what's happening
-  console.log('TranscriptView render:', {
+  logger.debug('TranscriptView render:', {
     isRecording,
     isPaused,
     isProcessing,

@@ -6,6 +6,7 @@
  */
 
 import { check, Update } from '@tauri-apps/plugin-updater';
+import { logger } from '@/lib/logger';
 import { relaunch } from '@tauri-apps/plugin-process';
 import { getVersion } from '@tauri-apps/api/app';
 
@@ -48,7 +49,7 @@ export class UpdateService {
     if (!force && this.lastCheckTime) {
       const timeSinceLastCheck = Date.now() - this.lastCheckTime;
       if (timeSinceLastCheck < this.CHECK_INTERVAL_MS) {
-        console.log('Skipping update check - checked recently');
+        logger.debug('Skipping update check - checked recently');
         return {
           available: false,
           currentVersion: await getVersion(),

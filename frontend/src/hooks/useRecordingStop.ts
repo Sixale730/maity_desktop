@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useEffect, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { listen } from '@tauri-apps/api/event';
 import { toast } from 'sonner';
@@ -12,6 +12,8 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useConfig } from '@/contexts/ConfigContext';
 import { invoke } from '@tauri-apps/api/core';
 import { supabase } from '@/lib/supabase';
+import { logger } from '@/lib/logger';
+import type { Transcript } from '@/types';
 
 type SummaryStatus = 'idle' | 'processing' | 'summarizing' | 'regenerating' | 'completed' | 'error';
 
@@ -73,7 +75,7 @@ export function useRecordingStop(
 
     const setupRecordingStoppedListener = async () => {
       try {
-        console.log('Setting up recording-stopped listener for navigation...');
+        logger.debug('Setting up recording-stopped listener for navigation...');
         unlistenFn = await listen<{
           message: string;
           folder_path?: string;
@@ -93,7 +95,7 @@ export function useRecordingStop(
           })();
 
         });
-        console.log('Recording stopped listener setup complete');
+        logger.debug('Recording stopped listener setup complete');
       } catch (error) {
         console.error('Failed to setup recording stopped listener:', error);
       }
@@ -102,7 +104,7 @@ export function useRecordingStop(
     setupRecordingStoppedListener();
 
     return () => {
-      console.log('Cleaning up recording stopped listener...');
+      logger.debug('Cleaning up recording stopped listener...');
       if (unlistenFn) {
         unlistenFn();
       }
@@ -133,7 +135,7 @@ export function useRecordingStop(
         await recordingStoppedDataRef.current;
       }
 
-      console.log('Post-stop processing (local-first)...', {
+      logger.debug('Post-stop processing (local-first)...', {
         stop_initiated_at: new Date(stopStartTime).toISOString(),
         current_transcript_count: transcriptsRef.current.length
       });
@@ -143,14 +145,14 @@ export function useRecordingStop(
 
       // Flush buffer with max 5s timeout — Parakeet already processed in real-time
       setStatus(RecordingStatus.PROCESSING_TRANSCRIPTS, 'Flushing transcript buffer...');
-      console.log('Flushing transcript buffer...');
+      logger.debug('Flushing transcript buffer...');
 
       flushBuffer();
 
       // Brief wait for React state to settle (500ms max)
       await new Promise(resolve => setTimeout(resolve, 500));
 
-      console.log('Buffer flush completed', {
+      logger.debug('Buffer flush completed', {
         total_time_since_stop: Date.now() - stopStartTime,
         final_transcript_count: transcriptsRef.current.length
       });
@@ -175,7 +177,7 @@ export function useRecordingStop(
         const savedMeetingName = sessionStorage.getItem('last_recording_meeting_name');
         const earlyMeetingId = sessionStorage.getItem('early_meeting_id');
 
-        console.log('Saving transcripts to database...', {
+        logger.debug('Saving transcripts to database...', {
           transcript_count: freshTranscripts.length,
           meeting_name: savedMeetingName || meetingTitle,
           folder_path: folderPath,
@@ -196,7 +198,7 @@ export function useRecordingStop(
             throw new Error('No meeting ID received from save operation');
           }
 
-          console.log('Successfully saved meeting with ID:', meetingId);
+          logger.debug('Successfully saved meeting with ID:', meetingId);
           recordingLogService.setMeetingId(meetingId);
           recordingLogService.log('sqlite_save_succeeded', {
             meeting_id: meetingId,
@@ -213,7 +215,7 @@ export function useRecordingStop(
           sessionStorage.removeItem('indexeddb_current_meeting_id');
 
           // Navigate IMMEDIATELY to conversations with localId
-          console.log(`[RecordingStop] Navigating to /conversations?localId=${meetingId}`);
+          logger.debug(`[RecordingStop] Navigating to /conversations?localId=${meetingId}`);
           router.push(`/conversations?localId=${meetingId}&source=recording`);
           Analytics.trackPageView('conversations');
 
@@ -240,7 +242,7 @@ export function useRecordingStop(
                 title: meetingData.title
               });
             }
-          } catch (error) {
+          } catch {
             setCurrentMeeting({ id: meetingId, title: savedMeetingName || meetingTitle || 'New Meeting' });
           }
 
@@ -311,7 +313,7 @@ export function useRecordingStop(
 
   // Fire-and-forget cloud sync enqueue
   const enqueueCloudSync = useCallback(async (
-    freshTranscripts: any[],
+    freshTranscripts: Transcript[],
     meetingId: string,
     savedMeetingName: string | null
   ) => {
@@ -404,7 +406,7 @@ export function useRecordingStop(
         dependsOn: job2Id,
       });
 
-      console.log(`[RecordingStop] Enqueued 3 cloud sync jobs for meeting ${meetingId}`);
+      logger.debug(`[RecordingStop] Enqueued 3 cloud sync jobs for meeting ${meetingId}`);
       recordingLogService.log('cloud_sync_enqueued', {
         meeting_id: meetingId,
         job_count: 3,
@@ -420,7 +422,7 @@ export function useRecordingStop(
   }, [maityUser, meetingTitle, transcriptModelConfig]);
 
   // Analytics tracking (fire-and-forget)
-  const trackMeetingAnalytics = useCallback(async (freshTranscripts: any[], meetingId: string) => {
+  const trackMeetingAnalytics = useCallback(async (freshTranscripts: Transcript[], meetingId: string) => {
     let durationSeconds = 0;
     if (freshTranscripts.length > 0 && freshTranscripts[0].audio_start_time !== undefined) {
       const lastTranscript = freshTranscripts[freshTranscripts.length - 1];
@@ -465,12 +467,14 @@ export function useRecordingStop(
   });
 
   useEffect(() => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- window API used by Rust callbacks
     (window as any).handleRecordingStop = (callApi: boolean = true) => {
       handleRecordingStopRef.current(callApi);
     };
 
     // Cleanup on unmount
     return () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- window API used by Rust callbacks
       delete (window as any).handleRecordingStop;
     };
   }, []);

@@ -208,7 +208,7 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
       {!preferences.auto_save && (
         <div className="p-4 border rounded-lg bg-[#f0f2fe] dark:bg-blue-900/30">
           <div className="text-sm text-[#2b3892] dark:text-blue-300">
-            La grabación de audio está deshabilitada. Habilita "Guardar Grabaciones de Audio" para guardar automáticamente el audio de tus reuniones.
+            La grabación de audio está deshabilitada. Habilita &quot;Guardar Grabaciones de Audio&quot; para guardar automáticamente el audio de tus reuniones.
           </div>
         </div>
       )}

@@ -1,4 +1,4 @@
-import { Loader2, CheckCircle, AlertCircle, RefreshCw } from 'lucide-react';
+import { Loader2, AlertCircle, RefreshCw } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { type AnalysisPhase } from '../hooks/useAnalysisPolling';

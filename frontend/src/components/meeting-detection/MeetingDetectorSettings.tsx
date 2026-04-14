@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useState, useEffect, useCallback } from 'react'
+import React, { useState, useEffect } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { Switch } from '@/components/ui/switch'
 import { Button } from '@/components/ui/button'
@@ -11,7 +11,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { Video, Settings, RefreshCw, Loader2 } from 'lucide-react'
+import { Video, RefreshCw, Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
 
 interface MonitoredAppStatus {
@@ -153,7 +153,7 @@ export function MeetingDetectorSettings() {
 
   const handleCheckNow = async () => {
     try {
-      const meetings = await invoke<any[]>('check_for_meetings_now')
+      const meetings = await invoke<unknown[]>('check_for_meetings_now')
       if (meetings.length === 0) {
         toast.info('No se detectaron reuniones activas')
       } else {

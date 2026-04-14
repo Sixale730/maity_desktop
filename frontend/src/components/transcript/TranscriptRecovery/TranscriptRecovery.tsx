@@ -21,12 +21,13 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { MeetingMetadata, StoredTranscript } from '@/services/indexedDBService';
 import { cn } from '@/lib/utils';
+import { logger } from '@/lib/logger';
 
 interface TranscriptRecoveryProps {
   isOpen: boolean;
   onClose: () => void;
   recoverableMeetings: MeetingMetadata[];
-  onRecover: (meetingId: string) => Promise<any>;
+  onRecover: (meetingId: string) => Promise<unknown>;
   onDelete: (meetingId: string) => Promise<void>;
   onLoadPreview: (meetingId: string) => Promise<StoredTranscript[]>;
 }
@@ -84,7 +85,7 @@ export function TranscriptRecovery({
         setTimeout(() => reject(new Error('La recuperación tardó demasiado. Intenta de nuevo.')), 30000)
       );
       const result = await Promise.race([onRecover(selectedMeetingId), timeoutPromise]);
-      console.log('Recovery successful:', result);
+      logger.debug('Recovery successful:', result);
       onClose();
     } catch (error) {
       console.error('Recovery failed:', error);

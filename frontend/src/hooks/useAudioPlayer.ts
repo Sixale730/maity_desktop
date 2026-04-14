@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { logger } from '@/lib/logger';
 
 export const useAudioPlayer = (audioPath: string | null) => {
   const [isPlaying, setIsPlaying] = useState(false);
@@ -16,19 +17,20 @@ export const useAudioPlayer = (audioPath: string | null) => {
   const initAudioContext = async () => {
     try {
       if (!audioRef.current) {
-        console.log('Creating new AudioContext');
+        logger.debug('Creating new AudioContext');
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- window.webkitAudioContext not typed
         const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
         audioRef.current = new AudioContextClass();
-        console.log('AudioContext created:', {
+        logger.debug('AudioContext created:', {
           state: audioRef.current.state,
           sampleRate: audioRef.current.sampleRate,
         });
       }
 
       if (audioRef.current.state === 'suspended') {
-        console.log('Resuming suspended AudioContext');
+        logger.debug('Resuming suspended AudioContext');
         await audioRef.current.resume();
-        console.log('AudioContext resumed:', audioRef.current.state);
+        logger.debug('AudioContext resumed:', audioRef.current.state);
       }
       
       setError(null);
@@ -43,7 +45,7 @@ export const useAudioPlayer = (audioPath: string | null) => {
   // Cleanup function
   useEffect(() => {
     return () => {
-      console.log('Cleaning up audio resources');
+      logger.debug('Cleaning up audio resources');
       if (rafRef.current) {
         cancelAnimationFrame(rafRef.current);
       }
@@ -58,7 +60,7 @@ export const useAudioPlayer = (audioPath: string | null) => {
 
   const loadAudio = async () => {
     if (!audioPath) {
-      console.log('No audio path provided');
+      logger.debug('No audio path provided');
       return;
     }
 
@@ -70,7 +72,7 @@ export const useAudioPlayer = (audioPath: string | null) => {
         return;
       }
 
-      console.log('Loading audio from:', audioPath);
+      logger.debug('Loading audio from:', audioPath);
       
       // Read the file using Tauri command
       const result = await invoke<number[]>('read_audio_file', { 
@@ -81,19 +83,19 @@ export const useAudioPlayer = (audioPath: string | null) => {
         throw new Error('Empty audio data received');
       }
       
-      console.log('Audio file read, size:', result.length, 'bytes');
+      logger.debug('Audio file read, size:', result.length, 'bytes');
       
       // Create a copy of the audio data
       const audioData = new Uint8Array(result).buffer;
       
-      console.log('Created audio buffer, size:', audioData.byteLength, 'bytes');
+      logger.debug('Created audio buffer, size:', audioData.byteLength, 'bytes');
       
       // Decode the audio data
       const audioBuffer = await new Promise<AudioBuffer>((resolve, reject) => {
         audioRef.current!.decodeAudioData(
           audioData,
           buffer => {
-            console.log('Audio decoded successfully:', {
+            logger.debug('Audio decoded successfully:', {
               duration: buffer.duration,
               sampleRate: buffer.sampleRate,
               numberOfChannels: buffer.numberOfChannels,
@@ -112,7 +114,7 @@ export const useAudioPlayer = (audioPath: string | null) => {
       setDuration(audioBuffer.duration);
       setCurrentTime(0);
       setError(null);
-      console.log('Audio loaded and ready to play');
+      logger.debug('Audio loaded and ready to play');
     } catch (error) {
       console.error('Error loading audio:', error);
       if (error instanceof Error) {
@@ -128,14 +130,14 @@ export const useAudioPlayer = (audioPath: string | null) => {
 
   // Load audio when path changes
   useEffect(() => {
-    console.log('Audio path changed:', audioPath);
+    logger.debug('Audio path changed:', audioPath);
     if (audioPath) {
       loadAudio();
     }
   }, [audioPath]);
 
   const stopPlayback = () => {
-    console.log('Stopping playback');
+    logger.debug('Stopping playback');
     if (rafRef.current) {
       cancelAnimationFrame(rafRef.current);
       rafRef.current = undefined;
@@ -145,7 +147,7 @@ export const useAudioPlayer = (audioPath: string | null) => {
         sourceRef.current.stop();
         sourceRef.current.disconnect();
       } catch (e) {
-        console.log('Error stopping source:', e);
+        logger.debug('Error stopping source:', e);
       }
       sourceRef.current = null;
     }
@@ -153,7 +155,7 @@ export const useAudioPlayer = (audioPath: string | null) => {
   };
 
   const play = async () => {
-    console.log('Play requested');
+    logger.debug('Play requested');
     
     try {
       // Initialize context if needed
@@ -175,11 +177,11 @@ export const useAudioPlayer = (audioPath: string | null) => {
       stopPlayback();
 
       // Create and setup new source
-      console.log('Creating new audio source');
+      logger.debug('Creating new audio source');
       sourceRef.current = audioRef.current.createBufferSource();
       sourceRef.current.buffer = audioBufferRef.current;
       
-      console.log('Audio buffer details:', {
+      logger.debug('Audio buffer details:', {
         duration: audioBufferRef.current.duration,
         sampleRate: audioBufferRef.current.sampleRate,
         numberOfChannels: audioBufferRef.current.numberOfChannels,
@@ -190,7 +192,7 @@ export const useAudioPlayer = (audioPath: string | null) => {
       
       // Setup ended callback
       sourceRef.current.onended = () => {
-        console.log('Playback ended naturally');
+        logger.debug('Playback ended naturally');
         stopPlayback();
         setCurrentTime(0);
       };
@@ -198,7 +200,7 @@ export const useAudioPlayer = (audioPath: string | null) => {
       // Start playback from the seek time
       const startTime = seekTimeRef.current;
       startTimeRef.current = audioRef.current.currentTime - startTime;
-      console.log('Starting playback', {
+      logger.debug('Starting playback', {
         startTime,
         contextTime: audioRef.current.currentTime,
         seekTime: seekTimeRef.current
@@ -211,14 +213,14 @@ export const useAudioPlayer = (audioPath: string | null) => {
       // Setup time update
       const updateTime = () => {
         if (!audioRef.current || !sourceRef.current) {
-          console.log('Update cancelled - context or source is null');
+          logger.debug('Update cancelled - context or source is null');
           return;
         }
         
         const newTime = audioRef.current.currentTime - startTimeRef.current;
         
         if (newTime >= duration) {
-          console.log('Playback finished');
+          logger.debug('Playback finished');
           stopPlayback();
           setCurrentTime(0);
           seekTimeRef.current = 0;
@@ -238,7 +240,7 @@ export const useAudioPlayer = (audioPath: string | null) => {
   };
 
   const seek = async (time: number) => {
-    console.log('Seek requested:', time);
+    logger.debug('Seek requested:', time);
     if (time < 0) time = 0;
     if (time > duration) time = duration;
     
@@ -253,13 +255,13 @@ export const useAudioPlayer = (audioPath: string | null) => {
     
     // If it was playing before, restart playback at new position
     if (wasPlaying) {
-      console.log('Restarting playback at:', time);
+      logger.debug('Restarting playback at:', time);
       await play();
     }
   };
 
   const pause = () => {
-    console.log('Pause requested');
+    logger.debug('Pause requested');
     stopPlayback();
   };
 

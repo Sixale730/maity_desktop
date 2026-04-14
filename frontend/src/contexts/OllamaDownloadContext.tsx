@@ -3,6 +3,7 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { toast } from 'sonner';
+import { logger } from '@/lib/logger';
 
 /**
  * Ollama download state synchronized with backend
@@ -42,7 +43,7 @@ export function OllamaDownloadProvider({ children }: { children: React.ReactNode
    * These persist for the lifetime of the app, unlike modal-scoped listeners
    */
   useEffect(() => {
-    console.log('[OllamaDownloadContext] Setting up event listeners');
+    logger.debug('[OllamaDownloadContext] Setting up event listeners');
     const unsubscribers: (() => void)[] = [];
 
     const setupListeners = async () => {
@@ -52,7 +53,7 @@ export function OllamaDownloadProvider({ children }: { children: React.ReactNode
           'ollama-model-download-progress',
           (event) => {
             const { modelName, progress } = event.payload;
-            console.log(`🔵 [OllamaDownloadContext] Progress for ${modelName}: ${progress}%`);
+            logger.debug(`🔵 [OllamaDownloadContext] Progress for ${modelName}: ${progress}%`);
 
             setDownloadProgress(prev => {
               const newProgress = new Map(prev);
@@ -76,7 +77,7 @@ export function OllamaDownloadProvider({ children }: { children: React.ReactNode
           'ollama-model-download-complete',
           (event) => {
             const { modelName } = event.payload;
-            console.log(`✅ [OllamaDownloadContext] Download complete for ${modelName}`);
+            logger.debug(`✅ [OllamaDownloadContext] Download complete for ${modelName}`);
 
             toast.success(`¡Modelo ${modelName} descargado!`, {
               description: 'El modelo está listo para usar',
@@ -127,7 +128,7 @@ export function OllamaDownloadProvider({ children }: { children: React.ReactNode
         );
         unsubscribers.push(unlistenError);
 
-        console.log('[OllamaDownloadContext] Event listeners set up successfully');
+        logger.debug('[OllamaDownloadContext] Event listeners set up successfully');
       } catch (error) {
         console.error('[OllamaDownloadContext] Failed to set up event listeners:', error);
       }
@@ -136,7 +137,7 @@ export function OllamaDownloadProvider({ children }: { children: React.ReactNode
     setupListeners();
 
     return () => {
-      console.log('[OllamaDownloadContext] Cleaning up event listeners');
+      logger.debug('[OllamaDownloadContext] Cleaning up event listeners');
       unsubscribers.forEach(unsub => unsub());
     };
   }, []);

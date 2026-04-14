@@ -4,7 +4,6 @@ import type { ModelConfig } from "@/types/models"
 import { TranscriptSettings } from "@/components/transcript/TranscriptSettings"
 import type { TranscriptModelProps } from "@/types/transcript"
 import { RecordingSettings } from "@/components/recording/RecordingSettings"
-import type { RecordingPreferences } from "@/types/audio"
 import { About } from "@/components/settings/About"
 import { MeetingDetectorSettings } from "@/components/meeting-detection/MeetingDetectorSettings"
 
@@ -27,7 +26,7 @@ export function SettingTabs({
     defaultTab = "transcriptSettings",
     transcriptModelConfig,
     setTranscriptModelConfig,
-    onSaveTranscript,
+    onSaveTranscript: _onSaveTranscript,
 }: SettingTabsProps) {
 
     const handleTabChange = () => {

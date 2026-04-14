@@ -4,6 +4,7 @@ import React, { useState, useEffect } from 'react'
 import { useAuth } from '@/contexts/AuthContext'
 import { Loader2, X } from 'lucide-react'
 import { listen } from '@tauri-apps/api/event'
+import { logger } from '@/lib/logger'
 
 function GoogleIcon({ className }: { className?: string }) {
   return (
@@ -62,7 +63,7 @@ export function LoginScreen() {
   useEffect(() => {
     const unlisten = listen<{ reason: string }>('auth-server-stopped', (event) => {
       if (event.payload.reason === 'timeout') {
-        console.log('[LoginScreen] Auth server timed out, resetting spinner')
+        logger.debug('[LoginScreen] Auth server timed out, resetting spinner')
         setIsSigningIn(false)
       }
     })

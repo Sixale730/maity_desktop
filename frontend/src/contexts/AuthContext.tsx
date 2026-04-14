@@ -7,6 +7,7 @@ import type { MaityUser } from '@/types/auth'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { onOpenUrl } from '@tauri-apps/plugin-deep-link'
+import { logger } from '@/lib/logger'
 
 interface AuthContextType {
   session: Session | null
@@ -67,7 +68,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const fetchOrCreateMaityUser = useCallback(async (authUser: User) => {
     // Promise dedup: if a fetch is already in progress, wait for it instead of running another
     if (fetchMaityUserPromise.current) {
-      console.log('[Auth] fetchOrCreateMaityUser already in progress, awaiting existing promise')
+      logger.debug('[Auth] fetchOrCreateMaityUser already in progress, awaiting existing promise')
       await fetchMaityUserPromise.current
       return
     }
@@ -118,7 +119,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           if (createError) {
             // Handle unique constraint violation (concurrent insert race)
             if (createError.code === '23505') {
-              console.log('[Auth] Unique constraint hit (concurrent insert), re-fetching user')
+              logger.debug('[Auth] Unique constraint hit (concurrent insert), re-fetching user')
               const { data: existingUser, error: refetchError } = await supabase
                 .from('users')
                 .select('id, auth_id, first_name, last_name, email, status, created_at, updated_at')
@@ -186,7 +187,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (isHandlingCallback.current) return
     isHandlingCallback.current = true
 
-    console.log('[Auth] Processing OAuth callback')
+    logger.debug('[Auth] Processing OAuth callback')
     setError(null)
 
     const tokens = extractTokensFromUrl(url)
@@ -207,7 +208,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         console.error('[Auth] Failed to set session:', sessionError)
         setError('Failed to complete sign-in. Please try again.')
       } else if (data.session) {
-        console.log('[Auth] Session established successfully')
+        logger.debug('[Auth] Session established successfully')
         setSession(data.session)
         setUser(data.session.user)
         await fetchOrCreateMaityUserRef.current(data.session.user)
@@ -230,7 +231,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         // Restore existing session
         const { data: { session: existingSession } } = await supabase.auth.getSession()
         if (existingSession && isMounted) {
-          console.log('[Auth] Restored existing session')
+          logger.debug('[Auth] Restored existing session')
           setSession(existingSession)
           setUser(existingSession.user)
           await fetchOrCreateMaityUserRef.current(existingSession.user)
@@ -245,11 +246,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
       // Subscribe to auth state changes (token refresh, sign-out, etc.)
       authSubscription = supabase.auth.onAuthStateChange(async (event, newSession) => {
-        console.log('[Auth] Auth state changed:', event, 'session:', !!newSession)
+        logger.debug('[Auth] Auth state changed:', event, 'session:', !!newSession)
 
         if (!isMounted) return
         if (isSigningOut.current) {
-          console.log('[Auth] Ignoring auth state change during sign out')
+          logger.debug('[Auth] Ignoring auth state change during sign out')
           return
         }
 
@@ -260,7 +261,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           // Skip if a callback handler (processAuthCode/processAuthTokens/handleDeepLinkCallback)
           // is already active — it will call fetchOrCreateMaityUser after establishing the session
           if (isHandlingCallback.current) {
-            console.log('[Auth] Skipping fetchOrCreateMaityUser in onAuthStateChange (callback handler active)')
+            logger.debug('[Auth] Skipping fetchOrCreateMaityUser in onAuthStateChange (callback handler active)')
           } else {
             await fetchOrCreateMaityUserRef.current(newSession.user)
           }
@@ -283,7 +284,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (isHandlingCallback.current) return
     isHandlingCallback.current = true
 
-    console.log('[Auth] Processing auth tokens')
+    logger.debug('[Auth] Processing auth tokens')
     setError(null)
 
     try {
@@ -296,7 +297,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         console.error('[Auth] Failed to set session from tokens:', sessionError)
         setError('Failed to complete sign-in. Please try again.')
       } else if (data.session) {
-        console.log('[Auth] Session established from tokens')
+        logger.debug('[Auth] Session established from tokens')
         setSession(data.session)
         setUser(data.session.user)
         await fetchOrCreateMaityUserRef.current(data.session.user)
@@ -323,12 +324,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     invoke<{ access_token: string; refresh_token: string } | null>('get_pending_auth_tokens')
       .then(async (pending) => {
         if (pending) {
-          console.log('[Auth] Found pending auth tokens via polling fallback')
+          logger.debug('[Auth] Found pending auth tokens via polling fallback')
           await processAuthTokens(pending.access_token, pending.refresh_token)
         }
       })
       .catch((err) => {
-        console.log('[Auth] get_pending_auth_tokens not available:', err)
+        logger.debug('[Auth] get_pending_auth_tokens not available:', err)
       })
 
     return () => {
@@ -341,7 +342,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (isHandlingCallback.current) return
     isHandlingCallback.current = true
 
-    console.log('[Auth] Processing PKCE code')
+    logger.debug('[Auth] Processing PKCE code')
     setError(null)
 
     try {
@@ -351,7 +352,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         console.error('[Auth] Failed to exchange PKCE code for session:', sessionError)
         setError('Failed to complete sign-in. Please try again.')
       } else if (data.session) {
-        console.log('[Auth] Session established via PKCE code exchange')
+        logger.debug('[Auth] Session established via PKCE code exchange')
         setSession(data.session)
         setUser(data.session.user)
         await fetchOrCreateMaityUserRef.current(data.session.user)
@@ -377,12 +378,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     invoke<string | null>('get_pending_auth_code')
       .then(async (pendingCode) => {
         if (pendingCode) {
-          console.log('[Auth] Found pending PKCE code via polling fallback')
+          logger.debug('[Auth] Found pending PKCE code via polling fallback')
           await processAuthCode(pendingCode)
         }
       })
       .catch((err) => {
-        console.log('[Auth] get_pending_auth_code not available:', err)
+        logger.debug('[Auth] get_pending_auth_code not available:', err)
       })
 
     return () => {
@@ -405,7 +406,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       cleanupOpenUrl = cleanup
     }).catch((err) => {
       // On Windows this may not be available — deep links come via single-instance
-      console.log('[Auth] onOpenUrl not available (expected on Windows):', err)
+      logger.debug('[Auth] onOpenUrl not available (expected on Windows):', err)
     })
 
     // Windows/Linux: single-instance plugin forwards deep-link URLs as events
@@ -424,7 +425,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const waitForSignOut = useCallback(async () => {
     if (signOutPromise.current) {
-      console.log('[Auth] Waiting for pending sign-out to complete before sign-in')
+      logger.debug('[Auth] Waiting for pending sign-out to complete before sign-in')
       await signOutPromise.current
     }
   }, [])
@@ -439,7 +440,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       try {
         const port = await invoke<number>('start_oauth_server')
         redirectTo = `http://127.0.0.1:${port}/auth/callback`
-        console.log('[Auth] Localhost OAuth server started on port', port)
+        logger.debug('[Auth] Localhost OAuth server started on port', port)
       } catch (serverErr) {
         console.warn('[Auth] Failed to start OAuth server, falling back to deep-link:', serverErr)
       }
@@ -460,7 +461,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
       if (data.url) {
         // Open the OAuth URL in the system browser
-        console.log('[Auth] Opening OAuth URL in system browser:', data.url)
+        logger.debug('[Auth] Opening OAuth URL in system browser:', data.url)
         await invoke('open_external_url', { url: data.url })
       }
     } catch (err) {
@@ -477,7 +478,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       try {
         const port = await invoke<number>('start_oauth_server')
         redirectTo = `http://127.0.0.1:${port}/auth/callback`
-        console.log('[Auth] Localhost OAuth server started on port', port)
+        logger.debug('[Auth] Localhost OAuth server started on port', port)
       } catch (serverErr) {
         console.warn('[Auth] Failed to start OAuth server, falling back to deep-link:', serverErr)
       }
@@ -496,7 +497,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         return
       }
       if (data.url) {
-        console.log('[Auth] Opening Apple OAuth URL in system browser')
+        logger.debug('[Auth] Opening Apple OAuth URL in system browser')
         await invoke('open_external_url', { url: data.url })
       }
     } catch (err) {
@@ -513,7 +514,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       try {
         const port = await invoke<number>('start_oauth_server')
         redirectTo = `http://127.0.0.1:${port}/auth/callback`
-        console.log('[Auth] Localhost OAuth server started on port', port)
+        logger.debug('[Auth] Localhost OAuth server started on port', port)
       } catch (serverErr) {
         console.warn('[Auth] Failed to start OAuth server, falling back to deep-link:', serverErr)
       }
@@ -533,7 +534,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         return
       }
       if (data.url) {
-        console.log('[Auth] Opening Azure OAuth URL in system browser')
+        logger.debug('[Auth] Opening Azure OAuth URL in system browser')
         await invoke('open_external_url', { url: data.url })
       }
     } catch (err) {
@@ -543,7 +544,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [waitForSignOut])
 
   const signOut = useCallback(async () => {
-    console.log('[Auth] signOut called')
+    logger.debug('[Auth] signOut called')
     isSigningOut.current = true
 
     const doSignOut = async () => {
@@ -562,7 +563,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         if (error) {
           console.error('[Auth] Supabase signOut error:', error)
         }
-        console.log('[Auth] Signed out successfully')
+        logger.debug('[Auth] Signed out successfully')
       } catch (err) {
         console.error('[Auth] Error signing out:', err)
       } finally {

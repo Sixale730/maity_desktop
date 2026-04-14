@@ -3,6 +3,7 @@
 import React, { Component, ErrorInfo, ReactNode } from 'react'
 import { Button } from '@/components/ui/button'
 import { AlertTriangle, RefreshCw, Bug, Copy, Check, FileDown } from 'lucide-react'
+import { logger } from '@/lib/logger'
 
 interface Props {
   children: ReactNode
@@ -58,9 +59,9 @@ export class ErrorBoundary extends Component<Props, State> {
 
     // Report to analytics if PostHog is available
     try {
-      // @ts-ignore - PostHog may be available globally
+      // @ts-expect-error PostHog may be available globally
       if (typeof window !== 'undefined' && window.posthog) {
-        // @ts-ignore
+        // @ts-expect-error PostHog may be available globally
         window.posthog.capture('react_error_boundary', {
           error_message: error.message,
           error_name: error.name,
@@ -95,7 +96,7 @@ export class ErrorBoundary extends Component<Props, State> {
       const result = await invoke<string>('export_logs')
       this.setState({ exported: true })
       setTimeout(() => this.setState({ exported: false }), 3000)
-      console.log('[ErrorBoundary] Logs exported:', result)
+      logger.debug('[ErrorBoundary] Logs exported:', result)
     } catch (e) {
       console.error('[ErrorBoundary] Failed to export logs:', e)
     } finally {

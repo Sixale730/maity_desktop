@@ -1,4 +1,4 @@
-import { Transcript, Summary, SummaryDataResponse } from '@/types';
+import { Transcript, SummaryDataResponse } from '@/types';
 
 /**
  * Represents a meeting record as returned from the backend API.

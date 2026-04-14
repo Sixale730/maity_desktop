@@ -7,6 +7,7 @@
  * Auth tokens are NEVER stored in payloads — fetched fresh at execution time.
  */
 import { invoke } from '@tauri-apps/api/core';
+import { logger } from '@/lib/logger';
 import {
   saveConversationToSupabase,
   saveTranscriptSegments,
@@ -39,7 +40,7 @@ class CloudSyncWorkerImpl {
   start() {
     if (this.started) return;
     this.started = true;
-    console.log('[CloudSyncWorker] Started');
+    logger.debug('[CloudSyncWorker] Started');
 
     // Reset stale jobs on start
     invoke('sync_queue_reset_stale', { staleSeconds: 300 }).catch((e) =>
@@ -64,7 +65,7 @@ class CloudSyncWorkerImpl {
       clearInterval(this.intervalId);
       this.intervalId = null;
     }
-    console.log('[CloudSyncWorker] Stopped');
+    logger.debug('[CloudSyncWorker] Stopped');
   }
 
   /** Force immediate processing (e.g., when network comes back) */
@@ -109,7 +110,7 @@ class CloudSyncWorkerImpl {
   private async cleanupOldJobs() {
     try {
       const deleted = await invoke<number>('sync_queue_reset_stale', { staleSeconds: 300 });
-      if (deleted > 0) console.log(`[CloudSyncWorker] Reset ${deleted} stale jobs`);
+      if (deleted > 0) logger.debug(`[CloudSyncWorker] Reset ${deleted} stale jobs`);
     } catch { /* ignore */ }
   }
 
@@ -121,7 +122,7 @@ class CloudSyncWorkerImpl {
       const jobs = await invoke<SyncQueueJob[]>('sync_queue_get_ready_jobs', { limit: 5 });
       if (jobs.length === 0) return;
 
-      console.log(`[CloudSyncWorker] Processing ${jobs.length} ready job(s)`);
+      logger.debug(`[CloudSyncWorker] Processing ${jobs.length} ready job(s)`);
 
       for (const job of jobs) {
         if (!this.started) break;
@@ -139,7 +140,7 @@ class CloudSyncWorkerImpl {
     try {
       const claimed = await invoke<boolean>('sync_queue_claim_job', { id: job.id });
       if (!claimed) {
-        console.log(`[CloudSyncWorker] Job ${job.id} already claimed, skipping`);
+        logger.debug(`[CloudSyncWorker] Job ${job.id} already claimed, skipping`);
         return;
       }
     } catch (e) {
@@ -153,7 +154,7 @@ class CloudSyncWorkerImpl {
         id: job.id,
         resultData: result ? JSON.stringify(result) : null,
       });
-      console.log(`[CloudSyncWorker] Job ${job.id} (${job.job_type}) completed`);
+      logger.debug(`[CloudSyncWorker] Job ${job.id} (${job.job_type}) completed`);
 
       // Emit sync status changed event for UI updates
       window.dispatchEvent(new CustomEvent('sync-status-changed', {

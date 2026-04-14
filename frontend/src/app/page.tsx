@@ -37,14 +37,14 @@ export default function Home() {
   const recordingState = useRecordingState();
 
   // Extract status from global state — single source of truth
-  const { status, isStopping, isProcessing, isSaving, isRecording } = recordingState;
+  const { status, isStopping, isProcessing, isRecording } = recordingState;
 
   // Hooks
   const { isModelReady: isParakeetModelReady, isDownloading: isParakeetDownloading } = useParakeetAutoDownloadContext();
   const { hasMicrophone, checkPermissions, isChecking: isCheckingPermissions } = usePermissionCheck();
-  const { setIsMeetingActive, isCollapsed: sidebarCollapsed, refetchMeetings } = useSidebar();
+  const { isCollapsed: sidebarCollapsed, refetchMeetings } = useSidebar();
   const { modals, messages, showModal, hideModal } = useModalState(transcriptModelConfig);
-  const { handleRecordingStart } = useRecordingStart(isRecording, (v) => { /* no-op: RecordingStateContext is source of truth */ }, showModal);
+  const { handleRecordingStart } = useRecordingStart(isRecording, (_v) => { /* no-op: RecordingStateContext is source of truth */ }, showModal);
 
   // Get handleRecordingStop function and setIsStopping (state comes from global context)
   const { handleRecordingStop, setIsStopping } = useRecordingStop(
@@ -54,8 +54,8 @@ export default function Home() {
   // Recovery hook
   const {
     recoverableMeetings,
-    isLoading: isLoadingRecovery,
-    isRecovering,
+    isLoading: _isLoadingRecovery,
+    isRecovering: _isRecovering,
     checkForRecoverableTranscripts,
     recoverMeeting,
     loadMeetingTranscripts,

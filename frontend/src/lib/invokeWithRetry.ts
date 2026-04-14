@@ -6,6 +6,7 @@
  */
 
 import { invoke } from '@tauri-apps/api/core';
+import { logger } from '@/lib/logger';
 import { withRetry, RetryOptions, isRetryExhaustedError } from './retry';
 
 export interface InvokeRetryOptions extends RetryOptions {
@@ -83,7 +84,7 @@ function isTauriErrorRetryable(error: unknown): boolean {
  * const data = await invokeWithRetry('slow_operation', {}, {
  *   maxRetries: 5,
  *   initialDelay: 1000,
- *   onRetry: (attempt) => console.log(`Retrying... (${attempt})`),
+ *   onRetry: (attempt) => logger.debug(`Retrying... (${attempt})`),
  * });
  * ```
  */
@@ -106,7 +107,7 @@ export async function invokeWithRetry<T>(
       {
         ...retryOptions,
         onRetry: (attempt, error, delay) => {
-          console.log(`[invokeWithRetry] Command "${cmd}" failed, attempt ${attempt}, retrying in ${delay}ms...`, error);
+          logger.debug(`[invokeWithRetry] Command "${cmd}" failed, attempt ${attempt}, retrying in ${delay}ms...`, error);
           retryOptions.onRetry?.(attempt, error, delay);
         },
       }

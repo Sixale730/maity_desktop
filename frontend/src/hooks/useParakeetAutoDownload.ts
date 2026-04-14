@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { useAuth } from '@/contexts/AuthContext';
+import { logger } from '@/lib/logger';
 
 interface ParakeetAutoDownloadState {
   isModelReady: boolean;
@@ -30,7 +31,7 @@ export function useParakeetAutoDownload(): ParakeetAutoDownloadState {
       // Check if model is already available
       const hasModels = await invoke<boolean>('parakeet_has_available_models');
       if (hasModels) {
-        console.log('[ParakeetAutoDownload] Model already available');
+        logger.debug('[ParakeetAutoDownload] Model already available');
         setIsModelReady(true);
         setIsDownloading(false);
         setError(null);
@@ -38,7 +39,7 @@ export function useParakeetAutoDownload(): ParakeetAutoDownloadState {
       }
 
       // Check if a download is already in progress
-      const models = await invoke<any[]>('parakeet_get_available_models');
+      const models = await invoke<{ name?: string; status?: string | Record<string, unknown> }[]>('parakeet_get_available_models');
       const alreadyDownloading = models.some(m =>
         m.status && (
           typeof m.status === 'object'
@@ -48,7 +49,7 @@ export function useParakeetAutoDownload(): ParakeetAutoDownloadState {
       );
 
       if (alreadyDownloading) {
-        console.log('[ParakeetAutoDownload] Download already in progress');
+        logger.debug('[ParakeetAutoDownload] Download already in progress');
         setIsDownloading(true);
         return;
       }
@@ -63,12 +64,12 @@ export function useParakeetAutoDownload(): ParakeetAutoDownloadState {
       );
 
       if (corruptedModel) {
-        console.log('[ParakeetAutoDownload] Corrupted model found, deleting before re-download');
+        logger.debug('[ParakeetAutoDownload] Corrupted model found, deleting before re-download');
         await invoke('parakeet_delete_corrupted_model', { modelName: MODEL_NAME });
       }
 
       // Start download
-      console.log(`[ParakeetAutoDownload] Starting download of ${MODEL_NAME}`);
+      logger.debug(`[ParakeetAutoDownload] Starting download of ${MODEL_NAME}`);
       setIsDownloading(true);
       setError(null);
       await invoke('parakeet_download_model', { modelName: MODEL_NAME });
@@ -80,7 +81,7 @@ export function useParakeetAutoDownload(): ParakeetAutoDownloadState {
 
       // Schedule retry
       retryTimeoutRef.current = setTimeout(() => {
-        console.log('[ParakeetAutoDownload] Retrying after error...');
+        logger.debug('[ParakeetAutoDownload] Retrying after error...');
         setError(null);
         checkAndDownload();
       }, RETRY_DELAY_MS);
@@ -92,7 +93,7 @@ export function useParakeetAutoDownload(): ParakeetAutoDownloadState {
     const unlisteners: (() => void)[] = [];
 
     const setup = async () => {
-      const unProgress = await listen<any>('parakeet-model-download-progress', (event) => {
+      const unProgress = await listen<{ progress?: number; status?: string }>('parakeet-model-download-progress', (event) => {
         const { progress, status } = event.payload;
         if (status === 'cancelled') {
           setIsDownloading(false);
@@ -103,8 +104,8 @@ export function useParakeetAutoDownload(): ParakeetAutoDownloadState {
       });
       unlisteners.push(unProgress);
 
-      const unComplete = await listen<any>('parakeet-model-download-complete', () => {
-        console.log('[ParakeetAutoDownload] Download complete');
+      const unComplete = await listen<void>('parakeet-model-download-complete', () => {
+        logger.debug('[ParakeetAutoDownload] Download complete');
         setIsModelReady(true);
         setIsDownloading(false);
         setDownloadProgress(100);
@@ -112,7 +113,7 @@ export function useParakeetAutoDownload(): ParakeetAutoDownloadState {
       });
       unlisteners.push(unComplete);
 
-      const unError = await listen<any>('parakeet-model-download-error', (event) => {
+      const unError = await listen<{ error?: string }>('parakeet-model-download-error', (event) => {
         const errorMsg = event.payload?.error || 'Download failed';
         console.error('[ParakeetAutoDownload] Download error:', errorMsg);
         setError(errorMsg);
@@ -120,7 +121,7 @@ export function useParakeetAutoDownload(): ParakeetAutoDownloadState {
 
         // Schedule retry
         retryTimeoutRef.current = setTimeout(() => {
-          console.log('[ParakeetAutoDownload] Retrying after download error...');
+          logger.debug('[ParakeetAutoDownload] Retrying after download error...');
           setError(null);
           checkAndDownload();
         }, RETRY_DELAY_MS);

@@ -4,6 +4,7 @@ import React, { createContext, useContext, useState, useEffect, useRef, useCallb
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import type { PermissionStatus, OnboardingPermissions } from '@/types/onboarding';
+import { logger } from '@/lib/logger';
 
 const PARAKEET_MODEL = 'parakeet-tdt-0.6b-v3-int8';
 
@@ -115,7 +116,7 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
       try {
         const recommendedModel = await invoke<string>('builtin_ai_get_recommended_model');
         setSelectedSummaryModel(recommendedModel);
-        console.log('[OnboardingContext] Set recommended model:', recommendedModel);
+        logger.debug('[OnboardingContext] Set recommended model:', recommendedModel);
       } catch (error) {
         console.error('[OnboardingContext] Failed to get recommended model:', error);
         // Keep default gemma3:1b
@@ -127,11 +128,11 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
   // Initialize database silently in background (moved from SetupOverviewStep)
   const initializeDatabaseInBackground = async () => {
     try {
-      console.log('[OnboardingContext] Starting background database initialization');
+      logger.debug('[OnboardingContext] Starting background database initialization');
       const isFirstLaunch = await invoke<boolean>('check_first_launch');
 
       if (!isFirstLaunch) {
-        console.log('[OnboardingContext] Database exists, skipping initialization');
+        logger.debug('[OnboardingContext] Database exists, skipping initialization');
         setDatabaseExists(true);
         return;
       }
@@ -155,13 +156,13 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
         );
 
         if (homebrewCheck?.exists) {
-          console.log('[OnboardingContext] Found Homebrew database, importing');
+          logger.debug('[OnboardingContext] Found Homebrew database, importing');
           await invoke('import_and_initialize_database', { legacyDbPath: homebrewDbPath });
           setDatabaseExists(true);
           return;
         }
       } catch (e) {
-        console.log('[OnboardingContext] Homebrew check failed, continuing:', e);
+        logger.debug('[OnboardingContext] Homebrew check failed, continuing:', e);
       }
     }
 
@@ -169,17 +170,17 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
     try {
       const legacyPath = await invoke<string | null>('check_default_legacy_database');
       if (legacyPath) {
-        console.log('[OnboardingContext] Found legacy database, importing');
+        logger.debug('[OnboardingContext] Found legacy database, importing');
         await invoke('import_and_initialize_database', { legacyDbPath: legacyPath });
         setDatabaseExists(true);
         return;
       }
     } catch (e) {
-      console.log('[OnboardingContext] Legacy check failed, continuing:', e);
+      logger.debug('[OnboardingContext] Legacy check failed, continuing:', e);
     }
 
     // No legacy database found - initialize fresh
-    console.log('[OnboardingContext] No legacy database found, initializing fresh');
+    logger.debug('[OnboardingContext] No legacy database found, initializing fresh');
     await invoke('initialize_fresh_database');
     setDatabaseExists(true);
   };
@@ -297,7 +298,7 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
     try {
       const isFirstLaunch = await invoke<boolean>('check_first_launch');
       setDatabaseExists(!isFirstLaunch);
-      console.log('[OnboardingContext] Database exists:', !isFirstLaunch);
+      logger.debug('[OnboardingContext] Database exists:', !isFirstLaunch);
     } catch (error) {
       console.error('[OnboardingContext] Failed to check database status:', error);
       setDatabaseExists(false);
@@ -308,7 +309,7 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
     try {
       const status = await invoke<OnboardingStatus | null>('get_onboarding_status');
       if (status) {
-        console.log('[OnboardingContext] Loaded saved status:', status);
+        logger.debug('[OnboardingContext] Loaded saved status:', status);
 
         // Don't trust saved status - verify actual model status on disk
         const verifiedStatus = await verifyModelStatus(status);
@@ -318,7 +319,7 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
         setParakeetDownloaded(verifiedStatus.parakeetDownloaded);
         setSummaryModelDownloaded(verifiedStatus.summaryModelDownloaded);
 
-        console.log('[OnboardingContext] Verified status:', verifiedStatus);
+        logger.debug('[OnboardingContext] Verified status:', verifiedStatus);
 
         // Check if any downloads are active to restore isBackgroundDownloading state
         await checkActiveDownloads();
@@ -337,7 +338,7 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
     try {
       await invoke('parakeet_init');
       parakeetDownloaded = await invoke<boolean>('parakeet_has_available_models');
-      console.log('[OnboardingContext] Parakeet verified on disk:', parakeetDownloaded);
+      logger.debug('[OnboardingContext] Parakeet verified on disk:', parakeetDownloaded);
     } catch (error) {
       console.warn('[OnboardingContext] Failed to verify Parakeet:', error);
       parakeetDownloaded = false;
@@ -348,7 +349,7 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
     try {
       const availableModel = await invoke<string | null>('builtin_ai_get_available_summary_model');
       summaryModelDownloaded = !!availableModel;
-      console.log('[OnboardingContext] Summary model verified on disk:', summaryModelDownloaded, 'model:', availableModel);
+      logger.debug('[OnboardingContext] Summary model verified on disk:', summaryModelDownloaded, 'model:', availableModel);
     } catch (error) {
       console.warn('[OnboardingContext] Failed to verify Summary model:', error);
       summaryModelDownloaded = false;
@@ -357,7 +358,7 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
     // Determine the correct step based on verified status
     // Simplified flow: Step 1: Welcome, Step 2: Permissions (macOS only)
     let currentStep = savedStatus.current_step;
-    let completed = savedStatus.completed;
+    const completed = savedStatus.completed;
 
     // Clamp step to new max (2: Welcome + Permissions)
     if (currentStep > 2) {
@@ -379,7 +380,7 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
     // This prevents a race condition where a download completion event triggers a save
     // that overwrites the "completed" status set by completeOnboarding
     if (isCompletingRef.current) {
-      console.log('[OnboardingContext] Skipping saveOnboardingStatus because completion is in progress');
+      logger.debug('[OnboardingContext] Skipping saveOnboardingStatus because completion is in progress');
       return;
     }
 
@@ -417,7 +418,7 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
         model: selectedSummaryModel,
       });
       setCompleted(true);
-      console.log('[OnboardingContext] Onboarding completed with model:', selectedSummaryModel);
+      logger.debug('[OnboardingContext] Onboarding completed with model:', selectedSummaryModel);
 
       // Reset the flag so subsequent state updates can be saved
       isCompletingRef.current = false;
@@ -430,13 +431,13 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
 
   // Start background downloads for models (parallel - Parakeet first, then Gemma immediately)
   const startBackgroundDownloads = async (includeGemma: boolean) => {
-    console.log('[OnboardingContext] Starting background downloads, includeGemma:', includeGemma);
+    logger.debug('[OnboardingContext] Starting background downloads, includeGemma:', includeGemma);
     setIsBackgroundDownloading(true);
 
     try {
       // Start Parakeet download first (speech recognition - always required)
       if (!parakeetDownloaded) {
-        console.log('[OnboardingContext] Starting Parakeet download');
+        logger.debug('[OnboardingContext] Starting Parakeet download');
         invoke('parakeet_download_model', { modelName: PARAKEET_MODEL })
           .catch(err => console.error('[OnboardingContext] Parakeet download failed:', err));
       }
@@ -444,7 +445,7 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
       // Start Gemma download after a delay to prioritize Parakeet bandwidth
       if (includeGemma && !summaryModelDownloaded) {
         setTimeout(() => {
-          console.log('[OnboardingContext] Starting Gemma download (delayed to prioritize Parakeet)');
+          logger.debug('[OnboardingContext] Starting Gemma download (delayed to prioritize Parakeet)');
           invoke('builtin_ai_download_model', { modelName: selectedSummaryModel || 'gemma3:1b' })
             .catch(err => console.error('[OnboardingContext] Gemma download failed:', err));
         }, 3000); // 3 second delay to give Parakeet priority
@@ -459,11 +460,11 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
   // Check if any models are currently downloading (for re-entry)
   const checkActiveDownloads = async () => {
     try {
-      const models = await invoke<any[]>('parakeet_get_available_models');
+      const models = await invoke<Array<{ status: unknown }>>('parakeet_get_available_models');
       const isDownloading = models.some(m => m.status && (typeof m.status === 'object' ? 'Downloading' in m.status : m.status === 'Downloading'));
       
       if (isDownloading) {
-        console.log('[OnboardingContext] Detected active background downloads on mount');
+        logger.debug('[OnboardingContext] Detected active background downloads on mount');
         setIsBackgroundDownloading(true);
       }
       
@@ -475,7 +476,7 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
   };
 
   const retryParakeetDownload = async () => {
-    console.log('[OnboardingContext] Retrying Parakeet download');
+    logger.debug('[OnboardingContext] Retrying Parakeet download');
     try {
       await invoke('parakeet_retry_download', { modelName: PARAKEET_MODEL });
     } catch (error) {

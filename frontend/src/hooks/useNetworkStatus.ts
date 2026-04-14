@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react'
 import { invoke } from '@tauri-apps/api/core'
+import { logger } from '@/lib/logger'
 
 export interface NetworkStatus {
   isOnline: boolean
@@ -61,7 +62,7 @@ export function useNetworkStatus(options: UseNetworkStatusOptions = {}): Network
   // Handle browser online/offline events
   useEffect(() => {
     const handleOnline = () => {
-      console.log('[useNetworkStatus] Browser reports online')
+      logger.debug('[useNetworkStatus] Browser reports online')
       setStatus(prev => ({ ...prev, isOnline: true }))
       // Check backend when coming back online
       checkBackendConnectivity()
@@ -70,10 +71,10 @@ export function useNetworkStatus(options: UseNetworkStatusOptions = {}): Network
     const handleOffline = () => {
       if (isTauri) {
         // Ignore offline events in Tauri - navigator.onLine is unreliable in WebView2
-        console.log('[useNetworkStatus] Ignoring offline event in Tauri (unreliable in WebView2)')
+        logger.debug('[useNetworkStatus] Ignoring offline event in Tauri (unreliable in WebView2)')
         return
       }
-      console.log('[useNetworkStatus] Browser reports offline')
+      logger.debug('[useNetworkStatus] Browser reports offline')
       setStatus(prev => ({
         ...prev,
         isOnline: false,

@@ -7,6 +7,7 @@ import { ModelSettingsModal } from '@/components/models/ModelSettingsModal';
 import type { ModelConfig } from '@/types/models';
 import { Switch } from '@/components/ui/switch';
 import { useConfig } from '@/contexts/ConfigContext';
+import { logger } from '@/lib/logger';
 
 interface SummaryModelSettingsProps {
   refetchTrigger?: number; // Change this to trigger refetch
@@ -26,6 +27,7 @@ export function SummaryModelSettings({ refetchTrigger }: SummaryModelSettingsPro
   // Reusable fetch function
   const fetchModelConfig = useCallback(async () => {
     try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- dynamic config from backend
       const data = await invoke('api_get_model_config') as any;
       if (data && data.provider !== null) {
         // Fetch API key if not included and provider requires it
@@ -42,6 +44,7 @@ export function SummaryModelSettings({ refetchTrigger }: SummaryModelSettingsPro
         // Fetch Custom OpenAI config if that's the active provider
         if (data.provider === 'custom-openai') {
           try {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- dynamic config from backend
             const customConfig = (await invoke('api_get_custom_openai_config')) as any;
             if (customConfig) {
               data.customOpenAIDisplayName = customConfig.displayName || null;
@@ -83,7 +86,7 @@ export function SummaryModelSettings({ refetchTrigger }: SummaryModelSettingsPro
     const setupListener = async () => {
       const { listen } = await import('@tauri-apps/api/event');
       const unlisten = await listen<ModelConfig>('model-config-updated', (event) => {
-        console.log('SummaryModelSettings received model-config-updated event:', event.payload);
+        logger.debug('SummaryModelSettings received model-config-updated event:', event.payload);
         setModelConfig(event.payload);
       });
 

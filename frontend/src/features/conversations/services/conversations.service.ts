@@ -837,7 +837,6 @@ const EMPTY_DIMENSIONS = { claridad: 0, proposito: 0, emociones: 0, estructura: 
 export async function getOmiStats(userId?: string): Promise<OmiStats | null> {
   if (!userId) return null;
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const { data, error } = await supabase
     .from('omi_conversations')
     .select('id, created_at, duration_seconds, title, emoji, communication_feedback_v4')
@@ -857,46 +856,44 @@ export async function getOmiStats(userId?: string): Promise<OmiStats | null> {
     };
   }
 
+  type StatsRow = { id: string; created_at: string; duration_seconds: number | null; title: string | null; emoji: string | null; communication_feedback_v4: CommunicationFeedbackV4 | null };
+  const rows = data as StatsRow[];
+
   const calcAvg = (arr: number[]) =>
     arr.length > 0 ? arr.reduce((a, b) => a + b, 0) / arr.length : 0;
 
   // Filter conversations with V4 feedback
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const withV4 = data.filter((c: any) => c.communication_feedback_v4?.resumen?.puntuacion_global != null);
+  const withV4 = rows.filter((c: StatsRow) => (c.communication_feedback_v4 as CommunicationFeedbackV4 | null)?.resumen?.puntuacion_global != null);
 
   // Overall scores
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const overallScores = withV4.map((c: any) => c.communication_feedback_v4.resumen.puntuacion_global as number);
+  const overallScores = withV4.map((c: StatsRow) => c.communication_feedback_v4!.resumen.puntuacion_global as number);
 
   // Dimension averages
   const dimAverages = { ...EMPTY_DIMENSIONS };
   for (const key of DIMENSION_KEYS_STATS) {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const scores = withV4.map((c: any) => {
-      const dim = c.communication_feedback_v4?.dimensiones?.[key];
+    const scores = withV4.map((c: StatsRow) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const dim = c.communication_feedback_v4?.dimensiones?.[key] as any;
       return dim?.puntaje as number | undefined;
     }).filter((s: number | undefined): s is number => s != null);
     dimAverages[key] = Math.round(calcAvg(scores));
   }
 
   // Total duration
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const totalDurationSeconds = data.reduce((acc: number, c: any) => acc + (c.duration_seconds || 0), 0);
+  const totalDurationSeconds = rows.reduce((acc: number, c: StatsRow) => acc + (c.duration_seconds || 0), 0);
 
   // Score history (last 10 with V4 scores)
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const scoreHistory = withV4.slice(-10).map((c: any) => ({
+  const scoreHistory = withV4.slice(-10).map((c: StatsRow) => ({
     date: new Date(c.created_at).toLocaleDateString('es-MX', { month: 'short', day: 'numeric' }),
-    score: c.communication_feedback_v4.resumen.puntuacion_global as number,
+    score: c.communication_feedback_v4!.resumen.puntuacion_global as number,
   }));
 
   // Recent conversations (last 5)
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const recentConversations = [...data].reverse().slice(0, 5).map((c: any) => ({
+  const recentConversations = [...rows].reverse().slice(0, 5).map((c: StatsRow) => ({
     id: c.id as string,
     title: (c.title || 'Sin título') as string,
     emoji: c.emoji as string | null,
-    score: (c.communication_feedback_v4?.resumen?.puntuacion_global ?? 0) as number,
+    score: ((c.communication_feedback_v4 as CommunicationFeedbackV4 | null)?.resumen?.puntuacion_global ?? 0) as number,
     date: new Date(c.created_at).toLocaleDateString('es-MX', { month: 'short', day: 'numeric' }),
   }));
 

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -11,6 +11,7 @@ import {
   getModelDisplayName,
   formatFileSize
 } from '@/lib/engines/parakeet';
+import { logger } from '@/lib/logger';
 
 interface ParakeetModelManagerProps {
   selectedModel?: string;
@@ -91,7 +92,7 @@ export function ParakeetModelManager({
     let unlistenError: (() => void) | null = null;
 
     const setupListeners = async () => {
-      console.log('[ParakeetModelManager] Setting up event listeners...');
+      logger.debug('[ParakeetModelManager] Setting up event listeners...');
 
       // Download progress with throttling
       unlistenProgress = await listen<{ modelName: string; progress: number }>(
@@ -107,7 +108,7 @@ export function ParakeetModelManager({
             Math.abs(progress - throttleData.progress) >= 5;
 
           if (shouldUpdate) {
-            console.log(`[ParakeetModelManager] Progress update for ${modelName}: ${progress}%`);
+            logger.debug(`[ParakeetModelManager] Progress update for ${modelName}: ${progress}%`);
             progressThrottleRef.current.set(modelName, { progress, timestamp: now });
 
             setModels(prevModels =>
@@ -201,7 +202,7 @@ export function ParakeetModelManager({
     setupListeners();
 
     return () => {
-      console.log('[ParakeetModelManager] Cleaning up event listeners...');
+      logger.debug('[ParakeetModelManager] Cleaning up event listeners...');
       if (unlistenProgress) unlistenProgress();
       if (unlistenComplete) unlistenComplete();
       if (unlistenError) unlistenError();
@@ -445,7 +446,7 @@ function ModelCard({
   onDownload,
   onCancel,
   onDelete,
-  isDownloading
+  isDownloading: _isDownloading
 }: ModelCardProps) {
   const [isHovered, setIsHovered] = useState(false);
   const displayInfo = getModelDisplayInfo(model.name);

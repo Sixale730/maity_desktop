@@ -115,7 +115,7 @@ interface CompactAudioLevelMeterProps {
 // Compact version for inline display in dropdowns
 export function CompactAudioLevelMeter({
   rmsLevel,
-  peakLevel,
+  peakLevel: _peakLevel,
   isActive,
   className = ''
 }: CompactAudioLevelMeterProps) {

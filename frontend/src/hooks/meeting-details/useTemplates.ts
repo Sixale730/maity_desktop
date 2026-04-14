@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { invoke as invokeTauri } from '@tauri-apps/api/core';
 import { toast } from 'sonner';
 import Analytics from '@/lib/analytics';
+import { logger } from '@/lib/logger';
 
 export function useTemplates() {
   const [availableTemplates, setAvailableTemplates] = useState<Array<{
@@ -20,7 +21,7 @@ export function useTemplates() {
           name: string;
           description: string;
         }>;
-        console.log('Available templates:', templates);
+        logger.debug('Available templates:', templates);
         setAvailableTemplates(templates);
       } catch (error) {
         console.error('Failed to fetch templates:', error);

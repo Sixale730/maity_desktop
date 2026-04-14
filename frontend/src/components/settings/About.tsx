@@ -25,7 +25,7 @@ export function About() {
         getVersion().then(setCurrentVersion).catch(console.error);
     }, []);
 
-    const handleContactClick = async () => {
+    const _handleContactClick = async () => {
         try {
             await invoke('open_external_url', { url: 'https://maity.cloud' });
         } catch (error) {
@@ -43,9 +43,9 @@ export function About() {
             } else {
                 toast.success('Estás ejecutando la última versión');
             }
-        } catch (error: any) {
+        } catch (error: unknown) {
             console.error('Failed to check for updates:', error);
-            toast.error('Error al buscar actualizaciones: ' + (error.message || 'Error desconocido'));
+            toast.error('Error al buscar actualizaciones: ' + (error instanceof Error ? error.message : 'Error desconocido'));
         } finally {
             setIsChecking(false);
         }

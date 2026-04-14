@@ -32,6 +32,7 @@ import { AnalysisPollingInitializer } from '@/components/AnalysisPollingInitiali
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ThemeProvider } from '@/contexts/ThemeContext'
 import Script from 'next/script'
+import { logger } from '@/lib/logger'
 
 // Create a client outside the component to avoid re-creating it on every render
 const queryClient = new QueryClient({
@@ -108,11 +109,11 @@ function AuthGate({ children }: { children: React.ReactNode }) {
     }
 
     const retry1 = setTimeout(() => {
-      console.log('[AuthGate] Auto-retry #1 for maityUser (3s)')
+      logger.debug('[AuthGate] Auto-retry #1 for maityUser (3s)')
       retryFetchMaityUser()
     }, 3000)
     const retry2 = setTimeout(() => {
-      console.log('[AuthGate] Auto-retry #2 for maityUser (7s)')
+      logger.debug('[AuthGate] Auto-retry #2 for maityUser (7s)')
       retryFetchMaityUser()
     }, 7000)
     const timeout = setTimeout(() => setTimedOut(true), 12000)
@@ -206,7 +207,7 @@ function AuthGate({ children }: { children: React.ReactNode }) {
  */
 function AppContent({ children }: { children: React.ReactNode }) {
   const [showOnboarding, setShowOnboarding] = useState(false)
-  const [onboardingCompleted, setOnboardingCompleted] = useState(false)
+  const [, setOnboardingCompleted] = useState(false)
 
   useEffect(() => {
     // Check onboarding status first
@@ -216,10 +217,10 @@ function AppContent({ children }: { children: React.ReactNode }) {
         setOnboardingCompleted(isComplete)
 
         if (!isComplete) {
-          console.log('[Layout] Onboarding not completed, showing onboarding flow')
+          logger.debug('[Layout] Onboarding not completed, showing onboarding flow')
           setShowOnboarding(true)
         } else {
-          console.log('[Layout] Onboarding completed, showing main app')
+          logger.debug('[Layout] Onboarding completed, showing main app')
         }
       })
       .catch((error) => {
@@ -242,7 +243,7 @@ function AppContent({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     // Listen for tray recording toggle request
     const unlisten = listen('request-recording-toggle', () => {
-      console.log('[Layout] Received request-recording-toggle from tray');
+      logger.debug('[Layout] Received request-recording-toggle from tray');
 
       if (showOnboarding) {
         toast.error("Por favor completa la configuración primero", {
@@ -250,7 +251,7 @@ function AppContent({ children }: { children: React.ReactNode }) {
         });
       } else {
         // If in main app, forward to useRecordingStart via window event
-        console.log('[Layout] Forwarding to start-recording-from-sidebar');
+        logger.debug('[Layout] Forwarding to start-recording-from-sidebar');
         window.dispatchEvent(new CustomEvent('start-recording-from-sidebar'));
       }
     });
@@ -261,7 +262,7 @@ function AppContent({ children }: { children: React.ReactNode }) {
   }, [showOnboarding]);
 
   const handleOnboardingComplete = () => {
-    console.log('[Layout] Onboarding completed, showing main app')
+    logger.debug('[Layout] Onboarding completed, showing main app')
     setShowOnboarding(false)
     setOnboardingCompleted(true)
   }

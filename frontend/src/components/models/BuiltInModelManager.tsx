@@ -72,6 +72,7 @@ export function BuiltInModelManager({ selectedModel, onModelSelect }: BuiltInMod
     let unlisten: (() => void) | undefined;
 
     const setupListener = async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Tauri event payload structure
       unlisten = await listen('builtin-ai-download-progress', (event: any) => {
         const { model, progress, downloaded_mb, total_mb, speed_mbps, status } = event.payload;
 
@@ -171,7 +172,7 @@ export function BuiltInModelManager({ selectedModel, onModelSelect }: BuiltInMod
                     status: {
                       type: 'error',
                       progress: 0,
-                    } as any,
+                    } as ModelInfo['status'],
                   }
                 : m
             )
@@ -345,7 +346,7 @@ export function BuiltInModelManager({ selectedModel, onModelSelect }: BuiltInMod
                     {(isError || isCorrupted) && (
                       <p className="mb-1 text-xs text-[#cc0040]">
                         {isError && typeof model.status === 'object' && 'Error' in model.status
-                          ? (model.status as any).Error
+                          ? (model.status as { type: string; Error?: string }).Error
                           : isCorrupted
                           ? 'El archivo está corrupto. Reintentar descarga o eliminar.'
                           : 'Ocurrió un error'}

@@ -10,6 +10,7 @@ import type { StorageLocations, NotificationSettings } from '@/types/config';
 import { invoke } from '@tauri-apps/api/core';
 import { useAuth } from '@/contexts/AuthContext';
 import { getUserRoleFromEmail, isAdmin as checkIsAdmin } from '@/lib/roles';
+import { logger } from '@/lib/logger';
 
 export type { OllamaModel, StorageLocations, NotificationSettings };
 
@@ -141,7 +142,7 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
         }
 
         const data = await response.json();
-        const modelList = data.models.map((model: any) => ({
+        const modelList = data.models.map((model: { name: string; model: string; size: number; modified_at: string }) => ({
           name: model.name,
           id: model.model,
           size: formatSize(model.size),
@@ -173,7 +174,7 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
       try {
         const config = await configService.getTranscriptConfig();
         if (config) {
-          console.log('[ConfigContext] Loaded saved transcript config:', config);
+          logger.debug('[ConfigContext] Loaded saved transcript config:', config);
           setTranscriptModelConfig({
             provider: config.provider || 'parakeet',
             model: config.model || 'parakeet-tdt-0.6b-v3-int8',
@@ -203,7 +204,7 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
 
     const forceParakeet = () => {
       if (transcriptModelConfig.provider !== 'parakeet') {
-        console.log('[ConfigContext] Migrating to Parakeet for user:', email);
+        logger.debug('[ConfigContext] Migrating to Parakeet for user:', email);
         const parakeetConfig: TranscriptModelProps = { provider: 'parakeet', model: 'parakeet-tdt-0.6b-v3-int8', language: 'es-419' };
         setTranscriptModelConfig(parakeetConfig);
         invoke('api_save_transcript_config', {
@@ -240,7 +241,7 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
               const customConfig = await configService.getCustomOpenAIConfig();
               if (customConfig) {
                 // Merge custom config fields into modelConfig
-                console.log('[ConfigContext] Loading custom OpenAI config:', {
+                logger.debug('[ConfigContext] Loading custom OpenAI config:', {
                   endpoint: customConfig.endpoint,
                   model: customConfig.model,
                 });
@@ -283,7 +284,7 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
     const setupListener = async () => {
       const { listen } = await import('@tauri-apps/api/event');
       const unlisten = await listen<ModelConfig>('model-config-updated', (event) => {
-        console.log('[ConfigContext] Received model-config-updated event:', event.payload);
+        logger.debug('[ConfigContext] Received model-config-updated event:', event.payload);
         setModelConfig(event.payload);
       });
       return unlisten;
@@ -307,10 +308,10 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
             micDevice: prefs.preferred_mic_device,
             systemDevice: prefs.preferred_system_device
           });
-          console.log('Loaded device preferences:', prefs);
+          logger.debug('Loaded device preferences:', prefs);
         }
       } catch (error) {
-        console.log('No device preferences found or failed to load:', error);
+        logger.debug('No device preferences found or failed to load:', error);
       }
     };
     loadDevicePreferences();
@@ -323,10 +324,10 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
         const language = await configService.getLanguagePreference();
         if (language) {
           setSelectedLanguage(language);
-          console.log('Loaded language preference:', language);
+          logger.debug('Loaded language preference:', language);
         }
       } catch (error) {
-        console.log('No language preference found or failed to load, using default (es):', error);
+        logger.debug('No language preference found or failed to load, using default (es):', error);
         // Default to 'es' (Spanish) for Latin American market
         setSelectedLanguage('es');
       }

@@ -8,6 +8,7 @@ import { AudioBackendSelector } from '@/components/recording/AudioBackendSelecto
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Label } from '@/components/ui/label';
 import Analytics from '@/lib/analytics';
+import { logger } from '@/lib/logger';
 import type { AudioDevice, SelectedDevices, AudioLevelData, AudioLevelUpdate } from '@/types/audio';
 
 export type { AudioDevice, SelectedDevices, AudioLevelData, AudioLevelUpdate };
@@ -34,7 +35,7 @@ export function DeviceSelection({ selectedDevices, onDeviceChange, disabled = fa
   const outputDevices = devices.filter(device => device.device_type === 'Output');
 
   // Get default output device name for Windows display
-  const defaultOutputDevice = outputDevices.length > 0 ? outputDevices[0]?.name : 'Default System Audio';
+  const _defaultOutputDevice = outputDevices.length > 0 ? outputDevices[0]?.name : 'Default System Audio';
 
   // Handle platform-specific defaults
   useEffect(() => {
@@ -53,7 +54,7 @@ export function DeviceSelection({ selectedDevices, onDeviceChange, disabled = fa
       setError(null);
       const result = await invoke<AudioDevice[]>('get_audio_devices');
       setDevices(result);
-      console.log('Fetched audio devices:', result);
+      logger.debug('Fetched audio devices:', result);
     } catch (err) {
       console.error('Failed to fetch audio devices:', err);
       setError('Error al cargar dispositivos de audio. Por favor verifica la configuración de audio de tu sistema.');
@@ -182,7 +183,7 @@ export function DeviceSelection({ selectedDevices, onDeviceChange, disabled = fa
       await invoke('start_audio_level_monitoring', { deviceNames });
       setIsMonitoring(true);
       setShowLevels(true);
-      console.log('Started audio level monitoring for input devices:', deviceNames);
+      logger.debug('Started audio level monitoring for input devices:', deviceNames);
     } catch (err) {
       console.error('Failed to start audio level monitoring:', err);
       setError('Error al iniciar monitoreo de nivel de audio');
@@ -195,14 +196,14 @@ export function DeviceSelection({ selectedDevices, onDeviceChange, disabled = fa
       await invoke('stop_audio_level_monitoring');
       setIsMonitoring(false);
       setAudioLevels(new Map());
-      console.log('Stopped audio level monitoring');
+      logger.debug('Stopped audio level monitoring');
     } catch (err) {
       console.error('Failed to stop audio level monitoring:', err);
     }
   };
 
   // Toggle audio level monitoring
-  const toggleAudioLevelMonitoring = async () => {
+  const _toggleAudioLevelMonitoring = async () => {
     if (isMonitoring) {
       await stopAudioLevelMonitoring();
     } else {
@@ -377,7 +378,7 @@ export function DeviceSelection({ selectedDevices, onDeviceChange, disabled = fa
           <p>• <strong>Niveles del Mic:</strong> Verde = bueno, Amarillo = alto, Rojo = muy alto</p>
         )}
         {!isMonitoring && inputDevices.length > 0 && (
-          <p>• <strong>Tip:</strong> Haz clic en "Probar Mic" para verificar si tu micrófono funciona</p>
+          <p>• <strong>Tip:</strong> Haz clic en &quot;Probar Mic&quot; para verificar si tu micrófono funciona</p>
         )}
       </div>
     </div>

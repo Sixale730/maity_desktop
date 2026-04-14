@@ -7,6 +7,7 @@ import { useRecordingState } from './RecordingStateContext';
 import { transcriptService } from '@/services/transcriptService';
 import { recordingService } from '@/services/recordingService';
 import { indexedDBService } from '@/services/indexedDBService';
+import { logger } from '@/lib/logger';
 
 interface TranscriptContextType {
   transcripts: Transcript[];
@@ -109,7 +110,7 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
 
             // Store in sessionStorage as fallback for markMeetingAsSaved
             sessionStorage.setItem('indexeddb_current_meeting_id', meetingId);
-            console.log('[Recording Started] 💾 IndexedDB meeting ID stored:', meetingId);
+            logger.debug('[Recording Started] IndexedDB meeting ID stored:', meetingId);
 
             // Get meeting name
             const meetingName = await recordingService.getRecordingMeetingName();
@@ -143,7 +144,7 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
                   await indexedDBService.saveMeetingMetadata(metadata);
                 }
               }
-            } catch (error) {
+            } catch {
               // Non-fatal - will be set on stop if recording completes normally
             }
           } catch (error) {
@@ -177,11 +178,11 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
     return () => {
       if (unlistenRecordingStarted) {
         unlistenRecordingStarted();
-        console.log('🧹 Recording started listener cleaned up');
+        logger.debug('Recording started listener cleaned up');
       }
       if (unlistenRecordingStopped) {
         unlistenRecordingStopped();
-        console.log('🧹 Recording stopped listener cleaned up');
+        logger.debug('Recording stopped listener cleaned up');
       }
     };
   }, [currentMeetingId]);
@@ -197,7 +198,7 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     let unlistenFn: (() => void) | undefined;
     let transcriptCounter = 0;
-    let transcriptBuffer = new Map<number, Transcript>();
+    const transcriptBuffer = new Map<number, Transcript>();
     let processingTimer: ReturnType<typeof setTimeout> | undefined;
 
     const processBufferedTranscripts = () => {
@@ -225,7 +226,7 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
 
       if (uniqueNew.length === 0) return;
 
-      console.log(`Adding ${uniqueNew.length} unique transcripts out of ${allNew.length} received`);
+      logger.debug(`Adding ${uniqueNew.length} unique transcripts out of ${allNew.length} received`);
 
       // Append to the full list and sort only the new additions into place
       const fullList = [...allTranscriptsRef.current, ...uniqueNew].sort((a, b) => {
@@ -244,10 +245,10 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
 
     const setupListener = async () => {
       try {
-        console.log('🔥 Setting up MAIN transcript listener during component initialization...');
+        logger.debug('Setting up MAIN transcript listener during component initialization...');
         unlistenFn = await transcriptService.onTranscriptUpdate((update) => {
           const now = Date.now();
-          console.log('🎯 MAIN LISTENER: Received transcript update:', {
+          logger.debug('MAIN LISTENER: Received transcript update:', {
             sequence_id: update.sequence_id,
             text: update.text.substring(0, 50) + '...',
             timestamp: update.timestamp,
@@ -258,7 +259,7 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
 
           // Check for duplicate sequence_id before processing
           if (transcriptBuffer.has(update.sequence_id)) {
-            console.log('🚫 MAIN LISTENER: Duplicate sequence_id, skipping buffer:', update.sequence_id);
+            logger.debug('MAIN LISTENER: Duplicate sequence_id, skipping buffer:', update.sequence_id);
             return;
           }
 
@@ -281,7 +282,7 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
 
           // Add to buffer
           transcriptBuffer.set(update.sequence_id, newTranscript);
-          console.log(`✅ MAIN LISTENER: Buffered transcript with sequence_id ${update.sequence_id}. Buffer size: ${transcriptBuffer.size}`);
+          logger.debug(`MAIN LISTENER: Buffered transcript with sequence_id ${update.sequence_id}. Buffer size: ${transcriptBuffer.size}`);
 
           // Save to IndexedDB (non-blocking) - use ref to avoid dependency issues
           if (currentMeetingIdRef.current) {
@@ -301,7 +302,7 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
             }, 16);
           }
         });
-        console.log('✅ MAIN transcript listener setup complete');
+        logger.debug('MAIN transcript listener setup complete');
       } catch (error) {
         console.error('❌ Failed to setup MAIN transcript listener:', error);
         alert('Failed to setup transcript listener. Check console for details.');
@@ -309,17 +310,17 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
     };
 
     setupListener();
-    console.log('Started enhanced listener setup');
+    logger.debug('Started enhanced listener setup');
 
     return () => {
-      console.log('🧹 CLEANUP: Cleaning up MAIN transcript listener...');
+      logger.debug('CLEANUP: Cleaning up MAIN transcript listener...');
       if (processingTimer) {
         clearTimeout(processingTimer);
-        console.log('🧹 CLEANUP: Cleared processing timer');
+        logger.debug('CLEANUP: Cleared processing timer');
       }
       if (unlistenFn) {
         unlistenFn();
-        console.log('🧹 CLEANUP: MAIN transcript listener cleaned up');
+        logger.debug('CLEANUP: MAIN transcript listener cleaned up');
       }
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -332,37 +333,38 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
       // If recording is active and we have no local transcripts, sync from backend
       if (recordingState.isRecording && transcripts.length === 0) {
         try {
-          console.log('[Reload Sync] Recording active after reload, syncing transcript history...');
+          logger.debug('[Reload Sync] Recording active after reload, syncing transcript history...');
 
           // Fetch transcript history from backend
           const history = await transcriptService.getTranscriptHistory();
-          console.log(`[Reload Sync] Retrieved ${history.length} transcript segments from backend`);
+          logger.debug(`[Reload Sync] Retrieved ${history.length} transcript segments from backend`);
 
           // Convert backend format to frontend Transcript format
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
           const formattedTranscripts: Transcript[] = history.map((segment: any) => ({
-            id: segment.id,
-            text: segment.text,
-            timestamp: segment.display_time, // Use display_time for UI
-            sequence_id: segment.sequence_id,
-            chunk_start_time: segment.audio_start_time,
+            id: segment.id as string,
+            text: segment.text as string,
+            timestamp: segment.display_time as string, // Use display_time for UI
+            sequence_id: segment.sequence_id as number,
+            chunk_start_time: segment.audio_start_time as number | undefined,
             is_partial: false, // History segments are always final
-            confidence: segment.confidence,
-            audio_start_time: segment.audio_start_time,
-            audio_end_time: segment.audio_end_time,
-            duration: segment.duration,
-            source_type: segment.source_type, // Preserve speaker identification for reload sync
+            confidence: segment.confidence as number | undefined,
+            audio_start_time: segment.audio_start_time as number | undefined,
+            audio_end_time: segment.audio_end_time as number | undefined,
+            duration: segment.duration as number | undefined,
+            source_type: segment.source_type as 'user' | 'interlocutor' | undefined, // Preserve speaker identification for reload sync
           }));
 
           allTranscriptsRef.current = formattedTranscripts;
           setTranscripts(formattedTranscripts.slice(-DISPLAY_WINDOW_SIZE));
-          console.log('[Reload Sync] ✅ Transcript history synced successfully');
+          logger.debug('[Reload Sync] Transcript history synced successfully');
 
           // Fetch meeting name from backend
           const meetingName = await recordingService.getRecordingMeetingName();
           if (meetingName) {
-            console.log('[Reload Sync] Retrieved meeting name:', meetingName);
+            logger.debug('[Reload Sync] Retrieved meeting name:', meetingName);
             setMeetingTitle(meetingName);
-            console.log('[Reload Sync] ✅ Meeting title synced successfully');
+            logger.debug('[Reload Sync] Meeting title synced successfully');
           }
         } catch (error) {
           console.error('[Reload Sync] Failed to sync from backend:', error);
@@ -375,7 +377,7 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
 
   // Manual transcript update handler (for RecordingControls component)
   const addTranscript = useCallback((update: TranscriptUpdate) => {
-    console.log('🎯 addTranscript called with:', {
+    logger.debug('addTranscript called with:', {
       sequence_id: update.sequence_id,
       text: update.text.substring(0, 50) + '...',
       timestamp: update.timestamp,
@@ -402,11 +404,11 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
       t => t.text === update.text && t.timestamp === update.timestamp
     );
     if (exists) {
-      console.log('🚫 Duplicate transcript detected, skipping:', update.text.substring(0, 30) + '...');
+      logger.debug('Duplicate transcript detected, skipping:', update.text.substring(0, 30) + '...');
       return;
     }
 
-    console.log('📊 Current transcripts count before update:', allTranscriptsRef.current.length);
+    logger.debug('Current transcripts count before update:', allTranscriptsRef.current.length);
 
     // Append to full list and sort
     const fullList = [...allTranscriptsRef.current, newTranscript].sort((a, b) => {
@@ -416,8 +418,8 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
     });
     allTranscriptsRef.current = fullList;
 
-    console.log('✅ Added new transcript. New count:', fullList.length);
-    console.log('📝 Latest transcript:', {
+    logger.debug('Added new transcript. New count:', fullList.length);
+    logger.debug('Latest transcript:', {
       id: newTranscript.id,
       text: newTranscript.text.substring(0, 30) + '...',
       sequence_id: newTranscript.sequence_id
@@ -450,7 +452,7 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
   // Force flush buffer (for final transcript processing)
   const flushBuffer = useCallback(() => {
     if (finalFlushRef.current) {
-      console.log('🔄 Flushing transcript buffer...');
+      logger.debug('Flushing transcript buffer...');
       finalFlushRef.current();
     }
   }, []);

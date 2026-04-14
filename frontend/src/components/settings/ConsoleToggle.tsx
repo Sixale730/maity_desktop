@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
+import { logger } from '@/lib/logger';
 
 export function ConsoleToggle() {
   const [isLoading, setIsLoading] = useState(false);
@@ -12,7 +13,7 @@ export function ConsoleToggle() {
     setIsLoading(true);
     try {
       const result = await invoke('toggle_console');
-      console.log('Console toggle result:', result);
+      logger.debug('Console toggle result:', result);
       setConsoleVisible(!consoleVisible);
     } catch (error) {
       console.error('Failed to toggle console:', error);
@@ -25,7 +26,7 @@ export function ConsoleToggle() {
     setIsLoading(true);
     try {
       const result = await invoke('show_console');
-      console.log('Show console result:', result);
+      logger.debug('Show console result:', result);
       setConsoleVisible(true);
     } catch (error) {
       console.error('Failed to show console:', error);
@@ -38,7 +39,7 @@ export function ConsoleToggle() {
     setIsLoading(true);
     try {
       const result = await invoke('hide_console');
-      console.log('Hide console result:', result);
+      logger.debug('Hide console result:', result);
       setConsoleVisible(false);
     } catch (error) {
       console.error('Failed to hide console:', error);

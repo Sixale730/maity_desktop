@@ -25,7 +25,7 @@ export function LogExporter() {
   const [isExporting, setIsExporting] = useState(false)
   const [isClearing, setIsClearing] = useState(false)
   const [logInfo, setLogInfo] = useState<LogInfo | null>(null)
-  const [isLoadingInfo, setIsLoadingInfo] = useState(false)
+  const [, setIsLoadingInfo] = useState(false)
 
   const loadLogInfo = useCallback(async () => {
     setIsLoadingInfo(true)
@@ -53,10 +53,10 @@ export function LogExporter() {
       })
       // Refresh log info after export
       loadLogInfo()
-    } catch (error: any) {
+    } catch (error: unknown) {
       console.error('Failed to export logs:', error)
       toast.error('Error al exportar logs', {
-        description: error?.toString() || 'Error desconocido',
+        description: error instanceof Error ? error.message : String(error),
       })
     } finally {
       setIsExporting(false)
@@ -66,10 +66,10 @@ export function LogExporter() {
   const handleOpenLogDirectory = async () => {
     try {
       await invoke('open_log_directory')
-    } catch (error: any) {
+    } catch (error: unknown) {
       console.error('Failed to open log directory:', error)
       toast.error('Error al abrir carpeta de logs', {
-        description: error?.toString() || 'Error desconocido',
+        description: error instanceof Error ? error.message : String(error),
       })
     }
   }
@@ -85,10 +85,10 @@ export function LogExporter() {
       }
       // Refresh log info after clearing
       loadLogInfo()
-    } catch (error: any) {
+    } catch (error: unknown) {
       console.error('Failed to clear old logs:', error)
       toast.error('Error al limpiar logs', {
-        description: error?.toString() || 'Error desconocido',
+        description: error instanceof Error ? error.message : String(error),
       })
     } finally {
       setIsClearing(false)

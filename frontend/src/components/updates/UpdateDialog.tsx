@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Download, X, CheckCircle2, AlertCircle, Loader2 } from 'lucide-react';
+import { Download, AlertCircle, Loader2 } from 'lucide-react';
 import {
   Dialog,
   DialogContent,
@@ -9,10 +9,11 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
-import { updateService, UpdateInfo, UpdateProgress } from '@/services/updateService';
+import { UpdateInfo, UpdateProgress } from '@/services/updateService';
 import { check, Update } from '@tauri-apps/plugin-updater';
 import { relaunch } from '@tauri-apps/plugin-process';
 import { toast } from 'sonner';
+import { logger } from '@/lib/logger';
 
 interface UpdateDialogProps {
   open: boolean;
@@ -66,8 +67,8 @@ export function UpdateDialog({ open, onOpenChange, updateInfo }: UpdateDialogPro
           setError('Actualización no disponible');
           return;
         }
-      } catch (err: any) {
-        setError('Error al obtener actualización: ' + (err.message || 'Error desconocido'));
+      } catch (err: unknown) {
+        setError('Error al obtener actualización: ' + (err instanceof Error ? err.message : 'Error desconocido'));
         return;
       }
     }
@@ -90,7 +91,7 @@ export function UpdateDialog({ open, onOpenChange, updateInfo }: UpdateDialogPro
         switch (event.event) {
           case 'Started':
             contentLength = event.data.contentLength || 0;
-            console.log(`[UpdateDialog] Started downloading ${contentLength} bytes`);
+            logger.debug(`[UpdateDialog] Started downloading ${contentLength} bytes`);
             setProgress({
               downloaded: 0,
               total: contentLength,
@@ -103,7 +104,7 @@ export function UpdateDialog({ open, onOpenChange, updateInfo }: UpdateDialogPro
             const percentage = contentLength > 0
               ? Math.round((downloaded / contentLength) * 100)
               : 0;
-            console.log(`[UpdateDialog] Progress: ${downloaded} / ${contentLength} bytes (${percentage}%)`);
+            logger.debug(`[UpdateDialog] Progress: ${downloaded} / ${contentLength} bytes (${percentage}%)`);
             setProgress({
               downloaded,
               total: contentLength,
@@ -112,7 +113,7 @@ export function UpdateDialog({ open, onOpenChange, updateInfo }: UpdateDialogPro
             break;
 
           case 'Finished':
-            console.log('[UpdateDialog] Download finished');
+            logger.debug('[UpdateDialog] Download finished');
             setProgress({
               downloaded: contentLength,
               total: contentLength,
@@ -122,7 +123,7 @@ export function UpdateDialog({ open, onOpenChange, updateInfo }: UpdateDialogPro
         }
       });
 
-      console.log('[UpdateDialog] Update installed successfully');
+      logger.debug('[UpdateDialog] Update installed successfully');
       toast.success('Actualización instalada exitosamente. La aplicación se reiniciará...');
 
       // Mark download as complete before closing
@@ -133,11 +134,12 @@ export function UpdateDialog({ open, onOpenChange, updateInfo }: UpdateDialogPro
 
       // Relaunch the app
       await relaunch();
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('Update failed:', err);
-      setError(err.message || 'Error al descargar o instalar actualización');
+      const errMsg = err instanceof Error ? err.message : 'Error desconocido';
+      setError(errMsg || 'Error al descargar o instalar actualización');
       setIsDownloading(false);
-      toast.error('Actualización fallida: ' + (err.message || 'Error desconocido'));
+      toast.error('Actualización fallida: ' + errMsg);
     }
   };
 

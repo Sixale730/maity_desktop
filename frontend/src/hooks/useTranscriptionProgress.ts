@@ -17,7 +17,7 @@ export interface UseTranscriptionProgressResult {
   cancelPending: () => Promise<void>;
 }
 
-const INITIAL_STATE: UseTranscriptionProgressResult = {
+const _INITIAL_STATE: UseTranscriptionProgressResult = {
   isFinishing: false,
   totalRemaining: 0,
   processed: 0,

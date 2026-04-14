@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useRef } from 'react'
+import { logger } from '@/lib/logger'
 
 /**
  * ChunkErrorRecovery: Detects ChunkLoadError (common in Next.js dev mode)
@@ -55,7 +56,7 @@ export function ChunkErrorRecovery() {
         reloadCountRef.current++
         sessionStorage.setItem('chunkErrorReloadCount', String(reloadCountRef.current))
 
-        console.log(
+        logger.debug(
           `[ChunkErrorRecovery] Reloading page in ${RELOAD_DELAY_MS}ms... ` +
           `(attempt ${reloadCountRef.current}/${MAX_RELOAD_ATTEMPTS})`
         )
@@ -93,7 +94,7 @@ export function ChunkErrorRecovery() {
         reloadCountRef.current++
         sessionStorage.setItem('chunkErrorReloadCount', String(reloadCountRef.current))
 
-        console.log(
+        logger.debug(
           `[ChunkErrorRecovery] Reloading page in ${RELOAD_DELAY_MS}ms... ` +
           `(attempt ${reloadCountRef.current}/${MAX_RELOAD_ATTEMPTS})`
         )

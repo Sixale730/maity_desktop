@@ -10,6 +10,7 @@
  */
 
 import { invoke } from '@tauri-apps/api/core'
+import { logger } from '@/lib/logger'
 import { supabase } from './supabase'
 
 export interface DeepgramProxyConfig {
@@ -57,9 +58,9 @@ export async function getDeepgramProxyConfig(): Promise<DeepgramProxyConfig> {
     )
   }
 
-  console.log('[deepgram] Using session token, expires at:', new Date((session.expires_at ?? 0) * 1000).toISOString())
+  logger.debug('[deepgram] Using session token, expires at:', new Date((session.expires_at ?? 0) * 1000).toISOString())
 
-  console.log('[deepgram] Fetching proxy config via Rust backend...')
+  logger.debug('[deepgram] Fetching proxy config via Rust backend...')
 
   try {
     // Rust command handles: HTTP fetch, caching, URL parsing, error classification
@@ -68,8 +69,8 @@ export async function getDeepgramProxyConfig(): Promise<DeepgramProxyConfig> {
       { accessToken: session.access_token }
     )
 
-    console.log('[deepgram] Proxy config obtained, expires in', result.expires_in, 's')
-    console.log('[deepgram] Proxy base URL:', result.proxy_base_url)
+    logger.debug('[deepgram] Proxy config obtained, expires in', result.expires_in, 's')
+    logger.debug('[deepgram] Proxy base URL:', result.proxy_base_url)
 
     return {
       proxyBaseUrl: result.proxy_base_url,
@@ -104,7 +105,7 @@ export async function clearDeepgramProxyCache(): Promise<void> {
   } catch (e) {
     console.warn('[deepgram] Failed to clear Rust cache:', e)
   }
-  console.log('[deepgram] Proxy config cache cleared')
+  logger.debug('[deepgram] Proxy config cache cleared')
 }
 
 /**

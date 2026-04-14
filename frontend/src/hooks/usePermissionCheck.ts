@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { logger } from '@/lib/logger';
 
 export interface PermissionStatus {
   hasMicrophone: boolean;
@@ -32,7 +33,7 @@ export function usePermissionCheck() {
       const outputDevices = devices.filter(d => d.device_type === 'Output');
       const hasSystemAudio = outputDevices.length > 0;
 
-      console.log('Permission check:', {
+      logger.debug('Permission check:', {
         hasMicrophone,
         hasSystemAudio,
         inputDevices: inputDevices.length,

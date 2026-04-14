@@ -3,9 +3,9 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { Summary, Block } from '@/types';
 import { Section } from './Section';
-import { EditableTitle } from '@/components/shared/EditableTitle';
 import { ContextMenu } from './ContextMenu';
-import { ExclamationTriangleIcon, CheckCircleIcon, ClipboardDocumentCheckIcon } from '@heroicons/react/24/outline';
+import { ExclamationTriangleIcon } from '@heroicons/react/24/outline';
+import { logger } from '@/lib/logger';
 
 interface Props {
   summary: Summary | null;
@@ -20,7 +20,7 @@ interface Props {
   };
 }
 
-export const AISummary = ({ summary, status, error, onSummaryChange, onRegenerateSummary, meeting }: Props) => {
+export const AISummary = ({ summary, status, error, onSummaryChange, onRegenerateSummary: _onRegenerateSummary, meeting }: Props) => {
   const generateUniqueId = (sectionKey: string) => {
     return `${sectionKey}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
   };
@@ -113,7 +113,7 @@ export const AISummary = ({ summary, status, error, onSummaryChange, onRegenerat
     return allBlocks;
   };
 
-  const findBlockAndSection = (blockId: string) => {
+  const _findBlockAndSection = (blockId: string) => {
     for (const [sectionKey, section] of Object.entries(currentSummary)) {
       const block = section.blocks.find(b => b.id === blockId);
       if (block) {
@@ -165,7 +165,7 @@ export const AISummary = ({ summary, status, error, onSummaryChange, onRegenerat
     setIsDragging(true);
   };
 
-  const handleBlockMouseEnter = (blockId: string, sectionKey: keyof Summary) => {
+  const handleBlockMouseEnter = (blockId: string, _sectionKey: keyof Summary) => {
     if (isDragging && dragStartBlock) {
       const range = getBlockRange(dragStartBlock, blockId);
       setSelectedBlocks(range);
@@ -216,7 +216,7 @@ export const AISummary = ({ summary, status, error, onSummaryChange, onRegenerat
   };
 
   const handleTitleChange = (sectionKey: keyof Summary, newTitle: string) => {
-    console.log('Title change:', { sectionKey, newTitle });
+    logger.debug('Title change:', { sectionKey, newTitle });
     const updatedSummary = {
       ...currentSummary,
       [sectionKey]: {
@@ -224,11 +224,11 @@ export const AISummary = ({ summary, status, error, onSummaryChange, onRegenerat
         title: newTitle
       }
     };
-    console.log('Updated summary:', updatedSummary);
+    logger.debug('Updated summary:', updatedSummary);
     onSummaryChange(updatedSummary);
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent, blockId: string) => {
+  const handleKeyDown = (e: React.KeyboardEvent, _blockId: string) => {
     if ((e.key === 'Delete' || e.key === 'Backspace') && selectedBlocks.length > 1) {
       // Handle multi-block deletion
       e.preventDefault();
@@ -379,7 +379,7 @@ export const AISummary = ({ summary, status, error, onSummaryChange, onRegenerat
   const getSelectedBlocksContent = useCallback(() => {
     return selectedBlocks
       .map(blockId => {
-        for (const [sectionKey, section] of Object.entries(currentSummary)) {
+        for (const [, section] of Object.entries(currentSummary)) {
           const block = section.blocks.find(b => b.id === blockId);
           if (block) {
             return block.content;
@@ -415,7 +415,7 @@ export const AISummary = ({ summary, status, error, onSummaryChange, onRegenerat
           }
         } else if (e.key === 'c') {
           const blockContents = selectedBlocks.map(blockId => {
-            for (const [sectionKey, section] of Object.entries(currentSummary)) {
+            for (const [, section] of Object.entries(currentSummary)) {
               const block = section.blocks.find(b => b.id === blockId);
               if (block) {
                 return block.content;
@@ -536,7 +536,7 @@ export const AISummary = ({ summary, status, error, onSummaryChange, onRegenerat
     onSummaryChange(newSummary);
   };
 
-  const handleAddSection = () => {
+  const _handleAddSection = () => {
     const newSectionKey = `section${Object.keys(currentSummary).length + 1}`;
     const newBlockId = Date.now().toString();
     const newSummary: Summary = {
@@ -593,7 +593,7 @@ export const AISummary = ({ summary, status, error, onSummaryChange, onRegenerat
     return markdown;
   };
 
-  const handleExport = () => {
+  const _handleExport = () => {
     const markdown = convertToMarkdown();
     const blob = new Blob([markdown], { type: 'text/markdown' });
     const url = URL.createObjectURL(blob);

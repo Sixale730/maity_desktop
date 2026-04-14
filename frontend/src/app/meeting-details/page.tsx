@@ -10,6 +10,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { LoaderIcon } from "lucide-react";
 import { useConfig } from "@/contexts/ConfigContext";
 import { usePaginatedTranscripts } from "@/hooks/usePaginatedTranscripts";
+import { logger } from '@/lib/logger';
 
 interface MeetingDetailsResponse {
   id: string;
@@ -51,9 +52,9 @@ function MeetingDetailsContent() {
   // Check if gemma3:1b model is available in Ollama
   const checkForGemmaModel = useCallback(async (): Promise<boolean> => {
     try {
-      const models = await invoke('get_ollama_models', { endpoint: null }) as any[];
-      const hasGemma = models.some((m: any) => m.name === 'gemma3:1b');
-      console.log('🔍 Checked for gemma3:1b:', hasGemma);
+      const models = await invoke('get_ollama_models', { endpoint: null }) as Array<{ name: string }>;
+      const hasGemma = models.some((m) => m.name === 'gemma3:1b');
+      logger.debug('Checked for gemma3:1b:', hasGemma);
       return hasGemma;
     } catch (error) {
       console.error('❌ Failed to check Ollama models:', error);
@@ -67,25 +68,25 @@ function MeetingDetailsContent() {
 
     // Only auto-generate if navigated from recording
     if (source !== 'recording') {
-      console.log('Not from recording navigation, skipping auto-generation');
+      logger.debug('Not from recording navigation, skipping auto-generation');
       setHasCheckedAutoGen(true);
       return;
     }
 
     // Respect user's auto-summary toggle preference
     if (!isAutoSummary) {
-      console.log('Auto-summary is disabled in settings');
+      logger.debug('Auto-summary is disabled in settings');
       setHasCheckedAutoGen(true);
       return;
     }
 
     try {
       // Check what's currently in database
-      const currentConfig = await invoke('api_get_model_config') as any;
+      const currentConfig = await invoke('api_get_model_config') as { model?: string } | null;
 
       // If DB already has a model, use it (never override!)
       if (currentConfig && currentConfig.model) {
-        console.log('Using existing model from DB:', currentConfig.model);
+        logger.debug('Using existing model from DB:', currentConfig.model);
         setShouldAutoGenerate(true);
         setHasCheckedAutoGen(true);
         return;
@@ -95,7 +96,7 @@ function MeetingDetailsContent() {
       const hasGemma = await checkForGemmaModel();
 
       if (hasGemma) {
-        console.log('💾 DB empty, using gemma3:1b as initial default');
+        logger.debug('DB empty, using gemma3:1b as initial default');
 
         await invoke('api_save_model_config', {
           provider: 'ollama',
@@ -107,7 +108,7 @@ function MeetingDetailsContent() {
 
         setShouldAutoGenerate(true);
       } else {
-        console.log('⚠️ No model configured and gemma3:1b not found');
+        logger.debug('No model configured and gemma3:1b not found');
       }
     } catch (error) {
       console.error('❌ Failed to setup auto-generation:', error);
@@ -124,7 +125,7 @@ function MeetingDetailsContent() {
     }
 
     if (metadata) {
-      console.log('Meeting metadata loaded:', metadata);
+      logger.debug('Meeting metadata loaded:', metadata);
 
       // Build meeting details from metadata and paginated transcripts
       setMeetingDetails({
@@ -156,7 +157,7 @@ function MeetingDetailsContent() {
 
     // The usePaginatedTranscripts hook automatically refetches when meetingId changes
     // This function is kept for compatibility with onMeetingUpdated callback
-    console.log('fetchMeetingDetails called - pagination hook will handle refetch');
+    logger.debug('fetchMeetingDetails called - pagination hook will handle refetch');
   }, [meetingId]);
 
   // Reset states when meetingId changes (prevent race conditions)
@@ -175,14 +176,14 @@ function MeetingDetailsContent() {
   useEffect(() => {
     return () => {
       if (meetingId) {
-        console.log('Cleaning up: Stopping summary polling for meeting:', meetingId);
+        logger.debug('Cleaning up: Stopping summary polling for meeting:', meetingId);
         stopSummaryPolling(meetingId);
       }
     };
   }, [meetingId, stopSummaryPolling]);
 
   useEffect(() => {
-    console.log('MeetingDetails useEffect triggered - meetingId:', meetingId);
+    logger.debug('MeetingDetails useEffect triggered - meetingId:', meetingId);
 
     if (!meetingId || meetingId === 'intro-call') {
       console.warn('No valid meeting ID in URL - meetingId:', meetingId);
@@ -192,7 +193,7 @@ function MeetingDetailsContent() {
       return;
     }
 
-    console.log('Valid meeting ID found, fetching details for:', meetingId);
+    logger.debug('Valid meeting ID found, fetching details for:', meetingId);
 
     setMeetingDetails(null);
     setMeetingSummary(null);
@@ -203,9 +204,9 @@ function MeetingDetailsContent() {
       try {
         const summary = await invoke('api_get_summary', {
           meetingId: meetingId,
-        }) as any;
+        }) as Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any -- Rust command returns dynamic JSON shape
 
-        console.log('FETCH SUMMARY: Raw response:', summary);
+        logger.debug('FETCH SUMMARY: Raw response:', summary);
 
         // Check if the summary request failed with 404 or error status, or if no summary exists yet (idle)
         // Note: 'cancelled' and 'failed' statuses can still have data if backup was restored
@@ -222,16 +223,16 @@ function MeetingDetailsContent() {
         if (typeof summaryData === 'string') {
           try {
             parsedData = JSON.parse(summaryData);
-          } catch (e) {
+          } catch {
             parsedData = {};
           }
         }
 
-        console.log('🔍 FETCH SUMMARY: Parsed data:', parsedData);
+        logger.debug('FETCH SUMMARY: Parsed data:', parsedData);
 
         // Extract communication feedback if present
         if (parsedData.communication_feedback) {
-          console.log('🔍 FETCH SUMMARY: Found communication feedback:', parsedData.communication_feedback);
+          logger.debug('FETCH SUMMARY: Found communication feedback:', parsedData.communication_feedback);
           setCommunicationFeedback(parsedData.communication_feedback);
         } else {
           setCommunicationFeedback(null);
@@ -239,20 +240,20 @@ function MeetingDetailsContent() {
 
         // Priority 1: BlockNote JSON format
         if (parsedData.summary_json) {
-          setMeetingSummary(parsedData as any);
+          setMeetingSummary(parsedData as unknown as Summary);
           return;
         }
 
         // Priority 2: Markdown format
         if (parsedData.markdown) {
-          setMeetingSummary(parsedData as any);
+          setMeetingSummary(parsedData as unknown as Summary);
           return;
         }
 
         // Legacy format - apply formatting
-        console.log('LEGACY FORMAT: Detected legacy format, applying section formatting');
+        logger.debug('LEGACY FORMAT: Detected legacy format, applying section formatting');
 
-        const { MeetingName, _section_order, ...restSummaryData } = parsedData;
+        const { MeetingName: _MeetingName, _section_order, ...restSummaryData } = parsedData;
 
         // Format the summary data with consistent styling - PRESERVE ORDER
         const formattedSummary: Summary = {};
@@ -260,7 +261,7 @@ function MeetingDetailsContent() {
         // Use section order if available to maintain exact order and handle duplicates
         const sectionKeys = _section_order || Object.keys(restSummaryData);
 
-        console.log('LEGACY FORMAT: Processing sections:', sectionKeys);
+        logger.debug('LEGACY FORMAT: Processing sections:', sectionKeys);
 
         for (const key of sectionKeys) {
           try {
@@ -270,12 +271,13 @@ function MeetingDetailsContent() {
               typeof section === 'object' &&
               'title' in section &&
               'blocks' in section) {
-              const typedSection = section as { title?: string; blocks?: any[] };
+              const typedSection = section as { title?: string; blocks?: Array<{ content?: string }> };
 
               // Ensure blocks is an array before mapping
               if (Array.isArray(typedSection.blocks)) {
                 formattedSummary[key] = {
                   title: typedSection.title || key,
+                  // eslint-disable-next-line @typescript-eslint/no-explicit-any
                   blocks: typedSection.blocks.map((block: any) => ({
                     ...block,
                     // type: 'bullet',
@@ -300,7 +302,7 @@ function MeetingDetailsContent() {
           }
         }
 
-        console.log('LEGACY FORMAT: Formatted summary:', formattedSummary);
+        logger.debug('LEGACY FORMAT: Formatted summary:', formattedSummary);
         setMeetingSummary(formattedSummary);
       } catch (error) {
         console.error('FETCH SUMMARY: Error fetching meeting summary:', error);
@@ -335,7 +337,7 @@ function MeetingDetailsContent() {
         meetingDetails.transcripts.length > 0 &&
         !hasCheckedAutoGen
       ) {
-        console.log('No summary found, checking for auto-generation...');
+        logger.debug('No summary found, checking for auto-generation...');
         await setupAutoGeneration();
       }
     };

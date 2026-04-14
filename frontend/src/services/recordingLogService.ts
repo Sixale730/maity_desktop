@@ -10,6 +10,7 @@
  */
 
 import { invoke } from '@tauri-apps/api/core';
+import { logger } from '@/lib/logger';
 import { getVersion } from '@tauri-apps/api/app';
 import { supabase } from '@/lib/supabase';
 
@@ -133,7 +134,7 @@ class RecordingLogService {
       // Mark as synced
       const ids = unsynced.map((l) => l.id);
       await invoke('mark_recording_logs_synced', { ids });
-      console.log(`[RecordingLog] Synced ${ids.length} logs to cloud`);
+      logger.debug(`[RecordingLog] Synced ${ids.length} logs to cloud`);
     } catch (err) {
       console.warn('[RecordingLog] syncToCloud failed:', err);
     }

@@ -212,7 +212,7 @@ export function ChunkProgressDisplay({
 
                 {chunk.text_preview && (
                   <div className="mt-1 text-[#3a3a3c] dark:text-gray-200 text-xs truncate">
-                    "{chunk.text_preview}"
+                    &quot;{chunk.text_preview}&quot;
                   </div>
                 )}
 

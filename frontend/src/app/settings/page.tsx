@@ -13,6 +13,7 @@ import { SummaryModelSettings } from '@/components/models/SummaryModelSettings';
 import { useConfig } from '@/contexts/ConfigContext';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { useUserRole } from '@/hooks/useUserRole';
+import { logger } from '@/lib/logger';
 
 // Tabs configuration (constant)
 const TABS = [
@@ -41,9 +42,9 @@ export default function SettingsPage() {
   useEffect(() => {
     const loadTranscriptConfig = async () => {
       try {
-        const config = await invoke('api_get_transcript_config') as any;
+        const config = await invoke('api_get_transcript_config') as TranscriptModelProps | null;
         if (config) {
-          console.log('Loaded saved transcript config:', config);
+          logger.debug('Loaded saved transcript config:', config);
           setTranscriptModelConfig({
             provider: config.provider || 'localWhisper',
             model: config.model || 'large-v3',

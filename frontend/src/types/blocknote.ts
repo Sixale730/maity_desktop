@@ -3,8 +3,8 @@ export type SummaryFormat = 'legacy' | 'markdown' | 'blocknote';
 export interface BlockNoteBlock {
   id: string;
   type: string;
-  props?: Record<string, any>;
-  content?: any[];
+  props?: Record<string, unknown>;
+  content?: unknown[];
   children?: BlockNoteBlock[];
 }
 
@@ -14,5 +14,5 @@ export interface SummaryDataResponse {
   // Legacy format fields
   MeetingName?: string;
   _section_order?: string[];
-  [key: string]: any; // For legacy section data
+  [key: string]: unknown; // For legacy section data
 }

@@ -1,9 +1,8 @@
 "use client";
 import { useState, useEffect, useRef } from 'react';
 import { motion } from 'framer-motion';
-import { Summary, SummaryResponse } from '@/types';
+import { Summary, SummaryResponse, Transcript, TranscriptSegmentData } from '@/types';
 import { CommunicationFeedback } from '@/types/communication';
-import { useSidebar } from '@/components/Sidebar/SidebarProvider';
 import Analytics from '@/lib/analytics';
 import { TranscriptPanel } from '@/components/MeetingDetails/TranscriptPanel';
 import { SummaryPanel } from '@/components/MeetingDetails/SummaryPanel';
@@ -16,6 +15,7 @@ import { useTemplates } from '@/hooks/meeting-details/useTemplates';
 import { useCopyOperations } from '@/hooks/meeting-details/useCopyOperations';
 import { useMeetingOperations } from '@/hooks/meeting-details/useMeetingOperations';
 import { useConfig } from '@/contexts/ConfigContext';
+import { logger } from '@/lib/logger';
 
 export default function PageContent({
   meeting,
@@ -32,21 +32,21 @@ export default function PageContent({
   loadedCount,
   onLoadMore,
 }: {
-  meeting: any;
+  meeting: { id: string; title: string; created_at: string; updated_at: string; transcripts: Transcript[] };
   summaryData: Summary | null;
   communicationFeedback?: CommunicationFeedback | null;
   shouldAutoGenerate?: boolean;
   onAutoGenerateComplete?: () => void;
   onMeetingUpdated?: () => Promise<void>;
   // Pagination props
-  segments?: any[];
+  segments?: TranscriptSegmentData[];
   hasMore?: boolean;
   isLoadingMore?: boolean;
   totalCount?: number;
   loadedCount?: number;
   onLoadMore?: () => void;
 }) {
-  console.log('📄 PAGE CONTENT: Initializing with data:', {
+  logger.debug('PAGE CONTENT: Initializing with data:', {
     meetingId: meeting.id,
     summaryDataKeys: summaryData ? Object.keys(summaryData) : null,
     transcriptsCount: meeting.transcripts?.length
@@ -60,9 +60,6 @@ export default function PageContent({
   // Ref to store the modal open function from SummaryGeneratorButtonGroup
   const openModelSettingsRef = useRef<(() => void) | null>(null);
 
-  // Sidebar context
-  const { serverAddress } = useSidebar();
-
   // Get model config from ConfigContext
   const { modelConfig, setModelConfig } = useConfig();
 
@@ -72,13 +69,13 @@ export default function PageContent({
 
   // Callback to register the modal open function
   const handleRegisterModalOpen = (openFn: () => void) => {
-    console.log('📝 Registering modal open function in PageContent');
+    logger.debug('Registering modal open function in PageContent');
     openModelSettingsRef.current = openFn;
   };
 
   // Callback to trigger modal open (called from error handler)
   const handleOpenModelSettings = () => {
-    console.log('🔔 Opening model settings from PageContent');
+    logger.debug('Opening model settings from PageContent');
     if (openModelSettingsRef.current) {
       openModelSettingsRef.current();
     } else {
@@ -87,10 +84,10 @@ export default function PageContent({
   };
 
   // Model config save handler (ConfigContext updates automatically via events)
-  const handleSaveModelConfig = async (config?: any) => {
+  const handleSaveModelConfig = async () => {
     // The actual save happens in the modal via api_save_model_config
     // ConfigContext will be updated via event listener
-    console.log('[PageContent] Model config saved, context will update via event');
+    logger.debug('[PageContent] Model config saved, context will update via event');
   };
 
   const summaryGeneration = useSummaryGeneration({
@@ -128,7 +125,7 @@ export default function PageContent({
 
     const autoGenerate = async () => {
       if (shouldAutoGenerate && meetingData.transcripts.length > 0 && !cancelled) {
-        console.log(`🤖 Auto-generating summary with ${modelConfig.provider}/${modelConfig.model}...`);
+        logger.debug(`Auto-generating summary with ${modelConfig.provider}/${modelConfig.model}...`);
         await summaryGeneration.handleGenerateSummary('');
 
         // Notify parent that auto-generation is complete (only if not cancelled)

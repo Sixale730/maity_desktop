@@ -5,6 +5,7 @@ import { usePathname, useRouter } from 'next/navigation';
 import Analytics from '@/lib/analytics';
 import { invoke } from '@tauri-apps/api/core';
 import { useRecordingState } from '@/contexts/RecordingStateContext';
+import { logger } from '@/lib/logger';
 
 
 interface SidebarItem {
@@ -47,7 +48,7 @@ interface SidebarContextType {
   setTranscriptServerAddress: (address: string) => void;
   // Summary polling management
   activeSummaryPolls: Map<string, NodeJS.Timeout>;
-  startSummaryPolling: (meetingId: string, processId: string, onUpdate: (result: any) => void) => void;
+  startSummaryPolling: (meetingId: string, processId: string, onUpdate: (result: unknown) => void) => void;
   stopSummaryPolling: (meetingId: string) => void;
   // Refetch meetings from backend
   refetchMeetings: () => Promise<void>;
@@ -70,7 +71,7 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
   const [meetings, setMeetings] = useState<CurrentMeeting[]>([]);
   const [sidebarItems, setSidebarItems] = useState<SidebarItem[]>([]);
   const [isMeetingActive, setIsMeetingActive] = useState(false);
-  const [searchResults, setSearchResults] = useState<any[]>([]);
+  const [searchResults, setSearchResults] = useState<TranscriptSearchResult[]>([]);
   const [isSearching, setIsSearching] = useState(false);
   const [serverAddress, setServerAddress] = useState('');
   const [transcriptServerAddress, setTranscriptServerAddress] = useState('');
@@ -87,7 +88,7 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
     if (serverAddress) {
       try {
         const meetings = await invoke('api_get_meetings') as Array<{ id: string, title: string }>;
-        const transformedMeetings = meetings.map((meeting: any) => ({
+        const transformedMeetings = meetings.map((meeting: { id: string, title: string }) => ({
           id: meeting.id,
           title: meeting.title
         }));
@@ -148,11 +149,11 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
       // Check if already on home page
       if (pathname === '/') {
         // Already on home - trigger recording directly via custom event
-        console.log('Triggering recording from sidebar (already on home page)');
+        logger.debug('Triggering recording from sidebar (already on home page)');
         window.dispatchEvent(new CustomEvent('start-recording-from-sidebar'));
       } else {
         // Not on home - navigate and use auto-start mechanism
-        console.log('Navigating to home page with auto-start flag');
+        logger.debug('Navigating to home page with auto-start flag');
         sessionStorage.setItem('autoStartRecording', 'true');
         router.push('/');
       }
@@ -188,14 +189,14 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
   const startSummaryPolling = React.useCallback((
     meetingId: string,
     processId: string,
-    onUpdate: (result: any) => void
+    onUpdate: (result: unknown) => void
   ) => {
     // Stop existing poll for this meeting if any
     if (activeSummaryPolls.has(meetingId)) {
       clearInterval(activeSummaryPolls.get(meetingId)!);
     }
 
-    console.log(`📊 Starting polling for meeting ${meetingId}, process ${processId}`);
+    logger.debug(`Starting polling for meeting ${meetingId}, process ${processId}`);
 
     let pollCount = 0;
     const MAX_POLLS = 200; // ~16.5 minutes at 5-second intervals (slightly longer than backend's 15-min timeout to avoid race conditions)
@@ -221,16 +222,16 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
       try {
         const result = await invoke('api_get_summary', {
           meetingId: meetingId,
-        }) as any;
+        }) as Record<string, unknown>;
 
-        console.log(`📊 Polling update for ${meetingId}:`, result.status);
+        logger.debug(`Polling update for ${meetingId}:`, result.status);
 
         // Call the update callback with result
         onUpdate(result);
 
         // Stop polling if completed, error, failed, cancelled, or idle (after initial processing)
         if (result.status === 'completed' || result.status === 'error' || result.status === 'failed' || result.status === 'cancelled') {
-          console.log(`Polling completed for ${meetingId}, status: ${result.status}`);
+          logger.debug(`Polling completed for ${meetingId}, status: ${result.status}`);
           clearInterval(pollInterval);
           setActiveSummaryPolls(prev => {
             const next = new Map(prev);
@@ -239,7 +240,7 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
           });
         } else if (result.status === 'idle' && pollCount > 1) {
           // If we get 'idle' after polling started, process completed/disappeared
-          console.log(`Process completed or not found for ${meetingId}, stopping poll`);
+          logger.debug(`Process completed or not found for ${meetingId}, stopping poll`);
           clearInterval(pollInterval);
           setActiveSummaryPolls(prev => {
             const next = new Map(prev);
@@ -269,7 +270,7 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
   const stopSummaryPolling = React.useCallback((meetingId: string) => {
     const pollInterval = activeSummaryPolls.get(meetingId);
     if (pollInterval) {
-      console.log(`⏹️ Stopping polling for meeting ${meetingId}`);
+      logger.debug(`Stopping polling for meeting ${meetingId}`);
       clearInterval(pollInterval);
       setActiveSummaryPolls(prev => {
         const next = new Map(prev);
@@ -282,7 +283,7 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
   // Cleanup all polling intervals on unmount
   useEffect(() => {
     return () => {
-      console.log('🧹 Cleaning up all summary polling intervals');
+      logger.debug('Cleaning up all summary polling intervals');
       activeSummaryPolls.forEach(interval => clearInterval(interval));
     };
   }, [activeSummaryPolls]);

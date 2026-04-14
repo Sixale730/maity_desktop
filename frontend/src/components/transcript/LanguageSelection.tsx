@@ -1,8 +1,9 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { Globe } from 'lucide-react';
 import Analytics from '@/lib/analytics';
 import { toast } from 'sonner';
+import { logger } from '@/lib/logger';
 
 export interface Language {
   code: string;
@@ -146,7 +147,7 @@ export function LanguageSelection({
       // Save language preference to backend
       await invoke('set_language_preference', { language: languageCode });
       onLanguageChange(languageCode);
-      console.log('Language preference saved:', languageCode);
+      logger.debug('Language preference saved:', languageCode);
 
       // Track language selection analytics
       const selectedLang = LANGUAGES.find(lang => lang.code === languageCode);

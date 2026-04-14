@@ -21,7 +21,7 @@ export const EditableTitle: React.FC<EditableTitleProps> = ({
 }) => {
   const titleInputRef = useRef<HTMLTextAreaElement>(null);
 
-  const handleKeyDown = (e: React.KeyboardEvent) => {
+  const _handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter') {
       onFinishEditing();
     }

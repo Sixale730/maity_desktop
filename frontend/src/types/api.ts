@@ -18,7 +18,7 @@ export interface Summary {
 export interface ApiResponse {
   message: string;
   num_chunks: number;
-  data: any[];
+  data: unknown[];
 }
 
 export interface SummaryResponse {

@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
+import { logger } from '@/lib/logger';
 
 export interface AnalyticsProperties {
   [key: string]: string;
@@ -45,7 +46,7 @@ export class Analytics {
     try {
       await invoke('init_analytics');
       this.initialized = true;
-      console.log('Analytics initialized successfully');
+      logger.debug('Analytics initialized successfully');
     } catch (error) {
       console.error('Failed to initialize analytics:', error);
       throw error;
@@ -60,7 +61,7 @@ export class Analytics {
       this.initialized = false;
       this.currentUserId = null;
       this.initializationPromise = null;
-      console.log('Analytics disabled successfully');
+      logger.debug('Analytics disabled successfully');
     } catch (error) {
       console.error('Failed to disable analytics:', error);
     }
@@ -351,7 +352,7 @@ export class Analytics {
     try {
       const { Store } = await import('@tauri-apps/plugin-store');
       const store = await Store.load('analytics.json');
-      const features = await store.get<Record<string, any>>('features_used') || {};
+      const features = await store.get<Record<string, unknown>>('features_used') || {};
       return !!features[featureName];
     } catch (error) {
       console.error(`Failed to check feature usage for ${featureName}:`, error);
@@ -363,7 +364,7 @@ export class Analytics {
     try {
       const { Store } = await import('@tauri-apps/plugin-store');
       const store = await Store.load('analytics.json');
-      const features = await store.get<Record<string, any>>('features_used') || {};
+      const features = await store.get<Record<string, { first_used: string; use_count: number }>>('features_used') || {};
 
       if (!features[featureName]) {
         features[featureName] = {
@@ -461,7 +462,7 @@ export class Analytics {
   }
 
   // Feature usage tracking with platform info
-  static async trackFeatureUsedEnhanced(featureName: string, properties?: Record<string, any>): Promise<void> {
+  static async trackFeatureUsedEnhanced(featureName: string, properties?: Record<string, unknown>): Promise<void> {
     if (!this.initialized) return;
 
     try {
@@ -490,7 +491,7 @@ export class Analytics {
   }
 
   // Copy tracking with frequency
-  static async trackCopy(copyType: 'transcript' | 'summary', properties?: Record<string, any>): Promise<void> {
+  static async trackCopy(copyType: 'transcript' | 'summary', properties?: Record<string, unknown>): Promise<void> {
     if (!this.initialized) return;
 
     try {
@@ -500,7 +501,7 @@ export class Analytics {
 
       // Get today's date
       const today = new Date().toISOString().split('T')[0];
-      const copyCounts = await store.get<Record<string, any>>('copy_counts') || {};
+      const copyCounts = await store.get<Record<string, Record<string, number>>>('copy_counts') || {};
       const todayCounts = copyCounts[today] || {};
       const copyCount = todayCounts[copyType] || 0;
 
@@ -651,7 +652,7 @@ export class Analytics {
     }
 
     try {
-      console.log('Tracking backend connection event:', { success, error });
+      logger.debug('Tracking backend connection event:', { success, error });
       await invoke('track_event', {
         eventName: 'backend_connection',
         properties: {
@@ -660,7 +661,7 @@ export class Analytics {
           timestamp: new Date().toISOString()
         }
       });
-      console.log('Backend connection event tracked successfully');
+      logger.debug('Backend connection event tracked successfully');
     } catch (error) {
       console.error('Failed to track backend connection:', error);
     }
@@ -674,7 +675,7 @@ export class Analytics {
     }
 
     try {
-      console.log('Tracking transcription error event:', { errorMessage });
+      logger.debug('Tracking transcription error event:', { errorMessage });
       await invoke('track_event', {
         eventName: 'transcription_error',
         properties: {
@@ -682,7 +683,7 @@ export class Analytics {
           timestamp: new Date().toISOString()
         }
       });
-      console.log('Transcription error event tracked successfully');
+      logger.debug('Transcription error event tracked successfully');
     } catch (error) {
       console.error('Failed to track transcription error:', error);
     }
@@ -696,7 +697,7 @@ export class Analytics {
     }
 
     try {
-      console.log('Tracking transcription success event:', { duration });
+      logger.debug('Tracking transcription success event:', { duration });
       await invoke('track_event', {
         eventName: 'transcription_success',
         properties: {
@@ -704,7 +705,7 @@ export class Analytics {
           timestamp: new Date().toISOString()
         }
       });
-      console.log('Transcription success event tracked successfully');
+      logger.debug('Transcription success event tracked successfully');
     } catch (error) {
       console.error('Failed to track transcription success:', error);
     }
@@ -724,7 +725,7 @@ export class Analytics {
 
     try {
       const deviceInfo = await this.getDeviceInfo();
-      console.log('Tracking summary generation started event:', {
+      logger.debug('Tracking summary generation started event:', {
         modelProvider,
         modelName,
         transcriptLength,
@@ -744,7 +745,7 @@ export class Analytics {
       }
 
       await this.track('summary_generation_started', properties);
-      console.log('Summary generation started event tracked successfully');
+      logger.debug('Summary generation started event tracked successfully');
     } catch (error) {
       console.error('Failed to track summary generation started:', error);
     }
@@ -763,7 +764,7 @@ export class Analytics {
     }
 
     try {
-      console.log('Tracking summary generation completed event:', { modelProvider, modelName, success, durationSeconds, errorMessage });
+      logger.debug('Tracking summary generation completed event:', { modelProvider, modelName, success, durationSeconds, errorMessage });
       await invoke('track_summary_generation_completed', {
         modelProvider,
         modelName,
@@ -771,7 +772,7 @@ export class Analytics {
         durationSeconds,
         errorMessage
       });
-      console.log('Summary generation completed event tracked successfully');
+      logger.debug('Summary generation completed event tracked successfully');
     } catch (error) {
       console.error('Failed to track summary generation completed:', error);
     }
@@ -784,12 +785,12 @@ export class Analytics {
     }
 
     try {
-      console.log('Tracking summary regenerated event:', { modelProvider, modelName });
+      logger.debug('Tracking summary regenerated event:', { modelProvider, modelName });
       await invoke('track_summary_regenerated', {
         modelProvider,
         modelName
       });
-      console.log('Summary regenerated event tracked successfully');
+      logger.debug('Summary regenerated event tracked successfully');
     } catch (error) {
       console.error('Failed to track summary regenerated:', error);
     }
@@ -802,14 +803,14 @@ export class Analytics {
     }
 
     try {
-      console.log('Tracking model changed event:', { oldProvider, oldModel, newProvider, newModel });
+      logger.debug('Tracking model changed event:', { oldProvider, oldModel, newProvider, newModel });
       await invoke('track_model_changed', {
         oldProvider,
         oldModel,
         newProvider,
         newModel
       });
-      console.log('Model changed event tracked successfully');
+      logger.debug('Model changed event tracked successfully');
     } catch (error) {
       console.error('Failed to track model changed:', error);
     }
@@ -822,11 +823,11 @@ export class Analytics {
     }
 
     try {
-      console.log('Tracking custom prompt used event:', { promptLength });
+      logger.debug('Tracking custom prompt used event:', { promptLength });
       await invoke('track_custom_prompt_used', {
         promptLength
       });
-      console.log('Custom prompt used event tracked successfully');
+      logger.debug('Custom prompt used event tracked successfully');
     } catch (error) {
       console.error('Failed to track custom prompt used:', error);
     }

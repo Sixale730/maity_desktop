@@ -11,6 +11,7 @@ import { showRecordingNotification } from '@/components/recording/recordingNotif
 import { toast } from 'sonner';
 import { getDeepgramProxyConfig, hasValidCachedProxyConfig, DeepgramError } from '@/lib/deepgram';
 import type { DeepgramErrorType } from '@/lib/deepgram';
+import { logger } from '@/lib/logger';
 
 
 interface UseRecordingStartReturn {
@@ -75,22 +76,22 @@ export function useRecordingStart(
   // Check if transcription is ready based on selected provider
   const checkTranscriptionReady = useCallback(async (): Promise<TranscriptionReadyResult> => {
     const provider = transcriptModelConfig?.provider || 'deepgram';
-    console.log(`Checking transcription readiness for provider: ${provider}`);
+    logger.debug(`Checking transcription readiness for provider: ${provider}`);
 
     try {
       switch (provider) {
         case 'deepgram': {
           try {
-            console.log('[recording] Deepgram: checking auth status and proxy config...');
+            logger.debug('[recording] Deepgram: checking auth status and proxy config...');
 
             if (await hasValidCachedProxyConfig()) {
-              console.log('Deepgram proxy config already cached, ready to record');
+              logger.debug('Deepgram proxy config already cached, ready to record');
               return { ready: true, isDownloading: false };
             }
 
-            console.log('Fetching Deepgram proxy config...');
+            logger.debug('Fetching Deepgram proxy config...');
             await getDeepgramProxyConfig();
-            console.log('Deepgram proxy config obtained and cached, ready to record');
+            logger.debug('Deepgram proxy config obtained and cached, ready to record');
 
             return { ready: true, isDownloading: false };
           } catch (error) {
@@ -120,11 +121,11 @@ export function useRecordingStart(
             await invoke('parakeet_init');
             const hasModels = await invoke<boolean>('parakeet_has_available_models');
             if (hasModels) {
-              console.log('Parakeet models available, ready to record');
+              logger.debug('Parakeet models available, ready to record');
               return { ready: true, isDownloading: false };
             }
 
-            const models = await invoke<any[]>('parakeet_get_available_models');
+            const models = await invoke<{ status?: string | Record<string, unknown> }[]>('parakeet_get_available_models');
             const isDownloading = models.some(m =>
               m.status && (
                 typeof m.status === 'object'
@@ -151,11 +152,11 @@ export function useRecordingStart(
             await invoke('whisper_init');
             const hasModels = await invoke<boolean>('whisper_has_available_models');
             if (hasModels) {
-              console.log('Whisper models available, ready to record');
+              logger.debug('Whisper models available, ready to record');
               return { ready: true, isDownloading: false };
             }
 
-            const models = await invoke<any[]>('whisper_get_available_models');
+            const models = await invoke<{ status?: string | Record<string, unknown> }[]>('whisper_get_available_models');
             const isDownloading = models.some(m =>
               m.status && (
                 typeof m.status === 'object'
@@ -180,11 +181,11 @@ export function useRecordingStart(
             await invoke('moonshine_init');
             const hasModels = await invoke<boolean>('moonshine_has_available_models');
             if (hasModels) {
-              console.log('Moonshine models available, ready to record');
+              logger.debug('Moonshine models available, ready to record');
               return { ready: true, isDownloading: false };
             }
 
-            const models = await invoke<any[]>('moonshine_get_available_models');
+            const models = await invoke<{ status?: string | Record<string, unknown> }[]>('moonshine_get_available_models');
             const isDownloading = models.some(m =>
               m.status && (
                 typeof m.status === 'object'
@@ -244,13 +245,13 @@ export function useRecordingStart(
     setStatus(RecordingStatus.STARTING, 'Initializing recording...');
 
     // Start the actual backend recording
-    console.log(`Starting backend recording (trigger=${trigger}) with meeting:`, title);
+    logger.debug(`Starting backend recording (trigger=${trigger}) with meeting:`, title);
     await recordingService.startRecordingWithDevices(
       selectedDevices?.micDevice || null,
       selectedDevices?.systemDevice || null,
       title
     );
-    console.log('Backend recording started successfully');
+    logger.debug('Backend recording started successfully');
 
     // Update UI state after successful backend start
     // Note: RECORDING status will be set by RecordingStateContext event listener
@@ -304,14 +305,14 @@ export function useRecordingStart(
   // Handle manual recording start (from button click)
   const handleRecordingStart = useCallback(async () => {
     if (isStartingRef.current) {
-      console.log('[recording] Start already in progress, ignoring click');
+      logger.debug('[recording] Start already in progress, ignoring click');
       return;
     }
     isStartingRef.current = true;
 
     try {
       const provider = transcriptModelConfig?.provider || 'deepgram';
-      console.log(`handleRecordingStart called - checking ${provider} transcription status`);
+      logger.debug(`handleRecordingStart called - checking ${provider} transcription status`);
 
       const transcriptionStatus = await checkTranscriptionReady();
       if (!transcriptionStatus.ready) {
@@ -319,7 +320,7 @@ export function useRecordingStart(
         return;
       }
 
-      console.log(`${provider} ready - starting recording flow`);
+      logger.debug(`${provider} ready - starting recording flow`);
       await startRecordingFlow('manual');
     } catch (error) {
       console.error('Failed to start recording:', error);
@@ -340,7 +341,7 @@ export function useRecordingStart(
       if (typeof window !== 'undefined') {
         const shouldAutoStart = sessionStorage.getItem('autoStartRecording');
         if (shouldAutoStart === 'true' && !isRecording && !isAutoStarting) {
-          console.log('Auto-starting recording from navigation...');
+          logger.debug('Auto-starting recording from navigation...');
           setIsAutoStarting(true);
           sessionStorage.removeItem('autoStartRecording');
 
@@ -384,10 +385,10 @@ export function useRecordingStart(
         const { listen } = await import('@tauri-apps/api/event');
         unlisten = await listen<string>('start-recording-from-detector', async (event) => {
           const meetingName = event.payload;
-          console.log(`Meeting detector triggered recording: "${meetingName}"`);
+          logger.debug(`Meeting detector triggered recording: "${meetingName}"`);
 
           if (isRecording || isAutoStarting) {
-            console.log('Recording already in progress, ignoring detector event');
+            logger.debug('Recording already in progress, ignoring detector event');
             return;
           }
 
@@ -455,12 +456,12 @@ export function useRecordingStart(
   useEffect(() => {
     const handleDirectStart = async () => {
       if (isRecording || isAutoStarting) {
-        console.log('Recording already in progress, ignoring direct start event');
+        logger.debug('Recording already in progress, ignoring direct start event');
         return;
       }
 
       const provider = transcriptModelConfig?.provider || 'deepgram';
-      console.log(`Direct start from sidebar - checking ${provider} transcription status`);
+      logger.debug(`Direct start from sidebar - checking ${provider} transcription status`);
       setIsAutoStarting(true);
 
       const transcriptionStatus = await checkTranscriptionReady();
@@ -522,7 +523,7 @@ export function useRecordingStart(
             duration: 4000,
           });
         }
-      } catch (error) {
+      } catch {
         // Silently ignore polling errors (e.g., recording stopped between interval ticks)
       }
     }, 2000);

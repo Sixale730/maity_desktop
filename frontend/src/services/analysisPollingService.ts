@@ -13,6 +13,7 @@
  * (backward compatibility during transition before web app sets the field).
  */
 import { invoke } from '@tauri-apps/api/core';
+import { logger } from '@/lib/logger';
 import { supabase } from '@/lib/supabase';
 import {
   getOmiConversation,
@@ -76,7 +77,7 @@ class AnalysisPollingServiceImpl {
   start() {
     if (this.started) return;
     this.started = true;
-    console.log('[AnalysisPollingService] Started');
+    logger.debug('[AnalysisPollingService] Started');
 
     this.restoreFromSession();
 
@@ -101,7 +102,7 @@ class AnalysisPollingServiceImpl {
 
     this.pollingStartedAt.clear();
 
-    console.log('[AnalysisPollingService] Stopped');
+    logger.debug('[AnalysisPollingService] Stopped');
   }
 
   /**
@@ -120,7 +121,7 @@ class AnalysisPollingServiceImpl {
 
     const existing = this.tracked.get(key);
     if (existing && (existing.phase === 'polling' || existing.phase === 'retrying')) {
-      console.log(`[AnalysisPollingService] Already tracking ${key}, skipping`);
+      logger.debug(`[AnalysisPollingService] Already tracking ${key}, skipping`);
       return;
     }
 
@@ -140,7 +141,7 @@ class AnalysisPollingServiceImpl {
     this.pollingStartedAt.set(key, Date.now());
     this.persistToSession(state);
     this.emitStateChanged(key);
-    console.log(`[AnalysisPollingService] Now tracking ${key} (source: ${opts.source})`);
+    logger.debug(`[AnalysisPollingService] Now tracking ${key} (source: ${opts.source})`);
 
     // For local conversations, immediately check if sync already completed
     // (handles race condition where track() is called after finalize-completed event was missed)
@@ -339,7 +340,7 @@ class AnalysisPollingServiceImpl {
       const supabaseId = parsed.conversation_id;
       if (!supabaseId) return;
 
-      console.log(`[AnalysisPollingService] Recovered supabaseId=${supabaseId} for ${key} from sync_queue`);
+      logger.debug(`[AnalysisPollingService] Recovered supabaseId=${supabaseId} for ${key} from sync_queue`);
 
       // Same logic as handleFinalizeCompleted: store resolved ID and start cloud polling
       this.resolvedIds.set(key, supabaseId);
@@ -473,7 +474,7 @@ class AnalysisPollingServiceImpl {
     const state = this.tracked.get(key);
     if (!state) return;
 
-    console.log(`[AnalysisPollingService] finalize-completed for ${key}, supabaseId=${supabaseId}`);
+    logger.debug(`[AnalysisPollingService] finalize-completed for ${key}, supabaseId=${supabaseId}`);
 
     // Store resolved Supabase ID so cloud polling can begin
     this.resolvedIds.set(key, supabaseId);
@@ -511,7 +512,7 @@ class AnalysisPollingServiceImpl {
     if (detail.jobType === 'save_conversation') {
       for (const [, s] of this.tracked.entries()) {
         if (s.localId === detail.meetingId || s.conversationId === detail.meetingId) {
-          console.log(`[AnalysisPollingService] sync-status-changed: ${detail.jobType} completed for ${detail.meetingId}`);
+          logger.debug(`[AnalysisPollingService] sync-status-changed: ${detail.jobType} completed for ${detail.meetingId}`);
           break;
         }
       }
@@ -580,7 +581,7 @@ class AnalysisPollingServiceImpl {
             };
             this.tracked.set(key, state);
             this.pollingStartedAt.set(key, Date.now());
-            console.log(`[AnalysisPollingService] Restored from session: ${key}`);
+            logger.debug(`[AnalysisPollingService] Restored from session: ${key}`);
           } else {
             sessionStorage.removeItem(storageKey);
           }

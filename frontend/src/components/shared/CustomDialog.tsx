@@ -1,8 +1,6 @@
 import React from "react";
-import { Settings } from "lucide-react";
 import { Dialog, DialogContent, DialogTitle, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
 import { VisuallyHidden } from "@/components/ui/visually-hidden";
-import { SettingTabs } from "@/components/settings/SettingTabs";
 
 interface DialogProps {
     triggerComponent: React.ReactElement;
