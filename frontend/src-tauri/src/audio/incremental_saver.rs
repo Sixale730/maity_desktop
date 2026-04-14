@@ -440,14 +440,16 @@ mod tests {
             2  // stereo (L=mic, R=system)
         ).unwrap();
 
-        // Add 60 seconds worth of audio (should create 2 checkpoints)
+        // Add 60 seconds worth of audio (should create 2 checkpoints).
+        // Pipeline emits interleaved stereo chunks, so 0.5s @ 48kHz stereo = 48000 samples
+        // (not 24000, which would be 0.5s mono).
         for i in 0..120u64 {  // 120 chunks of 0.5s each
             let chunk = AudioChunk {
-                data: vec![0.5f32; 24000],  // 0.5s at 48kHz
+                data: vec![0.5f32; 48000],  // 0.5s stereo interleaved @ 48kHz
                 sample_rate: 48000,
                 timestamp: i as f64 * 0.5,
                 chunk_id: i,
-                device_type: DeviceType::Microphone,
+                device_type: DeviceType::Mixed,
             };
             saver.add_chunk(chunk).unwrap();
         }

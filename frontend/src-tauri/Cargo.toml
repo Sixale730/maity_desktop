@@ -151,7 +151,7 @@ rand = "0.8.5"
 rubato = "0.15.0"
 ringbuf = "0.4.8"
 
-ffmpeg-sidecar = { git = "https://github.com/nathanbabcock/ffmpeg-sidecar", branch = "main" }
+ffmpeg-sidecar = { git = "https://github.com/nathanbabcock/ffmpeg-sidecar", rev = "a4d189d46aba70c22cf18ad49276caaf6c7a0e58" }
 
 sqlx = { version = "0.8", features = [ "runtime-tokio", "sqlite", "chrono"] }
 
