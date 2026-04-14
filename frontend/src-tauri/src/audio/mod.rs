@@ -25,6 +25,8 @@ pub mod recording_lifecycle;
 pub mod recording_commands;
 pub mod recording_preferences;
 pub mod recording_saver;
+pub mod transcript_live_streamer;  // B.2 — fire-and-forget SQLite streaming
+pub mod thread_priority_helper;    // C.3 — explicit thread priorities
 pub mod incremental_saver;  // NEW: Incremental audio saving with checkpoints
 pub mod level_monitor;
 pub mod simple_level_monitor;

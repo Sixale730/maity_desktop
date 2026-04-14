@@ -30,6 +30,7 @@ import { LoginScreen } from '@/components/Auth'
 import { CloudSyncInitializer } from '@/components/CloudSyncInitializer'
 import { AnalysisPollingInitializer } from '@/components/AnalysisPollingInitializer'
 import { useDeepgramJwtRefresh } from '@/hooks/useDeepgramJwtRefresh'
+import { useTranscriptionBackpressureIndicator } from '@/hooks/useTranscriptionBackpressureIndicator'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ThemeProvider } from '@/contexts/ThemeContext'
 import Script from 'next/script'
@@ -213,6 +214,10 @@ function AppContent({ children }: { children: React.ReactNode }) {
   // the proxy config from Vercel when the 5-min JWT is about to die. This is
   // what prevents the mid-recording freeze reported by users on sessions >5m.
   useDeepgramJwtRefresh()
+
+  // B.3 — Surface backpressure / circuit-breaker events to the user via toast
+  // so audio loss never happens silently.
+  useTranscriptionBackpressureIndicator()
 
   useEffect(() => {
     // Check onboarding status first

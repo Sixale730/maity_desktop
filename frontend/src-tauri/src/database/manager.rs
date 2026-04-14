@@ -205,4 +205,108 @@ impl DatabaseManager {
 
         Ok(())
     }
+
+}
+
+// ============================================================================
+// B.2 — Live transcript streaming helpers
+// ============================================================================
+
+/// Row shape of `transcript_segments_live`. Kept in this module so other
+/// modules can consume it without pulling in sqlx directly.
+#[derive(Debug, Clone)]
+pub struct LiveTranscriptRow {
+    pub meeting_id: String,
+    pub sequence_id: i64,
+    pub segment_id: String,
+    pub text: String,
+    pub audio_start_time: f64,
+    pub audio_end_time: f64,
+    pub duration: f64,
+    pub display_time: String,
+    pub confidence: f64,
+    pub source_type: Option<String>,
+}
+
+impl DatabaseManager {
+    /// Upsert a single segment into `transcript_segments_live`. Called as a
+    /// best-effort secondary write alongside the canonical `transcripts.json`.
+    /// If the insert fails, the caller should log and continue — the JSON
+    /// remains the source of truth during normal operation.
+    pub async fn upsert_live_transcript(&self, row: &LiveTranscriptRow) -> sqlx::Result<()> {
+        sqlx::query(
+            "INSERT INTO transcript_segments_live (
+                meeting_id, sequence_id, segment_id, text,
+                audio_start_time, audio_end_time, duration,
+                display_time, confidence, source_type
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(meeting_id, sequence_id) DO UPDATE SET
+                segment_id       = excluded.segment_id,
+                text             = excluded.text,
+                audio_start_time = excluded.audio_start_time,
+                audio_end_time   = excluded.audio_end_time,
+                duration         = excluded.duration,
+                display_time     = excluded.display_time,
+                confidence       = excluded.confidence,
+                source_type      = excluded.source_type",
+        )
+        .bind(&row.meeting_id)
+        .bind(row.sequence_id)
+        .bind(&row.segment_id)
+        .bind(&row.text)
+        .bind(row.audio_start_time)
+        .bind(row.audio_end_time)
+        .bind(row.duration)
+        .bind(&row.display_time)
+        .bind(row.confidence)
+        .bind(&row.source_type)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Delete all live rows for a meeting. Called when the recording is
+    /// finalized successfully and the canonical JSON is safely on disk.
+    pub async fn purge_live_transcript(&self, meeting_id: &str) -> sqlx::Result<u64> {
+        let result = sqlx::query("DELETE FROM transcript_segments_live WHERE meeting_id = ?")
+            .bind(meeting_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected())
+    }
+
+    /// Read all live rows for a meeting, ordered by sequence_id. Used on
+    /// crash recovery to rebuild `transcripts.json` when it is missing.
+    pub async fn load_live_transcript(
+        &self,
+        meeting_id: &str,
+    ) -> sqlx::Result<Vec<LiveTranscriptRow>> {
+        use sqlx::Row;
+        let rows = sqlx::query(
+            "SELECT meeting_id, sequence_id, segment_id, text,
+                    audio_start_time, audio_end_time, duration,
+                    display_time, confidence, source_type
+             FROM transcript_segments_live
+             WHERE meeting_id = ?
+             ORDER BY sequence_id ASC",
+        )
+        .bind(meeting_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| LiveTranscriptRow {
+                meeting_id: r.get("meeting_id"),
+                sequence_id: r.get("sequence_id"),
+                segment_id: r.get("segment_id"),
+                text: r.get("text"),
+                audio_start_time: r.get("audio_start_time"),
+                audio_end_time: r.get("audio_end_time"),
+                duration: r.get("duration"),
+                display_time: r.get("display_time"),
+                confidence: r.get("confidence"),
+                source_type: r.get("source_type"),
+            })
+            .collect())
+    }
 }

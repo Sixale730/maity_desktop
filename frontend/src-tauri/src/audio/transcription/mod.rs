@@ -9,6 +9,8 @@ pub mod deepgram_provider;  // Deepgram cloud transcription
 pub mod deepgram_commands;  // Tauri commands for Deepgram cloud proxy tokens
 pub mod engine;
 pub mod worker;
+pub mod circuit_breaker;  // B.1 — protects worker from cascading engine failures
+pub mod spill_queue;  // C.2 — disk-backed overflow when RAM queue saturates
 
 // Re-export commonly used types
 pub use provider::{TranscriptionError, TranscriptionProvider, TranscriptResult};

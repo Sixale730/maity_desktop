@@ -11,6 +11,8 @@ use std::path::PathBuf;
 use super::recording_state::AudioChunk;
 use super::audio_processing::create_meeting_folder;
 use super::incremental_saver::IncrementalAudioSaver;
+use super::transcript_live_streamer::LiveTranscriptSender;
+use crate::database::manager::LiveTranscriptRow;
 
 /// Structured transcript segment for JSON export
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -106,11 +108,20 @@ pub struct RecordingSaver {
     incremental_saver: Option<Arc<AsyncMutex<IncrementalAudioSaver>>>,
     meeting_folder: Option<PathBuf>,
     meeting_name: Option<String>,
+    /// Identifier used for the `transcript_segments_live` rows. Usually the
+    /// meeting folder name (timestamp-based). Set together with the live
+    /// streamer via `set_live_transcript_streamer`.
+    meeting_id_for_live: Option<String>,
     metadata: Option<MeetingMetadata>,
     /// Segment store with O(1) upsert. See `TranscriptStore` for rationale.
     transcript_segments: Arc<Mutex<TranscriptStore>>,
     chunk_receiver: Option<mpsc::UnboundedReceiver<AudioChunk>>,
     is_saving: Arc<Mutex<bool>>,
+    /// B.2 — Optional channel that pipes segments to a background task which
+    /// writes them to `transcript_segments_live` in SQLite. When None, only
+    /// the JSON path is used (legacy behaviour). The JSON remains the source
+    /// of truth even when live streaming is active; SQLite is for recovery.
+    live_transcript_sender: Option<LiveTranscriptSender>,
 }
 
 impl RecordingSaver {
@@ -120,10 +131,31 @@ impl RecordingSaver {
             meeting_folder: None,
             meeting_name: None,
             metadata: None,
+            meeting_id_for_live: None,
             transcript_segments: Arc::new(Mutex::new(TranscriptStore::new())),
             chunk_receiver: None,
             is_saving: Arc::new(Mutex::new(false)),
+            live_transcript_sender: None,
         }
+    }
+
+    /// B.2 — Enable live SQLite streaming for this recording. The caller is
+    /// responsible for starting the streamer task (see
+    /// `audio::transcript_live_streamer::start_streamer`) and passing the
+    /// resulting sender plus a stable `meeting_id`.
+    pub fn set_live_transcript_streamer(
+        &mut self,
+        sender: LiveTranscriptSender,
+        meeting_id: String,
+    ) {
+        self.meeting_id_for_live = Some(meeting_id);
+        self.live_transcript_sender = Some(sender);
+    }
+
+    /// Expose the meeting id used for live streaming (if any) so the caller
+    /// can purge the table after a clean finalize.
+    pub fn live_transcript_meeting_id(&self) -> Option<&str> {
+        self.meeting_id_for_live.as_deref()
     }
 
     /// Set the meeting name for this recording session
@@ -152,6 +184,31 @@ impl RecordingSaver {
     pub fn add_transcript_segment(&self, segment: TranscriptSegment) {
         let segment_id = segment.id.clone();
         let segment_seq = segment.sequence_id;
+
+        // B.2 — Fire-and-forget live SQLite write. Done before the in-memory
+        // upsert so a slow Mutex doesn't delay the DB write. If the channel
+        // is dropped (recording finalized) or the queue is full, we silently
+        // skip — the JSON on disk remains authoritative.
+        if let (Some(sender), Some(meeting_id)) =
+            (&self.live_transcript_sender, &self.meeting_id_for_live)
+        {
+            let row = LiveTranscriptRow {
+                meeting_id: meeting_id.clone(),
+                sequence_id: segment.sequence_id as i64,
+                segment_id: segment.id.clone(),
+                text: segment.text.clone(),
+                audio_start_time: segment.audio_start_time,
+                audio_end_time: segment.audio_end_time,
+                duration: segment.duration,
+                display_time: segment.display_time.clone(),
+                confidence: segment.confidence as f64,
+                source_type: segment.source_type.clone(),
+            };
+            if let Err(e) = sender.send(row) {
+                warn!("live transcript streamer channel closed: {}", e);
+            }
+        }
+
         if let Ok(mut store) = self.transcript_segments.lock() {
             let updated = store.upsert(segment);
             if updated {

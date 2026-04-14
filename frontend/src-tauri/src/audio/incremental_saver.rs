@@ -14,6 +14,12 @@ struct AudioData {
     // sample_rate: u32,
 }
 
+/// C.1 — Part rollover interval. Every N samples of audio captured, the
+/// accumulated checkpoints are merged into a standalone `part_NNN.wav` so
+/// that a crash at hour 4 of a 5-hour recording does not lose the preceding
+/// 4 hours. The default is 30 minutes (30 * 60 s).
+const PART_ROLLOVER_SECS: usize = 30 * 60;
+
 /// Incremental audio saver that writes checkpoints every 30 seconds
 /// to minimize memory usage and enable crash recovery
 pub struct IncrementalAudioSaver {
@@ -24,6 +30,15 @@ pub struct IncrementalAudioSaver {
     meeting_folder: PathBuf,
     sample_rate: u32,
     channels: u16,  // 1 = mono, 2 = stereo (L=mic, R=system)
+    /// Total samples written since start of recording (interleaved across
+    /// channels). Used only for part-rollover math.
+    total_samples_written: usize,
+    /// Cumulative samples threshold for the next part rollover.
+    next_part_rollover_samples: usize,
+    /// Index of the next part file to emit (starts at 1).
+    next_part_index: u32,
+    /// Paths of finalized `part_NNN.mp4` files for merge at finalize.
+    finalized_parts: Vec<PathBuf>,
 }
 
 impl IncrementalAudioSaver {
@@ -43,6 +58,7 @@ impl IncrementalAudioSaver {
 
         info!("IncrementalAudioSaver: {} channels, {}Hz, 30s checkpoints", channels, sample_rate);
 
+        let part_samples = sample_rate as usize * PART_ROLLOVER_SECS * channels as usize;
         Ok(Self {
             checkpoint_buffer: Vec::new(),
             // 30 seconds worth of samples (accounting for channels)
@@ -53,18 +69,25 @@ impl IncrementalAudioSaver {
             meeting_folder,
             sample_rate,
             channels,
+            total_samples_written: 0,
+            next_part_rollover_samples: part_samples,
+            next_part_index: 1,
+            finalized_parts: Vec::new(),
         })
     }
 
     /// Add an audio chunk to the buffer
-    /// Automatically saves a checkpoint when buffer reaches 30 seconds
+    /// Automatically saves a checkpoint when buffer reaches 30 seconds and
+    /// rolls over to a new part file every 30 min (C.1).
     pub fn add_chunk(&mut self, chunk: AudioChunk) -> Result<()> {
+        let chunk_samples = chunk.data.len();
         let audio_data = AudioData {
             data: chunk.data,
             // sample_rate: chunk.sample_rate,
         };
 
         self.checkpoint_buffer.push(audio_data);
+        self.total_samples_written = self.total_samples_written.saturating_add(chunk_samples);
 
         // Calculate total samples in buffer
         let total_samples: usize = self.checkpoint_buffer
@@ -78,6 +101,108 @@ impl IncrementalAudioSaver {
             self.checkpoint_buffer.clear();
         }
 
+        // C.1 — Part rollover. Once we have written >= 30 min of audio,
+        // merge everything accumulated so far into a standalone part file
+        // and reset the checkpoint counter. The part file is immediately
+        // reproducible, so a crash after this point never costs the user
+        // more than 30 min of recording.
+        if self.total_samples_written >= self.next_part_rollover_samples {
+            if let Err(e) = self.rollover_part() {
+                // Do not fail the recording on a rollover error — just warn.
+                warn!("Part rollover failed (non-fatal): {}", e);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Merge all current checkpoint files into `part_NNN.mp4` and reset the
+    /// checkpoint directory for the next part. No-op if there are no
+    /// checkpoints yet. Errors propagate; callers decide whether to swallow.
+    fn rollover_part(&mut self) -> Result<()> {
+        // Flush anything still in the in-memory buffer first.
+        if !self.checkpoint_buffer.is_empty() {
+            self.save_checkpoint()?;
+            self.checkpoint_buffer.clear();
+        }
+
+        if self.checkpoint_count == 0 {
+            // Nothing to roll over; just advance the deadline so we don't
+            // retry on every chunk.
+            self.next_part_rollover_samples = self.next_part_rollover_samples
+                .saturating_add(self.sample_rate as usize * PART_ROLLOVER_SECS * self.channels as usize);
+            self.next_part_index += 1;
+            return Ok(());
+        }
+
+        let part_path = self
+            .meeting_folder
+            .join(format!("part_{:03}.mp4", self.next_part_index));
+        info!(
+            "C.1 rollover: merging {} checkpoints into {}",
+            self.checkpoint_count,
+            part_path.display()
+        );
+
+        // Use the same ffmpeg concat merge already implemented below.
+        self.concat_checkpoints_into(&part_path)?;
+
+        self.finalized_parts.push(part_path);
+        self.next_part_index += 1;
+        self.next_part_rollover_samples = self
+            .next_part_rollover_samples
+            .saturating_add(self.sample_rate as usize * PART_ROLLOVER_SECS * self.channels as usize);
+
+        // Reset checkpoint state so the next part starts fresh at chunk 0.
+        self.checkpoint_count = 0;
+        if let Err(e) = std::fs::remove_dir_all(&self.checkpoints_dir) {
+            warn!("C.1: failed to clean checkpoints dir during rollover: {}", e);
+        }
+        std::fs::create_dir_all(&self.checkpoints_dir)?;
+
+        Ok(())
+    }
+
+    /// Concat all current checkpoint files into a single output via ffmpeg's
+    /// concat demuxer. Extracted from the existing `merge_checkpoints` logic
+    /// so it can be reused by rollover.
+    fn concat_checkpoints_into(&self, output_path: &PathBuf) -> Result<()> {
+        let ffmpeg = find_ffmpeg_path()
+            .ok_or_else(|| anyhow!("ffmpeg binary not found for C.1 rollover concat"))?;
+        let list_path = self.checkpoints_dir.join("concat_list.txt");
+        let mut list_content = String::new();
+        for i in 0..self.checkpoint_count {
+            let chunk_path = self.checkpoints_dir.join(format!("audio_chunk_{:03}.mp4", i));
+            // ffmpeg concat list requires forward slashes and escaped quotes.
+            let normalized = chunk_path
+                .to_string_lossy()
+                .replace('\\', "/")
+                .replace('\'', "'\\''");
+            list_content.push_str(&format!("file '{}'\n", normalized));
+        }
+        std::fs::write(&list_path, list_content)?;
+
+        let output = std::process::Command::new(ffmpeg)
+            .args([
+                "-y",
+                "-f",
+                "concat",
+                "-safe",
+                "0",
+                "-i",
+                list_path.to_str().unwrap_or_default(),
+                "-c",
+                "copy",
+                output_path.to_str().unwrap_or_default(),
+            ])
+            .output()?;
+
+        if !output.status.success() {
+            return Err(anyhow!(
+                "ffmpeg concat failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
         Ok(())
     }
 

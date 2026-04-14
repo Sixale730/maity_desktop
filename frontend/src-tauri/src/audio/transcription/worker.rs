@@ -3,6 +3,7 @@
 // Parallel transcription worker pool and chunk processing logic.
 // Includes ChunkAccumulator for batching small VAD segments before Parakeet/Whisper.
 
+use super::circuit_breaker::{CircuitBreaker, SharedCircuitBreaker};
 use super::engine::TranscriptionEngine;
 use super::provider::{TranscriptionError, TranscriptionProvider};
 use crate::audio::AudioChunk;
@@ -211,6 +212,12 @@ pub fn start_transcription_task<R: Runtime>(
             info!("Streaming provider detected - reader task handles event emission");
         }
 
+        // B.1 — Shared circuit breaker for all workers (current NUM_WORKERS=1).
+        // Defaults: 5 failures in 30s open the circuit for 60s. When open, the
+        // worker keeps consuming chunks (marking them completed) so the queue
+        // never blocks the input pipeline; the chunks are simply not transcribed.
+        let circuit_breaker: SharedCircuitBreaker = Arc::new(CircuitBreaker::default());
+
         // Spawn worker tasks
         let mut worker_handles = Vec::new();
         for worker_id in 0..NUM_WORKERS {
@@ -227,8 +234,14 @@ pub fn start_transcription_task<R: Runtime>(
             let input_finished_clone = input_finished.clone();
             let chunks_queued_clone = chunks_queued.clone();
             let chunks_dropped_clone = chunks_dropped.clone();
+            let breaker_clone = circuit_breaker.clone();
 
             let worker_handle = tokio::spawn(async move {
+                // C.3 — ensure the transcription worker runs at Normal priority
+                // so it cannot starve the higher-priority capture threads.
+                crate::audio::thread_priority_helper::apply(
+                    crate::audio::thread_priority_helper::AudioThreadRole::TranscriptionWorker,
+                );
                 info!("👷 Worker {} started", worker_id);
 
                 // PRE-VALIDATE model state to avoid repeated async calls per chunk
@@ -297,6 +310,17 @@ pub fn start_transcription_task<R: Runtime>(
                                 continue;
                             }
 
+                            // B.1 — Circuit breaker check. When Open we skip
+                            // the transcription call entirely but still count
+                            // the chunk as completed so the queue drains.
+                            // (Future: persist the audio for post-session reintento
+                            // — that work is part of C.2 spill queue.)
+                            if !breaker_clone.allow_attempt() {
+                                chunks_completed_clone.fetch_add(1, Ordering::SeqCst);
+                                chunks_dropped_clone.fetch_add(1, Ordering::SeqCst);
+                                continue;
+                            }
+
                             let chunk_timestamp = chunk.timestamp;
                             let chunk_duration = chunk.data.len() as f64 / chunk.sample_rate as f64;
                             // Capture device_type before chunk is moved (for speaker identification and routing)
@@ -317,6 +341,10 @@ pub fn start_transcription_task<R: Runtime>(
                             .await
                             {
                                 Ok((transcript, confidence_opt, is_partial)) => {
+                                    // B.1 — success resets the breaker. A single
+                                    // success in HalfOpen closes the circuit; a
+                                    // success in Closed is a no-op.
+                                    breaker_clone.record_success(&app_clone);
                                     // Provider-aware confidence threshold
                                     let confidence_threshold = match &engine_clone {
                                         TranscriptionEngine::Whisper(_) | TranscriptionEngine::Provider(_) => 0.3,
@@ -413,7 +441,7 @@ pub fn start_transcription_task<R: Runtime>(
                                 }
                                 Err(e) => {
                                     // Improved error handling with specific cases
-                                    match e {
+                                    match &e {
                                         TranscriptionError::AudioTooShort { .. } => {
                                             // Skip silently, this is expected for very short chunks
                                             info!("Worker {}: {}", worker_id, e);
@@ -428,6 +456,10 @@ pub fn start_transcription_task<R: Runtime>(
                                         _ => {
                                             warn!("Worker {}: Transcription failed: {}", worker_id, e);
                                             let _ = app_clone.emit("transcription-warning", e.to_string());
+                                            // B.1 — Count real engine failures toward the breaker.
+                                            // AudioTooShort and ModelNotLoaded are not counted (they
+                                            // are not engine malfunctions).
+                                            breaker_clone.record_failure(&app_clone, &e.to_string());
                                         }
                                     }
                                 }
