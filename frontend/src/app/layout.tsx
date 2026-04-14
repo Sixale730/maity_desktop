@@ -29,6 +29,7 @@ import { ParakeetAutoDownloadProvider } from '@/contexts/ParakeetAutoDownloadCon
 import { LoginScreen } from '@/components/Auth'
 import { CloudSyncInitializer } from '@/components/CloudSyncInitializer'
 import { AnalysisPollingInitializer } from '@/components/AnalysisPollingInitializer'
+import { useMicrophoneFallbackToast } from '@/hooks/useMicrophoneFallbackToast'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ThemeProvider } from '@/contexts/ThemeContext'
 import Script from 'next/script'
@@ -208,6 +209,12 @@ function AuthGate({ children }: { children: React.ReactNode }) {
 function AppContent({ children }: { children: React.ReactNode }) {
   const [showOnboarding, setShowOnboarding] = useState(false)
   const [, setOnboardingCompleted] = useState(false)
+
+  // Surface a toast when the user's preferred mic is not honoured (USB
+  // unplugged, locale rename, driver change). Recording continues with the
+  // system default; the toast tells the user *which* device is actually
+  // capturing audio so silent transcription failures stop being a mystery.
+  useMicrophoneFallbackToast()
 
   useEffect(() => {
     // Check onboarding status first

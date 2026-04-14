@@ -7,6 +7,9 @@ pub mod speakers;
 pub mod configuration;
 pub mod platform;
 pub mod fallback;
+/// Robust device-name matching that tolerates locale, case, NBSP and minor
+/// driver-name drift. Used by `windows.rs` and `recording_helpers.rs`.
+pub mod device_name_matcher;
 
 // Re-export all public functions to preserve existing API
 pub use discovery::{list_audio_devices, trigger_audio_permission};

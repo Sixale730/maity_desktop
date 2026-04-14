@@ -4,6 +4,51 @@ use log::{debug, info, warn};
 
 use crate::audio::devices::configuration::{AudioDevice, DeviceType};
 
+/// Try to open a CPAL input device with a sensible config, preferring stereo
+/// F32 and falling back through any F32 → first available config.
+/// Extracted from `get_windows_device` so the strict and fuzzy matchers can
+/// share the same opening behaviour without copy-paste drift.
+fn open_input_device(
+    device: cpal::Device,
+    name: &str,
+) -> Result<(cpal::Device, cpal::SupportedStreamConfig)> {
+    match device.default_input_config() {
+        Ok(default_config) => Ok((device, default_config)),
+        Err(e) => {
+            warn!(
+                "Default input config failed for '{}': {}. Trying supported configs...",
+                name, e
+            );
+            if let Ok(supported_configs) = device.supported_input_configs() {
+                let configs: Vec<_> = supported_configs.collect();
+                if configs.is_empty() {
+                    warn!("No supported input configurations found for '{}'", name);
+                } else {
+                    for config in &configs {
+                        if config.sample_format() == cpal::SampleFormat::F32
+                            && config.channels() == 2
+                        {
+                            return Ok((device, config.with_max_sample_rate()));
+                        }
+                    }
+                    for config in &configs {
+                        if config.sample_format() == cpal::SampleFormat::F32 {
+                            return Ok((device, config.with_max_sample_rate()));
+                        }
+                    }
+                    let config = configs[0].with_max_sample_rate();
+                    info!("Using fallback input config for '{}': {:?}", name, config);
+                    return Ok((device, config));
+                }
+            }
+            Err(anyhow!(
+                "No compatible input configuration found for device: {}",
+                name
+            ))
+        }
+    }
+}
+
 /// Configure Windows audio devices using WASAPI
 pub fn configure_windows_audio(host: &cpal::Host) -> Result<Vec<AudioDevice>> {
     let mut devices = Vec::new();
@@ -111,10 +156,43 @@ pub fn get_windows_device(audio_device: &AudioDevice) -> Result<(cpal::Device, c
 
     match audio_device.device_type {
         DeviceType::Input => {
+            // Two-pass matching: strict first, fuzzy second. Strict catches the
+            // happy path with zero allocation; fuzzy is the bug fix for the
+            // tilde / case / NBSP / re-plug "(2)" cases that previously caused
+            // the matcher to silently fall back to the system default device
+            // — which breaks the user's explicit selection.
+            let mut enumerated: Vec<cpal::Device> = Vec::new();
             for device in wasapi_host.input_devices()? {
                 if let Ok(name) = device.name() {
                     info!("Checking input device: {}", name);
-                    // Check if the device name contains our base name
+                    if name == base_name || name.contains(base_name) {
+                        return open_input_device(device, &name);
+                    }
+                }
+                enumerated.push(device);
+            }
+
+            // Strict pass missed — try the fuzzy matcher.
+            for device in enumerated {
+                if let Ok(name) = device.name() {
+                    if super::super::device_name_matcher::is_same_device(&name, base_name) {
+                        info!(
+                            "Fuzzy-matched input device: requested '{}' resolved to '{}'",
+                            base_name, name
+                        );
+                        return open_input_device(device, &name);
+                    }
+                }
+            }
+
+            // Existing exact-match block (left as the canonical implementation
+            // for the rest of this match arm). The early `return`s above bypass
+            // it on success; only the unreachable fallback below executes when
+            // both passes fail — which is identical to the previous behaviour.
+            for device in wasapi_host.input_devices()? {
+                if let Ok(name) = device.name() {
+                    // Re-runs the strict check defensively (no-op in practice
+                    // since we already returned on match in the first pass).
                     if name == base_name || name.contains(base_name) {
                         // info!("Found matching input device: {}", name);
 

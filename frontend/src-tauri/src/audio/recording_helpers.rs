@@ -13,6 +13,7 @@ use super::{
     default_output_device,
     RecordingManager,
 };
+use super::devices::{device_name_matcher, list_audio_devices, AudioDevice, DeviceType};
 
 use super::transcription::{
     self,
@@ -28,32 +29,105 @@ pub struct ResolvedDevices {
     pub system_audio: Option<Arc<super::devices::AudioDevice>>,
 }
 
-/// Resolve microphone device from preference name or fallback to default
-pub fn resolve_microphone_from_preference(preferred_name: Option<String>) -> Result<Option<Arc<super::devices::AudioDevice>>, String> {
+/// Reason a fallback to the system default device was triggered.
+#[derive(Debug, Clone, Copy)]
+pub enum DeviceFallbackReason {
+    /// The preferred device name does not match any currently enumerated
+    /// device (typical after the user unplugged a USB headset between
+    /// sessions, or after a Windows locale change).
+    NotFound,
+    /// The preferred device name is in a format `parse_audio_device` rejects
+    /// (legacy preferences from a buggy build, manual edit, etc.).
+    InvalidFormat,
+}
+
+impl DeviceFallbackReason {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::NotFound => "not_found",
+            Self::InvalidFormat => "invalid_format",
+        }
+    }
+}
+
+/// Emit `microphone-fallback` to the frontend so the UI can show the user a
+/// toast explaining that their preferred mic could not be used and the
+/// recording is proceeding with the system default.
+fn emit_microphone_fallback<R: Runtime>(
+    app: &AppHandle<R>,
+    requested: &str,
+    actual: &str,
+    reason: DeviceFallbackReason,
+) {
+    let payload = serde_json::json!({
+        "requested": requested,
+        "actual": actual,
+        "reason": reason.as_str(),
+    });
+    if let Err(e) = app.emit("microphone-fallback", payload) {
+        warn!("failed to emit microphone-fallback event: {}", e);
+    }
+}
+
+/// Returns true if `requested_name` is found in the current enumeration of
+/// input devices using normalized matching. Used to decide whether to keep
+/// the user's preferred device or fall back to the system default.
+async fn input_device_exists(requested_name: &str) -> bool {
+    let bare = requested_name
+        .trim_end_matches(" (input)")
+        .trim_end_matches(" (Input)")
+        .trim();
+    match list_audio_devices().await {
+        Ok(devices) => devices.iter().any(|d| {
+            d.device_type == DeviceType::Input
+                && device_name_matcher::is_same_device(&d.name, bare)
+        }),
+        Err(e) => {
+            warn!(
+                "input_device_exists: list_audio_devices failed ({}); skipping verification",
+                e
+            );
+            // If we cannot enumerate, do not block the parsed device — let the
+            // downstream stream-open path surface the real error.
+            true
+        }
+    }
+}
+
+/// Resolve microphone device from preference name or fallback to default.
+///
+/// `app` is used to emit `microphone-fallback` whenever the user's preferred
+/// device cannot be honoured (invalid format, no longer enumerated, etc.) so
+/// the UI can show a clear toast instead of letting the recording proceed
+/// silently with the wrong mic.
+pub async fn resolve_microphone_from_preference<R: Runtime>(
+    app: &AppHandle<R>,
+    preferred_name: Option<String>,
+) -> Result<Option<Arc<super::devices::AudioDevice>>, String> {
     match preferred_name {
         Some(pref_name) => {
             info!("🎤 Attempting to use preferred microphone: '{}'", pref_name);
+            // Two-stage validation:
+            //   1. parse_audio_device checks the string suffix matches the
+            //      expected "(input)" / "(output)" format.
+            //   2. input_device_exists verifies the device is actually present
+            //      in the current OS enumeration (handles unplug, locale flip,
+            //      driver rename — see device_name_matcher.rs for details).
             match parse_audio_device(&pref_name) {
-                Ok(device) => {
+                Ok(device) if input_device_exists(&device.name).await => {
                     info!("✅ Using preferred microphone: '{}'", device.name);
                     Ok(Some(Arc::new(device)))
                 }
+                Ok(device) => {
+                    warn!(
+                        "⚠️ Preferred microphone '{}' not present in current enumeration",
+                        device.name
+                    );
+                    fallback_to_default_mic(app, &pref_name, DeviceFallbackReason::NotFound)
+                }
                 Err(e) => {
-                    warn!("⚠️ Preferred microphone '{}' not available: {}", pref_name, e);
-                    warn!("   Falling back to system default microphone...");
-                    match default_input_device() {
-                        Ok(device) => {
-                            info!("✅ Using default microphone: '{}'", device.name);
-                            Ok(Some(Arc::new(device)))
-                        }
-                        Err(default_err) => {
-                            error!("❌ No microphone available (preferred and default both failed)");
-                            Err(format!(
-                                "No microphone device available. Preferred device '{}' not found, and default microphone unavailable: {}",
-                                pref_name, default_err
-                            ))
-                        }
-                    }
+                    warn!("⚠️ Preferred microphone '{}' invalid format: {}", pref_name, e);
+                    fallback_to_default_mic(app, &pref_name, DeviceFallbackReason::InvalidFormat)
                 }
             }
         }
@@ -69,6 +143,31 @@ pub fn resolve_microphone_from_preference(preferred_name: Option<String>) -> Res
                     Err(format!("No microphone device available: {}", e))
                 }
             }
+        }
+    }
+}
+
+/// Fall back to the system default microphone, emit `microphone-fallback`
+/// to the frontend, and return the resolved device. Returns Err only when
+/// the system has no input devices at all.
+fn fallback_to_default_mic<R: Runtime>(
+    app: &AppHandle<R>,
+    requested: &str,
+    reason: DeviceFallbackReason,
+) -> Result<Option<Arc<AudioDevice>>, String> {
+    match default_input_device() {
+        Ok(device) => {
+            info!("✅ Falling back to default microphone: '{}'", device.name);
+            emit_microphone_fallback(app, requested, &device.name, reason);
+            Ok(Some(Arc::new(device)))
+        }
+        Err(default_err) => {
+            error!("❌ No microphone available (preferred and default both failed)");
+            emit_microphone_fallback(app, requested, "<none>", reason);
+            Err(format!(
+                "No microphone device available. Preferred '{}' not found and default unavailable: {}",
+                requested, default_err
+            ))
         }
     }
 }
@@ -118,15 +217,22 @@ pub fn resolve_system_audio_from_preference(preferred_name: Option<String>) -> O
     }
 }
 
-/// Parse explicit device names into device handles
-pub fn parse_explicit_devices(
+/// Parse explicit device names into device handles, with verification that
+/// the mic exists in the current OS enumeration. If it does not, fall back
+/// to the system default mic and emit `microphone-fallback` to the frontend.
+/// System audio (output) does not get the same treatment because it is
+/// optional — the recording continues fine without it.
+pub async fn parse_explicit_devices<R: Runtime>(
+    app: &AppHandle<R>,
     mic_device_name: &Option<String>,
     system_device_name: &Option<String>,
 ) -> Result<ResolvedDevices, String> {
     let microphone = if let Some(ref name) = mic_device_name {
-        Some(Arc::new(parse_audio_device(name).map_err(|e| {
-            format!("Invalid microphone device '{}': {}", name, e)
-        })?))
+        match parse_audio_device(name) {
+            Ok(device) if input_device_exists(&device.name).await => Some(Arc::new(device)),
+            Ok(_) => fallback_to_default_mic(app, name, DeviceFallbackReason::NotFound)?,
+            Err(_) => fallback_to_default_mic(app, name, DeviceFallbackReason::InvalidFormat)?,
+        }
     } else {
         None
     };

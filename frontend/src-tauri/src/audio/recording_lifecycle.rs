@@ -85,7 +85,8 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
         };
 
     // Resolve devices from preferences
-    let microphone_device = recording_helpers::resolve_microphone_from_preference(preferred_mic_name)?;
+    let microphone_device =
+        recording_helpers::resolve_microphone_from_preference(&app, preferred_mic_name).await?;
     let system_device = recording_helpers::resolve_system_audio_from_preference(preferred_system_name);
 
     // Initialize recording with resolved devices
@@ -138,7 +139,9 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
     info!("🚀 Starting async recording initialization with custom devices");
 
     // Parse explicit device names
-    let devices = recording_helpers::parse_explicit_devices(&mic_device_name, &system_device_name)?;
+    let devices =
+        recording_helpers::parse_explicit_devices(&app, &mic_device_name, &system_device_name)
+            .await?;
 
     // Load recording preferences for auto_save setting
     let auto_save = match super::recording_preferences::load_recording_preferences(&app).await {
