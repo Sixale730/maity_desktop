@@ -379,3 +379,187 @@ pub async fn generate_meeting_summary(
     info!("Summary generation completed successfully");
     Ok((final_markdown, successful_chunk_count))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    mod rough_token_count {
+        use super::*;
+
+        #[test]
+        fn empty_string_is_zero_tokens() {
+            assert_eq!(rough_token_count(""), 0);
+        }
+
+        #[test]
+        fn uses_035_tokens_per_char_rounded_up() {
+            // 10 chars × 0.35 = 3.5 → 4
+            assert_eq!(rough_token_count("abcdefghij"), 4);
+            // 100 chars × 0.35 = 35
+            assert_eq!(rough_token_count(&"x".repeat(100)), 35);
+        }
+
+        #[test]
+        fn unicode_counts_by_characters_not_bytes() {
+            // "café" = 4 chars → 4 × 0.35 = 1.4 → 2
+            assert_eq!(rough_token_count("café"), 2);
+            // "niño" = 4 chars, same as "niñX"
+            assert_eq!(rough_token_count("niño"), 2);
+        }
+    }
+
+    mod chunk_text {
+        use super::*;
+
+        #[test]
+        fn empty_text_returns_empty_vec() {
+            assert!(chunk_text("", 100, 10).is_empty());
+        }
+
+        #[test]
+        fn zero_chunk_size_returns_empty_vec() {
+            assert!(chunk_text("hola mundo", 0, 0).is_empty());
+        }
+
+        #[test]
+        fn short_text_returns_single_chunk_unchanged() {
+            let short = "hola mundo";
+            let chunks = chunk_text(short, 1000, 100);
+            assert_eq!(chunks.len(), 1);
+            assert_eq!(chunks[0], short);
+        }
+
+        #[test]
+        fn splits_long_text_into_multiple_chunks() {
+            // 500 palabras de 5 chars = ~3000 chars
+            let text = (0..500).map(|_| "palabra ").collect::<String>();
+            let chunks = chunk_text(&text, 50, 10); // chunk_size ≈ 143 chars, overlap ≈ 29
+            assert!(chunks.len() > 1, "expected multiple chunks, got {}", chunks.len());
+        }
+
+        #[test]
+        fn chunks_overlap_by_about_overlap_chars() {
+            let text = "aaaa bbbb cccc dddd eeee ffff gggg hhhh iiii jjjj kkkk llll mmmm nnnn oooo";
+            let chunks = chunk_text(text, 20, 5);
+            assert!(chunks.len() >= 2);
+            // Sentinel: concatenated length should be greater than original due to overlap
+            let total: usize = chunks.iter().map(|c| c.len()).sum();
+            assert!(total >= text.len(), "chunks should cover the text with overlap");
+        }
+
+        #[test]
+        fn prefers_sentence_boundary_when_available() {
+            let text = "Primera oración. Segunda oración. Tercera oración. Cuarta oración.";
+            let chunks = chunk_text(text, 15, 3);
+            // Every non-final chunk should end at a sentence boundary
+            for chunk in chunks.iter().take(chunks.len() - 1) {
+                assert!(
+                    chunk.ends_with(". ") || chunk.ends_with("."),
+                    "non-final chunk did not break on sentence boundary: {:?}",
+                    chunk
+                );
+            }
+        }
+
+        #[test]
+        fn handles_unicode_without_panic() {
+            let text = "café 🎉 niño año mañana ".repeat(50);
+            let chunks = chunk_text(&text, 30, 5);
+            // Just assert no panic + at least one chunk
+            assert!(!chunks.is_empty());
+        }
+    }
+
+    mod clean_llm_markdown_output {
+        use super::*;
+
+        #[test]
+        fn removes_think_tags() {
+            let input = "<think>internal reasoning</think>\n# Reunión\n\nContenido";
+            let result = clean_llm_markdown_output(input);
+            assert!(!result.contains("<think>"));
+            assert!(!result.contains("internal reasoning"));
+            assert!(result.contains("# Reunión"));
+        }
+
+        #[test]
+        fn removes_thinking_tags_multiline() {
+            let input = "<thinking>\nlinea 1\nlinea 2\n</thinking>\n\n# Título";
+            let result = clean_llm_markdown_output(input);
+            assert!(!result.contains("thinking"));
+            assert!(result.contains("# Título"));
+        }
+
+        #[test]
+        fn strips_markdown_code_fence() {
+            let input = "```markdown\n# Reunión\n\nContenido\n```";
+            let result = clean_llm_markdown_output(input);
+            assert_eq!(result, "# Reunión\n\nContenido");
+        }
+
+        #[test]
+        fn strips_generic_code_fence() {
+            let input = "```\n# Reunión\n```";
+            let result = clean_llm_markdown_output(input);
+            assert_eq!(result, "# Reunión");
+        }
+
+        #[test]
+        fn preserves_markdown_without_fences() {
+            let input = "# Reunión\n\nContenido normal.";
+            let result = clean_llm_markdown_output(input);
+            assert_eq!(result, "# Reunión\n\nContenido normal.");
+        }
+
+        #[test]
+        fn trims_outer_whitespace() {
+            let input = "\n\n  # Título\n\n";
+            let result = clean_llm_markdown_output(input);
+            assert_eq!(result, "# Título");
+        }
+    }
+
+    mod extract_meeting_name_from_markdown {
+        use super::*;
+
+        #[test]
+        fn returns_first_h1_heading() {
+            let md = "# Reunión de Producto\n\n## Agenda\n\nTema 1";
+            assert_eq!(
+                extract_meeting_name_from_markdown(md),
+                Some("Reunión de Producto".to_string())
+            );
+        }
+
+        #[test]
+        fn returns_none_when_no_h1() {
+            let md = "## Subtítulo\n\nContenido";
+            assert_eq!(extract_meeting_name_from_markdown(md), None);
+        }
+
+        #[test]
+        fn ignores_hashtags_not_followed_by_space() {
+            let md = "#notag\n# Real Title";
+            assert_eq!(
+                extract_meeting_name_from_markdown(md),
+                Some("Real Title".to_string())
+            );
+        }
+
+        #[test]
+        fn trims_whitespace() {
+            let md = "#    Título con espacios   ";
+            assert_eq!(
+                extract_meeting_name_from_markdown(md),
+                Some("Título con espacios".to_string())
+            );
+        }
+
+        #[test]
+        fn returns_first_h1_when_multiple() {
+            let md = "# Primera\n\n# Segunda";
+            assert_eq!(extract_meeting_name_from_markdown(md), Some("Primera".to_string()));
+        }
+    }
+}

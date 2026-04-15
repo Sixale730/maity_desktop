@@ -578,3 +578,201 @@ impl Clone for RecordingStats {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    mod audio_error {
+        use super::*;
+
+        #[test]
+        fn recoverable_errors() {
+            assert!(AudioError::DeviceDisconnected.is_recoverable());
+            assert!(AudioError::StreamFailed.is_recoverable());
+            assert!(AudioError::ProcessingFailed.is_recoverable());
+            assert!(AudioError::TranscriptionFailed.is_recoverable());
+            assert!(AudioError::BufferOverflow.is_recoverable());
+        }
+
+        #[test]
+        fn non_recoverable_errors() {
+            assert!(!AudioError::ChannelClosed.is_recoverable());
+            assert!(!AudioError::InitializationFailed.is_recoverable());
+            assert!(!AudioError::ConfigurationError.is_recoverable());
+            assert!(!AudioError::PermissionDenied.is_recoverable());
+            assert!(!AudioError::SampleRateUnsupported.is_recoverable());
+        }
+
+        #[test]
+        fn user_messages_are_nonempty() {
+            let errors = [
+                AudioError::DeviceDisconnected,
+                AudioError::StreamFailed,
+                AudioError::ProcessingFailed,
+                AudioError::TranscriptionFailed,
+                AudioError::ChannelClosed,
+                AudioError::InitializationFailed,
+                AudioError::ConfigurationError,
+                AudioError::PermissionDenied,
+                AudioError::BufferOverflow,
+                AudioError::SampleRateUnsupported,
+            ];
+            for err in errors {
+                assert!(!err.user_message().is_empty(), "{:?} has empty message", err);
+            }
+        }
+    }
+
+    mod device_type {
+        use super::*;
+
+        #[test]
+        fn equality_variants() {
+            assert_eq!(DeviceType::Microphone, DeviceType::Microphone);
+            assert_ne!(DeviceType::Microphone, DeviceType::System);
+            assert_ne!(DeviceType::System, DeviceType::Mixed);
+        }
+
+        #[test]
+        fn is_copy() {
+            let a = DeviceType::Microphone;
+            let b = a; // would not compile if not Copy
+            assert_eq!(a, b);
+        }
+    }
+
+    mod recording_state {
+        use super::*;
+
+        #[test]
+        fn new_starts_inactive() {
+            let state = RecordingState::new();
+            assert!(!state.is_recording());
+            assert!(!state.is_paused());
+            assert!(!state.is_active());
+            assert!(!state.is_reconnecting());
+        }
+
+        #[test]
+        fn start_recording_flips_flag_and_resets_errors() {
+            let state = RecordingState::new();
+            state.report_error(AudioError::StreamFailed);
+            state.report_error(AudioError::StreamFailed);
+            assert!(state.get_error_count() >= 2);
+
+            state.start_recording().unwrap();
+            assert!(state.is_recording());
+            assert!(state.is_active());
+            assert_eq!(state.get_error_count(), 0);
+            assert_eq!(state.get_recoverable_error_count(), 0);
+            assert!(state.get_last_error().is_none());
+        }
+
+        #[test]
+        fn stop_recording_clears_flags() {
+            let state = RecordingState::new();
+            state.start_recording().unwrap();
+            state.stop_recording();
+            assert!(!state.is_recording());
+            assert!(!state.is_paused());
+        }
+
+        #[test]
+        fn pause_requires_recording() {
+            let state = RecordingState::new();
+            assert!(state.pause_recording().is_err());
+        }
+
+        #[test]
+        fn double_pause_fails() {
+            let state = RecordingState::new();
+            state.start_recording().unwrap();
+            state.pause_recording().unwrap();
+            assert!(state.pause_recording().is_err());
+        }
+
+        #[test]
+        fn resume_requires_pause() {
+            let state = RecordingState::new();
+            state.start_recording().unwrap();
+            assert!(state.resume_recording().is_err());
+        }
+
+        #[test]
+        fn pause_and_resume_toggle_correctly() {
+            let state = RecordingState::new();
+            state.start_recording().unwrap();
+            state.pause_recording().unwrap();
+            assert!(state.is_paused());
+            assert!(!state.is_active());
+            state.resume_recording().unwrap();
+            assert!(!state.is_paused());
+            assert!(state.is_active());
+        }
+
+        #[test]
+        fn audio_levels_roundtrip_mic_and_system() {
+            let state = RecordingState::new();
+            state.set_audio_level(DeviceType::Microphone, 0.3, 0.7);
+            state.set_audio_level(DeviceType::System, 0.4, 0.8);
+            let (mic_rms, mic_peak, sys_rms, sys_peak) = state.get_audio_levels();
+            assert!((mic_rms - 0.3).abs() < 1e-6);
+            assert!((mic_peak - 0.7).abs() < 1e-6);
+            assert!((sys_rms - 0.4).abs() < 1e-6);
+            assert!((sys_peak - 0.8).abs() < 1e-6);
+        }
+
+        #[test]
+        fn mixed_device_type_does_not_update_levels() {
+            let state = RecordingState::new();
+            state.set_audio_level(DeviceType::Microphone, 0.5, 0.9);
+            state.set_audio_level(DeviceType::Mixed, 999.0, 999.0);
+            let (mic_rms, _, _, _) = state.get_audio_levels();
+            assert!((mic_rms - 0.5).abs() < 1e-6);
+        }
+
+        #[test]
+        fn report_error_triggers_callback_and_increments_counter() {
+            let state = RecordingState::new();
+            let count = Arc::new(std::sync::atomic::AtomicU32::new(0));
+            let count_clone = count.clone();
+            state.set_error_callback(move |_err| {
+                count_clone.fetch_add(1, Ordering::SeqCst);
+            });
+
+            state.report_error(AudioError::StreamFailed);
+            assert_eq!(state.get_error_count(), 1);
+            assert_eq!(state.get_recoverable_error_count(), 1);
+            assert_eq!(count.load(Ordering::SeqCst), 1);
+        }
+
+        #[test]
+        fn non_recoverable_error_stops_recording_and_is_fatal() {
+            let state = RecordingState::new();
+            state.start_recording().unwrap();
+            state.report_error(AudioError::InitializationFailed);
+            assert!(!state.is_recording(), "non-recoverable error should stop recording");
+            assert!(state.has_fatal_error());
+        }
+
+        #[test]
+        fn reconnection_start_prevents_double_start() {
+            use crate::audio::devices::{AudioDevice, DeviceType as TauriDeviceType};
+            let state = RecordingState::new();
+            let device = Arc::new(AudioDevice {
+                name: "mic".into(),
+                device_type: TauriDeviceType::Input,
+            });
+
+            assert!(state.start_reconnecting(device.clone(), DeviceType::Microphone));
+            assert!(state.is_reconnecting());
+            assert!(!state.start_reconnecting(device.clone(), DeviceType::Microphone),
+                "second start should fail because reconnection is in progress");
+
+            state.stop_reconnecting();
+            assert!(!state.is_reconnecting());
+            assert!(state.get_disconnected_device().is_none());
+        }
+    }
+}

@@ -735,3 +735,248 @@ pub fn write_transcript_json_to_file(
 
     Ok(file_path.to_string_lossy().to_string())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    mod sanitize_filename {
+        use super::*;
+
+        #[test]
+        fn replaces_invalid_chars_with_underscore() {
+            assert_eq!(sanitize_filename("a/b\\c:d*e?f\"g<h>i|j"), "a_b_c_d_e_f_g_h_i_j");
+        }
+
+        #[test]
+        fn replaces_control_chars() {
+            let input = format!("foo{}bar", '\x01');
+            assert_eq!(sanitize_filename(&input), "foo_bar");
+        }
+
+        #[test]
+        fn trims_surrounding_whitespace() {
+            assert_eq!(sanitize_filename("   meeting   "), "meeting");
+        }
+
+        #[test]
+        fn preserves_valid_chars() {
+            assert_eq!(sanitize_filename("Reunion con Ana (2026)"), "Reunion con Ana (2026)");
+        }
+
+        #[test]
+        fn unicode_passes_through() {
+            assert_eq!(sanitize_filename("café_español"), "café_español");
+        }
+
+        #[test]
+        fn empty_input_returns_empty() {
+            assert_eq!(sanitize_filename(""), "");
+        }
+    }
+
+    mod normalize_v2 {
+        use super::*;
+
+        #[test]
+        fn returns_empty_unchanged_when_silent() {
+            let silent = vec![0.0f32; 100];
+            let result = normalize_v2(&silent);
+            assert_eq!(result, silent);
+        }
+
+        #[test]
+        fn boosts_quiet_audio() {
+            let quiet: Vec<f32> = (0..100).map(|i| (i as f32 / 100.0) * 0.01).collect();
+            let result = normalize_v2(&quiet);
+            let quiet_rms: f32 = (quiet.iter().map(|x| x * x).sum::<f32>() / quiet.len() as f32).sqrt();
+            let result_rms: f32 = (result.iter().map(|x| x * x).sum::<f32>() / result.len() as f32).sqrt();
+            assert!(result_rms > quiet_rms, "expected RMS boost, got {} → {}", quiet_rms, result_rms);
+        }
+
+        #[test]
+        fn soft_clip_attenuates_samples_above_0_95() {
+            // Input far beyond 0.95 goes through the linear soft-clip formula
+            // 0.95 + (scaled - 0.95) * 0.05. Large inputs are heavily attenuated
+            // relative to the pre-scaled value, but NOT hard-capped at 1.0.
+            let loud = vec![10.0f32; 10];
+            let result = normalize_v2(&loud);
+            for &s in &result {
+                // After clipping, 10.0 * scaling factor still gets attenuated
+                // compared to its linear extrapolation
+                let linear_projection = 10.0 * 2.0; // min scaling factor 1.5 or rms/peak
+                assert!(s < linear_projection, "soft clip should attenuate {}", s);
+                assert!(s > 0.95, "positive input stays above the 0.95 knee");
+            }
+        }
+
+        #[test]
+        fn preserves_length() {
+            let input = vec![0.1f32; 256];
+            let result = normalize_v2(&input);
+            assert_eq!(result.len(), input.len());
+        }
+
+        #[test]
+        fn negative_samples_stay_below_minus_0_95() {
+            let loud_neg = vec![-10.0f32; 10];
+            let result = normalize_v2(&loud_neg);
+            for &s in &result {
+                assert!(s < -0.95, "negative input stays below the -0.95 knee, got {}", s);
+            }
+        }
+    }
+
+    mod audio_to_mono {
+        use super::*;
+
+        #[test]
+        fn mono_input_returns_unchanged_values() {
+            let input = vec![0.1f32, 0.2, 0.3, 0.4];
+            let result = audio_to_mono(&input, 1);
+            assert_eq!(result, input);
+        }
+
+        #[test]
+        fn stereo_averages_left_right() {
+            // interleaved LR pairs: (0.0, 1.0), (0.5, 0.5)
+            let input = vec![0.0f32, 1.0, 0.5, 0.5];
+            let result = audio_to_mono(&input, 2);
+            assert_eq!(result, vec![0.5, 0.5]);
+        }
+
+        #[test]
+        fn multichannel_uses_only_first_two_channels() {
+            // 4 channels per frame: (1.0, 1.0, 99.0, -99.0) → mono should be 1.0
+            let input = vec![1.0f32, 1.0, 99.0, -99.0, 0.5, 0.5, 99.0, -99.0];
+            let result = audio_to_mono(&input, 4);
+            assert_eq!(result, vec![1.0, 0.5]);
+        }
+
+        #[test]
+        fn handles_empty_input() {
+            let result = audio_to_mono(&[], 2);
+            assert!(result.is_empty());
+        }
+    }
+
+    mod resample {
+        use super::*;
+
+        #[test]
+        fn empty_input_returns_empty() {
+            let result = resample(&[], 48000, 16000).unwrap();
+            assert!(result.is_empty());
+        }
+
+        #[test]
+        fn same_rate_returns_identical_vec() {
+            let input = vec![0.1f32; 1024];
+            let result = resample(&input, 48000, 48000).unwrap();
+            assert_eq!(result, input);
+        }
+
+        #[test]
+        fn downsample_48k_to_16k_reduces_length_to_about_third() {
+            let input = vec![0.0f32; 4800]; // 100ms @ 48kHz
+            let result = resample(&input, 48000, 16000).unwrap();
+            // SincFixedIn output size ≈ input * ratio, but can drop chunks that
+            // don't complete a full sinc window. Tolerate 20% deviation.
+            let expected = 1600_f64;
+            let ratio = result.len() as f64 / expected;
+            assert!(ratio > 0.7 && ratio < 1.2,
+                "expected ~{}, got {} (ratio {:.2})", expected, result.len(), ratio);
+        }
+
+        #[test]
+        fn upsample_16k_to_48k_increases_length() {
+            let input = vec![0.0f32; 1600];
+            let result = resample(&input, 16000, 48000).unwrap();
+            // Upsampled length should be larger than input (roughly 3×).
+            // SincFixedIn can lose the final partial chunk so we allow 20% slack.
+            assert!(result.len() > input.len() * 2,
+                "upsample should at least double length, got {} from {}", result.len(), input.len());
+        }
+    }
+
+    mod high_pass_filter {
+        use super::*;
+
+        #[test]
+        fn blocks_dc_component() {
+            let mut filter = HighPassFilter::new(48000, 80.0);
+            let dc = vec![1.0f32; 4800];
+            let output = filter.process(&dc);
+            // After enough samples the output should decay toward zero
+            let tail_rms: f32 = (output[2400..].iter().map(|x| x * x).sum::<f32>()
+                / (output.len() - 2400) as f32)
+                .sqrt();
+            assert!(tail_rms < 0.1, "DC should be blocked, tail RMS = {}", tail_rms);
+        }
+
+        #[test]
+        fn reset_clears_state() {
+            let mut filter = HighPassFilter::new(48000, 80.0);
+            filter.process(&vec![1.0f32; 100]);
+            filter.reset();
+            // After reset, state should be zero — a zero-input produces zero output
+            let output = filter.process(&vec![0.0f32; 10]);
+            assert!(output.iter().all(|&x| x.abs() < 1e-9));
+        }
+
+        #[test]
+        fn output_length_matches_input() {
+            let mut filter = HighPassFilter::new(48000, 100.0);
+            let input = vec![0.5f32; 512];
+            assert_eq!(filter.process(&input).len(), 512);
+        }
+    }
+
+    mod average_noise_spectrum {
+        use super::*;
+
+        #[test]
+        fn returns_mean_squared_magnitude() {
+            let input = vec![1.0f32, -1.0, 1.0, -1.0];
+            assert_eq!(average_noise_spectrum(&input), 1.0);
+        }
+
+        #[test]
+        fn silent_input_returns_zero() {
+            let input = vec![0.0f32; 64];
+            assert_eq!(average_noise_spectrum(&input), 0.0);
+        }
+    }
+
+    mod loudness_normalizer {
+        use super::*;
+
+        #[test]
+        fn new_succeeds_for_48k_stereo() {
+            assert!(LoudnessNormalizer::new(2, 48000).is_ok());
+        }
+
+        #[test]
+        fn empty_input_returns_empty_output() {
+            let mut norm = LoudnessNormalizer::new(1, 48000).unwrap();
+            assert!(norm.normalize_loudness(&[]).is_empty());
+        }
+
+        #[test]
+        fn output_length_matches_input() {
+            let mut norm = LoudnessNormalizer::new(1, 48000).unwrap();
+            let input = vec![0.1f32; 1024];
+            assert_eq!(norm.normalize_loudness(&input).len(), 1024);
+        }
+
+        #[test]
+        fn keeps_output_below_true_peak() {
+            let mut norm = LoudnessNormalizer::new(1, 48000).unwrap();
+            let input: Vec<f32> = (0..4800).map(|i| ((i as f32 * 0.01).sin()) * 0.9).collect();
+            let out = norm.normalize_loudness(&input);
+            let max = out.iter().fold(0.0f32, |a, &b| a.max(b.abs()));
+            assert!(max <= 1.0, "output exceeded 1.0 TP: {}", max);
+        }
+    }
+}
+

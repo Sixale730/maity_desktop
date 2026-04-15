@@ -259,3 +259,304 @@ impl SyncQueueRepository {
         Ok(row.and_then(|r| r.0))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    const SCHEMA: &str = r#"
+        CREATE TABLE sync_queue (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            job_type TEXT NOT NULL,
+            meeting_id TEXT NOT NULL,
+            payload TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            attempt_count INTEGER NOT NULL DEFAULT 0,
+            max_attempts INTEGER NOT NULL DEFAULT 10,
+            next_retry_at TEXT,
+            last_error TEXT,
+            depends_on INTEGER,
+            result_data TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            completed_at TEXT,
+            FOREIGN KEY (depends_on) REFERENCES sync_queue(id) ON DELETE SET NULL
+        );
+    "#;
+
+    async fn setup_pool() -> SqlitePool {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect(":memory:")
+            .await
+            .expect("in-memory sqlite");
+        sqlx::query(SCHEMA).execute(&pool).await.expect("schema");
+        pool
+    }
+
+    #[tokio::test]
+    async fn enqueue_returns_autoincrement_id() {
+        let pool = setup_pool().await;
+        let id1 = SyncQueueRepository::enqueue(&pool, "save_conversation", "m1", "{}", 3, None)
+            .await
+            .unwrap();
+        let id2 = SyncQueueRepository::enqueue(&pool, "save_transcript_segments", "m1", "{}", 3, None)
+            .await
+            .unwrap();
+        assert!(id2 > id1);
+    }
+
+    #[tokio::test]
+    async fn get_ready_jobs_returns_pending_without_deps() {
+        let pool = setup_pool().await;
+        SyncQueueRepository::enqueue(&pool, "save_conversation", "m1", "{}", 3, None)
+            .await
+            .unwrap();
+        let jobs = SyncQueueRepository::get_ready_jobs(&pool, 10).await.unwrap();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].status, "pending");
+    }
+
+    #[tokio::test]
+    async fn get_ready_jobs_skips_jobs_with_uncompleted_deps() {
+        let pool = setup_pool().await;
+        let parent = SyncQueueRepository::enqueue(&pool, "save_conversation", "m1", "{}", 3, None)
+            .await
+            .unwrap();
+        SyncQueueRepository::enqueue(
+            &pool,
+            "finalize_conversation",
+            "m1",
+            "{}",
+            3,
+            Some(parent),
+        )
+        .await
+        .unwrap();
+
+        let jobs = SyncQueueRepository::get_ready_jobs(&pool, 10).await.unwrap();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].id, parent);
+    }
+
+    #[tokio::test]
+    async fn get_ready_jobs_includes_child_after_parent_completes() {
+        let pool = setup_pool().await;
+        let parent = SyncQueueRepository::enqueue(&pool, "save_conversation", "m1", "{}", 3, None)
+            .await
+            .unwrap();
+        let child = SyncQueueRepository::enqueue(
+            &pool,
+            "finalize_conversation",
+            "m1",
+            "{}",
+            3,
+            Some(parent),
+        )
+        .await
+        .unwrap();
+        SyncQueueRepository::claim_job(&pool, parent).await.unwrap();
+        SyncQueueRepository::complete_job(&pool, parent, Some(r#"{"conversation_id":"abc"}"#))
+            .await
+            .unwrap();
+
+        let jobs = SyncQueueRepository::get_ready_jobs(&pool, 10).await.unwrap();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].id, child);
+    }
+
+    #[tokio::test]
+    async fn claim_job_transitions_from_pending_to_in_progress() {
+        let pool = setup_pool().await;
+        let id = SyncQueueRepository::enqueue(&pool, "save_conversation", "m1", "{}", 3, None)
+            .await
+            .unwrap();
+        assert!(SyncQueueRepository::claim_job(&pool, id).await.unwrap());
+        let job = SyncQueueRepository::get_job_by_id(&pool, id).await.unwrap().unwrap();
+        assert_eq!(job.status, "in_progress");
+    }
+
+    #[tokio::test]
+    async fn claim_job_is_idempotent_returns_false_second_time() {
+        let pool = setup_pool().await;
+        let id = SyncQueueRepository::enqueue(&pool, "save_conversation", "m1", "{}", 3, None)
+            .await
+            .unwrap();
+        assert!(SyncQueueRepository::claim_job(&pool, id).await.unwrap());
+        assert!(!SyncQueueRepository::claim_job(&pool, id).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn complete_job_sets_status_and_result() {
+        let pool = setup_pool().await;
+        let id = SyncQueueRepository::enqueue(&pool, "save_conversation", "m1", "{}", 3, None)
+            .await
+            .unwrap();
+        SyncQueueRepository::claim_job(&pool, id).await.unwrap();
+        SyncQueueRepository::complete_job(&pool, id, Some(r#"{"ok":true}"#)).await.unwrap();
+        let job = SyncQueueRepository::get_job_by_id(&pool, id).await.unwrap().unwrap();
+        assert_eq!(job.status, "completed");
+        assert_eq!(job.result_data.as_deref(), Some(r#"{"ok":true}"#));
+        assert!(job.completed_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn fail_job_increments_attempts_and_stays_pending_until_max() {
+        let pool = setup_pool().await;
+        let id = SyncQueueRepository::enqueue(&pool, "save_conversation", "m1", "{}", 3, None)
+            .await
+            .unwrap();
+
+        SyncQueueRepository::fail_job(&pool, id, "first", Some("2026-01-01 00:00:00"))
+            .await
+            .unwrap();
+        let job = SyncQueueRepository::get_job_by_id(&pool, id).await.unwrap().unwrap();
+        assert_eq!(job.attempt_count, 1);
+        assert_eq!(job.status, "pending");
+        assert_eq!(job.last_error.as_deref(), Some("first"));
+    }
+
+    #[tokio::test]
+    async fn fail_job_transitions_to_failed_on_max_attempts() {
+        let pool = setup_pool().await;
+        let id = SyncQueueRepository::enqueue(&pool, "save_conversation", "m1", "{}", 2, None)
+            .await
+            .unwrap();
+
+        SyncQueueRepository::fail_job(&pool, id, "e1", Some("2026-01-01 00:00:00"))
+            .await
+            .unwrap();
+        SyncQueueRepository::fail_job(&pool, id, "e2", Some("2026-01-01 00:00:00"))
+            .await
+            .unwrap();
+
+        let job = SyncQueueRepository::get_job_by_id(&pool, id).await.unwrap().unwrap();
+        assert_eq!(job.attempt_count, 2);
+        assert_eq!(job.status, "failed");
+        assert_eq!(job.next_retry_at, None);
+    }
+
+    #[tokio::test]
+    async fn get_meeting_sync_status_aggregates_counts() {
+        let pool = setup_pool().await;
+        let a = SyncQueueRepository::enqueue(&pool, "save_conversation", "m1", "{}", 3, None).await.unwrap();
+        let _b = SyncQueueRepository::enqueue(&pool, "save_transcript_segments", "m1", "{}", 3, None).await.unwrap();
+        let c = SyncQueueRepository::enqueue(&pool, "finalize_conversation", "m1", "{}", 3, None).await.unwrap();
+
+        SyncQueueRepository::claim_job(&pool, a).await.unwrap();
+        SyncQueueRepository::complete_job(&pool, a, None).await.unwrap();
+        SyncQueueRepository::claim_job(&pool, c).await.unwrap();
+
+        let status = SyncQueueRepository::get_meeting_sync_status(&pool, "m1")
+            .await
+            .unwrap()
+            .expect("status row");
+        assert_eq!(status.total_jobs, 3);
+        assert_eq!(status.completed, 1);
+        assert_eq!(status.in_progress, 1);
+        assert_eq!(status.pending, 1);
+        assert_eq!(status.failed, 0);
+    }
+
+    #[tokio::test]
+    async fn get_dependency_result_returns_parent_result() {
+        let pool = setup_pool().await;
+        let parent = SyncQueueRepository::enqueue(&pool, "save_conversation", "m1", "{}", 3, None)
+            .await
+            .unwrap();
+        let child = SyncQueueRepository::enqueue(
+            &pool,
+            "finalize_conversation",
+            "m1",
+            "{}",
+            3,
+            Some(parent),
+        )
+        .await
+        .unwrap();
+        SyncQueueRepository::claim_job(&pool, parent).await.unwrap();
+        SyncQueueRepository::complete_job(&pool, parent, Some(r#"{"id":"abc"}"#))
+            .await
+            .unwrap();
+
+        let result = SyncQueueRepository::get_dependency_result(&pool, child).await.unwrap();
+        assert_eq!(result.as_deref(), Some(r#"{"id":"abc"}"#));
+    }
+
+    #[tokio::test]
+    async fn get_dependency_result_returns_none_without_dependency() {
+        let pool = setup_pool().await;
+        let id = SyncQueueRepository::enqueue(&pool, "save_conversation", "m1", "{}", 3, None)
+            .await
+            .unwrap();
+        let result = SyncQueueRepository::get_dependency_result(&pool, id).await.unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn cancel_jobs_for_meeting_removes_pending_and_in_progress_only() {
+        let pool = setup_pool().await;
+        let pending = SyncQueueRepository::enqueue(&pool, "a", "m1", "{}", 3, None).await.unwrap();
+        let in_progress = SyncQueueRepository::enqueue(&pool, "b", "m1", "{}", 3, None).await.unwrap();
+        let completed = SyncQueueRepository::enqueue(&pool, "c", "m1", "{}", 3, None).await.unwrap();
+
+        SyncQueueRepository::claim_job(&pool, in_progress).await.unwrap();
+        SyncQueueRepository::claim_job(&pool, completed).await.unwrap();
+        SyncQueueRepository::complete_job(&pool, completed, None).await.unwrap();
+
+        let removed = SyncQueueRepository::cancel_jobs_for_meeting(&pool, "m1").await.unwrap();
+        assert_eq!(removed, 2);
+
+        assert!(SyncQueueRepository::get_job_by_id(&pool, pending).await.unwrap().is_none());
+        assert!(SyncQueueRepository::get_job_by_id(&pool, in_progress).await.unwrap().is_none());
+        assert!(SyncQueueRepository::get_job_by_id(&pool, completed).await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn delete_by_meeting_removes_all_regardless_of_status() {
+        let pool = setup_pool().await;
+        SyncQueueRepository::enqueue(&pool, "a", "m1", "{}", 3, None).await.unwrap();
+        let completed = SyncQueueRepository::enqueue(&pool, "b", "m1", "{}", 3, None).await.unwrap();
+        SyncQueueRepository::enqueue(&pool, "c", "m2", "{}", 3, None).await.unwrap();
+
+        SyncQueueRepository::claim_job(&pool, completed).await.unwrap();
+        SyncQueueRepository::complete_job(&pool, completed, None).await.unwrap();
+
+        let removed = SyncQueueRepository::delete_by_meeting(&pool, "m1").await.unwrap();
+        assert_eq!(removed, 2);
+
+        let remaining = SyncQueueRepository::get_all_sync_statuses(&pool).await.unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].meeting_id, "m2");
+    }
+
+    #[tokio::test]
+    async fn get_completed_finalize_result_returns_only_completed_finalize() {
+        let pool = setup_pool().await;
+        let other = SyncQueueRepository::enqueue(&pool, "save_conversation", "m1", "{}", 3, None)
+            .await
+            .unwrap();
+        SyncQueueRepository::claim_job(&pool, other).await.unwrap();
+        SyncQueueRepository::complete_job(&pool, other, Some(r#"{"not":"this"}"#)).await.unwrap();
+
+        // pending finalize — should not be returned
+        SyncQueueRepository::enqueue(&pool, "finalize_conversation", "m1", "{}", 3, None)
+            .await
+            .unwrap();
+        let none = SyncQueueRepository::get_completed_finalize_result(&pool, "m1").await.unwrap();
+        assert!(none.is_none());
+
+        // completed finalize — should be returned
+        let finalize = SyncQueueRepository::enqueue(&pool, "finalize_conversation", "m1", "{}", 3, None)
+            .await
+            .unwrap();
+        SyncQueueRepository::claim_job(&pool, finalize).await.unwrap();
+        SyncQueueRepository::complete_job(&pool, finalize, Some(r#"{"conversation_id":"x"}"#))
+            .await
+            .unwrap();
+
+        let result = SyncQueueRepository::get_completed_finalize_result(&pool, "m1").await.unwrap();
+        assert_eq!(result.as_deref(), Some(r#"{"conversation_id":"x"}"#));
+    }
+}
