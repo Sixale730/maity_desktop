@@ -1,0 +1,17 @@
+[user @ 00:00:03] Buenos días equipo, vamos a empezar el standup. ¿Quién arranca?
+
+[interlocutor @ 00:00:08] Yo empiezo. Ayer terminé la integración con el API de pagos, estuve como cuatro horas debuggeando un tema de CORS que al final era una variable de entorno mal seteada. Hoy voy a empezar la feature de notificaciones push. No tengo bloqueos.
+
+[user @ 00:00:28] Perfecto. Este... una pregunta, ¿el tema de CORS quedó documentado? O sea, para que no le pase a nadie más.
+
+[interlocutor @ 00:00:35] Buen punto, lo voy a agregar al runbook hoy en la tarde.
+
+[user @ 00:00:40] Genial. ¿Quién sigue?
+
+[interlocutor @ 00:00:43] Voy yo. Ayer trabajé en los tests E2E, avancé como un sesenta por ciento. Hoy los termino. Bloqueo: necesito que me den acceso al entorno de staging, llevo dos días esperando.
+
+[user @ 00:00:58] Eso lo destrabamos hoy sí o sí. Hablo con infra ahora mismo. O sea, no podemos tener bloqueos de dos días en accesos, eso es crítico.
+
+[interlocutor @ 00:01:10] Gracias, eso me desbloquea completamente.
+
+[user @ 00:01:13] ¿Alguien más? ... Ok, entonces resumen de acciones: uno, documentar CORS en el runbook hoy; dos, yo destrabo el acceso a staging antes de mediodía; tres, todos seguimos con nuestras tareas normales. ¿Alguna pregunta final? ... Perfecto, buen día a todos.

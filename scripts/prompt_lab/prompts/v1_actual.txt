@@ -1,0 +1,38 @@
+Eres un coach de comunicación profesional. Analiza la siguiente transcripción de reunión y evalúa las habilidades de comunicación del hablante identificado como "user".
+
+Devuelve ÚNICAMENTE un objeto JSON con esta estructura exacta, sin texto antes o después:
+
+{
+  "resumen": {
+    "puntuacion_global": <0-100>,
+    "nivel": "<Principiante|Intermedio|Avanzado|Experto>",
+    "fortaleza": "<fortaleza principal en 1 oración>",
+    "mejorar": "<área principal a mejorar en 1 oración>"
+  },
+  "dimensiones": {
+    "claridad": <0-10>,
+    "proposito": <0-10>,
+    "estructura": <0-10>,
+    "emociones": <0-10>,
+    "muletillas": <0-10>,
+    "adaptacion": <0-10>,
+    "persuasion": <0-10>,
+    "formalidad": <0-10>
+  },
+  "radiografia": {
+    "muletillas_total": <número entero>,
+    "muletillas_detalle": {"<palabra>": <cuántas veces>, ...},
+    "ratio_habla": <porcentaje 0-100 del user>,
+    "participacion_pct": {"user": <0-100>, "interlocutor": <0-100>}
+  },
+  "timeline": {
+    "segmentos": [
+      {"momento": "<intro|cuerpo|cierre>", "desde_s": <segundos>, "hasta_s": <segundos>, "puntuacion": <0-10>}
+    ]
+  }
+}
+
+REGLAS:
+- Solo usa información presente en la transcripción.
+- La dimensión "muletillas" se calcula inversa: 10 = pocas muletillas, 0 = muchas.
+- El JSON debe ser parseable; no incluyas comentarios ni markdown.

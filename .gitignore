@@ -106,3 +106,9 @@ frontend/.claude/
 *.dmg
 *.msi
 *-setup.exe
+
+# Prompt lab generated outputs (re-generate from fixtures/prompts)
+/scripts/prompt_lab/out/
+
+# Local telemetry / build logs (not for version control)
+/memory/
