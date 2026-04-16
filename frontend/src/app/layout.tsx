@@ -33,6 +33,8 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ThemeProvider } from '@/contexts/ThemeContext'
 import Script from 'next/script'
 import { logger } from '@/lib/logger'
+import { platformLogger } from '@/lib/platformLogger'
+import { usePageViewTracker } from '@/hooks/usePageViewTracker'
 
 // Create a client outside the component to avoid re-creating it on every render
 const queryClient = new QueryClient({
@@ -208,6 +210,31 @@ function AuthGate({ children }: { children: React.ReactNode }) {
 function AppContent({ children }: { children: React.ReactNode }) {
   const [showOnboarding, setShowOnboarding] = useState(false)
   const [, setOnboardingCompleted] = useState(false)
+
+  // Telemetry: emit nav.page_view to platform_logs on every Next.js route change
+  usePageViewTracker()
+
+  // Telemetry: emit app.open once on mount + app.close on tab/window close
+  useEffect(() => {
+    void platformLogger.log('app.open', {
+      referrer: typeof document !== 'undefined' ? document.referrer : null,
+      screen: typeof window !== 'undefined' ? `${window.screen.width}x${window.screen.height}` : null,
+      viewport: typeof window !== 'undefined' ? `${window.innerWidth}x${window.innerHeight}` : null,
+      language: typeof navigator !== 'undefined' ? navigator.language : null,
+    })
+
+    const handleBeforeUnload = () => {
+      void platformLogger.log('app.close')
+    }
+    if (typeof window !== 'undefined') {
+      window.addEventListener('beforeunload', handleBeforeUnload)
+    }
+    return () => {
+      if (typeof window !== 'undefined') {
+        window.removeEventListener('beforeunload', handleBeforeUnload)
+      }
+    }
+  }, [])
 
   useEffect(() => {
     // Check onboarding status first
