@@ -210,12 +210,23 @@ function AuthGate({ children }: { children: React.ReactNode }) {
 function AppContent({ children }: { children: React.ReactNode }) {
   const [showOnboarding, setShowOnboarding] = useState(false)
   const [, setOnboardingCompleted] = useState(false)
+  const hasEmittedOpenRef = useRef(false)
 
   // Telemetry: emit nav.page_view to platform_logs on every Next.js route change
   usePageViewTracker()
 
-  // Telemetry: emit app.open once on mount + app.close on tab/window close
+  // Telemetry: emit app.open once on mount + app.close on tab/window close.
+  // Multiple safeguards because beforeunload is unreliable in Tauri native windows
+  // (X button on macOS/Windows quit). We listen to:
+  //   1. Tauri's onCloseRequested (most reliable for native close)
+  //   2. window.beforeunload (works in browser dev + page nav)
+  //   3. window.pagehide (more reliable than beforeunload on some platforms)
+  // All three call a single deduped emitter so we never log app.close twice.
+  // The useRef dedupe on app.open prevents React 18 StrictMode double-mount issues.
   useEffect(() => {
+    if (hasEmittedOpenRef.current) return
+    hasEmittedOpenRef.current = true
+
     void platformLogger.log('app.open', {
       referrer: typeof document !== 'undefined' ? document.referrer : null,
       screen: typeof window !== 'undefined' ? `${window.screen.width}x${window.screen.height}` : null,
@@ -223,16 +234,41 @@ function AppContent({ children }: { children: React.ReactNode }) {
       language: typeof navigator !== 'undefined' ? navigator.language : null,
     })
 
-    const handleBeforeUnload = () => {
+    let hasEmittedClose = false
+    const emitClose = () => {
+      if (hasEmittedClose) return
+      hasEmittedClose = true
       void platformLogger.log('app.close')
     }
+
+    // Browser-level fallbacks (work in dev + on graceful page nav)
     if (typeof window !== 'undefined') {
-      window.addEventListener('beforeunload', handleBeforeUnload)
+      window.addEventListener('beforeunload', emitClose)
+      window.addEventListener('pagehide', emitClose)
     }
+
+    // Tauri native: onCloseRequested fires reliably when user clicks the X button
+    // or quits the app natively. Dynamic import so this doesn't crash in pure
+    // browser dev mode (where @tauri-apps/api isn't initialized).
+    let unlistenTauriClose: (() => void) | undefined
+    ;(async () => {
+      try {
+        const { getCurrentWindow } = await import('@tauri-apps/api/window')
+        unlistenTauriClose = await getCurrentWindow().onCloseRequested(() => {
+          // Don't preventDefault — let the window close after we log.
+          emitClose()
+        })
+      } catch {
+        // Outside Tauri context (e.g. browser dev) — beforeunload covers this case.
+      }
+    })()
+
     return () => {
       if (typeof window !== 'undefined') {
-        window.removeEventListener('beforeunload', handleBeforeUnload)
+        window.removeEventListener('beforeunload', emitClose)
+        window.removeEventListener('pagehide', emitClose)
       }
+      unlistenTauriClose?.()
     }
   }, [])
 
