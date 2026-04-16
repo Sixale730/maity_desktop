@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import { logger } from '@/lib/logger';
+import { platformLogger } from '@/lib/platformLogger';
 
 export interface AnalyticsProperties {
   [key: string]: string;
@@ -87,6 +88,10 @@ export class Analytics {
     } catch (error) {
       console.error(`Failed to track event ${eventName}:`, error);
     }
+
+    // Dual-emit to Supabase platform_logs (fire-and-forget; never blocks PostHog).
+    // Allows cross-app dashboards to query a single canonical table.
+    void platformLogger.log(eventName, properties);
   }
 
   static async identify(userId: string, properties?: AnalyticsProperties): Promise<void> {
