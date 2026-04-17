@@ -7,6 +7,7 @@ pub mod speakers;
 pub mod configuration;
 pub mod platform;
 pub mod fallback;
+pub mod device_name_matcher;
 
 // Re-export all public functions to preserve existing API
 pub use discovery::{list_audio_devices, trigger_audio_permission};
