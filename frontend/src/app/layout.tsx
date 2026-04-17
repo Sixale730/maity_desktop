@@ -35,6 +35,7 @@ import Script from 'next/script'
 import { logger } from '@/lib/logger'
 import { platformLogger } from '@/lib/platformLogger'
 import { usePageViewTracker } from '@/hooks/usePageViewTracker'
+import { useMicrophoneFallbackToast } from '@/hooks/useMicrophoneFallbackToast'
 
 // Create a client outside the component to avoid re-creating it on every render
 const queryClient = new QueryClient({
@@ -214,6 +215,13 @@ function AppContent({ children }: { children: React.ReactNode }) {
 
   // Telemetry: emit nav.page_view to platform_logs on every Next.js route change
   usePageViewTracker()
+
+  // Surface a toast when the user's preferred mic could not be honoured
+  // (USB unplugged, Windows locale rename, driver change). The recording
+  // continues with the system default; the toast tells the user *which*
+  // device is actually capturing audio so silent transcription failures
+  // stop being a mystery.
+  useMicrophoneFallbackToast()
 
   // Telemetry: emit app.open once on mount + app.close on tab/window close.
   // Multiple safeguards because beforeunload is unreliable in Tauri native windows

@@ -3,6 +3,42 @@ use cpal::traits::{DeviceTrait, HostTrait};
 use log::{debug, info, warn};
 
 use crate::audio::devices::configuration::{AudioDevice, DeviceType};
+use crate::audio::devices::device_name_matcher::is_same_device;
+
+/// Open a CPAL input device and pick the best available stream config.
+/// Preference order: F32 stereo → any F32 → first config.
+fn open_input_device(
+    device: cpal::Device,
+    name: &str,
+) -> Result<(cpal::Device, cpal::SupportedStreamConfig)> {
+    if let Ok(default_config) = device.default_input_config() {
+        return Ok((device, default_config));
+    }
+    warn!(
+        "Default input config failed for '{}', falling back to supported configs",
+        name
+    );
+    let supported = device
+        .supported_input_configs()
+        .map_err(|e| anyhow!("Could not enumerate supported configs for '{}': {}", name, e))?;
+    let configs: Vec<_> = supported.collect();
+    if configs.is_empty() {
+        return Err(anyhow!("No supported input configurations for device '{}'", name));
+    }
+    for config in &configs {
+        if config.sample_format() == cpal::SampleFormat::F32 && config.channels() == 2 {
+            return Ok((device, config.with_max_sample_rate()));
+        }
+    }
+    for config in &configs {
+        if config.sample_format() == cpal::SampleFormat::F32 {
+            return Ok((device, config.with_max_sample_rate()));
+        }
+    }
+    let config = configs[0].with_max_sample_rate();
+    info!("Using fallback input config for '{}': {:?}", name, config);
+    Ok((device, config))
+}
 
 /// Configure Windows audio devices using WASAPI
 pub fn configure_windows_audio(host: &cpal::Host) -> Result<Vec<AudioDevice>> {
@@ -111,60 +147,31 @@ pub fn get_windows_device(audio_device: &AudioDevice) -> Result<(cpal::Device, c
 
     match audio_device.device_type {
         DeviceType::Input => {
+            // Two-pass matching against the live WASAPI enumeration:
+            //   1. Strict (byte-equal or `contains`) — the happy path with
+            //      zero allocation, behaviour identical to before.
+            //   2. Fuzzy (`is_same_device`) — only runs when strict misses,
+            //      and tolerates locale-flipped diacritics, NBSP, re-plug
+            //      `(2)` suffixes and driver renames (Logi → Logitech).
+            // Both pass → fall through to the system default mic below.
+            let mut enumerated: Vec<cpal::Device> = Vec::new();
             for device in wasapi_host.input_devices()? {
                 if let Ok(name) = device.name() {
                     info!("Checking input device: {}", name);
-                    // Check if the device name contains our base name
                     if name == base_name || name.contains(base_name) {
-                        // info!("Found matching input device: {}", name);
-
-                        // Try to get default input config with better error logging
-                        match device.default_input_config() {
-                            Ok(default_config) => {
-                                // info!("Using default input config: {:?}", default_config);
-                                return Ok((device, default_config));
-                            },
-                            Err(e) => {
-                                warn!("Failed to get default input config: {}. Trying supported configs...", e);
-
-                                // Try to find a supported configuration
-                                if let Ok(supported_configs) = device.supported_input_configs() {
-                                    let configs: Vec<_> = supported_configs.collect();
-                                    if configs.is_empty() {
-                                        warn!("No supported input configurations found for device: {}", name);
-                                    } else {
-                                        // info!("Found {} supported input configurations", configs.len());
-
-                                        // First try to find F32 format with 2 channels (stereo)
-                                        for config in &configs {
-                                            if config.sample_format() == cpal::SampleFormat::F32 && config.channels() == 2 {
-                                                let config = config.with_max_sample_rate();
-                                                // info!("Using stereo F32 input config: {:?}", config);
-                                                return Ok((device, config));
-                                            }
-                                        }
-
-                                        // Then try any F32 format
-                                        for config in &configs {
-                                            if config.sample_format() == cpal::SampleFormat::F32 {
-                                                let config = config.with_max_sample_rate();
-                                                // info!("Using F32 input config: {:?}", config);
-                                                return Ok((device, config));
-                                            }
-                                        }
-
-                                        // Finally, use the first available config
-                                        let config = configs[0].with_max_sample_rate();
-                                        info!("Using fallback input config: {:?}", config);
-                                        return Ok((device, config));
-                                    }
-                                } else {
-                                    warn!("Could not enumerate supported configurations for device: {}", name);
-                                }
-
-                                return Err(anyhow!("No compatible input configuration found for device: {}", name));
-                            }
-                        }
+                        return open_input_device(device, &name);
+                    }
+                }
+                enumerated.push(device);
+            }
+            for device in enumerated {
+                if let Ok(name) = device.name() {
+                    if is_same_device(&name, base_name) {
+                        info!(
+                            "Fuzzy-matched input device: requested '{}' resolved to '{}'",
+                            base_name, name
+                        );
+                        return open_input_device(device, &name);
                     }
                 }
             }
