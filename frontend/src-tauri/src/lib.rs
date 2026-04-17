@@ -614,6 +614,14 @@ pub fn run() {
                 } else {
                     log::info!("Skipping Summary ModelManager - using cloud provider: {}", summary_provider);
                 }
+
+                // Preload the configured STT model into RAM so the first
+                // recording feels instant. The `*_init` calls above only
+                // create the engine structs; this actually reads the ONNX
+                // from disk into memory. Safe by design: never triggers an
+                // implicit download — if the model is missing the
+                // post-auth auto-download flow handles it as before.
+                audio::transcription::preload_transcription_engine(app_handle_for_config.clone()).await;
             });
 
             // Initialize bundled templates directory for dynamic template discovery

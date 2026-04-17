@@ -6,7 +6,7 @@ use super::deepgram_provider::DeepgramRealtimeTranscriber;
 use super::provider::TranscriptionProvider;
 use log::{info, warn, error};
 use std::sync::Arc;
-use tauri::{AppHandle, Manager, Runtime};
+use tauri::{AppHandle, Emitter, Manager, Runtime};
 
 // ============================================================================
 // TRANSCRIPTION ENGINE ENUM
@@ -101,6 +101,73 @@ impl TranscriptionEngine {
 // ============================================================================
 // MODEL VALIDATION AND INITIALIZATION
 // ============================================================================
+
+/// Preload the configured STT model into RAM at app startup so the first
+/// recording feels instant (no multi-second cold start from a ~150MB ONNX
+/// read when the user clicks Record).
+///
+/// Safe by design:
+///   - reads config from local SQLite (no auth required)
+///   - delegates to `validate_transcription_model_ready`, which never
+///     triggers an implicit download — it fails with a clear error when
+///     the model is not on disk, leaving the existing auto-download flow
+///     (`useParakeetAutoDownload` after auth) untouched
+///   - cloud providers (Deepgram) are skipped entirely — nothing to load
+///
+/// Fire-and-forget from `.setup()`. Any failure is logged and ignored.
+pub async fn preload_transcription_engine<R: Runtime>(app: AppHandle<R>) {
+    // Let the window render and the DB pool settle before we start chewing
+    // disk IO on a large ONNX load.
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+    let config = match crate::api::api_get_transcript_config(
+        app.clone(),
+        app.clone().state(),
+        None,
+    )
+    .await
+    {
+        Ok(Some(c)) => c,
+        _ => crate::api::TranscriptConfig {
+            provider: "parakeet".to_string(),
+            model: "parakeet-tdt-0.6b-v3-int8".to_string(),
+            api_key: None,
+            language: Some("es-419".to_string()),
+        },
+    };
+
+    match config.provider.as_str() {
+        "parakeet" | "localWhisper" | "moonshine" => {
+            info!("🔥 Preloading STT model (provider: {})", config.provider);
+            let start = std::time::Instant::now();
+            match validate_transcription_model_ready(&app).await {
+                Ok(_) => {
+                    let elapsed = start.elapsed();
+                    info!("✅ STT model preloaded in {:?}", elapsed);
+                    // Available for a future UI indicator ("Modelo listo"
+                    // toast). No frontend subscriber required today.
+                    let _ = app.emit(
+                        "transcription-preload-completed",
+                        serde_json::json!({
+                            "provider": config.provider,
+                            "model": config.model,
+                            "elapsed_ms": elapsed.as_millis() as u64,
+                        }),
+                    );
+                }
+                Err(e) => {
+                    // Expected when the model has not been downloaded yet.
+                    // The auto-download flow that runs after Supabase auth
+                    // will handle it — we just skip the preload.
+                    info!("ℹ️ STT preload skipped: {}", e);
+                }
+            }
+        }
+        other => {
+            info!("☁️ Provider '{}' is cloud, no preload needed", other);
+        }
+    }
+}
 
 /// Validate that transcription models (Whisper or Parakeet) are ready before starting recording
 pub async fn validate_transcription_model_ready<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
