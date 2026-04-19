@@ -28,7 +28,6 @@ pub mod simple_level_monitor;
 pub mod buffer_pool;
 pub mod post_processor;
 pub mod hardware_detector;
-pub mod async_logger;
 pub mod batch_processor;
 pub mod system_detector;
 pub mod system_audio_commands;
