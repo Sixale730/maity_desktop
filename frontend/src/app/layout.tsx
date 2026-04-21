@@ -26,6 +26,7 @@ import { MeetingDetectionDialog } from '@/components/meeting-detection/MeetingDe
 import { OfflineIndicator } from '@/components/shared/OfflineIndicator'
 import { AuthProvider, useAuth } from '@/contexts/AuthContext'
 import { ParakeetAutoDownloadProvider } from '@/contexts/ParakeetAutoDownloadContext'
+import { ModelDownloadGate } from '@/components/ModelDownloadGate'
 import { LoginScreen } from '@/components/Auth'
 import { CloudSyncInitializer } from '@/components/CloudSyncInitializer'
 import { AnalysisPollingInitializer } from '@/components/AnalysisPollingInitializer'
@@ -211,7 +212,24 @@ function AuthGate({ children }: { children: React.ReactNode }) {
 function AppContent({ children }: { children: React.ReactNode }) {
   const [showOnboarding, setShowOnboarding] = useState(false)
   const [, setOnboardingCompleted] = useState(false)
+  const [modelGateActive, setModelGateActive] = useState<boolean | null>(null)
   const hasEmittedOpenRef = useRef(false)
+
+  // Check whether the local STT model is downloaded. The gate is shown only
+  // after onboarding completes, so the user always sees this prompt before
+  // being able to use the app — never receives a silent "model still
+  // downloading" error from the recording pipeline.
+  const checkModelAvailability = async () => {
+    try {
+      await invoke('parakeet_init')
+      const hasModel = await invoke<boolean>('parakeet_has_available_models')
+      setModelGateActive(!hasModel)
+      logger.debug('[Layout] Parakeet model availability:', hasModel)
+    } catch (error) {
+      console.error('[Layout] Failed to check Parakeet model availability:', error)
+      setModelGateActive(true)
+    }
+  }
 
   // Telemetry: emit nav.page_view to platform_logs on every Next.js route change
   usePageViewTracker()
@@ -290,8 +308,11 @@ function AppContent({ children }: { children: React.ReactNode }) {
         if (!isComplete) {
           logger.debug('[Layout] Onboarding not completed, showing onboarding flow')
           setShowOnboarding(true)
+          // Defer model check until onboarding finishes
+          setModelGateActive(false)
         } else {
-          logger.debug('[Layout] Onboarding completed, showing main app')
+          logger.debug('[Layout] Onboarding completed, checking model availability')
+          void checkModelAvailability()
         }
       })
       .catch((error) => {
@@ -299,6 +320,7 @@ function AppContent({ children }: { children: React.ReactNode }) {
         // Default to showing onboarding if we can't check
         setShowOnboarding(true)
         setOnboardingCompleted(false)
+        setModelGateActive(false)
       })
   }, [])
 
@@ -320,6 +342,10 @@ function AppContent({ children }: { children: React.ReactNode }) {
         toast.error("Por favor completa la configuración primero", {
           description: "Necesitas terminar la configuración inicial antes de poder grabar."
         });
+      } else if (modelGateActive) {
+        toast.error("Necesitas descargar el modelo primero", {
+          description: "Acepta la descarga del modelo de transcripción para poder grabar."
+        });
       } else {
         // If in main app, forward to useRecordingStart via window event
         logger.debug('[Layout] Forwarding to start-recording-from-sidebar');
@@ -330,12 +356,18 @@ function AppContent({ children }: { children: React.ReactNode }) {
     return () => {
       unlisten.then(fn => fn());
     };
-  }, [showOnboarding]);
+  }, [showOnboarding, modelGateActive]);
 
   const handleOnboardingComplete = () => {
-    logger.debug('[Layout] Onboarding completed, showing main app')
+    logger.debug('[Layout] Onboarding completed, checking model availability')
     setShowOnboarding(false)
     setOnboardingCompleted(true)
+    void checkModelAvailability()
+  }
+
+  const handleModelGateComplete = () => {
+    logger.debug('[Layout] Model gate completed, showing main app')
+    setModelGateActive(false)
   }
 
   return (
@@ -354,9 +386,13 @@ function AppContent({ children }: { children: React.ReactNode }) {
                     {/* Meeting detection dialog - listens for meeting-detected events */}
                     <MeetingDetectionDialog />
 
-                    {/* Show onboarding or main app */}
+                    {/* Show onboarding, model gate, or main app */}
                     {showOnboarding ? (
                       <OnboardingFlow onComplete={handleOnboardingComplete} />
+                    ) : modelGateActive ? (
+                      <ModelDownloadGate onComplete={handleModelGateComplete} />
+                    ) : modelGateActive === null ? (
+                      <SplashScreen />
                     ) : (
                       <div className="flex flex-col h-screen">
                         {/* Offline indicator at the top */}

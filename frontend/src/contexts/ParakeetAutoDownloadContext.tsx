@@ -1,16 +1,9 @@
 'use client';
 
 import React, { createContext, useContext, ReactNode } from 'react';
-import { useParakeetAutoDownload } from '@/hooks/useParakeetAutoDownload';
+import { useParakeetAutoDownload, type ParakeetAutoDownloadState } from '@/hooks/useParakeetAutoDownload';
 
-interface ParakeetAutoDownloadContextType {
-  isModelReady: boolean;
-  isDownloading: boolean;
-  downloadProgress: number;
-  error: string | null;
-}
-
-const ParakeetAutoDownloadContext = createContext<ParakeetAutoDownloadContextType | undefined>(undefined);
+const ParakeetAutoDownloadContext = createContext<ParakeetAutoDownloadState | undefined>(undefined);
 
 export function ParakeetAutoDownloadProvider({ children }: { children: ReactNode }) {
   const state = useParakeetAutoDownload();
