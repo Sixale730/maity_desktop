@@ -31,7 +31,6 @@ pub struct CanaryModel {
     encoder: Session,
     decoder: Session,
     vocab: Vec<String>,
-    token_to_id: HashMap<String, i64>,
     id_to_token: HashMap<i64, String>,
     eos_token_id: i64,
     // Full Canary prompt (9 tokens)
@@ -173,7 +172,6 @@ impl CanaryModel {
             encoder,
             decoder,
             vocab,
-            token_to_id,
             id_to_token,
             eos_token_id,
             transcribe_prompt,

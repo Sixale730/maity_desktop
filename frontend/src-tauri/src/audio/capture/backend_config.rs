@@ -55,15 +55,6 @@ impl AudioCaptureBackend {
         }
     }
 
-    /// Convert to string (lowercase)
-    pub fn to_string(&self) -> String {
-        match self {
-            AudioCaptureBackend::ScreenCaptureKit => "screencapturekit".to_string(),
-            #[cfg(target_os = "macos")]
-            AudioCaptureBackend::CoreAudio => "coreaudio".to_string(),
-        }
-    }
-
     /// Get all available backends for current platform
     pub fn available_backends() -> Vec<Self> {
         #[cfg(target_os = "macos")]

@@ -4,6 +4,7 @@ import React, { createContext, useContext, useState, useEffect, useRef, useCallb
 import { Transcript, TranscriptUpdate } from '@/types';
 import { toast } from 'sonner';
 import { useRecordingState } from './RecordingStateContext';
+import { invoke } from '@tauri-apps/api/core';
 import { transcriptService } from '@/services/transcriptService';
 import { recordingService } from '@/services/recordingService';
 import { indexedDBService } from '@/services/indexedDBService';
@@ -126,7 +127,6 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
             // Fetch folder path from backend and update metadata
             // This ensures folder path is persisted even if app crashes
             try {
-              const { invoke } = await import('@tauri-apps/api/core');
               const folderPath = await invoke<string>('get_meeting_folder_path');
               if (folderPath) {
                 const metadata = await indexedDBService.getMeetingMetadata(meetingId);

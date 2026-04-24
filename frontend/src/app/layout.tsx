@@ -65,7 +65,7 @@ export default function RootLayout({
         }
       })
       .catch((error) => {
-        console.error('[Layout] Failed to check onboarding status:', error)
+        logger.error('[Layout] Failed to check onboarding status:', error)
         // Default to showing onboarding if we can't check
         setShowOnboarding(true)
         setOnboardingCompleted(false)
