@@ -48,7 +48,7 @@ export function useRecordingStart(
 
   const { clearTranscripts, setMeetingTitle } = useTranscripts();
   const { setIsMeetingActive } = useSidebar();
-  const { selectedDevices, transcriptModelConfig } = useConfig();
+  const { selectedDevices, transcriptModelConfig, coachEnabled } = useConfig();
   const { setStatus } = useRecordingState();
 
   // Generate meeting title with timestamp
@@ -253,6 +253,13 @@ export function useRecordingStart(
     );
     logger.debug('Backend recording started successfully');
 
+    // Start coach overlay if enabled (fire-and-forget)
+    if (coachEnabled) {
+      invoke('start_coach_overlay', {
+        modelName: 'gemma3:1b',
+      }).catch((e: unknown) => logger.debug('Coach overlay start failed (non-blocking):', e));
+    }
+
     // Update UI state after successful backend start
     // Note: RECORDING status will be set by RecordingStateContext event listener
     setMeetingTitle(title);
@@ -271,7 +278,7 @@ export function useRecordingStart(
         body: `Reunión: ${title}`,
       })
     ).catch(() => {});
-  }, [generateMeetingTitle, selectedDevices, transcriptModelConfig, setStatus, setMeetingTitle, setIsRecording, clearTranscripts, setIsMeetingActive]);
+  }, [generateMeetingTitle, selectedDevices, transcriptModelConfig, setStatus, setMeetingTitle, setIsRecording, clearTranscripts, setIsMeetingActive, coachEnabled]);
 
   /**
    * Handle transcription not ready — show appropriate toast/modal.

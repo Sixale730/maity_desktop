@@ -38,6 +38,7 @@ pub mod analytics;
 pub mod api;
 pub mod audio;
 pub mod auth_server;
+pub mod coach;
 pub mod console_utils;
 pub mod database;
 pub mod logging;
@@ -921,6 +922,10 @@ pub fn run() {
             logging::commands::export_logs,
             logging::commands::open_log_directory,
             logging::commands::clear_old_logs,
+            // Coach overlay commands
+            coach::commands::start_coach_overlay,
+            coach::commands::stop_coach_overlay,
+            coach::commands::get_coach_status,
             // Health check
             health_check,
             // Deepgram proxy config commands
@@ -942,6 +947,21 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|_app_handle, event| {
+            // When the main window is closed, force-exit the entire app.
+            // The JS-side onCloseRequested handler in layout.tsx can prevent the
+            // default close on Windows. This Rust handler ensures the app exits.
+            if let tauri::RunEvent::WindowEvent {
+                label,
+                event: tauri::WindowEvent::CloseRequested { .. },
+                ..
+            } = &event
+            {
+                if label == "main" {
+                    log::info!("Main window close requested — force-exiting app");
+                    _app_handle.exit(0);
+                }
+            }
+
             if let tauri::RunEvent::Exit = event {
                 log::info!("Application exiting, cleaning up resources...");
                 tauri::async_runtime::block_on(async {

@@ -2,7 +2,8 @@
 
 import { useEffect, useState, useRef } from "react"
 import { Switch } from "@/components/ui/switch"
-import { FolderOpen, LogOut, Palette } from "lucide-react"
+import { FolderOpen, LogOut, Palette, Download, Loader2 } from "lucide-react"
+import { listen } from '@tauri-apps/api/event'
 import { ThemeSelector } from "@/components/settings/ThemeSelector"
 import { invoke } from "@tauri-apps/api/core"
 import Analytics from "@/lib/analytics"
@@ -19,7 +20,9 @@ export function PreferenceSettings() {
     storageLocations,
     isLoadingPreferences,
     loadPreferences,
-    updateNotificationSettings
+    updateNotificationSettings,
+    coachEnabled,
+    setCoachEnabled,
   } = useConfig();
 
   const { signOut, user } = useAuth();
@@ -27,6 +30,48 @@ export function PreferenceSettings() {
   const [notificationsEnabled, setNotificationsEnabled] = useState<boolean | null>(null);
   const [isInitialLoad, setIsInitialLoad] = useState(true);
   const [previousNotificationsEnabled, setPreviousNotificationsEnabled] = useState<boolean | null>(null);
+  const [coachModelReady, setCoachModelReady] = useState<boolean | null>(null);
+  const [coachDownloadProgress, setCoachDownloadProgress] = useState<number | null>(null);
+  const [coachDownloadError, setCoachDownloadError] = useState<string | null>(null);
+
+  // Check if coach model is ready when coach is enabled
+  useEffect(() => {
+    if (!coachEnabled) return;
+    const checkModel = async () => {
+      try {
+        const ready = await invoke<boolean>('builtin_ai_is_model_ready', { modelName: 'gemma3:1b' });
+        setCoachModelReady(ready);
+      } catch {
+        setCoachModelReady(false);
+      }
+    };
+    checkModel();
+  }, [coachEnabled]);
+
+  const handleDownloadCoachModel = async () => {
+    setCoachDownloadProgress(0);
+    setCoachDownloadError(null);
+
+    const unlistenProgress = await listen<{ model: string; progress: number; downloaded_mb: number; total_mb: number; speed_mbps: number; status: string }>('builtin-ai-download-progress', (event) => {
+      if (event.payload.model === 'gemma3:1b') {
+        setCoachDownloadProgress(event.payload.progress);
+        if (event.payload.status === 'completed') {
+          setCoachDownloadProgress(null);
+          setCoachModelReady(true);
+          unlistenProgress();
+        }
+      }
+    });
+
+    try {
+      await invoke('builtin_ai_download_model', { modelName: 'gemma3:1b' });
+    } catch (e) {
+      setCoachDownloadProgress(null);
+      setCoachDownloadError(e instanceof Error ? e.message : String(e));
+      unlistenProgress();
+    }
+  };
+
   const hasTrackedViewRef = useRef(false);
 
   // Lazy load preferences on mount (only loads if not already cached)
@@ -207,6 +252,68 @@ export function PreferenceSettings() {
             <strong>Nota:</strong> La base de datos y los modelos se almacenan juntos en el directorio de datos de tu aplicación para una gestión unificada.
           </p>
         </div>
+      </div>
+
+      {/* Coach Overlay Section */}
+      <div className="bg-card rounded-lg border border-border p-6 shadow-sm">
+        <h3 className="text-lg font-semibold text-foreground mb-1">Coach en Tiempo Real</h3>
+        <p className="text-xs text-muted-foreground mb-4">
+          Muestra sugerencias de preguntas durante tus llamadas usando un modelo local con Ollama.
+        </p>
+
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <label className="text-sm font-medium text-foreground">Activar Coach</label>
+            <p className="text-xs text-muted-foreground">Aparece automaticamente al grabar</p>
+          </div>
+          <Switch
+            checked={coachEnabled}
+            onCheckedChange={setCoachEnabled}
+          />
+        </div>
+
+        {coachEnabled && (
+          <div className="space-y-3 pt-2 border-t border-border">
+            <div>
+              <label className="text-sm font-medium text-foreground block mb-1.5">Modelo: Gemma 3 1B</label>
+              {coachModelReady ? (
+                <div className="flex items-center gap-2 p-2 bg-emerald-500/10 border border-emerald-500/20 rounded-lg">
+                  <div className="w-2 h-2 rounded-full bg-emerald-500" />
+                  <span className="text-xs text-emerald-400">Modelo listo (~1 GB)</span>
+                </div>
+              ) : coachDownloadProgress !== null ? (
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2">
+                    <Loader2 className="w-3.5 h-3.5 animate-spin text-primary" />
+                    <span className="text-xs text-foreground">Descargando Gemma 3 1B... {coachDownloadProgress}%</span>
+                  </div>
+                  <div className="w-full h-1.5 bg-zinc-800 rounded-full overflow-hidden">
+                    <div
+                      className="h-full bg-primary rounded-full transition-all duration-300"
+                      style={{ width: `${coachDownloadProgress}%` }}
+                    />
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  <p className="text-xs text-muted-foreground">
+                    Descarga el modelo para usar el Coach. Se ejecuta localmente, sin internet.
+                  </p>
+                  <button
+                    onClick={handleDownloadCoachModel}
+                    className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-primary/15 text-primary border border-primary/30 rounded-md hover:bg-primary/25 transition-colors"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    Descargar Gemma 3 1B (~1 GB)
+                  </button>
+                </div>
+              )}
+              {coachDownloadError && (
+                <p className="text-xs text-red-400 mt-1">{coachDownloadError}</p>
+              )}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Analytics Section */}

@@ -119,6 +119,9 @@ export function useRecordingStop(
     }
     stopInProgressRef.current = true;
 
+    // Stop coach overlay (fire-and-forget, non-blocking)
+    invoke('stop_coach_overlay').catch(() => {});
+
     // Set status to STOPPING immediately
     setStatus(RecordingStatus.STOPPING);
     setIsRecordingDisabled(true);

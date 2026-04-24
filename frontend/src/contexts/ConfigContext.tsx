@@ -44,6 +44,10 @@ interface ConfigContextType {
   isAutoSummary: boolean;
   toggleIsAutoSummary: (checked: boolean) => void;
 
+  // Coach overlay settings
+  coachEnabled: boolean;
+  setCoachEnabled: (enabled: boolean) => void;
+
   // Preference settings (lazy loaded)
   notificationSettings: NotificationSettings | null;
   storageLocations: StorageLocations | null;
@@ -96,6 +100,21 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
     }
     return true;
   });
+
+  // Coach overlay settings
+  const [coachEnabled, setCoachEnabledState] = useState<boolean>(() => {
+    if (typeof window !== 'undefined') {
+      return localStorage.getItem('coachEnabled') === 'true';
+    }
+    return false;
+  });
+  const setCoachEnabled = useCallback((enabled: boolean) => {
+    setCoachEnabledState(enabled);
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('coachEnabled', enabled.toString());
+    }
+  }, []);
+
 
   // Summary configs
   const [isAutoSummary, setisAutoSummary] = useState<boolean>(() => {
@@ -444,6 +463,8 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
     isLoadingPreferences,
     loadPreferences,
     updateNotificationSettings,
+    coachEnabled,
+    setCoachEnabled,
   }), [
     modelConfig,
     isAutoSummary,
@@ -461,6 +482,8 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
     isLoadingPreferences,
     loadPreferences,
     updateNotificationSettings,
+    coachEnabled,
+    setCoachEnabled,
   ]);
 
   return (
