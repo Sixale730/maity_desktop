@@ -1237,6 +1237,7 @@ pub fn run() {
             coach::chat::coach_chat_stream,
             auto_setup::auto_setup_retry,
             coach::trigger::coach_analyze_trigger,
+            coach::nudge_engine::coach_evaluate_nudge,
             coach::meeting_type::coach_detect_meeting_type,
             coach::meeting_type::coach_clear_meeting_type_cache,
             // System settings commands

@@ -81,33 +81,52 @@ const TIP_TYPE_META: Record<string, { icon: string; label: string; accent: strin
   introspective: { icon: '❓', label: 'Reflexión',      accent: 'text-purple-300' },
 };
 
+/** Parsea prefijos "Dile:", "Pregúntale:", "Excelente:", "Corrección:" del tip. */
+function parseTipPrefix(tip: string): { prefix: string | null; body: string; prefixColor: string } {
+  const prefixes: [RegExp, string, string][] = [
+    [/^(Dile:|Respóndele:|Responde:)\s*/i, 'Dile', 'text-emerald-300'],
+    [/^(Pregúntale:|Pregunta:)\s*/i, 'Pregunta', 'text-sky-300'],
+    [/^(Excelente:|Bien hecho:|Buen)\s*/i, 'Bien hecho', 'text-green-300'],
+    [/^(Corrección:|Corrige:)\s*/i, 'Corrige', 'text-amber-300'],
+    [/^(Noto|Observo)\s*/i, 'Observa', 'text-blue-300'],
+  ];
+  for (const [regex, label, color] of prefixes) {
+    const match = tip.match(regex);
+    if (match) {
+      return { prefix: label, body: tip.slice(match[0].length), prefixColor: color };
+    }
+  }
+  return { prefix: null, body: tip, prefixColor: '' };
+}
+
 function SuggestionCard({ suggestion, idx = 0 }: { suggestion: CoachSuggestion; idx?: number }) {
   const style = categoryStyle(suggestion.category);
-  const tipType = (suggestion.tip_type ?? 'observation') as string;
-  const tipMeta = TIP_TYPE_META[tipType] ?? TIP_TYPE_META.observation;
   const borderColor =
     suggestion.priority === 'critical' ? 'border-l-red-500' :
     suggestion.priority === 'important' ? 'border-l-yellow-500' : 'border-l-green-500';
   const isCritical = suggestion.priority === 'critical';
+  const isNudge = suggestion.model === 'nudge-engine';
+  const { prefix, body, prefixColor } = parseTipPrefix(suggestion.tip);
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 6 }}
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0 }}
       transition={{ duration: 0.15, delay: idx * 0.04 }}
-      className={`rounded-md border border-l-2 ${borderColor} ${style.bg} p-2 shadow-sm group`}
+      className={`rounded-md border border-l-2 ${borderColor} ${style.bg} p-2 shadow-sm group ${isNudge ? 'ring-1 ring-amber-500/30' : ''}`}
       role={isCritical ? 'alert' : undefined}
-      title={`${tipMeta.label} · ${relativeTime(suggestion.timestamp)} · conf ${(suggestion.confidence * 100).toFixed(0)}% · ${suggestion.latency_ms}ms`}
+      title={`${relativeTime(suggestion.timestamp)} · conf ${(suggestion.confidence * 100).toFixed(0)}%${suggestion.latency_ms ? ` · ${suggestion.latency_ms}ms` : ''}${isNudge ? ' · nudge' : ''}`}
     >
       <div className="flex items-center gap-1.5 mb-1">
-        <span className="text-sm" aria-hidden="true">{tipMeta.icon}</span>
         <span className={`${style.color}`}>{style.icon}</span>
         <span className={`text-[10px] uppercase tracking-wide font-medium ${style.color}`}>{style.label}</span>
-        <span className={`text-[9px] font-medium ${tipMeta.accent}`}>· {tipMeta.label}</span>
-        {/* technique hidden — noise in real-time coaching */}
+        {isNudge && <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/30">nudge</span>}
+        <span className="text-[9px] text-gray-600 ml-auto">{relativeTime(suggestion.timestamp)}</span>
       </div>
       <p className="text-[13px] leading-snug text-gray-50 font-medium">
-        {suggestion.tip}
+        {prefix && <span className={`${prefixColor} font-semibold`}>{prefix}: </span>}
+        {body}
       </p>
     </motion.div>
   );
@@ -354,18 +373,34 @@ export function CoachPanel() {
       </div>
 
       {/* Métricas en vivo */}
-      <div className="grid grid-cols-3 gap-1 px-3 py-2 border-b border-gray-800 bg-gray-900/60">
+      <div className="grid grid-cols-5 gap-0.5 px-2 py-2 border-b border-gray-800 bg-gray-900/60">
         <div className="flex flex-col items-center">
-          <span className="text-[9px] uppercase text-gray-500 tracking-wide">Duración</span>
-          <span className="text-sm font-mono text-gray-200">{formatDuration(metrics.durationSec)}</span>
+          <span className="text-[8px] uppercase text-gray-500 tracking-wide">Duración</span>
+          <span className="text-xs font-mono text-gray-200">{formatDuration(metrics.durationSec)}</span>
         </div>
-        <div className="flex flex-col items-center border-x border-gray-800">
-          <span className="text-[9px] uppercase text-gray-500 tracking-wide">Tú hablas</span>
-          <span className={`text-sm font-mono ${talkPctColor}`}>{metrics.totalWords > 0 ? `${talkPct}%` : '—'}</span>
+        <div className="flex flex-col items-center border-l border-gray-800">
+          <span className="text-[8px] uppercase text-gray-500 tracking-wide">Tú hablas</span>
+          <span className={`text-xs font-mono ${talkPctColor}`}>{metrics.totalWords > 0 ? `${talkPct}%` : '—'}</span>
         </div>
-        <div className="flex flex-col items-center">
-          <span className="text-[9px] uppercase text-gray-500 tracking-wide">Preguntas</span>
-          <span className="text-sm font-mono text-gray-200">{metrics.userQuestions}</span>
+        <div className="flex flex-col items-center border-l border-gray-800">
+          <span className="text-[8px] uppercase text-gray-500 tracking-wide">WPM</span>
+          <span className={`text-xs font-mono ${
+            metrics.userWpm > 180 ? 'text-red-400' :
+            metrics.userWpm > 150 ? 'text-yellow-400' : 'text-gray-200'
+          }`}>{metrics.userWpm || '—'}</span>
+        </div>
+        <div className="flex flex-col items-center border-l border-gray-800">
+          <span className="text-[8px] uppercase text-gray-500 tracking-wide">Preguntas</span>
+          <span className="text-xs font-mono text-gray-200">{metrics.userQuestions}</span>
+        </div>
+        <div className="flex flex-col items-center border-l border-gray-800">
+          <span className="text-[8px] uppercase text-gray-500 tracking-wide">Salud</span>
+          <span className={`text-xs font-mono font-semibold ${
+            metrics.connectionScore >= 80 ? 'text-green-400' :
+            metrics.connectionScore >= 60 ? 'text-yellow-400' : 'text-red-400'
+          }`}>
+            {metrics.connectionScore}
+          </span>
         </div>
       </div>
 

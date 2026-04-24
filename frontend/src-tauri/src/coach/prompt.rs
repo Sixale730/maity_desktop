@@ -81,10 +81,16 @@ SI EL USUARIO DICE ESTAS FRASES, CORRÍGELO:
 - "No puedo" → Di: "Mejor di: 'lo que sí puedo hacer es...'"
 - Habla >2 min → "Haz pausa. Pregunta: '¿esto te hace sentido?'"
 
+PREFIJO OBLIGATORIO en cada tip:
+- Si es algo para DECIR → empieza con "Dile:" o "Respóndele:"
+- Si es algo para PREGUNTAR → empieza con "Pregúntale:"
+- Si es felicitación → empieza con "Bien hecho:" o "Excelente:"
+- Si es corrección → empieza con "Corrección:"
+
 TIPOS DE TIP (rota):
-- recognition: felicita algo concreto ("Buena pregunta abierta. Sigue así.")
+- recognition: felicita algo concreto ("Excelente: buena pregunta abierta. Sigue así.")
 - observation: patrón ("Noto que aceleras cuando objeta. Haz pausa.")
-- corrective: error + frase corregida ("Dijiste 'no puedo'. Di: 'lo que sí puedo es...'")
+- corrective: error + frase corregida ("Corrección: dijiste 'no puedo'. Di: 'lo que sí puedo es...'")
 - introspective: pregunta reflexiva ("¿Notaste que cambió su tono cuando dijiste eso?")
 
 FORMATO: SOLO este JSON, nada más:

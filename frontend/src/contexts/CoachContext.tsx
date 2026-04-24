@@ -104,6 +104,10 @@ export interface CoachMetrics {
   turnCount: number;
   connectionScore: number;
   connectionTrend: 'rising' | 'falling' | 'stable';
+  /** Palabras por minuto del usuario. */
+  userWpm: number;
+  /** Monólogo más largo del usuario en segundos. */
+  longestUserMonologueSec: number;
   /** Historial de preguntas detectadas */
   questionHistory: QuestionEntry[];
 }
@@ -193,6 +197,8 @@ export function CoachProvider({ children }: { children: ReactNode }) {
     turnCount: 0,
     connectionScore: 50,
     connectionTrend: 'stable',
+    userWpm: 0,
+    longestUserMonologueSec: 0,
     questionHistory: [],
   });
   const sessionStartRef = useRef<number | null>(null);
@@ -795,6 +801,13 @@ export function CoachProvider({ children }: { children: ReactNode }) {
         ? Math.floor((Date.now() - sessionStartRef.current) / 1000)
         : 0;
 
+      // WPM: palabras del usuario / minutos de sesión
+      const minutesElapsed = Math.max(0.5, durationSec / 60);
+      const userWpm = Math.round(userWords / minutesElapsed);
+
+      // Monólogo más largo en segundos (estimación: 150 WPM promedio → words / 2.5)
+      const longestUserMonologueSec = Math.round(longestUserRun / 2.5);
+
       // Connection score algorithm v5.0 — CALIDAD DE SERVICIO
       // Evalua si el usuario esta dando buen servicio al cliente.
       // Frustration tiene peso DOMINANTE — una sola groseria del usuario
@@ -879,7 +892,7 @@ export function CoachProvider({ children }: { children: ReactNode }) {
         if (userFrustrationCount >= 2) {
           (window as any).__lastScoreFeedback = Date.now();
           setSuggestions(prev => [{
-            tip: "Tu tono esta escalando. Respira profundo. El cliente puede sentir tu frustracion.",
+            tip: "Cuidado con tu tono. Di: 'disculpa, quiero asegurarme de ayudarte bien.'",
             category: "self_control",
             priority: "critical",
             confidence: 0.95,
@@ -893,31 +906,31 @@ export function CoachProvider({ children }: { children: ReactNode }) {
         // NIVEL CRITICO: score <= 10 — servicio desastroso
         if (score <= 10) {
           feedbackTip = {
-            tip: "🚨 SERVICIO CRITICO. El cliente esta a punto de irse. Detente, respira, y pide disculpas sinceramente.",
+            tip: "Corrección: detente ahora. Di: 'Tienes razón, disculpa. ¿Cómo puedo resolver esto para ti?'",
             category: "service", priority: "critical",
           };
         // NIVEL ALERTA: score <= 25
         } else if (score <= 25) {
           feedbackTip = {
-            tip: "⚠️ La calidad del servicio es muy baja. Cambia el tono, escucha al cliente, usa empatia.",
+            tip: "Dile: 'Entiendo tu frustración. Déjame ver qué puedo hacer para solucionarlo ahora.'",
             category: "service", priority: "critical",
           };
         // NIVEL ADVERTENCIA: score <= 40
         } else if (score <= 40) {
           feedbackTip = {
-            tip: "La conexion se esta deteriorando. Intenta preguntar: '¿Como puedo ayudarle mejor?'",
+            tip: "Pregúntale: '¿Cómo puedo ayudarte mejor con esto?'",
             category: "rapport", priority: "important",
           };
         // FELICITACION: score subio >15 puntos respecto al anterior
         } else if (score >= 70 && score - prevScore >= 15) {
           feedbackTip = {
-            tip: "✅ Excelente! La conexion esta mejorando. Sigue con ese tono empático y profesional.",
+            tip: "Excelente: la conversación fluye bien. Sigue con ese tono.",
             category: "rapport", priority: "soft",
           };
         // FELICITACION: score alto sostenido
         } else if (score >= 85 && prevScore >= 80) {
           feedbackTip = {
-            tip: "🌟 Comunicacion excepcional. El cliente se siente escuchado y valorado. Asi se hace!",
+            tip: "Bien hecho: comunicación excepcional. El cliente se siente escuchado.",
             category: "rapport", priority: "soft",
           };
         }
@@ -960,7 +973,9 @@ export function CoachProvider({ children }: { children: ReactNode }) {
         turnCount: all.length,
         connectionScore: score,
         connectionTrend: trend,
-        questionHistory: questionEntries.slice(-50), // Keep last 50 questions
+        userWpm,
+        longestUserMonologueSec,
+        questionHistory: questionEntries.slice(-50),
       });
     };
     computeMetrics();
@@ -969,41 +984,61 @@ export function CoachProvider({ children }: { children: ReactNode }) {
   }, [isRecording, transcriptsRef]);
 
   /**
-   * Effect 5.5: Periodic tips — cada 30-40s según requisito del usuario.
-   * Si la conversación va bien, el LLM genera un tip de felicitación (ver prompt V3 LITE).
-   * Si va mal, genera corrección. El modelo decide según contexto.
+   * Effect 5.5: Nudge Engine — reemplaza timer periódico con coaching inteligente.
+   * Evalúa métricas cada 10s vía Rust nudge_engine. Solo genera tip cuando hay
+   * señal real (talk ratio, WPM, monólogo, etc.). Rate-limited: máx 1 cada 2 min.
    */
+  const lastNudgeRef = useRef<{ time: number; type: string | null }>({ time: 0, type: null });
   useEffect(() => {
     if (!enabled || !isRecording) return;
-    const timer = setInterval(async () => {
-      const age = Date.now() - lastTipTimestampRef.current;
-      if (age < 30_000) return;
+    const NUDGE_COOLDOWN_MS = 120_000; // 2 minutos entre nudges
 
-      // Determinar quién habló más reciente para dar contexto al LLM
-      const all = transcriptsRef.current ?? [];
-      const recent = all.slice(-3);
-      let lastSpeaker = 'unknown';
-      for (let i = recent.length - 1; i >= 0; i--) {
-        const st = (recent[i] as any).source_type;
-        if (st === 'user' || st === 'interlocutor') {
-          lastSpeaker = st;
-          break;
-        }
-      }
-      // Signal contextual: indica al LLM que es un chequeo periódico
-      // y quién habló último para que no confunda speakers
-      const periodicSignal = lastSpeaker === 'interlocutor'
-        ? 'periodic_check_last_speaker_interlocutor'
-        : 'periodic_check_last_speaker_user';
+    const timer = setInterval(async () => {
+      const now = Date.now();
+      // Rate limit: máx 1 nudge cada 2 min
+      if (now - lastNudgeRef.current.time < NUDGE_COOLDOWN_MS) return;
+      // También respetar cooldown de tips LLM
+      if (now - lastTipTimestampRef.current < TIP_COOLDOWN_MS) return;
 
       try {
-        await triggerNow(undefined, periodicSignal);
+        const result = await invoke<{
+          should_nudge: boolean;
+          nudge_type: string | null;
+          tip: string | null;
+          severity: string;
+          category: string;
+        }>('coach_evaluate_nudge', {
+          userTalkRatio: metrics.userTalkRatio,
+          userQuestions: metrics.userQuestions,
+          sessionDurationSec: metrics.durationSec,
+          userWpm: metrics.userWpm,
+          longestUserMonologueSec: metrics.longestUserMonologueSec,
+          healthScore: metrics.connectionScore,
+          lastNudgeType: lastNudgeRef.current.type,
+        });
+
+        if (result.should_nudge && result.tip) {
+          const nudgeSuggestion = {
+            tip: result.tip,
+            category: result.category,
+            confidence: 0.9,
+            priority: result.severity === 'high' ? 'critical' as const : result.severity === 'medium' ? 'important' as const : 'soft' as const,
+            timestamp: Math.floor(now / 1000),
+            model: 'nudge-engine',
+            latency_ms: 0,
+          };
+          setSuggestions(prev => [nudgeSuggestion, ...prev].slice(0, MAX_SUGGESTIONS));
+          lastTipTimestampRef.current = now;
+          lastNudgeRef.current = { time: now, type: result.nudge_type };
+          logger.info(`[Coach] Nudge: ${result.nudge_type} (${result.severity})`);
+        }
       } catch (e) {
-        // Silent - periodic tip failed, will retry next interval
+        // Silent — nudge evaluation failed
       }
-    }, 5_000);
+    }, 10_000); // Evaluar cada 10s (pero rate-limited a 1 cada 2 min)
+
     return () => clearInterval(timer);
-  }, [enabled, isRecording, triggerNow]);
+  }, [enabled, isRecording, metrics]);
 
   /**
    * Setter público para cambiar meeting type manualmente (override).

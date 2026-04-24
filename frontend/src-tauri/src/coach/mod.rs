@@ -10,6 +10,7 @@ pub mod commands;
 pub mod context;
 pub mod evaluator;
 pub mod meeting_type;
+pub mod nudge_engine;
 pub mod prompt;
 pub mod trigger;
 #[cfg(test)]
@@ -25,4 +26,5 @@ pub use context::{build_context, CoachContext, ContextMode};
 pub use evaluator::{
     coach_evaluate_communication, CommunicationFeedback, CommunicationObservations,
 };
+pub use nudge_engine::coach_evaluate_nudge;
 pub use trigger::{analyze_turn, coach_analyze_trigger, TriggerCategory, TriggerSignal};
