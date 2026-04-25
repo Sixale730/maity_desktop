@@ -210,6 +210,7 @@ pub mod notifications;
 pub mod ollama;
 pub mod onboarding;
 pub mod openrouter;
+pub mod orchestrator;
 pub mod progress_events;
 pub mod canary_engine;
 pub mod parakeet_engine;
@@ -1127,6 +1128,8 @@ pub fn run() {
             api::open_external_url,
             // Export commands
             export::export_meeting,
+            // Orchestrator commands (Wave B3 — reasoning engine pattern)
+            orchestrator::commands::analyze_meeting_context,
             // Custom OpenAI commands
             api::api_save_custom_openai_config,
             api::api_get_custom_openai_config,

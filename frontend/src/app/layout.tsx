@@ -26,7 +26,13 @@ import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { MeetingDetectionDialog } from '@/components/MeetingDetectionDialog'
 import { OfflineIndicator } from '@/components/OfflineIndicator'
 import { AutoSetupOverlay } from '@/components/AutoSetupOverlay'
+import { CommandPalette, useCommandPalette } from '@/components/CommandPalette'
 import { logger } from '@/lib/logger'
+
+function CommandPaletteMount() {
+  const { open, setOpen } = useCommandPalette();
+  return open ? <CommandPalette onClose={() => setOpen(false)} /> : null;
+}
 
 const sourceSans3 = Source_Sans_3({
   subsets: ['latin'],
@@ -151,6 +157,8 @@ export default function RootLayout({
                                   <Sidebar />
                                   <MainContent>{children}</MainContent>
                                 </div>
+                                {/* Wave B2: Command Palette (Ctrl+K) */}
+                                <CommandPaletteMount />
                               </div>
                             )}
                           </RecordingPostProcessingProvider>
