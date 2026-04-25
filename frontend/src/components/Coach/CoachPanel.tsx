@@ -15,6 +15,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Sparkles, MessageCircleQuestion, ShieldAlert, Target, Clock, Heart, Loader2, WifiOff, Send, MessageSquare, Lightbulb, HandCoins, Users2, DollarSign, HelpCircle, ChevronDown } from 'lucide-react';
 import { useCoach, CoachSuggestion, CoachChatMessage } from '@/contexts/CoachContext';
+import { useProgressEvents } from '@/hooks/useProgressEvents';
 import { ConnectionThermometer } from './ConnectionThermometer';
 import { MeetingTypeBadge } from './MeetingTypeBadge';
 import { BookmarkButton } from './BookmarkButton';
@@ -280,6 +281,7 @@ export function CoachPanel() {
   const [tab, setTab] = useState<CoachTab>('tips');
   const [chatInput, setChatInput] = useState('');
   const chatScrollRef = useRef<HTMLDivElement>(null);
+  const { isCoachWorking, coachThinking } = useProgressEvents();
 
   // Auto-scroll suave sin jank durante streaming.
   useEffect(() => {
@@ -330,8 +332,13 @@ export function CoachPanel() {
           <Sparkles className="w-4 h-4 text-blue-300 flex-shrink-0" />
           <h2 className="text-sm font-semibold text-gray-100">Coach IA</h2>
           <StatusIndicator ollama_running={status?.ollama_running} />
-          {(loading || chatLoading) && (
+          {(loading || chatLoading || isCoachWorking) && (
             <Loader2 className="w-3 h-3 text-blue-300 animate-spin" />
+          )}
+          {isCoachWorking && coachThinking && (
+            <span className="text-[10px] text-blue-400/80 font-medium" title={`Modelo: ${coachThinking.model}`}>
+              {coachThinking.stage === 'analyzing' ? 'Analizando…' : 'Generando…'}
+            </span>
           )}
         </div>
         <div className="flex items-center gap-1">

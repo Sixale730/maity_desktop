@@ -493,6 +493,7 @@ pub fn start_transcription_task<R: Runtime>(
         // improves quality (Whisper works better with 3-8s chunks than 400ms).
         let mut receiver = transcription_receiver;
         let chunks_dropped_dispatcher = chunks_dropped.clone();
+        let provider_name_for_events = transcription_engine.provider_name().to_string();
 
         // Separate accumulators per device type (mic audio and system audio transcribe independently)
         //
@@ -520,11 +521,13 @@ pub fn start_transcription_task<R: Runtime>(
         let mut sys_accumulator = ChunkAccumulator::new(min_dur, max_dur, flush_timeout);
 
         /// Helper: send an accumulated chunk to the worker channel
-        async fn dispatch_accumulated(
+        async fn dispatch_accumulated<R: tauri::Runtime>(
             accumulated: AudioChunk,
             work_sender: &tokio::sync::mpsc::Sender<AudioChunk>,
             chunks_queued: &AtomicU64,
             chunks_dropped: &AtomicU64,
+            app: &tauri::AppHandle<R>,
+            provider_name: &str,
         ) -> bool {
             let duration = accumulated.data.len() as f64 / accumulated.sample_rate as f64;
             let queued = chunks_queued.fetch_add(1, Ordering::SeqCst) + 1;
@@ -545,6 +548,12 @@ pub fn start_transcription_task<R: Runtime>(
                 Err(_) => {
                     error!("⚠️ Accumulated chunk dropped - queue full for >5s (backpressure timeout)");
                     chunks_dropped.fetch_add(1, Ordering::SeqCst);
+                    crate::progress_events::emit_transcription_stalled(
+                        app,
+                        provider_name,
+                        5000,
+                        queued as u32,
+                    );
                     true
                 }
             }
@@ -568,7 +577,7 @@ pub fn start_transcription_task<R: Runtime>(
                     };
 
                     if let Some(acc_chunk) = accumulated {
-                        if !dispatch_accumulated(acc_chunk, &work_sender, &chunks_queued, &chunks_dropped_dispatcher).await {
+                        if !dispatch_accumulated(acc_chunk, &work_sender, &chunks_queued, &chunks_dropped_dispatcher, &app, &provider_name_for_events).await {
                             break;
                         }
                     }
@@ -577,20 +586,20 @@ pub fn start_transcription_task<R: Runtime>(
                     // Channel closed - flush remaining buffers and exit
                     info!("📭 Input channel closed, flushing accumulators...");
                     if let Some(remaining) = mic_accumulator.flush() {
-                        dispatch_accumulated(remaining, &work_sender, &chunks_queued, &chunks_dropped_dispatcher).await;
+                        dispatch_accumulated(remaining, &work_sender, &chunks_queued, &chunks_dropped_dispatcher, &app, &provider_name_for_events).await;
                     }
                     if let Some(remaining) = sys_accumulator.flush() {
-                        dispatch_accumulated(remaining, &work_sender, &chunks_queued, &chunks_dropped_dispatcher).await;
+                        dispatch_accumulated(remaining, &work_sender, &chunks_queued, &chunks_dropped_dispatcher, &app, &provider_name_for_events).await;
                     }
                     break;
                 }
                 Err(_) => {
                     // Timeout - check if accumulators need flushing due to silence timeout
                     if let Some(timeout_chunk) = mic_accumulator.check_timeout() {
-                        dispatch_accumulated(timeout_chunk, &work_sender, &chunks_queued, &chunks_dropped_dispatcher).await;
+                        dispatch_accumulated(timeout_chunk, &work_sender, &chunks_queued, &chunks_dropped_dispatcher, &app, &provider_name_for_events).await;
                     }
                     if let Some(timeout_chunk) = sys_accumulator.check_timeout() {
-                        dispatch_accumulated(timeout_chunk, &work_sender, &chunks_queued, &chunks_dropped_dispatcher).await;
+                        dispatch_accumulated(timeout_chunk, &work_sender, &chunks_queued, &chunks_dropped_dispatcher, &app, &provider_name_for_events).await;
                     }
                 }
             }

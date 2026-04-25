@@ -31,6 +31,7 @@ import { logger } from '@/lib/logger';
 import { Input } from '../ui/input';
 import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupInput } from '../ui/input-group';
 import { SidebarControls } from './SidebarControls';
+import { QuickActions } from './QuickActions';
 
 interface SidebarItem {
   id: string;
@@ -739,6 +740,9 @@ const Sidebar: React.FC = () => {
             )}
           </div>
         </div>
+
+        {/* Quick Actions (Wave A2) */}
+        <QuickActions isCollapsed={isCollapsed} />
 
         {/* Footer */}
         <SidebarControls

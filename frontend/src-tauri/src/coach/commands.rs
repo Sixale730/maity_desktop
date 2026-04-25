@@ -229,7 +229,14 @@ pub async fn coach_suggest(
 
     let start = Instant::now();
 
-    let raw = generate_summary(
+    crate::progress_events::emit_coach_thinking(
+        &app,
+        crate::progress_events::CoachStage::Analyzing,
+        0,
+        &model,
+    );
+
+    let raw_result = generate_summary(
         client,
         &LLMProvider::Ollama,
         &model,
@@ -244,11 +251,30 @@ pub async fn coach_suggest(
         None,
         None,
     )
-    .await
-    .map_err(|e| format!("Error LLM: {}", e))?;
+    .await;
+
+    let raw = match raw_result {
+        Ok(r) => r,
+        Err(e) => {
+            crate::progress_events::emit_coach_thinking(
+                &app,
+                crate::progress_events::CoachStage::Error,
+                start.elapsed().as_millis() as u64,
+                &model,
+            );
+            return Err(format!("Error LLM: {}", e));
+        }
+    };
 
     let latency_ms = start.elapsed().as_millis() as u64;
     LAST_LATENCY_MS.store(latency_ms, Ordering::Relaxed);
+
+    crate::progress_events::emit_coach_thinking(
+        &app,
+        crate::progress_events::CoachStage::Done,
+        latency_ms,
+        &model,
+    );
 
     let parsed = parse_llm_output(&raw)?;
 

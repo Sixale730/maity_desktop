@@ -2,13 +2,14 @@ import { VirtualizedTranscriptView } from '@/components/VirtualizedTranscriptVie
 import { PermissionWarning } from '@/components/PermissionWarning';
 import { Button } from '@/components/ui/button';
 import { ButtonGroup } from '@/components/ui/button-group';
-import { Copy, GlobeIcon } from 'lucide-react';
+import { Copy, GlobeIcon, AlertTriangle } from 'lucide-react';
 import { useTranscripts } from '@/contexts/TranscriptContext';
 import { useConfig } from '@/contexts/ConfigContext';
 import { useRecordingState } from '@/contexts/RecordingStateContext';
 import { usePermissionCheck } from '@/hooks/usePermissionCheck';
 import { ModalType } from '@/hooks/useModalState';
 import { useIsLinux } from '@/hooks/usePlatform';
+import { useProgressEvents } from '@/hooks/useProgressEvents';
 import { useMemo } from 'react';
 
 /**
@@ -36,6 +37,7 @@ export function TranscriptPanel({
   const { isRecording, isPaused } = useRecordingState();
   const { checkPermissions, isChecking, hasSystemAudio, hasMicrophone } = usePermissionCheck();
   const isLinux = useIsLinux();
+  const { isTranscriptionStalled, transcriptionStalled } = useProgressEvents();
 
   // Convert transcripts to segments for virtualized view — sorted chronologically
   const segments = useMemo(() =>
@@ -58,11 +60,20 @@ export function TranscriptPanel({
       <div className="sticky top-0 z-10 bg-white dark:bg-gray-900 p-4 border-[#e7e7e9] dark:border-gray-700">
         <div className="flex flex-col space-y-3">
           {/* Active model indicator */}
-          <div className="flex justify-center">
+          <div className="flex justify-center gap-2 flex-wrap">
             <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-medium bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 border border-blue-200 dark:border-blue-800">
               <span className="h-1.5 w-1.5 rounded-full bg-blue-500 animate-pulse" />
               {transcriptModelConfig?.provider === 'canary' ? 'Canary' : 'Parakeet'}: {transcriptModelConfig?.model || 'cargando...'}
             </span>
+            {isTranscriptionStalled && transcriptionStalled && (
+              <span
+                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-medium bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-300 border border-amber-300 dark:border-amber-700"
+                title={`Cola: ${transcriptionStalled.queue_size} chunks · Backpressure ${transcriptionStalled.last_chunk_ago_ms}ms`}
+              >
+                <AlertTriangle className="h-3 w-3" />
+                Pipeline saturado
+              </span>
+            )}
           </div>
           <div className="flex  flex-col space-y-2">
             <div className="flex justify-center  items-center space-x-2">

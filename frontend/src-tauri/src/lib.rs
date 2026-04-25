@@ -210,6 +210,7 @@ pub mod notifications;
 pub mod ollama;
 pub mod onboarding;
 pub mod openrouter;
+pub mod progress_events;
 pub mod canary_engine;
 pub mod parakeet_engine;
 pub mod secure_storage;
