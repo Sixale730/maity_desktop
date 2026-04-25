@@ -48,7 +48,7 @@ export function useRecordingStart(
 
   const { clearTranscripts, setMeetingTitle } = useTranscripts();
   const { setIsMeetingActive } = useSidebar();
-  const { selectedDevices, transcriptModelConfig, coachEnabled } = useConfig();
+  const { selectedDevices, transcriptModelConfig, coachEnabled, coachModel } = useConfig();
   const { setStatus } = useRecordingState();
 
   // Generate meeting title with timestamp
@@ -256,7 +256,7 @@ export function useRecordingStart(
     // Start coach overlay if enabled (fire-and-forget)
     if (coachEnabled) {
       invoke('start_coach_overlay', {
-        modelName: 'gemma3:1b',
+        modelName: coachModel || 'gemma3:1b',
       }).catch((e: unknown) => logger.debug('Coach overlay start failed (non-blocking):', e));
     }
 
@@ -278,7 +278,7 @@ export function useRecordingStart(
         body: `Reunión: ${title}`,
       })
     ).catch(() => {});
-  }, [generateMeetingTitle, selectedDevices, transcriptModelConfig, setStatus, setMeetingTitle, setIsRecording, clearTranscripts, setIsMeetingActive, coachEnabled]);
+  }, [generateMeetingTitle, selectedDevices, transcriptModelConfig, setStatus, setMeetingTitle, setIsRecording, clearTranscripts, setIsMeetingActive, coachEnabled, coachModel]);
 
   /**
    * Handle transcription not ready — show appropriate toast/modal.

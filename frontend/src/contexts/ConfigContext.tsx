@@ -47,6 +47,8 @@ interface ConfigContextType {
   // Coach overlay settings
   coachEnabled: boolean;
   setCoachEnabled: (enabled: boolean) => void;
+  coachModel: string;
+  setCoachModel: (model: string) => void;
 
   // Preference settings (lazy loaded)
   notificationSettings: NotificationSettings | null;
@@ -112,6 +114,20 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
     setCoachEnabledState(enabled);
     if (typeof window !== 'undefined') {
       localStorage.setItem('coachEnabled', enabled.toString());
+    }
+  }, []);
+
+  // Coach model selection (Director-inspired LLM provider abstraction)
+  const [coachModel, setCoachModelState] = useState<string>(() => {
+    if (typeof window !== 'undefined') {
+      return localStorage.getItem('coachModel') || 'gemma3:1b';
+    }
+    return 'gemma3:1b';
+  });
+  const setCoachModel = useCallback((model: string) => {
+    setCoachModelState(model);
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('coachModel', model);
     }
   }, []);
 
@@ -465,6 +481,8 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
     updateNotificationSettings,
     coachEnabled,
     setCoachEnabled,
+    coachModel,
+    setCoachModel,
   }), [
     modelConfig,
     isAutoSummary,
@@ -484,6 +502,8 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
     updateNotificationSettings,
     coachEnabled,
     setCoachEnabled,
+    coachModel,
+    setCoachModel,
   ]);
 
   return (

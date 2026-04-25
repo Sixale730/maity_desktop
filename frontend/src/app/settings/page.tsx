@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useLayoutEffect, useRef, useMemo } from 'react';
-import { ArrowLeft, Settings2, Mic, Database as DatabaseIcon, SparkleIcon } from 'lucide-react';
+import { ArrowLeft, Settings2, Mic, Database as DatabaseIcon, SparkleIcon, Sparkles } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { invoke } from '@tauri-apps/api/core';
 import { motion } from 'framer-motion';
@@ -10,6 +10,7 @@ import type { TranscriptModelProps } from '@/types/transcript';
 import { RecordingSettings } from '@/components/recording/RecordingSettings';
 import { PreferenceSettings } from '@/components/settings/PreferenceSettings';
 import { SummaryModelSettings } from '@/components/models/SummaryModelSettings';
+import { CoachModelSettings } from '@/components/CoachModelSettings';
 import { useConfig } from '@/contexts/ConfigContext';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { useUserRole } from '@/hooks/useUserRole';
@@ -20,7 +21,8 @@ const TABS = [
   { value: 'general', label: 'General', icon: Settings2 },
   { value: 'recording', label: 'Grabaciones', icon: Mic },
   { value: 'Transcriptionmodels', label: 'Transcripción', icon: DatabaseIcon },
-  { value: 'summaryModels', label: 'Resumen', icon: SparkleIcon }
+  { value: 'summaryModels', label: 'Resumen', icon: SparkleIcon },
+  { value: 'coachModel', label: 'Coach IA', icon: Sparkles }
 ] as const;
 
 export default function SettingsPage() {
@@ -151,6 +153,9 @@ export default function SettingsPage() {
             </TabsContent>
             <TabsContent value="summaryModels">
               <SummaryModelSettings />
+            </TabsContent>
+            <TabsContent value="coachModel">
+              <CoachModelSettings />
             </TabsContent>
           </Tabs>
         </div>
