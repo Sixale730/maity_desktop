@@ -24,6 +24,12 @@ import { ErrorBoundary } from '@/components/shared/ErrorBoundary'
 import { ChunkErrorRecovery } from '@/components/shared/ChunkErrorRecovery'
 import { MeetingDetectionDialog } from '@/components/meeting-detection/MeetingDetectionDialog'
 import { OfflineIndicator } from '@/components/shared/OfflineIndicator'
+import { CommandPalette, useCommandPalette } from '@/components/CommandPalette'
+
+function CommandPaletteMount() {
+  const { open, setOpen } = useCommandPalette();
+  return open ? <CommandPalette onClose={() => setOpen(false)} /> : null;
+}
 import { AuthProvider, useAuth } from '@/contexts/AuthContext'
 import { ParakeetAutoDownloadProvider } from '@/contexts/ParakeetAutoDownloadContext'
 import { ModelDownloadGate } from '@/components/ModelDownloadGate'
@@ -401,6 +407,8 @@ function AppContent({ children }: { children: React.ReactNode }) {
                           <Sidebar />
                           <MainContent>{children}</MainContent>
                         </div>
+                        {/* Director-inspired command palette (Ctrl+K) */}
+                        <CommandPaletteMount />
                       </div>
                     )}
                   </RecordingPostProcessingProvider>
