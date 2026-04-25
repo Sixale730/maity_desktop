@@ -49,6 +49,7 @@ pub mod onboarding;
 pub mod openrouter;
 pub mod orchestrator;
 pub mod parakeet_engine;
+pub mod progress_events;
 pub mod semantic_search;
 pub mod moonshine_engine;
 pub mod state;

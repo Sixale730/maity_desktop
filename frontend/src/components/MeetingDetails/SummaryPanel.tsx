@@ -11,6 +11,7 @@ import { SummaryUpdaterButtonGroup } from './SummaryUpdaterButtonGroup';
 import Analytics from '@/lib/analytics';
 import { RefObject } from 'react';
 import { logger } from '@/lib/logger';
+import { useProgressEvents } from '@/hooks/useProgressEvents';
 
 interface SummaryPanelProps {
   meeting: {
@@ -90,9 +91,31 @@ export function SummaryPanel({
   onOpenModelSettings
 }: SummaryPanelProps) {
   const isSummaryLoading = summaryStatus === 'processing' || summaryStatus === 'summarizing' || summaryStatus === 'regenerating';
+  const { summaryProgress, isSummaryWorking } = useProgressEvents();
 
   return (
     <div className="flex-1 min-w-0 flex flex-col bg-background overflow-hidden">
+      {/* Director-inspired progress bar (summary-progress event) */}
+      {(isSummaryLoading || isSummaryWorking) && summaryProgress && (
+        <div className="px-4 pt-2 pb-1 bg-blue-50 dark:bg-blue-950/30 border-b border-blue-200 dark:border-blue-800">
+          <div className="flex items-center justify-between mb-1">
+            <span className="text-xs text-blue-700 dark:text-blue-300 font-medium">
+              {summaryProgress.stage === 'preparing' ? 'Preparando…' : summaryProgress.stage === 'done' ? 'Completado' : 'Procesando…'}
+            </span>
+            {summaryProgress.total_chunks > 0 && (
+              <span className="text-[10px] text-blue-600 dark:text-blue-400">
+                {summaryProgress.current_chunk}/{summaryProgress.total_chunks}
+              </span>
+            )}
+          </div>
+          <div className="h-1 w-full bg-blue-200 dark:bg-blue-900 rounded-full overflow-hidden">
+            <div
+              className="h-full bg-blue-500 transition-all duration-300"
+              style={{ width: `${Math.max(8, summaryProgress.percent * 100)}%` }}
+            />
+          </div>
+        </div>
+      )}
       {/* Title area */}
       <div className="p-4 border-b border-border">
         {/* <EditableTitle

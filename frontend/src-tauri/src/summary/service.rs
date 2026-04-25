@@ -252,6 +252,9 @@ impl SummaryService {
         // Get app data directory for BuiltInAI provider
         let app_data_dir = _app.path().app_data_dir().ok();
 
+        // Director-inspired progress event: starting
+        crate::progress_events::emit_summary_progress(&_app, "preparing", 0.0, 0, 0);
+
         // Generate summary
         let client = reqwest::Client::new();
         let result = generate_meeting_summary(
@@ -274,6 +277,11 @@ impl SummaryService {
         .await;
 
         let duration = start_time.elapsed().as_secs_f64();
+
+        // Emit progress: completed
+        if let Ok((_, n)) = &result {
+            crate::progress_events::emit_summary_progress(&_app, "done", 1.0, *n as u32, *n as u32);
+        }
 
         // Clean up cancellation token regardless of outcome
         Self::cleanup_cancellation_token(&meeting_id);
