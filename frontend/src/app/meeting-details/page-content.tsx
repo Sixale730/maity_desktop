@@ -6,6 +6,7 @@ import { CommunicationFeedback } from '@/types/communication';
 import Analytics from '@/lib/analytics';
 import { TranscriptPanel } from '@/components/MeetingDetails/TranscriptPanel';
 import { SummaryPanel } from '@/components/MeetingDetails/SummaryPanel';
+import { MeetingTimeline } from '@/components/MeetingDetails/MeetingTimeline';
 import { BluetoothPlaybackWarning } from '@/components/recording/BluetoothPlaybackWarning';
 
 // Custom hooks
@@ -154,6 +155,10 @@ export default function PageContent({
       <div className="px-4 pt-3">
         <BluetoothPlaybackWarning />
       </div>
+      {/* Director-inspired timeline + speaker visualization */}
+      {segments && segments.length > 0 && (
+        <MeetingTimeline segments={segments} />
+      )}
       <div className="flex flex-1 overflow-hidden">
         <TranscriptPanel
           transcripts={meetingData.transcripts}
