@@ -47,6 +47,7 @@ pub mod notifications;
 pub mod ollama;
 pub mod onboarding;
 pub mod openrouter;
+pub mod orchestrator;
 pub mod parakeet_engine;
 pub mod moonshine_engine;
 pub mod state;
@@ -812,6 +813,8 @@ pub fn run() {
             api::api_save_custom_openai_config,
             api::api_get_custom_openai_config,
             api::api_test_custom_openai_connection,
+            // Orchestrator commands (Director-inspired reasoning engine pattern)
+            orchestrator::commands::analyze_meeting_context,
             // Summary commands
             summary::api_process_transcript,
             summary::api_get_summary,
