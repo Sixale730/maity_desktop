@@ -20,6 +20,7 @@ export type CommandId =
   | 'export-json'
   | 'open-settings'
   | 'search-meetings'
+  | 'semantic-search'
   | 'toggle-coach'
   | 'go-home'
   | 'reload'
@@ -142,16 +143,25 @@ export function CommandPalette({ onClose }: CommandPaletteProps) {
       {
         id: 'search-meetings',
         slash: '/search',
-        label: 'Buscar reuniones',
-        description: 'En transcripciones existentes',
+        label: 'Buscar (texto exacto)',
+        description: 'Búsqueda literal en sidebar',
         icon: <Search className="w-4 h-4" />,
         keywords: ['find', 'buscar', 'encontrar'],
         group: 'Navegación',
         action: () => {
-          toast.info('Usa el buscador del sidebar');
           const el = document.querySelector<HTMLInputElement>('input[placeholder*="Buscar"]');
           el?.focus();
         },
+      },
+      {
+        id: 'semantic-search',
+        slash: '/find',
+        label: 'Búsqueda semántica',
+        description: 'Pregunta natural sobre transcripciones',
+        icon: <Sparkles className="w-4 h-4" />,
+        keywords: ['embedding', 'semantic', 'natural', 'pregunta'],
+        group: 'Navegación',
+        action: () => router.push('/search'),
       },
       {
         id: 'go-home',

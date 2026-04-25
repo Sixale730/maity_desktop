@@ -212,6 +212,7 @@ pub mod onboarding;
 pub mod openrouter;
 pub mod orchestrator;
 pub mod progress_events;
+pub mod semantic_search;
 pub mod canary_engine;
 pub mod parakeet_engine;
 pub mod secure_storage;
@@ -1130,6 +1131,10 @@ pub fn run() {
             export::export_meeting,
             // Orchestrator commands (Wave B3 — reasoning engine pattern)
             orchestrator::commands::analyze_meeting_context,
+            // Semantic search commands (Wave C2+C3 — embeddings + vector search local)
+            semantic_search::commands::semantic_index_meeting,
+            semantic_search::commands::semantic_search,
+            semantic_search::commands::semantic_get_index_stats,
             // Custom OpenAI commands
             api::api_save_custom_openai_config,
             api::api_get_custom_openai_config,
