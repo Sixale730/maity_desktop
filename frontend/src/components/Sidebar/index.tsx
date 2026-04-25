@@ -25,6 +25,7 @@ import Logo from '@/components/shared/Logo';
 import Info from '@/components/shared/Info';
 import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupInput } from '../ui/input-group';
 import { SidebarControls } from './SidebarControls';
+import { QuickActions } from './QuickActions';
 
 interface SidebarItem {
   id: string;
@@ -821,6 +822,9 @@ const Sidebar: React.FC = () => {
             )}
           </div>
         </div>
+
+        {/* Director-inspired quick actions */}
+        <QuickActions isCollapsed={isCollapsed} />
 
         {/* Footer */}
         <SidebarControls
