@@ -194,6 +194,10 @@ function MeetingDetailsContent() {
     }
 
     logger.debug('Valid meeting ID found, fetching details for:', meetingId);
+    Analytics.track('conversation_detail_viewed', {
+      meeting_id: meetingId,
+      source: source ?? 'direct',
+    });
 
     setMeetingDetails(null);
     setMeetingSummary(null);

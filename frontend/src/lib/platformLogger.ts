@@ -76,7 +76,7 @@ class PlatformLogger {
         p_event_data: data ?? null,
         p_status: status ?? null,
         p_error: error ?? null,
-        p_meeting_id: null,
+        p_meeting_id: (data?.meeting_id as string) ?? null,
         p_app_version: null,
         p_device_info: userAgent,
       })

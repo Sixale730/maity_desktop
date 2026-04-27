@@ -1,6 +1,7 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
+import Analytics from '@/lib/analytics';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft, Clock, MessageSquare, Calendar, Sparkles, X, RefreshCw, Loader2, FileText, Copy, Check } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
@@ -201,6 +202,33 @@ export function ConversationDetail({ conversation: initialConversation, onClose,
   const analysisSkipped = isAnalysisSkipped(feedbackV4Raw);
   const minutaData = conversation.meeting_minutes_data;
   const hasMinuta = !!minutaData;
+
+  const detailViewTracked = useRef(false);
+  const analysisViewTracked = useRef(false);
+
+  useEffect(() => {
+    if (!detailViewTracked.current) {
+      detailViewTracked.current = true;
+      const meetingId = conversation._localId ?? conversation.id;
+      Analytics.track('conversation_detail_viewed', {
+        meeting_id: meetingId,
+        source: conversation.source ?? 'unknown',
+      });
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    if (hasAnalysis && !analysisViewTracked.current) {
+      analysisViewTracked.current = true;
+      Analytics.track('analysis_viewed', {
+        meeting_id: conversation._localId ?? conversation.id,
+        has_v4: 'true',
+        has_minuta: hasMinuta.toString(),
+      });
+    }
+  }, [hasAnalysis, hasMinuta, conversation._localId, conversation.id]);
+
   const canAnalyze = !reanalyzeMutation.isPending && !loadingSegments &&
     ((segments && segments.length > 0) || !!conversation.transcript_text);
   const speakerNameMap = buildSpeakerNameMap(

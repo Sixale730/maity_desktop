@@ -129,6 +129,12 @@ fn toggle_recording_handler<R: Runtime>(app: &AppHandle<R>) {
                         log::warn!("Tray toggle: failed to emit recording-start-complete: {}", e);
                     }
 
+                    // Analytics: notify frontend of tray-triggered start so the dual-emit
+                    // to platform_logs captures the correct trigger source.
+                    if let Err(e) = app_clone.emit("tray-recording-started", ()) {
+                        log::warn!("Tray toggle: failed to emit tray-recording-started: {}", e);
+                    }
+
                     // Show system notification (best-effort, no-op on failure)
                     let notif_state = app_clone.state::<crate::NotificationManagerState<R>>();
                     if let Err(e) =

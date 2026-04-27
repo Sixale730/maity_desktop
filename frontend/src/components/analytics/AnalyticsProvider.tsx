@@ -3,6 +3,7 @@
 import React, { useEffect, ReactNode, useRef, useState, createContext } from 'react';
 import Analytics from '@/lib/analytics';
 import { load } from '@tauri-apps/plugin-store';
+import { listen } from '@tauri-apps/api/event';
 
 
 interface AnalyticsProviderProps {
@@ -80,6 +81,9 @@ export default function AnalyticsProvider({ children }: AnalyticsProviderProps) 
 
       await store.save();
 
+      // Read local meeting count to populate segmentation properties
+      const totalMeetings = await store.get<number>('total_meetings') ?? 0;
+
       // Identify user with enhanced properties immediately after init
       await Analytics.identify(userId, {
         app_version: '0.2.0',
@@ -88,6 +92,8 @@ export default function AnalyticsProvider({ children }: AnalyticsProviderProps) 
         architecture: deviceInfo.architecture,
         first_seen: new Date().toISOString(),
         user_agent: navigator.userAgent,
+        has_recorded: (totalMeetings > 0).toString(),
+        total_recordings: totalMeetings.toString(),
       });
 
       // Start analytics session with platform info
@@ -115,9 +121,15 @@ export default function AnalyticsProvider({ children }: AnalyticsProviderProps) 
 
       window.addEventListener('beforeunload', handleBeforeUnload);
 
+      // Track recordings started from the system tray (bypasses frontend hooks)
+      const unlistenTray = await listen('tray-recording-started', () => {
+        Analytics.trackButtonClick('start_recording', 'tray');
+      });
+
       // Cleanup function
       return () => {
         window.removeEventListener('beforeunload', handleBeforeUnload);
+        unlistenTray();
         if (sessionId) {
           Analytics.trackSessionEnded(sessionId);
         }

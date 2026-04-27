@@ -450,6 +450,15 @@ export function useRecordingStop(
     const store = await Store.load('analytics.json');
     const totalMeetings = await store.get<number>('total_meetings');
 
+    // Keep user profile properties fresh so PostHog can segment recorders vs non-recorders
+    const currentUserId = Analytics.getCurrentUserId();
+    if (currentUserId) {
+      await Analytics.identify(currentUserId, {
+        has_recorded: 'true',
+        total_recordings: (totalMeetings ?? 1).toString(),
+      });
+    }
+
     if (totalMeetings === 1) {
       const daysSinceInstall = await Analytics.calculateDaysSince('first_launch_date');
       await Analytics.track('user_activated', {
