@@ -1,9 +1,11 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { motion } from 'framer-motion';
+import { invoke } from '@tauri-apps/api/core';
 import { RecordingControls } from '@/components/recording/RecordingControls';
 import { LiveFeedbackPanel } from '@/components/coach/LiveFeedbackPanel';
+import { SessionFeedbackModal } from '@/components/recording/SessionFeedbackModal';
 import { useSidebar } from '@/components/Sidebar/SidebarProvider';
 import { usePermissionCheck } from '@/hooks/usePermissionCheck';
 import { useRecordingState, RecordingStatus } from '@/contexts/RecordingStateContext';
@@ -33,6 +35,26 @@ export default function Home() {
   const [showRecoveryDialog, setShowRecoveryDialog] = useState(false);
   const [isRecordingDisabled, setIsRecordingDisabled] = useState(false);
 
+  // Feedback modal state — shown after recording stop, before navigation
+  const [feedbackModal, setFeedbackModal] = useState<{ open: boolean; meetingId: string | null }>({
+    open: false,
+    meetingId: null,
+  });
+  const feedbackResolveRef = useRef<(() => void) | null>(null);
+
+  const onBeforeNavigate = useCallback((meetingId: string): Promise<void> => {
+    return new Promise((resolve) => {
+      feedbackResolveRef.current = resolve;
+      setFeedbackModal({ open: true, meetingId });
+    });
+  }, []);
+
+  const handleFeedbackSubmit = useCallback(() => {
+    setFeedbackModal({ open: false, meetingId: null });
+    feedbackResolveRef.current?.();
+    feedbackResolveRef.current = null;
+  }, []);
+
   // Use contexts for state management
   const { meetingTitle } = useTranscripts();
   const { transcriptModelConfig, selectedDevices, setSelectedDevices } = useConfig();
@@ -50,7 +72,8 @@ export default function Home() {
 
   // Get handleRecordingStop function and setIsStopping (state comes from global context)
   const { handleRecordingStop, setIsStopping } = useRecordingStop(
-    setIsRecordingDisabled
+    setIsRecordingDisabled,
+    onBeforeNavigate
   );
 
   // Recovery hook
@@ -70,6 +93,13 @@ export default function Home() {
     // Track page view
     Analytics.trackPageView('home');
   }, []);
+
+  // Auto-open coach float when recording starts
+  useEffect(() => {
+    if (isRecording) {
+      invoke('open_floating_coach').catch(() => {});
+    }
+  }, [isRecording]);
 
   // Startup recovery check — runs once on mount only
   useEffect(() => {
@@ -183,6 +213,13 @@ export default function Home() {
         onClose={hideModal}
       />
 
+      {/* Session feedback modal (shown after recording stop) */}
+      <SessionFeedbackModal
+        open={feedbackModal.open}
+        meetingId={feedbackModal.meetingId}
+        onSubmit={handleFeedbackSubmit}
+      />
+
       {/* Recovery Dialog */}
       <TranscriptRecovery
         isOpen={showRecoveryDialog}
@@ -196,8 +233,18 @@ export default function Home() {
         {isRecording || isProcessingStop || isStopping ? (
           <div className="flex flex-col flex-1 overflow-hidden">
             {isRecording && (
-              <div className="px-4 pt-3">
-                <LiveFeedbackPanel />
+              <div className="px-4 pt-3 flex items-start gap-2">
+                <div className="flex-1">
+                  <LiveFeedbackPanel />
+                </div>
+                <button
+                  onClick={() => invoke('open_floating_coach').catch(console.error)}
+                  title="Abrir coach flotante"
+                  className="mt-0.5 shrink-0 flex items-center gap-1 px-2 py-1 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-xs text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  <span className="text-base leading-none">🎙</span>
+                  <span className="hidden sm:inline">Coach</span>
+                </button>
               </div>
             )}
             <TranscriptPanel

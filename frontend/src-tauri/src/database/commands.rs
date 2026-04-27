@@ -357,3 +357,39 @@ pub async fn mark_recording_logs_synced<R: Runtime>(
         .await
         .map_err(|e| e.to_string())
 }
+
+/// Save user feedback: coach tip like/dislike or post-session rating.
+/// Returns the generated feedback id for optional cloud sync from the frontend.
+#[tauri::command]
+pub async fn save_user_feedback<R: Runtime>(
+    _app: AppHandle<R>,
+    state: tauri::State<'_, AppState>,
+    meeting_id: Option<String>,
+    feedback_type: String,
+    rating: Option<String>,
+    message: Option<String>,
+    metadata: Option<String>,
+) -> Result<String, String> {
+    let pool = state.db_manager.pool();
+    let id = uuid::Uuid::new_v4().to_string();
+
+    sqlx::query(
+        "INSERT INTO user_feedback (id, meeting_id, feedback_type, rating, message, metadata) \
+         VALUES (?, ?, ?, ?, ?, ?)",
+    )
+    .bind(&id)
+    .bind(&meeting_id)
+    .bind(&feedback_type)
+    .bind(&rating)
+    .bind(&message)
+    .bind(&metadata)
+    .execute(pool)
+    .await
+    .map_err(|e| {
+        error!("Failed to save user feedback: {}", e);
+        e.to_string()
+    })?;
+
+    info!("Saved user feedback: type={} id={}", feedback_type, id);
+    Ok(id)
+}

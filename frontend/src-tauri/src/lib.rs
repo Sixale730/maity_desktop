@@ -885,6 +885,7 @@ pub fn run() {
             database::commands::mark_recording_logs_synced,
             database::commands::get_database_directory,
             database::commands::open_database_folder,
+            database::commands::save_user_feedback,
             // Sync queue commands (offline-first cloud save)
             database::sync_queue_commands::sync_queue_enqueue,
             database::sync_queue_commands::sync_queue_get_ready_jobs,

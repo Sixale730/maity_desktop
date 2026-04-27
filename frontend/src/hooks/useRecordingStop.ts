@@ -28,10 +28,11 @@ interface UseRecordingStopReturn {
 
 /**
  * Custom hook for managing recording stop lifecycle.
- * Local-first flow: Stop -> flush buffer (max 5s) -> save SQLite -> navigate -> enqueue cloud sync (fire-and-forget).
+ * Local-first flow: Stop -> flush buffer (max 5s) -> save SQLite -> [onBeforeNavigate?] -> navigate -> enqueue cloud sync (fire-and-forget).
  */
 export function useRecordingStop(
-  setIsRecordingDisabled: (value: boolean) => void
+  setIsRecordingDisabled: (value: boolean) => void,
+  onBeforeNavigate?: (meetingId: string) => Promise<void>
 ): UseRecordingStopReturn {
   // Auth and config for Supabase save
   const { maityUser } = useAuth();
@@ -214,7 +215,12 @@ export function useRecordingStop(
           sessionStorage.removeItem('early_meeting_id');
           sessionStorage.removeItem('indexeddb_current_meeting_id');
 
-          // Navigate IMMEDIATELY to conversations with localId
+          // Show optional pre-navigation gate (e.g., feedback modal) before navigating
+          if (onBeforeNavigate) {
+            await onBeforeNavigate(meetingId);
+          }
+
+          // Navigate to conversations with localId
           logger.debug(`[RecordingStop] Navigating to /conversations?localId=${meetingId}`);
           router.push(`/conversations?localId=${meetingId}&source=recording`);
           Analytics.trackPageView('conversations');
@@ -309,6 +315,7 @@ export function useRecordingStop(
     router,
     maityUser,
     transcriptModelConfig,
+    onBeforeNavigate,
   ]);
 
   // Fire-and-forget cloud sync enqueue

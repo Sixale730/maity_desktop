@@ -175,3 +175,15 @@ pub struct MeetingSyncStatus {
     pub completed: i64,
     pub failed: i64,
 }
+
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct UserFeedback {
+    pub id: String,
+    pub meeting_id: Option<String>,
+    pub feedback_type: String,
+    pub rating: Option<String>,
+    pub message: Option<String>,
+    pub metadata: Option<String>,
+    pub synced_to_cloud: bool,
+    pub created_at: String,
+}

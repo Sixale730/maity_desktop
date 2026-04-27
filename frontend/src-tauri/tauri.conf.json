@@ -77,6 +77,16 @@
                             ]
                         }
                     ]
+                },
+                {
+                    "identifier": "coach-float",
+                    "description": "Floating coach window: events, drag, basic window ops",
+                    "windows": ["coach-float"],
+                    "permissions": [
+                        "core:event:default",
+                        "core:window:default",
+                        "core:window:allow-start-dragging"
+                    ]
                 }
             ]
         }

@@ -46,6 +46,7 @@ fn handle_menu_event<R: Runtime>(app: &AppHandle<R>, item_id: &str) {
         "pause_recording" => pause_recording_handler(app),
         "resume_recording" => resume_recording_handler(app),
         "stop_recording" => stop_recording_handler(app),
+        "open_coach_float" => open_coach_float_handler(app),
         "open_window" => focus_main_window(app),
         "settings" => {
             focus_main_window(app);
@@ -243,6 +244,15 @@ fn stop_recording_handler<R: Runtime>(app: &AppHandle<R>) {
     });
 }
 
+fn open_coach_float_handler<R: Runtime>(app: &AppHandle<R>) {
+    let app_clone = app.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Err(e) = crate::coach::commands::open_floating_coach(app_clone).await {
+            log::warn!("Tray: Failed to open coach float: {}", e);
+        }
+    });
+}
+
 fn check_updates_handler<R: Runtime>(app: &AppHandle<R>) {
     focus_main_window(app);
     if let Some(window) = app.get_webview_window("main") {
@@ -414,7 +424,8 @@ fn build_menu<R: Runtime>(
             RecordingState::Recording => {
                 builder = builder
                     .item(&MenuItemBuilder::with_id("pause_recording", "⏸ Pause Recording").build(app)?)
-                    .item(&MenuItemBuilder::with_id("stop_recording", "⏹ Stop Recording").build(app)?);
+                    .item(&MenuItemBuilder::with_id("stop_recording", "⏹ Stop Recording").build(app)?)
+                    .item(&MenuItemBuilder::with_id("open_coach_float", "🎙 Abrir Coach Flotante").build(app)?);
             }
             RecordingState::Pausing => {
                 builder = builder
@@ -431,7 +442,8 @@ fn build_menu<R: Runtime>(
                         &MenuItemBuilder::with_id("resume_recording", "▶ Resume Recording")
                             .build(app)?,
                     )
-                    .item(&MenuItemBuilder::with_id("stop_recording", "⏹ Stop Recording").build(app)?);
+                    .item(&MenuItemBuilder::with_id("stop_recording", "⏹ Stop Recording").build(app)?)
+                    .item(&MenuItemBuilder::with_id("open_coach_float", "🎙 Abrir Coach Flotante").build(app)?);
             }
             RecordingState::Resuming => {
                 builder = builder

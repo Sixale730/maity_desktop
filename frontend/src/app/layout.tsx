@@ -1,6 +1,7 @@
 'use client'
 
 import './globals.css'
+import { usePathname } from 'next/navigation'
 import { Source_Sans_3 } from 'next/font/google'
 import Sidebar from '@/components/Sidebar'
 import { SidebarProvider } from '@/components/Sidebar/SidebarProvider'
@@ -479,6 +480,19 @@ export default function RootLayout({
 }: {
   children: React.ReactNode
 }) {
+  const pathname = usePathname()
+
+  // Coach float window: bypass all auth/sidebar/provider logic
+  if (pathname === '/coach-float') {
+    return (
+      <html lang="es" className="dark">
+        <body className={`${sourceSans3.variable} font-sans antialiased`}>
+          {children}
+        </body>
+      </html>
+    )
+  }
+
   return (
     <html lang="es" className="dark">
       <body className={`${sourceSans3.variable} font-sans antialiased`}>
