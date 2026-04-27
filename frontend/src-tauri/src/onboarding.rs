@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Runtime};
+use tauri::{AppHandle, Manager, Runtime};
 use tauri_plugin_store::StoreExt;
 use log::{info, warn, error};
 use anyhow::Result;
@@ -167,15 +167,13 @@ pub async fn reset_onboarding_status_cmd<R: Runtime>(
 #[tauri::command]
 pub async fn complete_onboarding<R: Runtime>(
     app: AppHandle<R>,
-    state: tauri::State<'_, AppState>,
     _model: String,
 ) -> Result<(), String> {
-    // Cloud-only mode: Use OpenAI for summaries and Deepgram for transcription
-    // No local models required
     info!("Completing onboarding with cloud providers (OpenAI + Deepgram)");
 
-    // Step 1: Save model configuration to SQLite database FIRST
-    let pool = state.db_manager.pool();
+    let app_state = app.try_state::<AppState>()
+        .ok_or_else(|| "La base de datos no está lista. Espera un momento y vuelve a intentarlo.".to_string())?;
+    let pool = app_state.db_manager.pool();
 
     // Use OpenAI for summaries (cloud API)
     if let Err(e) = SettingsRepository::save_model_config(

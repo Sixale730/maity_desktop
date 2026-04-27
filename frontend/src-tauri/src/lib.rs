@@ -38,6 +38,7 @@ pub mod analytics;
 pub mod api;
 pub mod audio;
 pub mod auth_server;
+pub mod coach;
 pub mod console_utils;
 pub mod database;
 pub mod logging;
@@ -48,6 +49,7 @@ pub mod onboarding;
 pub mod openrouter;
 pub mod parakeet_engine;
 pub mod moonshine_engine;
+pub mod recording_pipeline;
 pub mod state;
 pub mod summary;
 pub mod tray;
@@ -921,6 +923,28 @@ pub fn run() {
             logging::commands::export_logs,
             logging::commands::open_log_directory,
             logging::commands::clear_old_logs,
+            // Coach commands
+            coach::setup::install_coach_if_needed,
+            coach::setup::cancel_gguf_download,
+            coach::commands::coach_suggest,
+            coach::commands::coach_set_model_for_purpose,
+            coach::commands::coach_get_models,
+            coach::commands::coach_get_status,
+            coach::commands::coach_evaluate_meeting,
+            coach::commands::coach_list_gguf_models,
+            coach::commands::coach_get_engine_status,
+            coach::commands::coach_download_gguf_model,
+            coach::commands::coach_switch_model,
+            coach::commands::open_floating_coach,
+            coach::commands::close_floating_coach,
+            coach::commands::floating_toggle_compact,
+            coach::trigger::coach_analyze_trigger,
+            coach::nudge_engine::coach_evaluate_nudge,
+            // Recording pipeline commands
+            recording_pipeline::get_available_pipelines,
+            recording_pipeline::get_active_pipeline_id,
+            recording_pipeline::set_active_pipeline,
+            recording_pipeline::get_pipeline_config,
             // Health check
             health_check,
             // Deepgram proxy config commands
@@ -962,6 +986,10 @@ pub fn run() {
                     if let Err(e) = summary::summary_engine::force_shutdown_sidecar().await {
                         log::error!("Failed to force shutdown sidecar: {}", e);
                     }
+
+                    // Detener procesos llama-server
+                    log::info!("Stopping llama-server processes...");
+                    coach::llama_engine::stop_all();
                 });
                 log::info!("Application cleanup complete");
             }

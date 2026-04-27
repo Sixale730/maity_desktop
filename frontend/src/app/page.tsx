@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { RecordingControls } from '@/components/recording/RecordingControls';
+import { LiveFeedbackPanel } from '@/components/coach/LiveFeedbackPanel';
 import { useSidebar } from '@/components/Sidebar/SidebarProvider';
 import { usePermissionCheck } from '@/hooks/usePermissionCheck';
 import { useRecordingState, RecordingStatus } from '@/contexts/RecordingStateContext';
@@ -192,11 +193,18 @@ export default function Home() {
       />
       <div className="flex flex-1 overflow-hidden">
         {isRecording || isProcessingStop || isStopping ? (
-          <TranscriptPanel
-            isProcessingStop={isProcessingStop}
-            isStopping={isStopping}
-            showModal={showModal}
-          />
+          <div className="flex flex-col flex-1 overflow-hidden">
+            {isRecording && (
+              <div className="px-4 pt-3">
+                <LiveFeedbackPanel />
+              </div>
+            )}
+            <TranscriptPanel
+              isProcessingStop={isProcessingStop}
+              isStopping={isStopping}
+              showModal={showModal}
+            />
+          </div>
         ) : (
           <div className="w-full overflow-y-auto">
             <GamifiedDashboardV2 />

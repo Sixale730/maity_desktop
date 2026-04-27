@@ -10,6 +10,7 @@ import type { TranscriptModelProps } from '@/types/transcript';
 import { RecordingSettings } from '@/components/recording/RecordingSettings';
 import { PreferenceSettings } from '@/components/settings/PreferenceSettings';
 import { SummaryModelSettings } from '@/components/models/SummaryModelSettings';
+import { PipelineSelector } from '@/components/coach/PipelineSelector';
 import { useConfig } from '@/contexts/ConfigContext';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { useUserRole } from '@/hooks/useUserRole';
@@ -20,7 +21,8 @@ const TABS = [
   { value: 'general', label: 'General', icon: Settings2 },
   { value: 'recording', label: 'Grabaciones', icon: Mic },
   { value: 'Transcriptionmodels', label: 'Transcripción', icon: DatabaseIcon },
-  { value: 'summaryModels', label: 'Resumen', icon: SparkleIcon }
+  { value: 'summaryModels', label: 'Resumen', icon: SparkleIcon },
+  { value: 'pipeline', label: 'Pipeline', icon: SparkleIcon }
 ] as const;
 
 export default function SettingsPage() {
@@ -151,6 +153,9 @@ export default function SettingsPage() {
             </TabsContent>
             <TabsContent value="summaryModels">
               <SummaryModelSettings />
+            </TabsContent>
+            <TabsContent value="pipeline">
+              <PipelineSelector />
             </TabsContent>
           </Tabs>
         </div>
