@@ -16,7 +16,7 @@ import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
 import { Video, Mic, X, Clock } from 'lucide-react'
 import { toast } from 'sonner'
-import { useRecordingState } from '@/contexts/RecordingStateContext'
+import { useRecordingState, RecordingStatus } from '@/contexts/RecordingStateContext'
 import { logger } from '@/lib/logger'
 
 interface DetectedMeeting {
@@ -69,12 +69,14 @@ export function MeetingDetectionDialog() {
   const [autoRecordCountdown, setAutoRecordCountdown] = useState<number | null>(null)
   const [isLoading, setIsLoading] = useState(false)
 
-  const { isRecording } = useRecordingState()
+  const { isRecording, status } = useRecordingState()
   const isRecordingRef = useRef(isRecording)
+  const statusRef = useRef(status)
 
   useEffect(() => {
     isRecordingRef.current = isRecording
-  }, [isRecording])
+    statusRef.current = status
+  }, [isRecording, status])
 
   // Play notification sound when meeting is detected
   const playNotificationSound = useCallback(() => {
@@ -108,8 +110,9 @@ export function MeetingDetectionDialog() {
         const { meeting, action } = event.payload
         logger.debug('[MeetingDetection] Detected:', meeting, 'Action:', action)
 
-        if (isRecordingRef.current) {
-          logger.debug('[MeetingDetection] Recording active, suppressing detection')
+        const busyStatuses = [RecordingStatus.STOPPING, RecordingStatus.PROCESSING_TRANSCRIPTS, RecordingStatus.SAVING]
+        if (isRecordingRef.current || busyStatuses.includes(statusRef.current)) {
+          logger.debug('[MeetingDetection] Recording active or stopping, suppressing detection')
           return
         }
 

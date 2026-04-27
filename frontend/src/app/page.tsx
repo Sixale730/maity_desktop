@@ -24,7 +24,8 @@ import { useRouter } from 'next/navigation';
 import { useParakeetAutoDownloadContext } from '@/contexts/ParakeetAutoDownloadContext';
 import { useRecordingLevels } from '@/hooks/useRecordingLevels';
 import { usePreviewLevels } from '@/hooks/usePreviewLevels';
-import { GamifiedDashboardV2 } from '@/features/gamification';
+import { GamifiedDashboardV2 } from '@/features/gamification'
+import { HeadphonesRecommendationWarning } from '@/components/recording/HeadphonesRecommendationWarning';
 
 export default function Home() {
   // Local page state
@@ -226,11 +227,12 @@ export default function Home() {
       status !== RecordingStatus.SAVING && (
         <div className="fixed bottom-0 left-0 right-0 z-50 pb-12 pt-4 bg-gradient-to-t from-[#0a0a1a] via-[#0a0a1a]/95 to-transparent">
           <div
-            className="flex justify-center pl-8 transition-[margin] duration-300"
+            className="flex flex-col items-center pl-8 transition-[margin] duration-300"
             style={{
               marginLeft: sidebarCollapsed ? '4rem' : '16rem'
             }}
           >
+            <HeadphonesRecommendationWarning enabled={hasMicrophone && !isRecording} />
             <div className="w-2/3 max-w-[750px] min-w-[200px] flex justify-center">
               <div className="bg-white dark:bg-gray-900 rounded-full shadow-lg flex items-center overflow-visible">
                 <RecordingControls
