@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useMemo, useEffect, useCallback } from 'react';
-import { ChevronDown, ChevronRight, File, Settings, ChevronLeftCircle, ChevronRightCircle, Calendar, Home, Trash2, Mic, Square, Plus, Pencil, SearchIcon, X, MessageSquare, FileText, ListChecks } from 'lucide-react';
+import { ChevronDown, ChevronRight, File, Settings, ChevronLeftCircle, ChevronRightCircle, Calendar, Home, Trash2, Mic, Square, Plus, Pencil, SearchIcon, X, MessageSquare, FileText, ListChecks, Bot } from 'lucide-react';
 import { useRouter, usePathname } from 'next/navigation';
 import { useSidebar } from './SidebarProvider';
 import type { CurrentMeeting } from '@/components/Sidebar/SidebarProvider';
@@ -460,6 +460,7 @@ const Sidebar: React.FC = () => {
     const isConversationsPage = pathname === '/conversations';
     const isNotesPage = pathname === '/notes';
     const isTasksPage = pathname === '/tasks';
+    const isChatPage = pathname === '/chat';
     const isSettingsPage = pathname === '/settings';
 
     return (
@@ -528,6 +529,21 @@ const Sidebar: React.FC = () => {
             </TooltipTrigger>
             <TooltipContent side="right">
               <p>Tareas</p>
+            </TooltipContent>
+          </Tooltip>
+
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                onClick={() => router.push('/chat')}
+                className={`p-2 rounded-lg transition-colors duration-150 ${isChatPage ? 'bg-secondary' : 'hover:bg-secondary'}`}
+                aria-label="Chat IA"
+              >
+                <Bot className="w-5 h-5 text-[#485df4]" />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="right">
+              <p>Chat IA</p>
             </TooltipContent>
           </Tooltip>
 
@@ -782,6 +798,13 @@ const Sidebar: React.FC = () => {
                 >
                   <ListChecks className="w-4 h-4 mr-2 text-orange-500" />
                   <span>Tareas</span>
+                </div>
+                <div
+                  onClick={() => router.push('/chat')}
+                  className={`p-3 text-lg font-semibold items-center hover:bg-secondary h-10 flex mx-3 mt-2 rounded-lg cursor-pointer text-foreground ${pathname === '/chat' ? 'bg-secondary' : ''}`}
+                >
+                  <Bot className="w-4 h-4 mr-2 text-[#485df4]" />
+                  <span>Chat IA</span>
                 </div>
               </>
             )}

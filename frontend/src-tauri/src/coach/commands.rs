@@ -456,3 +456,370 @@ fn parse_tip_response(raw: &str) -> Option<CoachTipUpdate> {
         timestamp_secs: 0,
     })
 }
+
+// ─── Chat IA con acceso autónomo a conversaciones ────────────────────────────
+
+/// Un turno del historial de chat enviado desde el frontend.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ChatTurn {
+    pub role: String,
+    pub content: String,
+}
+
+/// Payload del comando coach_chat.
+#[derive(Debug, Deserialize)]
+pub struct ChatQuery {
+    /// Historial de la conversación (sin el turno system, se inyecta server-side).
+    pub messages: Vec<ChatTurn>,
+}
+
+/// Respuesta enviada al frontend.
+#[derive(Debug, Serialize)]
+pub struct ChatReply {
+    pub content: String,
+    pub model: String,
+    pub provider: String,
+}
+
+/// Construye el system prompt del agente inyectando datos reales de todas
+/// las conversaciones del usuario más fragmentos relevantes a la pregunta.
+async fn build_agent_system_prompt(pool: &sqlx::SqlitePool, user_question: &str) -> String {
+    let base = "Eres Maity, asistente personal de comunicación. \
+        Tienes acceso completo a las conversaciones y análisis del usuario. \
+        Responde siempre en español. \
+        Sé conciso y orientado a acción (máximo 3 párrafos). \
+        Cita reuniones específicas por nombre cuando sea relevante.";
+
+    // ── Bloque 1: lista de reuniones con scores ──────────────────────────────
+    #[derive(sqlx::FromRow)]
+    struct MeetingRow {
+        id: String,
+        title: String,
+        created_at: String,
+    }
+
+    let meetings = sqlx::query_as::<_, MeetingRow>(
+        "SELECT id, title, created_at FROM meetings ORDER BY created_at DESC LIMIT 30",
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
+
+    if meetings.is_empty() {
+        return format!(
+            "{}\n\nEl usuario aún no tiene conversaciones registradas.",
+            base
+        );
+    }
+
+    // Leer scores de summary_processes
+    #[derive(sqlx::FromRow)]
+    struct SummaryRow {
+        meeting_id: String,
+        result: String,
+    }
+
+    let summaries = sqlx::query_as::<_, SummaryRow>(
+        "SELECT meeting_id, result FROM summary_processes \
+         WHERE status = 'completed' AND result IS NOT NULL",
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
+
+    use std::collections::HashMap;
+    let score_map: HashMap<String, f64> = summaries
+        .into_iter()
+        .filter_map(|row| {
+            let v: serde_json::Value = serde_json::from_str(&row.result).ok()?;
+            let score = v["resumen"]["puntuacion_global"]
+                .as_f64()
+                .or_else(|| v["calidad_global"]["puntaje"].as_f64())?;
+            Some((row.meeting_id, score))
+        })
+        .collect();
+
+    let scores: Vec<f64> = score_map.values().copied().collect();
+    let avg_score = if scores.is_empty() {
+        None
+    } else {
+        Some(scores.iter().sum::<f64>() / scores.len() as f64)
+    };
+
+    let first_date = meetings.last().map(|m| m.created_at[..10].to_string()).unwrap_or_default();
+    let last_date = meetings.first().map(|m| m.created_at[..10].to_string()).unwrap_or_default();
+
+    let mut profile = format!(
+        "PERFIL DEL USUARIO:\n\
+         - Total de conversaciones: {}\n\
+         - Período: {} → {}\n",
+        meetings.len(),
+        first_date,
+        last_date,
+    );
+    if let Some(avg) = avg_score {
+        profile.push_str(&format!("- Promedio de puntuación: {:.0}/100\n", avg));
+    }
+
+    profile.push_str("\nCONVERSACIONES (más recientes primero):\n");
+    for (i, m) in meetings.iter().take(15).enumerate() {
+        let date = &m.created_at[..10.min(m.created_at.len())];
+        if let Some(score) = score_map.get(&m.id) {
+            profile.push_str(&format!(
+                "{}. \"{}\" — {} — Puntuación: {:.0}/100\n",
+                i + 1,
+                m.title,
+                date,
+                score
+            ));
+        } else {
+            profile.push_str(&format!("{}. \"{}\" — {}\n", i + 1, m.title, date));
+        }
+    }
+
+    // ── Bloque 2: fragmentos relevantes a la pregunta ────────────────────────
+    let keywords: Vec<&str> = user_question
+        .split_whitespace()
+        .filter(|w| w.len() > 4)
+        .take(4)
+        .collect();
+
+    let mut relevant_block = String::new();
+    let mut seen_meetings: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    for keyword in &keywords {
+        if seen_meetings.len() >= 3 {
+            break;
+        }
+        #[derive(sqlx::FromRow)]
+        struct SearchRow {
+            title: String,
+            transcript: String,
+            meeting_id: String,
+        }
+        let pattern = format!("%{}%", keyword.to_lowercase());
+        let rows = sqlx::query_as::<_, SearchRow>(
+            "SELECT m.title, t.transcript, t.meeting_id \
+             FROM meetings m JOIN transcripts t ON m.id = t.meeting_id \
+             WHERE LOWER(t.transcript) LIKE ? LIMIT 3",
+        )
+        .bind(&pattern)
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default();
+
+        for row in rows {
+            if seen_meetings.contains(&row.meeting_id) {
+                continue;
+            }
+            seen_meetings.insert(row.meeting_id);
+            let snippet: String = row.transcript.chars().take(200).collect();
+            relevant_block.push_str(&format!(
+                "→ De \"{}\": \"...{}...\"\n",
+                row.title, snippet
+            ));
+            if seen_meetings.len() >= 3 {
+                break;
+            }
+        }
+    }
+
+    let mut prompt = format!("{}\n\n{}", base, profile);
+    if !relevant_block.is_empty() {
+        prompt.push_str(&format!("\nFRAGMENTOS RELEVANTES:\n{}", relevant_block));
+    }
+    prompt
+}
+
+/// Ruta A: envía el historial al llama-server en 11434 (OpenAI-compatible HTTP).
+async fn call_coach_llama<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    model_id: &str,
+    system_prompt: &str,
+    turns: &[ChatTurn],
+) -> Result<String, String> {
+    use crate::summary::llm_client::{ChatMessage as LlmMsg, ChatRequest as LlmReq, ChatResponse};
+
+    llama_engine::ensure_running(app, model_id, 11434)
+        .await
+        .map_err(|e| format!("No se pudo iniciar llama-server: {}", e))?;
+
+    let mut messages: Vec<LlmMsg> = vec![LlmMsg {
+        role: "system".to_string(),
+        content: system_prompt.to_string(),
+    }];
+    for turn in turns {
+        messages.push(LlmMsg {
+            role: turn.role.clone(),
+            content: turn.content.clone(),
+        });
+    }
+
+    let body = LlmReq {
+        model: "local".to_string(),
+        messages,
+        max_tokens: Some(512),
+        temperature: Some(0.7),
+        top_p: None,
+    };
+
+    let resp = HTTP_CLIENT
+        .post("http://127.0.0.1:11434/v1/chat/completions")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("Error conectando con llama-server: {}", e))?;
+
+    let chat_resp: ChatResponse = resp
+        .json()
+        .await
+        .map_err(|e| format!("Error parseando respuesta: {}", e))?;
+
+    chat_resp
+        .choices
+        .into_iter()
+        .next()
+        .map(|c| c.message.content)
+        .ok_or_else(|| "Respuesta vacía del modelo".to_string())
+}
+
+/// Ruta B: aplana el historial y llama al sidecar Built-In AI (gemma).
+async fn call_builtin_ai<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    model_name: &str,
+    system_prompt: &str,
+    turns: &[ChatTurn],
+) -> Result<String, String> {
+    use crate::summary::llm_client::{generate_summary, LLMProvider};
+
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("No se pudo obtener app_data_dir: {}", e))?;
+
+    let user_prompt = if turns.len() <= 1 {
+        turns
+            .last()
+            .map(|t| t.content.clone())
+            .unwrap_or_default()
+    } else {
+        let mut buf = String::from("Historial previo:\n");
+        for turn in &turns[..turns.len() - 1] {
+            let role = if turn.role == "user" { "Usuario" } else { "Asistente" };
+            buf.push_str(&format!("{}: {}\n", role, turn.content));
+        }
+        buf.push_str("---\nMensaje actual: ");
+        buf.push_str(&turns.last().map(|t| t.content.as_str()).unwrap_or(""));
+        buf
+    };
+
+    generate_summary(
+        &HTTP_CLIENT,
+        &LLMProvider::BuiltInAI,
+        model_name,
+        "",
+        system_prompt,
+        &user_prompt,
+        None,
+        None,
+        Some(512),
+        Some(0.7),
+        None,
+        Some(&app_data_dir),
+        None,
+    )
+    .await
+}
+
+/// Comando principal: resuelve el proveedor disponible y devuelve la respuesta.
+#[tauri::command]
+pub async fn coach_chat<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    query: ChatQuery,
+) -> Result<ChatReply, String> {
+    let state = app.state::<AppState>();
+    let pool = state.db_manager.pool();
+
+    let user_question = query
+        .messages
+        .last()
+        .map(|m| m.content.as_str())
+        .unwrap_or("");
+
+    let system_prompt = build_agent_system_prompt(pool, user_question).await;
+
+    let turns: &[ChatTurn] = if query.messages.len() > 10 {
+        &query.messages[query.messages.len() - 10..]
+    } else {
+        &query.messages
+    };
+
+    // ── Prioridad 1: Coach (llama-server) ────────────────────────────────────
+    if llama_engine::is_binary_installed(&app) {
+        let model_id = get_tips_model_id(pool).await;
+        match call_coach_llama(&app, &model_id, &system_prompt, turns).await {
+            Ok(content) => {
+                return Ok(ChatReply {
+                    content,
+                    model: model_id,
+                    provider: "coach".to_string(),
+                });
+            }
+            Err(e) => {
+                warn!("Coach llama-server no disponible, probando Built-In AI: {}", e);
+            }
+        }
+    }
+
+    // ── Prioridad 2: Built-In AI (gemma) ────────────────────────────────────
+    let mm_state = app.state::<crate::summary::summary_engine::ModelManagerState>();
+    {
+        let lock = mm_state.0.lock().await;
+        if lock.is_none() {
+            drop(lock);
+            crate::summary::summary_engine::init_model_manager(&app)
+                .await
+                .map_err(|e| format!("No se pudo inicializar modelo: {}", e))?;
+        }
+    }
+    let manager = {
+        let lock = mm_state.0.lock().await;
+        lock.as_ref()
+            .ok_or_else(|| "Model manager no inicializado".to_string())?
+            .clone()
+    };
+
+    let all_models = manager.list_models().await;
+    let builtin_model = all_models
+        .iter()
+        .filter(|m| {
+            matches!(
+                m.status,
+                crate::summary::summary_engine::model_manager::ModelStatus::Available
+            )
+        })
+        .max_by_key(|m| match m.name.as_str() {
+            "gemma3:4b" => 2,
+            "gemma3:1b" => 1,
+            _ => 0,
+        })
+        .map(|m| m.name.clone());
+
+    if let Some(model_name) = builtin_model {
+        match call_builtin_ai(&app, &model_name, &system_prompt, turns).await {
+            Ok(content) => {
+                return Ok(ChatReply {
+                    content,
+                    model: model_name,
+                    provider: "builtin-ai".to_string(),
+                });
+            }
+            Err(e) => {
+                warn!("Built-In AI falló: {}", e);
+            }
+        }
+    }
+
+    // ── Sin proveedor disponible ─────────────────────────────────────────────
+    Err("Ningún modelo local disponible. Configura Coach IA o Built-In AI en Ajustes → Pipeline.".to_string())
+}

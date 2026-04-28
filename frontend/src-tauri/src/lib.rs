@@ -939,6 +939,7 @@ pub fn run() {
             coach::commands::open_floating_coach,
             coach::commands::close_floating_coach,
             coach::commands::floating_toggle_compact,
+            coach::commands::coach_chat,
             coach::trigger::coach_analyze_trigger,
             coach::nudge_engine::coach_evaluate_nudge,
             // Recording pipeline commands
