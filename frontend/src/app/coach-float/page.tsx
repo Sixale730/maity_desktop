@@ -1,19 +1,10 @@
 'use client';
 
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { Sparkles, Minus, Maximize2, ThumbsUp, ThumbsDown } from 'lucide-react';
-
-interface CoachTipUpdate {
-  tip: string;
-  tip_type: string;
-  category: string;
-  priority: string;
-  confidence: number;
-  trigger?: string;
-  timestamp_secs: number;
-}
+import { useCoachTips } from '@/hooks/useCoachTips';
 
 interface AudioLevels {
   micRms: number;
@@ -49,20 +40,34 @@ function AudioBars({ rms, scales, color }: { rms: number; scales: number[]; colo
   );
 }
 
+const borderColor = (p: string) =>
+  p === 'critical' ? 'border-red-500/50' : p === 'important' ? 'border-amber-500/50' : 'border-emerald-500/30';
+const iconColor = (p: string) =>
+  p === 'critical' ? 'text-red-400' : p === 'important' ? 'text-amber-400' : 'text-emerald-400';
+
 export default function CoachFloatPage() {
-  const [tip, setTip] = useState<CoachTipUpdate | null>(null);
+  const { tips, latestTip } = useCoachTips(20);
   const [compact, setCompact] = useState(false);
   const [levels, setLevels] = useState({ micRms: 0, sysRms: 0 });
   const [words, setWords] = useState({ user: 0, inter: 0 });
   const [feedback, setFeedback] = useState<TipFeedback>(null);
   const meetingIdRef = useRef<string | null>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  // Reset feedback cuando cambia el tip más reciente
+  useEffect(() => {
+    setFeedback(null);
+  }, [latestTip]);
+
+  // Auto-scroll al top cuando llega un nuevo tip
+  useEffect(() => {
+    if (scrollRef.current) {
+      scrollRef.current.scrollTop = 0;
+    }
+  }, [tips.length]);
 
   useEffect(() => {
     const subs = [
-      listen<CoachTipUpdate>('coach-tip-update', (e) => {
-        setTip(e.payload);
-        setFeedback(null);
-      }),
       listen<AudioLevels>('recording-audio-levels', (e) => {
         setLevels({ micRms: e.payload.micRms, sysRms: e.payload.sysRms });
       }),
@@ -76,17 +81,13 @@ export default function CoachFloatPage() {
       }),
       listen('recording-start-complete', () => {
         setWords({ user: 0, inter: 0 });
-        setTip(null);
         setFeedback(null);
       }),
       listen<string>('early-meeting-id', (e) => {
         meetingIdRef.current = e.payload;
       }),
     ];
-
-    return () => {
-      subs.forEach((p) => p.then((fn) => fn()));
-    };
+    return () => { subs.forEach((p) => p.then((fn) => fn())); };
   }, []);
 
   const isRecording = levels.micRms > 0 || levels.sysRms > 0;
@@ -101,7 +102,7 @@ export default function CoachFloatPage() {
   const close = () => invoke('close_floating_coach').catch(console.error);
 
   const sendFeedback = async (rating: 'like' | 'dislike') => {
-    if (!tip || feedback !== null) return;
+    if (!latestTip || feedback !== null) return;
     setFeedback(rating);
     try {
       await invoke('save_user_feedback', {
@@ -110,21 +111,16 @@ export default function CoachFloatPage() {
         rating,
         message: undefined,
         metadata: JSON.stringify({
-          tip_text: tip.tip,
-          tip_category: tip.category,
-          tip_priority: tip.priority,
-          tip_type: tip.tip_type,
+          tip_text: latestTip.tip,
+          tip_category: latestTip.category,
+          tip_priority: latestTip.priority,
+          tip_type: latestTip.tip_type,
         }),
       });
     } catch (e) {
       console.error('[CoachFloat] feedback save failed:', e);
     }
   };
-
-  const borderColor = (p: string) =>
-    p === 'critical' ? 'border-red-500/50' : p === 'important' ? 'border-amber-500/50' : 'border-emerald-500/30';
-  const iconColor = (p: string) =>
-    p === 'critical' ? 'text-red-400' : p === 'important' ? 'text-amber-400' : 'text-emerald-400';
 
   // ── Compact ─────────────────────────────────────────────────────
   if (compact) {
@@ -139,7 +135,7 @@ export default function CoachFloatPage() {
             : <span className="w-1.5 h-1.5 rounded-full bg-zinc-600" />}
           <span className="text-xs text-zinc-400">Coach</span>
         </div>
-        {tip && <span className="text-xs text-white truncate max-w-[200px] mx-2">{tip.tip}</span>}
+        {latestTip && <span className="text-xs text-white truncate max-w-[200px] mx-2">{latestTip.tip}</span>}
         <Maximize2 className="w-3.5 h-3.5 text-zinc-500 shrink-0" />
       </div>
     );
@@ -203,46 +199,69 @@ export default function CoachFloatPage() {
         </div>
       </div>
 
-      {/* Tip */}
-      <div className="flex-1 overflow-y-auto p-3 flex flex-col gap-3">
-        {tip ? (
+      {/* Tips — más reciente arriba, historial debajo */}
+      <div ref={scrollRef} className="flex-1 overflow-y-auto p-3 flex flex-col gap-3">
+        {tips.length > 0 ? (
           <>
-            <div className={`rounded-lg border p-3 ${borderColor(tip.priority)}`}>
-              <div className="flex items-start gap-2">
-                <Sparkles className={`w-4 h-4 mt-0.5 shrink-0 ${iconColor(tip.priority)}`} />
-                <p className="text-sm text-white leading-snug">{tip.tip}</p>
-              </div>
-              {(tip.category || tip.trigger) && (
-                <div className="flex items-center gap-2 mt-2 ml-6">
-                  <span className="text-xs text-zinc-500 capitalize">{tip.category}</span>
-                  {tip.trigger && <><span className="text-zinc-700">·</span><span className="text-xs text-zinc-600">{tip.trigger}</span></>}
+            {/* Tip más reciente: estilo completo + like/dislike */}
+            {latestTip && (
+              <>
+                <div className={`rounded-lg border p-3 ${borderColor(latestTip.priority)}`}>
+                  <div className="flex items-start gap-2">
+                    <Sparkles className={`w-4 h-4 mt-0.5 shrink-0 ${iconColor(latestTip.priority)}`} />
+                    <p className="text-sm text-white leading-snug">{latestTip.tip}</p>
+                  </div>
+                  {(latestTip.category || latestTip.trigger) && (
+                    <div className="flex items-center gap-2 mt-2 ml-6">
+                      <span className="text-xs text-zinc-500 capitalize">{latestTip.category}</span>
+                      {latestTip.trigger && (
+                        <>
+                          <span className="text-zinc-700">·</span>
+                          <span className="text-xs text-zinc-600">{latestTip.trigger}</span>
+                        </>
+                      )}
+                    </div>
+                  )}
                 </div>
-              )}
-            </div>
 
-            {/* Like / Dislike */}
-            <div className="flex gap-2 justify-center">
-              {(['like', 'dislike'] as const).map((r) => (
-                <button
-                  key={r}
-                  onClick={() => sendFeedback(r)}
-                  disabled={feedback !== null}
-                  className={[
-                    'flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs border transition-all',
-                    feedback === r
-                      ? r === 'like' ? 'border-emerald-500/50 bg-emerald-500/15 text-emerald-400' : 'border-red-500/50 bg-red-500/15 text-red-400'
-                      : feedback !== null
-                      ? 'border-white/5 text-zinc-700 cursor-not-allowed'
-                      : r === 'like'
-                      ? 'border-white/10 text-zinc-400 hover:border-emerald-500/40 hover:text-emerald-400'
-                      : 'border-white/10 text-zinc-400 hover:border-red-500/40 hover:text-red-400',
-                  ].join(' ')}
-                >
-                  {r === 'like' ? <ThumbsUp className="w-3 h-3" /> : <ThumbsDown className="w-3 h-3" />}
-                  {r === 'like' ? 'Útil' : 'No útil'}
-                </button>
-              ))}
-            </div>
+                {/* Like / Dislike — solo para el tip más reciente */}
+                <div className="flex gap-2 justify-center">
+                  {(['like', 'dislike'] as const).map((r) => (
+                    <button
+                      key={r}
+                      onClick={() => sendFeedback(r)}
+                      disabled={feedback !== null}
+                      className={[
+                        'flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs border transition-all',
+                        feedback === r
+                          ? r === 'like' ? 'border-emerald-500/50 bg-emerald-500/15 text-emerald-400' : 'border-red-500/50 bg-red-500/15 text-red-400'
+                          : feedback !== null
+                          ? 'border-white/5 text-zinc-700 cursor-not-allowed'
+                          : r === 'like'
+                          ? 'border-white/10 text-zinc-400 hover:border-emerald-500/40 hover:text-emerald-400'
+                          : 'border-white/10 text-zinc-400 hover:border-red-500/40 hover:text-red-400',
+                      ].join(' ')}
+                    >
+                      {r === 'like' ? <ThumbsUp className="w-3 h-3" /> : <ThumbsDown className="w-3 h-3" />}
+                      {r === 'like' ? 'Útil' : 'No útil'}
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
+
+            {/* Historial de tips anteriores — compacto y opaco */}
+            {tips.length > 1 && (
+              <div className="border-t border-white/5 pt-2 space-y-1.5">
+                <p className="text-[10px] text-zinc-600 uppercase tracking-wide px-1">Anteriores</p>
+                {[...tips].reverse().slice(1).map((tip, idx) => (
+                  <div key={`${tip.timestamp_secs}-${idx}`} className="flex items-start gap-2 opacity-40 px-1">
+                    <Sparkles className="w-3 h-3 mt-0.5 shrink-0 text-zinc-500" />
+                    <p className="text-xs text-zinc-400 leading-snug">{tip.tip}</p>
+                  </div>
+                ))}
+              </div>
+            )}
           </>
         ) : (
           <div className="flex flex-col items-center justify-center flex-1 gap-3 text-center py-8">

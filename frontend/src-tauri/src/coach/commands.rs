@@ -419,6 +419,13 @@ pub async fn coach_delete_gguf_model<R: Runtime + 'static>(
     Ok(())
 }
 
+/// Devuelve el historial de tips de la sesión activa (máx 20, FIFO).
+/// Devuelve lista vacía si no hay sesión activa — nunca falla.
+#[tauri::command]
+pub fn coach_get_session_tips() -> Vec<CoachTipUpdate> {
+    crate::coach::live_feedback::get_session_tips()
+}
+
 // ─── Helpers privados ─────────────────────────────────────────────────────────
 
 async fn get_tips_model_id(pool: &sqlx::SqlitePool) -> String {

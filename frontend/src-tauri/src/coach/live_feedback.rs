@@ -56,8 +56,10 @@ struct FeedbackState {
     window: VecDeque<TranscriptEntry>,
     session_start: Instant,
     last_tip_at: Option<Instant>,
+    last_price_signal_at: Option<Instant>,
     last_nudge_type: Option<String>,
     previous_tips: Vec<String>,
+    tip_history: Vec<CoachTipUpdate>,
     user_word_count: u64,
     user_turns: u32,
     interlocutor_turns: u32,
@@ -74,8 +76,10 @@ impl FeedbackState {
             window: VecDeque::new(),
             session_start: Instant::now(),
             last_tip_at: None,
+            last_price_signal_at: None,
             last_nudge_type: None,
             previous_tips: Vec::new(),
+            tip_history: Vec::new(),
             user_word_count: 0,
             user_turns: 0,
             interlocutor_turns: 0,
@@ -131,7 +135,15 @@ impl FeedbackState {
     }
 
     fn can_emit(&self, critical: bool) -> bool {
-        let gap = if critical {
+        // Post-price/objection suppression: 8s de silencio para no interrumpir negociación
+        if let Some(t) = self.last_price_signal_at {
+            if t.elapsed() < Duration::from_secs(8) {
+                return false;
+            }
+        }
+        // Primer minuto: gap mínimo 30s para no abrumar al inicio
+        let session_secs = self.session_start.elapsed().as_secs();
+        let gap = if session_secs < 60 || critical {
             Duration::from_secs(30)
         } else {
             Duration::from_secs(120)
@@ -177,11 +189,15 @@ impl FeedbackState {
         }
     }
 
-    fn record_tip(&mut self, tip: String) {
+    fn record_tip(&mut self, update: CoachTipUpdate) {
         self.last_tip_at = Some(Instant::now());
-        self.previous_tips.push(tip);
+        self.previous_tips.push(update.tip.clone());
         if self.previous_tips.len() > 10 {
             self.previous_tips.remove(0);
+        }
+        self.tip_history.push(update);
+        if self.tip_history.len() > 20 {
+            self.tip_history.remove(0);
         }
     }
 }
@@ -335,6 +351,14 @@ pub async fn start<R: Runtime + 'static>(app: AppHandle<R>) -> Result<(), String
                 last_interlocutor.as_deref(),
             );
 
+            // Suprimir 8s después de señal de precio/objeción para no interrumpir negociación
+            let has_price_or_objection = signals.iter().any(|s| {
+                s.signal_id.contains("price") || s.signal_id.contains("objection")
+            });
+            if has_price_or_objection {
+                st.last_price_signal_at = Some(Instant::now());
+            }
+
             let has_critical = signals
                 .iter()
                 .any(|s| matches!(s.priority, SignalPriority::Critical));
@@ -439,7 +463,7 @@ pub async fn start<R: Runtime + 'static>(app: AppHandle<R>) -> Result<(), String
                     if let Some(tip_text) = nudge_tip {
                         // Tip heurístico listo — no necesita Ollama
                         let update = CoachTipUpdate {
-                            tip: tip_text.clone(),
+                            tip: tip_text,
                             tip_type: "observation".to_string(),
                             category,
                             priority: severity,
@@ -449,7 +473,7 @@ pub async fn start<R: Runtime + 'static>(app: AppHandle<R>) -> Result<(), String
                         };
                         let _ = app_bg.emit("coach-tip-update", &update);
                         if let Ok(mut st) = state_bg.lock() {
-                            st.record_tip(tip_text);
+                            st.record_tip(update);
                         }
                     } else {
                         // Nudge sin tip predefinido → llamar a Ollama
@@ -544,12 +568,11 @@ async fn call_ollama_and_emit<R: Runtime>(
             if let Some(update) =
                 parse_gemma_response(&raw, trigger.as_deref(), session_secs)
             {
-                let tip_text = update.tip.clone();
                 let _ = app.emit("coach-tip-update", &update);
-                if let Ok(mut st) = state.lock() {
-                    st.record_tip(tip_text);
-                }
                 info!("💡 Coach tip emitted: {}", update.tip);
+                if let Ok(mut st) = state.lock() {
+                    st.record_tip(update);
+                }
             } else {
                 warn!("Coach: Ollama respondió pero no se pudo parsear JSON");
                 // Liberar el rate-limit para no bloquear el siguiente intento
@@ -568,6 +591,29 @@ async fn call_ollama_and_emit<R: Runtime>(
     }
 }
 
+fn is_quality_tip(tip: &CoachTipUpdate) -> bool {
+    // Descartar tips con confianza demasiado baja
+    if tip.confidence < 0.3 {
+        return false;
+    }
+    // Descartar jerga abstracta — tips sin frase concreta
+    const BLOCKLIST: &[&str] = &[
+        "empatiza", "rapport", "spin", "latte", "heard", "framework",
+        "conecta", "escucha activa", "meddpicc", "genera confianza",
+    ];
+    let lower = tip.tip.to_lowercase();
+    if BLOCKLIST.iter().any(|w| lower.contains(w)) {
+        return false;
+    }
+    // Tips correctivos/observacionales deben incluir frase textual (comilla o dos puntos)
+    if matches!(tip.tip_type.as_str(), "corrective" | "observation") {
+        if !tip.tip.contains('\'') && !tip.tip.contains(':') {
+            return false;
+        }
+    }
+    true
+}
+
 fn parse_gemma_response(
     raw: &str,
     trigger: Option<&str>,
@@ -579,7 +625,7 @@ fn parse_gemma_response(
     if tip.is_empty() {
         return None;
     }
-    Some(CoachTipUpdate {
+    let update = CoachTipUpdate {
         tip,
         tip_type: parsed
             .tip_type
@@ -589,7 +635,20 @@ fn parse_gemma_response(
         confidence: parsed.confidence.unwrap_or(0.5),
         trigger: trigger.map(str::to_string),
         timestamp_secs: session_secs as u64,
-    })
+    };
+    if !is_quality_tip(&update) {
+        warn!("Coach: tip descartado por filtro de calidad (confidence={:.2}, tip='{}')", update.confidence, update.tip);
+        return None;
+    }
+    Some(update)
+}
+
+/// Devuelve el historial de tips de la sesión activa (para `coach_get_session_tips`).
+pub fn get_session_tips() -> Vec<CoachTipUpdate> {
+    let Ok(outer) = FEEDBACK_STATE.lock() else { return Vec::new(); };
+    let Some(ref arc) = *outer else { return Vec::new(); };
+    let Ok(state) = arc.lock() else { return Vec::new(); };
+    state.tip_history.clone()
 }
 
 fn extract_json(text: &str) -> Option<String> {

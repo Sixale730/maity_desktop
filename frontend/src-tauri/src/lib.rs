@@ -937,6 +937,7 @@ pub fn run() {
             coach::commands::coach_download_gguf_model,
             coach::commands::coach_switch_model,
             coach::commands::coach_delete_gguf_model,
+            coach::commands::coach_get_session_tips,
             coach::commands::open_floating_coach,
             coach::commands::close_floating_coach,
             coach::commands::floating_toggle_compact,

@@ -1,58 +1,27 @@
 'use client';
 
-import React, { useEffect, useState, useRef } from 'react';
-import { listen } from '@tauri-apps/api/event';
+import React from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { Sparkles, ExternalLink } from 'lucide-react';
+import { useCoachTips } from '@/hooks/useCoachTips';
 
-interface CoachTipUpdate {
-  tip: string;
-  tip_type: string;
-  category: string;
-  priority: string;
-  confidence: number;
-  trigger?: string;
-  timestamp_secs: number;
-}
+const priorityColor = (priority: string) => {
+  switch (priority) {
+    case 'critical': return 'text-red-400';
+    case 'important': return 'text-amber-400';
+    default: return 'text-emerald-400';
+  }
+};
 
 export function LiveFeedbackPanel() {
-  const [tip, setTip] = useState<CoachTipUpdate | null>(null);
-  const [age, setAge] = useState(0);
-  const tipReceivedAt = useRef<number>(0);
-
-  useEffect(() => {
-    const unlisten = listen<CoachTipUpdate>('coach-tip-update', (event) => {
-      setTip(event.payload);
-      tipReceivedAt.current = Date.now();
-      setAge(0);
-    });
-
-    return () => {
-      unlisten.then((fn) => fn());
-    };
-  }, []);
-
-  // Update displayed age every 5 seconds
-  useEffect(() => {
-    if (!tip) return;
-    const interval = setInterval(() => {
-      const elapsed = Math.round((Date.now() - tipReceivedAt.current) / 1000);
-      setAge(elapsed);
-    }, 5000);
-    return () => clearInterval(interval);
-  }, [tip]);
+  const { tips } = useCoachTips(3);
 
   const openFloat = () => {
     invoke('open_floating_coach').catch(console.error);
   };
 
-  const priorityColor = (priority: string) => {
-    switch (priority) {
-      case 'critical': return 'text-red-400';
-      case 'important': return 'text-amber-400';
-      default: return 'text-emerald-400';
-    }
-  };
+  // Más reciente primero para el stack visual
+  const visibleTips = [...tips].reverse();
 
   return (
     <div className="rounded-xl border border-border bg-card/50 p-3 space-y-2">
@@ -75,24 +44,32 @@ export function LiveFeedbackPanel() {
         </button>
       </div>
 
-      {/* Tip content */}
-      {tip ? (
-        <div className="space-y-1">
-          <div className="flex items-start gap-2">
-            <Sparkles className={`w-3.5 h-3.5 mt-0.5 shrink-0 ${priorityColor(tip.priority)}`} />
-            <p className="text-sm text-foreground leading-snug">{tip.tip}</p>
-          </div>
-          <div className="flex items-center gap-2 pl-5">
-            <span className="text-xs text-muted-foreground/60 capitalize">{tip.category}</span>
-            {age > 0 && (
-              <>
-                <span className="text-muted-foreground/30">·</span>
-                <span className="text-xs text-muted-foreground/60">
-                  hace {age < 60 ? `${age}s` : `${Math.round(age / 60)}min`}
-                </span>
-              </>
-            )}
-          </div>
+      {/* Stack de tips — más reciente arriba con más opacidad */}
+      {visibleTips.length > 0 ? (
+        <div className="space-y-2">
+          {visibleTips.map((tip, idx) => {
+            const isLatest = idx === 0;
+            return (
+              <div
+                key={`${tip.timestamp_secs}-${idx}`}
+                className={`transition-opacity ${isLatest ? 'opacity-100' : 'opacity-40'}`}
+              >
+                <div className="flex items-start gap-2">
+                  <Sparkles
+                    className={`w-3.5 h-3.5 mt-0.5 shrink-0 ${isLatest ? priorityColor(tip.priority) : 'text-muted-foreground'}`}
+                  />
+                  <p className={`text-sm leading-snug ${isLatest ? 'text-foreground' : 'text-muted-foreground'}`}>
+                    {tip.tip}
+                  </p>
+                </div>
+                {isLatest && (
+                  <div className="pl-5 mt-0.5">
+                    <span className="text-xs text-muted-foreground/60 capitalize">{tip.category}</span>
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
       ) : (
         <p className="text-xs text-muted-foreground/60 pl-4">

@@ -97,16 +97,23 @@ pub fn detect_possessive_language(text: &str) -> bool {
 
 // ─── Detectores de comunicación personal (V3.1) ──────────────────────────────
 
-/// Detecta muletillas verbales del usuario
+/// Detecta muletillas verbales del usuario (umbral ≥ 4 para reducir falsos positivos)
 pub fn detect_filler_words(text: &str) -> bool {
     let lower = text.to_lowercase();
-    let words: Vec<&str> = lower.split_whitespace().collect();
-    let fillers = ["este", "eh", "mm", "mmm", "o sea", "digamos", "básicamente",
-                   "basicalmente", "literalmente", "de hecho", "la verdad"];
-    let count = words.iter()
-        .filter(|w| fillers.iter().any(|f| w.contains(f)))
-        .count();
-    count >= 3
+    // Muletillas de varias palabras — revisar en texto completo
+    const MULTI: &[&str] = &["o sea", "de hecho", "como que", "la verdad", "o bien"];
+    let mut count = MULTI.iter().filter(|f| lower.contains(*f)).count();
+    // Muletillas de una palabra — revisar token a token para evitar falsos positivos
+    const SINGLE: &[&str] = &[
+        "este", "eh", "mm", "mmm", "pues", "tipo", "nomás", "nomas",
+        "básicamente", "basicalmente", "literalmente", "digamos",
+    ];
+    for word in lower.split_whitespace() {
+        if SINGLE.iter().any(|f| word == *f) {
+            count += 1;
+        }
+    }
+    count >= 4
 }
 
 /// Detecta habla atropellada (oraciones sin pausas naturales)
@@ -126,27 +133,36 @@ pub fn detect_question_drought(text: &str, session_duration_sec: u32) -> bool {
     !has_question && session_duration_sec > 180
 }
 
-/// Detecta espiral negativa (usuario usa mucho lenguaje negativo)
+/// Detecta espiral negativa — ≥ 2 frases de bloqueo en el mismo turno (prioridad Critical)
 pub fn detect_negative_spiral(text: &str) -> bool {
     let lower = text.to_lowercase();
-    let negatives = ["no puedo", "no es posible", "no tenemos", "no hay",
-                     "imposible", "nunca", "jamás", "jamas", "difícil", "dificil"];
-    let count = negatives.iter().filter(|n| lower.contains(*n)).count();
+    const NEGATIVES: &[&str] = &[
+        "no puedo", "no es posible", "no tenemos", "no hay",
+        "imposible", "es la política", "es la politica",
+        "no se puede", "no está en mis manos", "no esta en mis manos",
+        "no aplica", "no existe esa opción", "no existe esa opcion",
+        "no podemos hacer eso",
+    ];
+    let count = NEGATIVES.iter().filter(|n| lower.contains(*n)).count();
     count >= 2
 }
 
-/// Detecta brecha de empatía (respuesta muy fría/técnica a emoción del interlocutor)
+/// Detecta brecha de empatía: interlocutor emocional + respuesta del usuario sin validación
 pub fn detect_empathy_gap(user_text: &str, interlocutor_text: &str) -> bool {
-    let interlocutor_emotional = detect_frustration(interlocutor_text);
-    if !interlocutor_emotional {
+    if !detect_frustration(interlocutor_text) {
+        return false;
+    }
+    // Solo evaluar respuestas con suficiente contenido (≥ 8 palabras)
+    if user_text.split_whitespace().count() < 8 {
         return false;
     }
     let user_lower = user_text.to_lowercase();
-    let empathetic = ["entiendo", "comprendo", "imagino", "debe ser difícil",
-                      "tiene sentido", "lo escucho", "te escucho"]
-        .iter()
-        .any(|e| user_lower.contains(e));
-    !empathetic
+    const EMPATHY_WORDS: &[&str] = &[
+        "entiendo", "comprendo", "imagino", "debe ser difícil", "debe ser dificil",
+        "tiene sentido", "lo escucho", "te escucho", "veo que", "tienes razón",
+        "tienes razon", "lamento", "siento que", "lo siento", "entiendo tu",
+    ];
+    !EMPATHY_WORDS.iter().any(|e| user_lower.contains(e))
 }
 
 // ─── Análisis de turno ────────────────────────────────────────────────────────
@@ -211,7 +227,7 @@ pub fn analyze_turn(
             signals.push(ConversationSignal {
                 signal_id: "user_negative_spiral".to_string(),
                 category: SignalCategory::Pacing,
-                priority: SignalPriority::Important,
+                priority: SignalPriority::Critical,
                 source: "user".to_string(),
                 description: "Espiral negativa — demasiado lenguaje negativo".to_string(),
             });
@@ -274,7 +290,7 @@ pub fn analyze_turn_with_context(
                 signals.insert(0, ConversationSignal {
                     signal_id: "user_empathy_gap".to_string(),
                     category: SignalCategory::Rapport,
-                    priority: SignalPriority::Important,
+                    priority: SignalPriority::Critical,
                     source: "user".to_string(),
                     description: "Brecha de empatía — respuesta fría a emoción del cliente".to_string(),
                 });
