@@ -203,6 +203,8 @@ export function PipelineSelector() {
   const isRunningSetup = setupStep !== 'idle' && setupStep !== 'complete' && setupStep !== 'error';
   const hasAnyInstalled = ggufModels.some((m) => m.installed);
   const needsInitialSetup = !hasAnyInstalled;
+  const qwenModels = ggufModels.filter((m) => m.id.startsWith('qwen'));
+  const gemmaModels = ggufModels.filter((m) => m.id.startsWith('gemma'));
 
   const sttLabel = (stt: RecordingPipeline['stt']) => {
     switch (stt.type) {
@@ -337,127 +339,161 @@ export function PipelineSelector() {
           </div>
         )}
 
-        {/* Model list */}
-        {!isRunningSetup && !needsInitialSetup && ggufModels.length > 0 && (
+        {/* Qwen model list — shown after initial setup */}
+        {!isRunningSetup && !needsInitialSetup && qwenModels.length > 0 && (
           <div className="space-y-2">
-            {ggufModels.map((model) => {
-              const dl = downloads[model.id];
-              const isDownloading = !!dl;
-              const serverRunning = engineStatus.some(
-                (s) => s.model_id === model.id && s.running
-              );
+            {gemmaModels.length > 0 && (
+              <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Qwen</p>
+            )}
+            {qwenModels.map((model) => (
+              <ModelCard
+                key={model.id}
+                model={model}
+                dl={downloads[model.id]}
+                serverRunning={engineStatus.some((s) => s.model_id === model.id && s.running)}
+                onDownload={handleDownloadModel}
+                onSwitch={handleSwitchModel}
+              />
+            ))}
+          </div>
+        )}
 
-              return (
-                <div
-                  key={model.id}
-                  className="rounded-lg border border-border bg-card/50 p-3 space-y-2"
-                >
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="flex items-start gap-2 min-w-0">
-                      {model.installed ? (
-                        <CheckCircle className="w-4 h-4 text-emerald-500 shrink-0 mt-0.5" />
-                      ) : (
-                        <Circle className="w-4 h-4 text-muted-foreground/40 shrink-0 mt-0.5" />
-                      )}
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <span className="text-sm font-medium text-foreground">{model.name}</span>
-                          <UseCaseBadge use_case={model.use_case} />
-                          <span className="text-xs text-muted-foreground">{model.size_gb} GB</span>
-                          {serverRunning && (
-                            <span className="flex items-center gap-1 text-xs text-emerald-500">
-                              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 inline-block" />
-                              activo
-                            </span>
-                          )}
-                        </div>
-                        <p className="text-xs text-muted-foreground mt-0.5">{model.description}</p>
-                      </div>
-                    </div>
-
-                    {/* Actions */}
-                    <div className="flex items-center gap-1.5 shrink-0">
-                      {model.installed && !model.is_tips_model && model.use_case !== 'eval' && (
-                        <button
-                          onClick={() => handleSwitchModel('tips', model.id)}
-                          className="text-xs text-primary hover:text-primary/80 transition-colors whitespace-nowrap"
-                        >
-                          Usar para tips
-                        </button>
-                      )}
-                      {model.installed && !model.is_eval_model && model.use_case !== 'tips' && (
-                        <button
-                          onClick={() => handleSwitchModel('eval', model.id)}
-                          className="text-xs text-primary hover:text-primary/80 transition-colors whitespace-nowrap"
-                        >
-                          Usar para eval
-                        </button>
-                      )}
-                      {!model.installed && !isDownloading && (
-                        <button
-                          onClick={() => handleDownloadModel(model.id)}
-                          className="flex items-center gap-1 text-xs text-primary hover:text-primary/80 transition-colors"
-                        >
-                          <Download className="w-3.5 h-3.5" />
-                          Descargar
-                        </button>
-                      )}
-                    </div>
-                  </div>
-
-                  {/* Role badges */}
-                  {model.installed && (model.is_tips_model || model.is_eval_model) && (
-                    <div className="flex gap-1.5 ml-6">
-                      {model.is_tips_model && (
-                        <span className="inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-xs bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
-                          <Zap className="w-3 h-3" />
-                          Tips en vivo
-                        </span>
-                      )}
-                      {model.is_eval_model && (
-                        <span className="inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-xs bg-blue-500/10 text-blue-600 dark:text-blue-400">
-                          <BarChart2 className="w-3 h-3" />
-                          Evaluación
-                        </span>
-                      )}
-                    </div>
-                  )}
-
-                  {/* Download progress */}
-                  {isDownloading && (
-                    <div className="ml-6 space-y-1">
-                      <div className="flex items-center justify-between text-xs text-muted-foreground">
-                        <span className="flex items-center gap-1">
-                          <Loader2 className="w-3 h-3 animate-spin" />
-                          Descargando...
-                        </span>
-                        <div className="flex items-center gap-2">
-                          <span className="tabular-nums">
-                            {dl.downloaded_mb.toFixed(0)}/{dl.total_mb.toFixed(0)} MB ({dl.progress}%)
-                          </span>
-                          <button
-                            onClick={() => invoke('cancel_gguf_download', { modelId: model.id })}
-                            className="text-muted-foreground hover:text-destructive transition-colors"
-                            title="Cancelar descarga"
-                          >
-                            <X className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
-                      </div>
-                      <div className="h-1 w-full bg-muted rounded-full overflow-hidden">
-                        <div
-                          className="h-full bg-primary rounded-full transition-all duration-300"
-                          style={{ width: `${dl.progress}%` }}
-                        />
-                      </div>
-                    </div>
-                  )}
-                </div>
-              );
-            })}
+        {/* Gemma model list — always visible (download works independently of initial setup) */}
+        {!isRunningSetup && gemmaModels.length > 0 && (
+          <div className={`space-y-2 ${!needsInitialSetup && qwenModels.length > 0 ? 'mt-3' : ''}`}>
+            <div className="flex items-center justify-between">
+              <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Gemma 3</p>
+              {needsInitialSetup && (
+                <span className="text-xs text-muted-foreground">Requiere llama-server instalado</span>
+              )}
+            </div>
+            {gemmaModels.map((model) => (
+              <ModelCard
+                key={model.id}
+                model={model}
+                dl={downloads[model.id]}
+                serverRunning={engineStatus.some((s) => s.model_id === model.id && s.running)}
+                onDownload={handleDownloadModel}
+                onSwitch={handleSwitchModel}
+              />
+            ))}
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+interface ModelCardProps {
+  model: GgufModelInfo;
+  dl: DownloadState | undefined;
+  serverRunning: boolean;
+  onDownload: (id: string) => void;
+  onSwitch: (purpose: 'tips' | 'eval', id: string) => void;
+}
+
+function ModelCard({ model, dl, serverRunning, onDownload, onSwitch }: ModelCardProps) {
+  const isDownloading = !!dl;
+
+  return (
+    <div className="rounded-lg border border-border bg-card/50 p-3 space-y-2">
+      <div className="flex items-start justify-between gap-2">
+        <div className="flex items-start gap-2 min-w-0">
+          {model.installed ? (
+            <CheckCircle className="w-4 h-4 text-emerald-500 shrink-0 mt-0.5" />
+          ) : (
+            <Circle className="w-4 h-4 text-muted-foreground/40 shrink-0 mt-0.5" />
+          )}
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-sm font-medium text-foreground">{model.name}</span>
+              <UseCaseBadge use_case={model.use_case} />
+              <span className="text-xs text-muted-foreground">{model.size_gb} GB</span>
+              {serverRunning && (
+                <span className="flex items-center gap-1 text-xs text-emerald-500">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 inline-block" />
+                  activo
+                </span>
+              )}
+            </div>
+            <p className="text-xs text-muted-foreground mt-0.5">{model.description}</p>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-1.5 shrink-0">
+          {model.installed && !model.is_tips_model && model.use_case !== 'eval' && (
+            <button
+              onClick={() => onSwitch('tips', model.id)}
+              className="text-xs text-primary hover:text-primary/80 transition-colors whitespace-nowrap"
+            >
+              Usar para tips
+            </button>
+          )}
+          {model.installed && !model.is_eval_model && model.use_case !== 'tips' && (
+            <button
+              onClick={() => onSwitch('eval', model.id)}
+              className="text-xs text-primary hover:text-primary/80 transition-colors whitespace-nowrap"
+            >
+              Usar para eval
+            </button>
+          )}
+          {!model.installed && !isDownloading && (
+            <button
+              onClick={() => onDownload(model.id)}
+              className="flex items-center gap-1 text-xs text-primary hover:text-primary/80 transition-colors"
+            >
+              <Download className="w-3.5 h-3.5" />
+              Descargar
+            </button>
+          )}
+        </div>
+      </div>
+
+      {model.installed && (model.is_tips_model || model.is_eval_model) && (
+        <div className="flex gap-1.5 ml-6">
+          {model.is_tips_model && (
+            <span className="inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-xs bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
+              <Zap className="w-3 h-3" />
+              Tips en vivo
+            </span>
+          )}
+          {model.is_eval_model && (
+            <span className="inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-xs bg-blue-500/10 text-blue-600 dark:text-blue-400">
+              <BarChart2 className="w-3 h-3" />
+              Evaluación
+            </span>
+          )}
+        </div>
+      )}
+
+      {isDownloading && dl && (
+        <div className="ml-6 space-y-1">
+          <div className="flex items-center justify-between text-xs text-muted-foreground">
+            <span className="flex items-center gap-1">
+              <Loader2 className="w-3 h-3 animate-spin" />
+              Descargando...
+            </span>
+            <div className="flex items-center gap-2">
+              <span className="tabular-nums">
+                {dl.downloaded_mb.toFixed(0)}/{dl.total_mb.toFixed(0)} MB ({dl.progress}%)
+              </span>
+              <button
+                onClick={() => invoke('cancel_gguf_download', { modelId: model.id })}
+                className="text-muted-foreground hover:text-destructive transition-colors"
+                title="Cancelar descarga"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          </div>
+          <div className="h-1 w-full bg-muted rounded-full overflow-hidden">
+            <div
+              className="h-full bg-primary rounded-full transition-all duration-300"
+              style={{ width: `${dl.progress}%` }}
+            />
+          </div>
+        </div>
+      )}
     </div>
   );
 }
