@@ -60,6 +60,8 @@ struct FeedbackState {
     last_nudge_type: Option<String>,
     previous_tips: Vec<String>,
     tip_history: Vec<CoachTipUpdate>,
+    emitted_tips: std::collections::HashSet<String>,
+    emitted_tips_order: Vec<String>,
     user_word_count: u64,
     user_turns: u32,
     interlocutor_turns: u32,
@@ -80,6 +82,8 @@ impl FeedbackState {
             last_nudge_type: None,
             previous_tips: Vec::new(),
             tip_history: Vec::new(),
+            emitted_tips: std::collections::HashSet::new(),
+            emitted_tips_order: Vec::new(),
             user_word_count: 0,
             user_turns: 0,
             interlocutor_turns: 0,
@@ -191,6 +195,18 @@ impl FeedbackState {
 
     fn record_tip(&mut self, update: CoachTipUpdate) {
         self.last_tip_at = Some(Instant::now());
+
+        // Dedup semántico: registrar tip lowercase para filtrar repeticiones del LLM
+        let key = update.tip.to_lowercase();
+        self.emitted_tips.insert(key.clone());
+        self.emitted_tips_order.push(key.clone());
+        if self.emitted_tips_order.len() > 20 {
+            if let Some(oldest) = self.emitted_tips_order.first().cloned() {
+                self.emitted_tips_order.remove(0);
+                self.emitted_tips.remove(&oldest);
+            }
+        }
+
         self.previous_tips.push(update.tip.clone());
         if self.previous_tips.len() > 10 {
             self.previous_tips.remove(0);
@@ -546,44 +562,76 @@ async fn call_ollama_and_emit<R: Runtime>(
         trigger.as_deref(),
     );
 
-    let result = generate_summary(
-        &HTTP_CLIENT,
-        &LLMProvider::Ollama,
-        model,
-        "",
-        COACH_SYSTEM_PROMPT,
-        &user_prompt,
-        Some(endpoint),
-        None,
-        None,
-        Some(0.3),
-        None,
-        None,
-        Some(&cancel),
-    )
-    .await;
+    // Prioridad: gemma3:1b (más rápido, menor latencia) → Ollama/llama-server
+    // gemma3:4b es para análisis post-reunión, no para tips en vivo
+    let result = if let Ok(data_dir) = app.path().app_data_dir() {
+        let r1b = generate_summary(
+            &HTTP_CLIENT,
+            &LLMProvider::BuiltInAI,
+            "gemma3:1b",
+            "",
+            COACH_SYSTEM_PROMPT,
+            &user_prompt,
+            None, None, None, Some(0.3), None,
+            Some(&data_dir),
+            Some(&cancel),
+        )
+        .await;
+        if r1b.is_ok() {
+            r1b
+        } else {
+            generate_summary(
+                &HTTP_CLIENT,
+                &LLMProvider::Ollama,
+                model,
+                "",
+                COACH_SYSTEM_PROMPT,
+                &user_prompt,
+                Some(endpoint),
+                None, None, Some(0.3), None, None,
+                Some(&cancel),
+            )
+            .await
+        }
+    } else {
+        generate_summary(
+            &HTTP_CLIENT,
+            &LLMProvider::Ollama,
+            model,
+            "",
+            COACH_SYSTEM_PROMPT,
+            &user_prompt,
+            Some(endpoint),
+            None, None, Some(0.3), None, None,
+            Some(&cancel),
+        )
+        .await
+    };
 
     match result {
         Ok(raw) => {
-            if let Some(update) =
-                parse_gemma_response(&raw, trigger.as_deref(), session_secs)
-            {
+            if let Some(update) = parse_gemma_response(&raw, trigger.as_deref(), session_secs) {
+                // Dedup: descartar si el LLM generó un tip ya emitido antes
+                let key = update.tip.to_lowercase();
+                let is_dup = state.lock().map(|s| s.emitted_tips.contains(&key)).unwrap_or(false);
+                if is_dup {
+                    warn!("Coach: tip duplicado descartado (dedup)");
+                    return;
+                }
                 let _ = app.emit("coach-tip-update", &update);
                 info!("💡 Coach tip emitted: {}", update.tip);
                 if let Ok(mut st) = state.lock() {
                     st.record_tip(update);
                 }
             } else {
-                warn!("Coach: Ollama respondió pero no se pudo parsear JSON");
-                // Liberar el rate-limit para no bloquear el siguiente intento
+                warn!("Coach: LLM respondió pero no se pudo parsear JSON");
                 if let Ok(mut st) = state.lock() {
                     st.last_tip_at = None;
                 }
             }
         }
         Err(e) => {
-            warn!("Coach Ollama call failed: {}", e);
-            // Liberar el rate-limit — Ollama puede no estar disponible
+            warn!("Coach LLM call failed: {}", e);
             if let Ok(mut st) = state.lock() {
                 st.last_tip_at = None;
             }

@@ -62,7 +62,7 @@ pub fn evaluate_nudge(snapshot: &ConversationSnapshot) -> NudgeResult {
         return NudgeResult {
             should_nudge: true,
             nudge_type: Some(NudgeType::LowHealthScore),
-            tip: Some("Atención: la conversación necesita mejorar. Pregúntale: '¿cómo te sientes con lo que hemos hablado?'".to_string()),
+            tip: None,
             severity: "high".to_string(),
             category: "rapport".to_string(),
         };
@@ -72,7 +72,7 @@ pub fn evaluate_nudge(snapshot: &ConversationSnapshot) -> NudgeResult {
         return NudgeResult {
             should_nudge: true,
             nudge_type: Some(NudgeType::Monologue),
-            tip: Some("Llevas más de 1 minuto hablando. Haz pausa y pregunta: '¿esto te hace sentido?'".to_string()),
+            tip: None,
             severity: "high".to_string(),
             category: "pacing".to_string(),
         };
@@ -83,7 +83,7 @@ pub fn evaluate_nudge(snapshot: &ConversationSnapshot) -> NudgeResult {
             return NudgeResult {
                 should_nudge: true,
                 nudge_type: Some(NudgeType::TalkRatioDominant),
-                tip: Some("Estás hablando mucho. Pregúntale: '¿qué opinas tú sobre esto?'".to_string()),
+                tip: None,
                 severity: "medium".to_string(),
                 category: "pacing".to_string(),
             };
@@ -94,7 +94,7 @@ pub fn evaluate_nudge(snapshot: &ConversationSnapshot) -> NudgeResult {
         return NudgeResult {
             should_nudge: true,
             nudge_type: Some(NudgeType::SpeakingTooFast),
-            tip: Some("Estás acelerando. Baja el ritmo y respira entre oraciones.".to_string()),
+            tip: None,
             severity: "medium".to_string(),
             category: "pacing".to_string(),
         };
@@ -104,7 +104,7 @@ pub fn evaluate_nudge(snapshot: &ConversationSnapshot) -> NudgeResult {
         return NudgeResult {
             should_nudge: true,
             nudge_type: Some(NudgeType::NoQuestions),
-            tip: Some("Llevas rato sin preguntar. Pregúntale: '¿qué es lo más importante para ti?'".to_string()),
+            tip: None,
             severity: "low".to_string(),
             category: "discovery".to_string(),
         };
@@ -115,7 +115,7 @@ pub fn evaluate_nudge(snapshot: &ConversationSnapshot) -> NudgeResult {
             return NudgeResult {
                 should_nudge: true,
                 nudge_type: Some(NudgeType::NextStepsReminder),
-                tip: Some("Llevas 20+ min. Pregúntale: '¿cuáles serían los siguientes pasos?'".to_string()),
+                tip: None,
                 severity: "low".to_string(),
                 category: "closing".to_string(),
             };
