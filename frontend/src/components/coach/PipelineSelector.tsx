@@ -10,6 +10,7 @@ import {
   Download,
   Loader2,
   RefreshCw,
+  Trash2,
   X,
   Zap,
   BarChart2,
@@ -200,6 +201,16 @@ export function PipelineSelector() {
     }
   };
 
+  const handleDeleteModel = async (modelId: string) => {
+    try {
+      await invoke('coach_delete_gguf_model', { modelId });
+      await refreshModels();
+      await refreshEngineStatus();
+    } catch (e) {
+      console.error('Error deleting model:', e);
+    }
+  };
+
   const isRunningSetup = setupStep !== 'idle' && setupStep !== 'complete' && setupStep !== 'error';
   const hasAnyInstalled = ggufModels.some((m) => m.installed);
   const needsInitialSetup = !hasAnyInstalled;
@@ -353,6 +364,7 @@ export function PipelineSelector() {
                 serverRunning={engineStatus.some((s) => s.model_id === model.id && s.running)}
                 onDownload={handleDownloadModel}
                 onSwitch={handleSwitchModel}
+                onDelete={handleDeleteModel}
               />
             ))}
           </div>
@@ -375,6 +387,7 @@ export function PipelineSelector() {
                 serverRunning={engineStatus.some((s) => s.model_id === model.id && s.running)}
                 onDownload={handleDownloadModel}
                 onSwitch={handleSwitchModel}
+                onDelete={handleDeleteModel}
               />
             ))}
           </div>
@@ -390,9 +403,10 @@ interface ModelCardProps {
   serverRunning: boolean;
   onDownload: (id: string) => void;
   onSwitch: (purpose: 'tips' | 'eval', id: string) => void;
+  onDelete: (id: string) => void;
 }
 
-function ModelCard({ model, dl, serverRunning, onDownload, onSwitch }: ModelCardProps) {
+function ModelCard({ model, dl, serverRunning, onDownload, onSwitch, onDelete }: ModelCardProps) {
   const isDownloading = !!dl;
 
   return (
@@ -444,6 +458,15 @@ function ModelCard({ model, dl, serverRunning, onDownload, onSwitch }: ModelCard
             >
               <Download className="w-3.5 h-3.5" />
               Descargar
+            </button>
+          )}
+          {model.installed && !isDownloading && (
+            <button
+              onClick={() => onDelete(model.id)}
+              className="text-muted-foreground hover:text-destructive transition-colors"
+              title="Eliminar modelo"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
             </button>
           )}
         </div>

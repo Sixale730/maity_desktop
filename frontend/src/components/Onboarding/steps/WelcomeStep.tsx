@@ -5,7 +5,7 @@ import { OnboardingContainer } from '../OnboardingContainer';
 import { useOnboarding } from '@/contexts/OnboardingContext';
 
 export function WelcomeStep() {
-  const { goNext, completeOnboarding } = useOnboarding();
+  const { goNext, goToStep } = useOnboarding();
   const [isMac, setIsMac] = useState(false);
 
   useEffect(() => {
@@ -20,17 +20,11 @@ export function WelcomeStep() {
     checkPlatform();
   }, []);
 
-  const handleStart = async () => {
+  const handleStart = () => {
     if (isMac) {
-      // macOS needs permissions step
-      goNext();
+      goNext();       // macOS → paso 2 (Permisos)
     } else {
-      // Windows: complete onboarding directly
-      try {
-        await completeOnboarding();
-      } catch (error) {
-        console.error('Failed to complete onboarding:', error);
-      }
+      goToStep(3);    // Windows → salta permisos, va directo a descarga de modelos
     }
   };
 

@@ -493,14 +493,14 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
   }, []);
 
   const goToStep = useCallback((step: number) => {
-    setCurrentStep(Math.max(1, Math.min(step, 2)));
+    setCurrentStep(Math.max(1, Math.min(step, 3)));
   }, []);
 
   const goNext = useCallback(() => {
     setCurrentStep((prev: number) => {
       const next = prev + 1;
-      // Don't go past step 2
-      return Math.min(next, 2);
+      // Don't go past step 3
+      return Math.min(next, 3);
     });
   }, []);
 

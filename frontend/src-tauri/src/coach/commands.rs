@@ -384,6 +384,41 @@ pub async fn coach_switch_model<R: Runtime + 'static>(
     Ok(())
 }
 
+/// Elimina el archivo GGUF descargado de un modelo. Detiene llama-server si el
+/// modelo está activo en algún puerto.
+#[tauri::command]
+pub async fn coach_delete_gguf_model<R: Runtime + 'static>(
+    app: AppHandle<R>,
+    model_id: String,
+) -> Result<(), String> {
+    model_registry::get_model(&model_id)
+        .ok_or_else(|| format!("Modelo '{}' no reconocido", model_id))?;
+
+    let path = llama_engine::model_file_path(&app, &model_id)
+        .ok_or_else(|| format!("No se pudo resolver la ruta del modelo '{}'", model_id))?;
+
+    if !path.exists() {
+        return Err(format!("El modelo '{}' no está descargado", model_id));
+    }
+
+    // Detener el servidor si usa este modelo
+    for port in [11434u16, 11435u16] {
+        if llama_engine::get_running_status()
+            .iter()
+            .any(|s| s.port == port && s.running)
+        {
+            llama_engine::stop_server(port);
+        }
+    }
+
+    tokio::fs::remove_file(&path)
+        .await
+        .map_err(|e| format!("Error eliminando modelo '{}': {}", model_id, e))?;
+
+    info!("🗑️  Modelo GGUF eliminado: {}", model_id);
+    Ok(())
+}
+
 // ─── Helpers privados ─────────────────────────────────────────────────────────
 
 async fn get_tips_model_id(pool: &sqlx::SqlitePool) -> String {
