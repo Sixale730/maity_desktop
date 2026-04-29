@@ -40,10 +40,13 @@ function AudioBars({ rms, scales, color }: { rms: number; scales: number[]; colo
   );
 }
 
+// §3.9 Adapters de la metadata centralizada (tipMeta.ts) a clases Tailwind para
+// no romper el look actual. Importar desde tipMeta directamente cuando se haga
+// la migracion full-glass de Fase 6.
+import { getPriorityColor } from '@/components/coach/tipMeta';
 const borderColor = (p: string) =>
   p === 'critical' ? 'border-red-500/50' : p === 'important' ? 'border-amber-500/50' : 'border-emerald-500/30';
-const iconColor = (p: string) =>
-  p === 'critical' ? 'text-red-400' : p === 'important' ? 'text-amber-400' : 'text-emerald-400';
+const iconStyle = (p: string): React.CSSProperties => ({ color: getPriorityColor(p) });
 
 export default function CoachFloatPage() {
   const { tips, latestTip } = useCoachTips(20);
@@ -208,7 +211,7 @@ export default function CoachFloatPage() {
               <>
                 <div className={`rounded-lg border p-3 ${borderColor(latestTip.priority)}`}>
                   <div className="flex items-start gap-2">
-                    <Sparkles className={`w-4 h-4 mt-0.5 shrink-0 ${iconColor(latestTip.priority)}`} />
+                    <Sparkles className="w-4 h-4 mt-0.5 shrink-0" style={iconStyle(latestTip.priority)} />
                     <p className="text-sm text-white leading-snug">{latestTip.tip}</p>
                   </div>
                   {(latestTip.category || latestTip.trigger) && (

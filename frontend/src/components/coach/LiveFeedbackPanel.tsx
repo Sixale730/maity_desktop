@@ -4,14 +4,13 @@ import React from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { Sparkles, ExternalLink } from 'lucide-react';
 import { useCoachTips } from '@/hooks/useCoachTips';
+import { getPriorityColor } from '@/components/coach/tipMeta';
 
-const priorityColor = (priority: string) => {
-  switch (priority) {
-    case 'critical': return 'text-red-400';
-    case 'important': return 'text-amber-400';
-    default: return 'text-emerald-400';
-  }
-};
+// §3.9 Color de prioridad inline (style en lugar de className porque tipMeta.ts da hex,
+// no clases tailwind). Mantenemos parity visual con LiveFeedbackPanel previo.
+const priorityIconStyle = (priority: string): React.CSSProperties => ({
+  color: getPriorityColor(priority),
+});
 
 export function LiveFeedbackPanel() {
   const { tips } = useCoachTips(3);
@@ -56,7 +55,8 @@ export function LiveFeedbackPanel() {
               >
                 <div className="flex items-start gap-2">
                   <Sparkles
-                    className={`w-3.5 h-3.5 mt-0.5 shrink-0 ${isLatest ? priorityColor(tip.priority) : 'text-muted-foreground'}`}
+                    className="w-3.5 h-3.5 mt-0.5 shrink-0"
+                    style={isLatest ? priorityIconStyle(tip.priority) : undefined}
                   />
                   <p className={`text-sm leading-snug ${isLatest ? 'text-foreground' : 'text-muted-foreground'}`}>
                     {tip.tip}
