@@ -11,7 +11,7 @@ use crate::summary::llm_client::{generate_summary, LLMProvider};
 use once_cell::sync::Lazy;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, Manager, Runtime};
+use tauri::{AppHandle, Emitter, LogicalPosition, Manager, Runtime};
 use tracing::{info, warn};
 
 static HTTP_CLIENT: Lazy<Client> = Lazy::new(Client::new);
@@ -221,7 +221,7 @@ pub async fn open_floating_coach<R: Runtime>(app: AppHandle<R>) -> Result<(), St
     // para el efecto glass — ver §3.2 en page.tsx. Riesgo conocido §3.4:
     // Win10 con DWM desactivado puede tener artefactos; aceptado en V1.
     // Resize 320x430 -> 320x480 (decision §14.8) para acomodar gauge + split.
-    tauri::WebviewWindowBuilder::new(
+    let window = tauri::WebviewWindowBuilder::new(
         &app,
         "coach-float",
         tauri::WebviewUrl::App("coach-float".into()),
@@ -236,6 +236,22 @@ pub async fn open_floating_coach<R: Runtime>(app: AppHandle<R>) -> Result<(), St
     .transparent(true)
     .build()
     .map_err(|e| format!("Error abriendo ventana flotante: {}", e))?;
+
+    // §3.5 Auto-posicionar top-right del monitor activo con margen 32px.
+    // Antes la ventana salia en posicion default del OS (centro o ultima usada),
+    // que tapaba contenido principal de la llamada. Top-right es donde el usuario
+    // espera un asistente persistente.
+    if let Ok(Some(monitor)) = window.primary_monitor() {
+        let scale = monitor.scale_factor();
+        let size = monitor.size();
+        let mon_w = size.width as f64 / scale;
+        let mon_h = size.height as f64 / scale;
+        let target_x = (mon_w - 320.0 - 32.0).max(0.0);
+        let target_y = 80.0_f64.min((mon_h - 480.0 - 32.0).max(0.0));
+        if let Err(e) = window.set_position(LogicalPosition::new(target_x, target_y)) {
+            warn!("No se pudo posicionar la ventana flotante top-right: {}", e);
+        }
+    }
 
     info!("✅ Floating coach window opened");
     Ok(())
