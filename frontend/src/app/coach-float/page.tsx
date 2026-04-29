@@ -106,6 +106,21 @@ export default function CoachFloatPage() {
 
   const close = () => invoke('close_floating_coach').catch(console.error);
 
+  // §3.6 Drag fallback programatico para Windows. data-tauri-drag-region puede
+  // no funcionar consistentemente en Win con decorations:false + transparent:true.
+  // El handler ignora botones no-izq y elementos interactivos para no atrapar clicks.
+  const handleDragMouseDown = async (e: React.MouseEvent) => {
+    if (e.button !== 0) return;
+    const target = e.target as HTMLElement;
+    if (target.closest('button, a, input, textarea, select, [role="button"]')) return;
+    try {
+      const { getCurrentWebviewWindow } = await import('@tauri-apps/api/webviewWindow');
+      await getCurrentWebviewWindow().startDragging();
+    } catch (err) {
+      console.warn('startDragging failed', err);
+    }
+  };
+
   const sendFeedback = async (rating: 'like' | 'dislike') => {
     if (!latestTip || feedback !== null) return;
     setFeedback(rating);
@@ -161,9 +176,12 @@ export default function CoachFloatPage() {
       }}
     >
 
-      {/* Title bar */}
+      {/* Title bar — §3.6 doble drag: data-tauri-drag-region nativo + onMouseDown
+          fallback que llama startDragging() programatico (Win con decorations:false
+          + transparent:true a veces ignora el atributo nativo). */}
       <div
         data-tauri-drag-region
+        onMouseDown={handleDragMouseDown}
         className="flex items-center justify-between px-3 py-2 border-b border-white/10 cursor-move shrink-0"
       >
         <div className="flex items-center gap-2">
