@@ -70,6 +70,10 @@ struct FeedbackState {
     mono_start: Option<Instant>,
     last_interlocutor_text: Option<String>,
     turn_ctx: TurnContext,
+    /// §1.5.1 TTFB primer tip: timestamp del primer tip emitido en la sesion.
+    /// None hasta que record_tip() detecta que es el primero. Se emite "coach-metrics"
+    /// con ttfb_first_tip_ms en ese momento.
+    first_tip_emitted_at: Option<Instant>,
 }
 
 impl FeedbackState {
@@ -90,6 +94,7 @@ impl FeedbackState {
             mono_start: None,
             last_interlocutor_text: None,
             turn_ctx: TurnContext::default(),
+            first_tip_emitted_at: None,
         }
     }
 
@@ -208,6 +213,17 @@ impl FeedbackState {
             health_score: self.health_score(),
             last_nudge_type: self.last_nudge_type.clone(),
         }
+    }
+
+    /// §1.5.1 Marca el primer tip emitido y devuelve el TTFB en ms si fue el primero.
+    /// Devuelve None si ya habia sido marcado en esta sesion.
+    fn mark_first_tip_if_needed(&mut self) -> Option<u128> {
+        if self.first_tip_emitted_at.is_some() {
+            return None;
+        }
+        let elapsed_ms = self.session_start.elapsed().as_millis();
+        self.first_tip_emitted_at = Some(Instant::now());
+        Some(elapsed_ms)
     }
 
     fn record_tip(&mut self, update: CoachTipUpdate) {
@@ -605,8 +621,19 @@ pub async fn start<R: Runtime + 'static>(app: AppHandle<R>) -> Result<(), String
                             timestamp_secs: dur as u64,
                         };
                         let _ = app_bg.emit("coach-tip-update", &update);
-                        if let Ok(mut st) = state_bg.lock() {
+                        let ttfb_ms = if let Ok(mut st) = state_bg.lock() {
+                            let ttfb = st.mark_first_tip_if_needed();
                             st.record_tip(update);
+                            ttfb
+                        } else {
+                            None
+                        };
+                        if let Some(ms) = ttfb_ms {
+                            info!("[METRIC] TTFB primer tip: {}ms", ms);
+                            let _ = app_bg.emit(
+                                "coach-metrics",
+                                serde_json::json!({ "ttfb_first_tip_ms": ms as u64 }),
+                            );
                         }
                     } else {
                         // Nudge sin tip predefinido → llamar a Ollama
@@ -770,8 +797,19 @@ async fn call_ollama_and_emit<R: Runtime>(
     }
     let _ = app.emit("coach-tip-update", &update);
     info!("💡 Coach tip emitted: {}", update.tip);
-    if let Ok(mut st) = state.lock() {
+    let ttfb_ms = if let Ok(mut st) = state.lock() {
+        let ttfb = st.mark_first_tip_if_needed();
         st.record_tip(update);
+        ttfb
+    } else {
+        None
+    };
+    if let Some(ms) = ttfb_ms {
+        info!("[METRIC] TTFB primer tip: {}ms", ms);
+        let _ = app.emit(
+            "coach-metrics",
+            serde_json::json!({ "ttfb_first_tip_ms": ms as u64 }),
+        );
     }
 }
 
