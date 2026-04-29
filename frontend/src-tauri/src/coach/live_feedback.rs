@@ -141,6 +141,21 @@ impl FeedbackState {
     }
 
     fn can_emit(&self, critical: bool) -> bool {
+        // §5.3 Hard cap: maximo 6 tips por minuto, red de seguridad sin importar otras condiciones.
+        // Con cooldown 20s el limite teorico de un solo trigger es 3 tips/min; 6 deja margen 2x
+        // para cuando sumemos triggers adicionales (heuristico 3s en Fase 3). El usuario percibe
+        // "coach atento" sin spam.
+        let now_secs = self.session_secs() as u64;
+        let cutoff = now_secs.saturating_sub(60);
+        let recent = self
+            .tip_history
+            .iter()
+            .filter(|t| t.timestamp_secs >= cutoff)
+            .count();
+        if recent >= 6 {
+            return false;
+        }
+
         // Post-price/objection suppression: 8s de silencio para no interrumpir negociación
         if let Some(t) = self.last_price_signal_at {
             if t.elapsed() < Duration::from_secs(8) {
@@ -218,7 +233,9 @@ impl FeedbackState {
             self.previous_tips.remove(0);
         }
         self.tip_history.push(update);
-        if self.tip_history.len() > 20 {
+        // Cap 100 (mas alto que los 20 originales) para que el hard cap §5.3 cuente de forma
+        // confiable los tips del ultimo minuto. El frontend muestra solo los ultimos 50.
+        if self.tip_history.len() > 100 {
             self.tip_history.remove(0);
         }
     }
