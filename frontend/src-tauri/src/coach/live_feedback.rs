@@ -39,6 +39,21 @@ static LLM_PARSE_FAILED: AtomicU64 = AtomicU64::new(0);
 
 // ─── Public types (emitted to frontend) ──────────────────────────────────────
 
+/// §1.2 Payload emitido como evento "meeting-metrics" cada 3s mientras hay grabacion.
+/// El frontend lo consume para pintar HealthGauge (health 0-100), TalkSplitBar
+/// (user/interlocutor %) y para dedup defensivo cuando aun no hay datos
+/// (user_turns + interlocutor_turns == 0 -> "Esperando audio…").
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MeetingMetrics {
+    pub health: u8,                 // 0-100
+    pub user_talk_pct: u8,          // 0-100 (% del tiempo de palabra del usuario)
+    pub interlocutor_talk_pct: u8,  // 0-100 (suma con user = 100)
+    pub session_secs: u32,
+    pub user_turns: u32,
+    pub interlocutor_turns: u32,
+}
+
 /// Payload emitido como evento "coach-tip-update".
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CoachTipUpdate {
