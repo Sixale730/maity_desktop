@@ -11,8 +11,6 @@ import React from 'react';
 
 const SIZE = 96;
 const STROKE = 8;
-const RADIUS = (SIZE - STROKE) / 2;
-const CIRCUMFERENCE = 2 * Math.PI * RADIUS;
 
 function colorFor(value: number): string {
   if (value >= 70) return '#1bea9a';
