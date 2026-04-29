@@ -216,18 +216,24 @@ pub async fn open_floating_coach<R: Runtime>(app: AppHandle<R>) -> Result<(), St
         return Ok(());
     }
 
+    // §3.1 Ventana translucida (transparent + skip_taskbar=false). El root
+    // del flotante usa background rgba(15,16,24,0.92) + backdrop-filter blur
+    // para el efecto glass — ver §3.2 en page.tsx. Riesgo conocido §3.4:
+    // Win10 con DWM desactivado puede tener artefactos; aceptado en V1.
+    // Resize 320x430 -> 320x480 (decision §14.8) para acomodar gauge + split.
     tauri::WebviewWindowBuilder::new(
         &app,
         "coach-float",
         tauri::WebviewUrl::App("coach-float".into()),
     )
     .title("Maity Coach")
-    .inner_size(320.0, 430.0)
-    .min_inner_size(280.0, 200.0)
+    .inner_size(320.0, 480.0)
+    .min_inner_size(280.0, 240.0)
     .always_on_top(true)
     .decorations(false)
     .resizable(true)
-    .skip_taskbar(true)
+    .skip_taskbar(false)
+    .transparent(true)
     .build()
     .map_err(|e| format!("Error abriendo ventana flotante: {}", e))?;
 
@@ -249,10 +255,11 @@ pub async fn close_floating_coach<R: Runtime>(app: AppHandle<R>) -> Result<(), S
 pub async fn floating_toggle_compact<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
     if let Some(w) = app.get_webview_window("coach-float") {
         let size = w.inner_size().map_err(|e| e.to_string())?;
+        // §3.1 Expandido 320x480 (antes 320x430) para el header de gauge + split.
         let (new_w, new_h): (u32, u32) = if size.height > 250 {
             (320, 80)
         } else {
-            (320, 430)
+            (320, 480)
         };
         w.set_size(tauri::Size::Physical(tauri::PhysicalSize {
             width: new_w,

@@ -147,8 +147,19 @@ export default function CoachFloatPage() {
   }
 
   // ── Expanded ────────────────────────────────────────────────────
+  // §3.2 Glass background con backdrop-filter blur 22px. La ventana Tauri es
+  // transparent (§3.1), asi que el bg rgba(15,16,24,0.92) + blur dan el efecto.
   return (
-    <div className="h-screen flex flex-col bg-zinc-900 border border-white/10 rounded-xl overflow-hidden select-none">
+    <div
+      className="h-screen flex flex-col overflow-hidden select-none rounded-xl"
+      style={{
+        background: 'rgba(15, 16, 24, 0.92)',
+        backdropFilter: 'blur(22px) saturate(180%)',
+        WebkitBackdropFilter: 'blur(22px) saturate(180%)',
+        border: '1px solid rgba(255,255,255,0.14)',
+        boxShadow: '0 12px 40px rgba(0,0,0,0.5)',
+      }}
+    >
 
       {/* Title bar */}
       <div
