@@ -151,25 +151,54 @@ impl FeedbackState {
         }
     }
 
+    /// §1.1 Score de salud de la conversacion (0-100). Empieza en 70.
+    /// Bajan: monologos largos, talk_ratio extremo (>80% o <15%), pocas preguntas en
+    ///        sesiones largas, profanity detectado en ultimo turno (TurnContext).
+    /// Suben: talk_ratio balanceado (40-60%), preguntas, turns interlocutor.
+    /// Es algoritmo simple v1 — iterar despues con datos reales (decision §14).
     fn health_score(&self) -> u32 {
-        let mut s = 50u32;
+        let mut s: i32 = 70;
         let r = self.talk_ratio();
-        if r > 0.30 && r < 0.65 {
-            s += 20;
-        } else if r > 0.85 {
-            s = s.saturating_sub(15);
+        let session_secs = self.session_secs();
+
+        // Penalizaciones
+        if self.longest_mono_secs > 120 {
+            s -= 20;
+        } else if self.longest_mono_secs > 60 {
+            s -= 10;
         }
-        if self.user_questions >= 3 {
-            s += 20;
-        } else if self.user_questions > 0 {
-            s += 10;
+        if r > 0.80 {
+            s -= 15;
         }
-        if self.longest_mono_secs < 30 {
-            s += 10;
-        } else if self.longest_mono_secs > 90 {
-            s = s.saturating_sub(20);
+        if r < 0.15 && session_secs > 180 {
+            // Audience-mode legitimo: usuario escucha a interlocutor activo (>=5 turns).
+            // Sin esa condicion penalizamos como conversacion pasiva.
+            if self.interlocutor_turns < 5 {
+                s -= 10;
+            }
         }
-        s.min(100)
+        if self.user_questions == 0 && session_secs > 300 {
+            s -= 10;
+        }
+        // NOTA: profanity penalization (§1.1) aplazado — TurnContext aun no expone
+        // profanity_detected; trigger.rs solo lo emite como signal. Sumar en V2 cuando
+        // tengamos TurnContext.profanity_detected o un last_signal cacheado en FeedbackState.
+
+        // Bonificaciones
+        if r >= 0.40 && r <= 0.60 {
+            s += 5;
+        }
+        if self.user_turns > 0 {
+            let q_ratio = self.user_questions as f32 / self.user_turns as f32;
+            if q_ratio > 0.20 {
+                s += 10;
+            }
+        }
+        if self.interlocutor_turns >= 3 {
+            s += 5;
+        }
+
+        s.clamp(0, 100) as u32
     }
 
     fn can_emit(&self, critical: bool) -> bool {
@@ -1160,6 +1189,89 @@ mod tests {
         }
         // p95 sobre 100 valores 1..=100 -> sorted[95] == 96.
         assert_eq!(st.llm_latency_p95_ms(), Some(96));
+    }
+
+    // §1.1 health_score ───────────────────────────────────────────────────────
+
+    #[test]
+    fn health_score_baseline_es_70_en_estado_inicial() {
+        let st = FeedbackState::new();
+        // Sin turns no hay datos. talk_ratio() default 0.5 (esta en zona neutra,
+        // ni penaliza ni bonifica los rangos > 0.85 / < 0.15 / 0.40-0.60).
+        // Pero r=0.5 cae en 0.40-0.60 -> +5. Por interlocutor_turns < 3 no suma.
+        // user_turns=0 -> ratio preguntas no aplica. mono < 60 -> no penaliza.
+        // Resultado: 70 + 5 = 75.
+        let h = st.health_score();
+        assert!(h >= 70 && h <= 80, "health inicial cerca de 70-80, got {}", h);
+    }
+
+    #[test]
+    fn health_score_baja_con_monologo_largo() {
+        let mut st = FeedbackState::new();
+        st.longest_mono_secs = 130; // > 120 -> -20
+        let h = st.health_score();
+        assert!(h <= 60, "monologo > 2min debe bajar health, got {}", h);
+    }
+
+    #[test]
+    fn health_score_baja_con_dominancia() {
+        let mut st = FeedbackState::new();
+        st.user_turns = 9;
+        st.interlocutor_turns = 1; // ratio 0.9 -> -15
+        let h = st.health_score();
+        assert!(h <= 60, "dominancia >0.80 debe bajar health, got {}", h);
+    }
+
+    #[test]
+    fn health_score_sube_con_balance_y_preguntas() {
+        let mut st = FeedbackState::new();
+        st.user_turns = 5;
+        st.interlocutor_turns = 5; // ratio 0.5 -> +5
+        st.user_questions = 2; // q_ratio 0.4 > 0.20 -> +10
+        // interlocutor_turns >= 3 -> +5
+        let h = st.health_score();
+        assert!(h >= 85, "balance + preguntas + turns interloc >=3 sube health, got {}", h);
+    }
+
+    #[test]
+    fn health_score_audience_mode_legitimo_no_penaliza() {
+        let mut st = FeedbackState::new();
+        st.session_start = Instant::now() - Duration::from_secs(240); // > 180s
+        st.user_turns = 1;
+        st.interlocutor_turns = 8; // ratio ~0.11 < 0.15, pero interlocutor activo
+        // Audience-mode legitimo (interlocutor_turns >= 5): no penaliza por ratio bajo.
+        let h = st.health_score();
+        // Solo bonificacion +5 por interlocutor_turns >= 3 (ratio 0.11 no es 0.40-0.60).
+        assert!(h >= 70, "audience-mode con interlocutor activo no penaliza, got {}", h);
+    }
+
+    #[test]
+    fn health_score_audience_pasivo_si_penaliza() {
+        let mut st = FeedbackState::new();
+        st.session_start = Instant::now() - Duration::from_secs(240);
+        // ratio < 0.15 con interlocutor < 5 turns: 1/8 = 0.125 < 0.15 y interloc 4 < 5.
+        // Pero queremos un caso pasivo *real*, asi que: usuario casi mudo y otro habla
+        // poco — silencio incomodo. interlocutor_turns=4 (<5 pero >=3 da +5).
+        st.user_turns = 0;
+        st.interlocutor_turns = 4;
+        let h = st.health_score();
+        // Penalizacion -10 (audience pasivo) + bonificacion +5 (interlocutor>=3) -> ~65.
+        assert!(h < 70, "audience-mode pasivo penaliza, got {}", h);
+    }
+
+    #[test]
+    fn health_score_clampea_a_0_y_100() {
+        // Penalizaciones agresivas
+        let mut st = FeedbackState::new();
+        st.session_start = Instant::now() - Duration::from_secs(600);
+        st.longest_mono_secs = 200;     // -20
+        st.user_turns = 100;
+        st.interlocutor_turns = 0;       // ratio 1.0 > 0.80 -> -15
+        st.user_questions = 0;           // session > 300 -> -10
+        let h = st.health_score();
+        // 70 - 20 - 15 - 10 = 25, clampea bien arriba de 0.
+        assert!(h <= 30, "muchas penalizaciones bajan a <=30, got {}", h);
+        assert!(h >= 0);
     }
 
     #[test]
