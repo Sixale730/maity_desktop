@@ -625,6 +625,82 @@ pub fn run() {
                 // implicit download — if the model is missing the
                 // post-auth auto-download flow handles it as before.
                 audio::transcription::preload_transcription_engine(app_handle_for_config.clone()).await;
+
+                // Preload el sidecar Built-in AI (Gemma) en background para que
+                // el primer tip/chat sea rápido. Sin esto, la primera interacción
+                // con el coach paga ~30s de cold-start (spawn helper + cargar
+                // GGUF en VRAM/RAM). Con preload, el modelo ya está caliente.
+                let app_for_sidecar = app_handle_for_config.clone();
+                tauri::async_runtime::spawn(async move {
+                    let app_data_dir = match app_for_sidecar.path().app_data_dir() {
+                        Ok(p) => p,
+                        Err(e) => {
+                            log::warn!("Sidecar preload skipped — sin app_data_dir: {}", e);
+                            return;
+                        }
+                    };
+
+                    log::info!("🦙 Pre-init sidecar Built-in AI...");
+                    if let Err(e) = summary::summary_engine::client::init_sidecar_manager(
+                        app_data_dir.clone(),
+                    )
+                    .await
+                    {
+                        log::warn!("Sidecar init falló (no fatal): {}", e);
+                        return;
+                    }
+
+                    // Resolver modelo configurado en DB; fallback a default.
+                    let coach_model = if let Some(state) =
+                        app_for_sidecar.try_state::<crate::state::AppState>()
+                    {
+                        let pool = state.db_manager.pool();
+                        sqlx::query_scalar::<_, String>(
+                            "SELECT tips_model_id FROM coach_settings WHERE id = '1'",
+                        )
+                        .fetch_optional(pool)
+                        .await
+                        .ok()
+                        .flatten()
+                        .unwrap_or_else(|| "gemma3-4b-q4".to_string())
+                    } else {
+                        "gemma3-4b-q4".to_string()
+                    };
+
+                    let builtin_id = crate::coach::llama_engine::map_to_builtin_id(&coach_model);
+
+                    // Verificar que el modelo está descargado antes de warmup.
+                    if !crate::coach::llama_engine::is_model_installed(&app_for_sidecar, &coach_model)
+                    {
+                        log::info!(
+                            "Sidecar warmup skipped — modelo '{}' no descargado todavía",
+                            coach_model
+                        );
+                        return;
+                    }
+
+                    log::info!(
+                        "🦙 Sidecar warmup: cargando '{}' (builtin={}) en RAM/VRAM...",
+                        coach_model,
+                        builtin_id
+                    );
+                    let warm_start = std::time::Instant::now();
+                    match summary::summary_engine::generate_with_builtin(
+                        &app_data_dir,
+                        builtin_id,
+                        "warmup",
+                        "ok",
+                        None,
+                    )
+                    .await
+                    {
+                        Ok(_) => log::info!(
+                            "✅ Sidecar Built-in AI warm en {:.1}s — primer tip/chat será rápido",
+                            warm_start.elapsed().as_secs_f32()
+                        ),
+                        Err(e) => log::warn!("Sidecar warmup falló (no fatal): {}", e),
+                    }
+                });
             });
 
             // Initialize bundled templates directory for dynamic template discovery
