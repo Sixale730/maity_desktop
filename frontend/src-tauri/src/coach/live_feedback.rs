@@ -84,6 +84,11 @@ struct FeedbackState {
     /// Se calcula p95 al cierre de sesion para detectar tail latency. 4b es ~2-4x mas
     /// lento que 1b; si p95 > 6s hay que rever cooldown 20s o considerar 3b como fallback.
     llm_latencies_ms: VecDeque<u64>,
+    /// §1.5.4 Contadores de origen de tips. Sweet spot esperado: ~30-50% heuristico.
+    /// Si sale 100% LLM, el loop §6 no esta disparando (bug). Si sale 80% heuristico,
+    /// las plantillas dominan y el LLM no aporta valor (revisar umbrales o quitar §6).
+    tips_from_llm: u32,
+    tips_from_heuristic: u32,
 }
 
 impl FeedbackState {
@@ -106,6 +111,8 @@ impl FeedbackState {
             turn_ctx: TurnContext::default(),
             first_tip_emitted_at: None,
             llm_latencies_ms: VecDeque::with_capacity(100),
+            tips_from_llm: 0,
+            tips_from_heuristic: 0,
         }
     }
 
@@ -689,6 +696,7 @@ pub async fn start<R: Runtime + 'static>(app: AppHandle<R>) -> Result<(), String
                         let _ = app_bg.emit("coach-tip-update", &update);
                         let ttfb_ms = if let Ok(mut st) = state_bg.lock() {
                             let ttfb = st.mark_first_tip_if_needed();
+                            st.tips_from_heuristic += 1; // §1.5.4 nudge predefinido = heuristico
                             st.record_tip(update);
                             ttfb
                         } else {
@@ -781,6 +789,7 @@ pub async fn start<R: Runtime + 'static>(app: AppHandle<R>) -> Result<(), String
                     );
                     let ttfb_ms = if let Ok(mut st) = state_he.lock() {
                         let ttfb = st.mark_first_tip_if_needed();
+                        st.tips_from_heuristic += 1; // §1.5.4 ratio
                         st.record_tip(update);
                         ttfb
                     } else {
@@ -822,24 +831,31 @@ pub fn stop<R: Runtime>(app: &AppHandle<R>) {
         }
     }
 
-    // §1.5.2 + §1.5.3 Emit summary de metricas LLM al cierre de sesion.
+    // §1.5.2 + §1.5.3 + §1.5.4 Emit summary de metricas al cierre de sesion.
     let parse_total = LLM_PARSE_TOTAL.load(Ordering::Relaxed);
     let parse_failed = LLM_PARSE_FAILED.load(Ordering::Relaxed);
-    let p95_ms = if let Ok(outer) = FEEDBACK_STATE.lock() {
-        outer
-            .as_ref()
-            .and_then(|arc| arc.lock().ok().and_then(|s| s.llm_latency_p95_ms()))
+    let (p95_ms, tips_llm, tips_heur) = if let Ok(outer) = FEEDBACK_STATE.lock() {
+        match outer.as_ref().and_then(|arc| arc.lock().ok()) {
+            Some(s) => (s.llm_latency_p95_ms(), s.tips_from_llm, s.tips_from_heuristic),
+            None => (None, 0, 0),
+        }
     } else {
-        None
+        (None, 0, 0)
     };
     let parse_failed_pct = if parse_total > 0 {
         (parse_failed as f64 / parse_total as f64) * 100.0
     } else {
         0.0
     };
+    let total_tips = tips_llm + tips_heur;
+    let heur_pct = if total_tips > 0 {
+        (tips_heur as f64 / total_tips as f64) * 100.0
+    } else {
+        0.0
+    };
     info!(
-        "[METRIC] session-summary llm_parse_total={} llm_parse_failed={} ({:.1}%) llm_latency_p95_ms={:?}",
-        parse_total, parse_failed, parse_failed_pct, p95_ms
+        "[METRIC] session-summary llm_parse_total={} llm_parse_failed={} ({:.1}%) llm_latency_p95_ms={:?} tips_from_llm={} tips_from_heuristic={} heuristic_pct={:.1}%",
+        parse_total, parse_failed, parse_failed_pct, p95_ms, tips_llm, tips_heur, heur_pct
     );
     let _ = app.emit(
         "coach-metrics",
@@ -849,6 +865,9 @@ pub fn stop<R: Runtime>(app: &AppHandle<R>) {
                 "llm_parse_failed": parse_failed,
                 "llm_parse_failed_pct": parse_failed_pct,
                 "llm_latency_p95_ms": p95_ms,
+                "tips_from_llm": tips_llm,
+                "tips_from_heuristic": tips_heur,
+                "heuristic_pct": heur_pct,
             }
         }),
     );
@@ -987,6 +1006,7 @@ async fn call_ollama_and_emit<R: Runtime>(
     info!("💡 Coach tip emitted: {}", update.tip);
     let ttfb_ms = if let Ok(mut st) = state.lock() {
         let ttfb = st.mark_first_tip_if_needed();
+        st.tips_from_llm += 1; // §1.5.4 ratio LLM vs heuristico
         st.record_tip(update);
         ttfb
     } else {
