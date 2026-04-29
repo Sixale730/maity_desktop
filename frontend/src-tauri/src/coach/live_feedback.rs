@@ -62,8 +62,6 @@ struct FeedbackState {
     last_nudge_type: Option<String>,
     previous_tips: Vec<String>,
     tip_history: Vec<CoachTipUpdate>,
-    emitted_tips: std::collections::HashSet<String>,
-    emitted_tips_order: Vec<String>,
     user_word_count: u64,
     user_turns: u32,
     interlocutor_turns: u32,
@@ -84,8 +82,6 @@ impl FeedbackState {
             last_nudge_type: None,
             previous_tips: Vec::new(),
             tip_history: Vec::new(),
-            emitted_tips: std::collections::HashSet::new(),
-            emitted_tips_order: Vec::new(),
             user_word_count: 0,
             user_turns: 0,
             interlocutor_turns: 0,
@@ -217,17 +213,10 @@ impl FeedbackState {
     fn record_tip(&mut self, update: CoachTipUpdate) {
         self.last_tip_at = Some(Instant::now());
 
-        // Dedup semántico: registrar tip lowercase para filtrar repeticiones del LLM
-        let key = update.tip.to_lowercase();
-        self.emitted_tips.insert(key.clone());
-        self.emitted_tips_order.push(key.clone());
-        if self.emitted_tips_order.len() > 20 {
-            if let Some(oldest) = self.emitted_tips_order.first().cloned() {
-                self.emitted_tips_order.remove(0);
-                self.emitted_tips.remove(&oldest);
-            }
-        }
-
+        // Dedup semantico: previous_tips es la fuente de verdad para Jaccard §4.2.
+        // No usamos HashSet exact-match porque el LLM genera parafrasis y la comparacion
+        // caracter-por-caracter las acepta como distintas; Jaccard sobre tokens >2 chars
+        // las atrapa.
         self.previous_tips.push(update.tip.clone());
         if self.previous_tips.len() > 10 {
             self.previous_tips.remove(0);
@@ -239,6 +228,46 @@ impl FeedbackState {
             self.tip_history.remove(0);
         }
     }
+}
+
+// §4.2 Dedup Jaccard 0.85 sobre ultimos 5 tips ────────────────────────────────
+//
+// Por que 0.85 sobre 5: ventana suficiente para atrapar parafrasis recientes sin
+// descartar ideas legitimas que se repiten 30 min despues. 0.85 tolera reformulaciones
+// leves (articulos, conectores) pero atrapa "que te preocupa" vs "que es lo que te preocupa".
+// Filtramos tokens <=2 chars para que sea sobre contenido semantico, no estructura sintactica.
+
+const TIP_DEDUP_THRESHOLD: f32 = 0.85;
+const TIP_DEDUP_WINDOW: usize = 5;
+
+fn tip_similarity(a: &str, b: &str) -> f32 {
+    let normalize = |s: &str| {
+        s.to_lowercase()
+            .split_whitespace()
+            .filter(|t| t.len() > 2)
+            .map(String::from)
+            .collect::<std::collections::HashSet<String>>()
+    };
+    let ta = normalize(a);
+    let tb = normalize(b);
+    if ta.is_empty() || tb.is_empty() {
+        return 0.0;
+    }
+    let inter = ta.intersection(&tb).count() as f32;
+    let union = ta.union(&tb).count() as f32;
+    if union == 0.0 {
+        0.0
+    } else {
+        inter / union
+    }
+}
+
+fn is_duplicate_tip(candidate: &str, previous: &[String]) -> bool {
+    previous
+        .iter()
+        .rev()
+        .take(TIP_DEDUP_WINDOW)
+        .any(|prev| tip_similarity(prev, candidate) >= TIP_DEDUP_THRESHOLD)
 }
 
 // ─── Inbound event payload ────────────────────────────────────────────────────
@@ -729,11 +758,14 @@ async fn call_ollama_and_emit<R: Runtime>(
         return;
     };
 
-    // Dedup: descartar si el LLM generó un tip ya emitido antes
-    let key = update.tip.to_lowercase();
-    let is_dup = state.lock().map(|s| s.emitted_tips.contains(&key)).unwrap_or(false);
+    // §4.2 Dedup Jaccard 0.85 contra ultimos 5 previous_tips. Atrapa parafrasis del LLM
+    // que el dedup exact-match anterior dejaba pasar.
+    let is_dup = state
+        .lock()
+        .map(|s| is_duplicate_tip(&update.tip, &s.previous_tips))
+        .unwrap_or(false);
     if is_dup {
-        warn!("Coach: tip duplicado descartado (dedup)");
+        warn!("Coach: tip duplicado descartado (Jaccard >= 0.85)");
         return;
     }
     let _ = app.emit("coach-tip-update", &update);
