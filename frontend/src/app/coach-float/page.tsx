@@ -6,17 +6,14 @@ import { invoke } from '@tauri-apps/api/core';
 import { Sparkles, Minus, Maximize2, ThumbsUp, ThumbsDown } from 'lucide-react';
 import { useCoachTips } from '@/hooks/useCoachTips';
 import { useMeetingMetrics } from '@/hooks/useMeetingMetrics';
+import { HealthGauge } from '@/components/coach/HealthGauge';
+import { TalkSplitBar } from '@/components/coach/TalkSplitBar';
 
 interface AudioLevels {
   micRms: number;
   micPeak: number;
   sysRms: number;
   sysPeak: number;
-}
-
-interface TranscriptUpdate {
-  text: string;
-  source_type: string;
 }
 
 type TipFeedback = 'like' | 'dislike' | null;
@@ -52,14 +49,10 @@ const iconStyle = (p: string): React.CSSProperties => ({ color: getPriorityColor
 export default function CoachFloatPage() {
   // §3.7 Cap historial 20 -> 50 para sesiones largas con buena cadencia.
   const { tips, latestTip } = useCoachTips(50);
-  // §2.3 Listener meeting-metrics. Vars renombradas con prefijo _ porque el
-  // render real (HealthGauge + TalkSplitBar) viene en el siguiente commit;
-  // mientras tanto el lint exige no-unused-vars y _ marca explicitamente que
-  // estan reservadas, no olvidadas.
-  const { metrics: _metrics, isWaitingForAudio: _isWaitingForAudio } = useMeetingMetrics();
+  // §2.3 + §2.4 Listener meeting-metrics + render HealthGauge + TalkSplitBar.
+  const { metrics, isWaitingForAudio } = useMeetingMetrics();
   const [compact, setCompact] = useState(false);
   const [levels, setLevels] = useState({ micRms: 0, sysRms: 0 });
-  const [words, setWords] = useState({ user: 0, inter: 0 });
   const [feedback, setFeedback] = useState<TipFeedback>(null);
   const meetingIdRef = useRef<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -77,20 +70,13 @@ export default function CoachFloatPage() {
   }, [tips.length]);
 
   useEffect(() => {
+    // §2.4 Quitamos el listener transcript-update + setWords: el split-bar
+    // ahora consume meeting-metrics, no contadores locales de palabras.
     const subs = [
       listen<AudioLevels>('recording-audio-levels', (e) => {
         setLevels({ micRms: e.payload.micRms, sysRms: e.payload.sysRms });
       }),
-      listen<TranscriptUpdate>('transcript-update', (e) => {
-        const count = e.payload.text.trim().split(/\s+/).filter(Boolean).length;
-        if (e.payload.source_type === 'user') {
-          setWords((w) => ({ ...w, user: w.user + count }));
-        } else {
-          setWords((w) => ({ ...w, inter: w.inter + count }));
-        }
-      }),
       listen('recording-start-complete', () => {
-        setWords({ user: 0, inter: 0 });
         setFeedback(null);
       }),
       listen<string>('early-meeting-id', (e) => {
@@ -101,8 +87,17 @@ export default function CoachFloatPage() {
   }, []);
 
   const isRecording = levels.micRms > 0 || levels.sysRms > 0;
-  const total = words.user + words.inter;
-  const userPct = total > 0 ? Math.round((words.user / total) * 100) : 50;
+
+  // §2.4 Contador de tiempo a partir de metrics.sessionSecs (fuente de verdad
+  // backend, evita drift con timers locales). Formato MM:SS o HH:MM:SS.
+  const sessionTime = (() => {
+    const secs = metrics?.sessionSecs ?? 0;
+    const h = Math.floor(secs / 3600);
+    const m = Math.floor((secs % 3600) / 60);
+    const s = secs % 60;
+    const pad = (n: number) => n.toString().padStart(2, '0');
+    return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${pad(m)}:${pad(s)}`;
+  })();
 
   const toggleCompact = () =>
     invoke('floating_toggle_compact')
@@ -189,23 +184,29 @@ export default function CoachFloatPage() {
           </div>
         </div>
         {isRecording && (
-          <span className="text-[10px] font-mono text-red-400 flex items-center gap-1">
-            <span className="w-1.5 h-1.5 rounded-full bg-red-500 inline-block animate-pulse" />
-            REC
-          </span>
+          <div className="flex items-center gap-2">
+            {/* §2.4 Timer de sesion (fuente: metrics.sessionSecs del backend) */}
+            <span className="text-[10px] font-mono text-zinc-300 tabular-nums">{sessionTime}</span>
+            <span className="text-[10px] font-mono text-red-400 flex items-center gap-1">
+              <span className="w-1.5 h-1.5 rounded-full bg-red-500 inline-block animate-pulse" />
+              REC
+            </span>
+          </div>
         )}
       </div>
 
-      {/* Word split bar */}
-      <div className="px-3 py-2 border-b border-white/5 shrink-0">
-        <div className="flex items-center justify-between text-[10px] text-zinc-500 mb-1">
-          <span>Tú {total > 0 ? `${userPct}%` : '—'}</span>
-          <span className="text-zinc-700">palabras</span>
-          <span>Ellos {total > 0 ? `${100 - userPct}%` : '—'}</span>
-        </div>
-        <div className="flex rounded-full overflow-hidden h-1.5 bg-white/5">
-          <div className="bg-[#485df4] transition-all duration-500" style={{ width: `${userPct}%` }} />
-          <div className="bg-emerald-500 transition-all duration-500" style={{ width: `${100 - userPct}%` }} />
+      {/* §2.4 Header de metricas: HealthGauge 96x96 + TalkSplitBar.
+          Reemplaza la barra word-split simplificada anterior. Datos vienen del
+          evento meeting-metrics (3s) — antes se calculaban a partir de
+          `words` (eventos transcript-update) que ya no son la fuente de verdad. */}
+      <div className="px-3 py-3 border-b border-white/5 shrink-0 flex items-center gap-3">
+        <HealthGauge value={metrics?.health ?? 70} />
+        <div className="flex-1">
+          <TalkSplitBar
+            userPct={metrics?.userTalkPct ?? 50}
+            interlocutorPct={metrics?.interlocutorTalkPct ?? 50}
+            empty={isWaitingForAudio}
+          />
         </div>
       </div>
 
