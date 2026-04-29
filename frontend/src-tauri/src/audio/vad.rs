@@ -48,25 +48,26 @@ impl ContinuousVadProcessor {
         let mut config = VadConfig::default();
         config.sample_rate = VAD_SAMPLE_RATE as usize;
 
-        // CONTINUOUS SPEECH FIX: Tuned for capturing complete 5+ second utterances
-        // Previous: 0.55/0.40 with 400ms redemption was fragmenting speech into 40ms segments
-        // New: More lenient thresholds + longer redemption for continuous speech
-        config.positive_speech_threshold = 0.50;  // Silero default - good for continuous speech
-        config.negative_speech_threshold = 0.35;  // Silero default - allows natural pauses
+        // SENSITIVE TUNING: thresholds bajos + pads extendidos para capturar voz suave,
+        // susurros e inicios/finales de oracion. Replica config probada en el repo de
+        // referencia (mismos valores en silero_rs durante meses sin falsos positivos
+        // perceptibles). Si aparecen falsos positivos por ruido, gate adicional via RMS
+        // en el pipeline.
+        config.positive_speech_threshold = 0.35;  // antes 0.50 — captura voz suave/acentuada
+        config.negative_speech_threshold = 0.25;  // antes 0.35 — cierra mas tarde, segmentos mas largos
 
         // CRITICAL FIX: Removed redemption_time capping to support long continuous speech
         // Previous: capped at 400ms, causing VAD to fragment 5-second speech into 40ms segments
         // New: Use full redemption_time from pipeline (2000ms) to bridge natural pauses
         config.redemption_time = Duration::from_millis(redemption_time_ms as u64);
-        config.pre_speech_pad = Duration::from_millis(150);   // FIX: Increased from 100ms to capture word beginnings (plosives P, T, K)
-        config.post_speech_pad = Duration::from_millis(400);  // Increased: more context at end
+        config.pre_speech_pad = Duration::from_millis(200);   // antes 150ms — mas contexto plosivas P/T/K
+        config.post_speech_pad = Duration::from_millis(500);  // antes 400ms — mas contexto al final
 
-        // FIX: Reduced from 250ms to 150ms to capture short words ("sí", "no", "ok")
-        // Whisper can handle segments >100ms, so 150ms is safe while preserving short affirmations
-        config.min_speech_time = Duration::from_millis(150);  // Capture short words
+        // antes 150ms — captura "si/no/ok" mas cortos. Parakeet/Whisper manejan >=100ms sin problema.
+        config.min_speech_time = Duration::from_millis(100);  // Capture short words
 
         debug!("Creating VAD session with: sample_rate={}Hz, redemption={}ms, min_speech={}ms, input_rate={}Hz",
-               VAD_SAMPLE_RATE, redemption_time_ms, 150, input_sample_rate);
+               VAD_SAMPLE_RATE, redemption_time_ms, 100, input_sample_rate);
 
         let session = VadSession::new(config)
             .map_err(|e| anyhow!("Failed to create VAD session: {:?}", e))?;
