@@ -331,7 +331,11 @@ pub async fn start<R: Runtime + 'static>(app: AppHandle<R>) -> Result<(), String
         installed
     };
     let window_secs = cfg.as_ref().map(|c| c.context_window_secs).unwrap_or(180);
-    let interval_secs = cfg.as_ref().map(|c| c.interval_secs).unwrap_or(45);
+    // §5.6 Default 15s (antes 45s). El nudge loop evalua talk_ratio/monologo/preguntas y
+    // dispara tips de pacing. A 45s se pierden monologos cortos: si el usuario empieza a
+    // monologar en el segundo 5, no recibe tip "haz pausa, pregunta" hasta el segundo 50.
+    // A 15s detectamos a tiempo sin saturar (cooldown 20s evita LLM calls innecesarios).
+    let interval_secs = cfg.as_ref().map(|c| c.interval_secs).unwrap_or(15);
 
     let token = CancellationToken::new();
     if let Ok(mut lock) = CANCEL_TOKEN.lock() {
