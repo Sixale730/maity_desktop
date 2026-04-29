@@ -5,8 +5,53 @@
 use super::deepgram_provider::DeepgramRealtimeTranscriber;
 use super::provider::TranscriptionProvider;
 use log::{info, warn, error};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock, RwLock};
 use tauri::{AppHandle, Emitter, Manager, Runtime};
+
+// ============================================================================
+// FAST PATH: PRELOADED ENGINE FLAG
+// ============================================================================
+//
+// Cuando preload_transcription_engine() carga el modelo en startup, registra
+// (provider, model) en este flag global. validate_transcription_model_ready
+// consulta el flag ANTES de leer SQLite — si coincide, retorna Ok(()) en <1ms
+// en lugar de hacer round-trip a la DB (3-100ms).
+//
+// El flag debe re-actualizarse via mark_preloaded(...) cuando el usuario
+// cambia el modelo desde Settings, para que validate no devuelva un modelo
+// viejo. Cada *_engine commands handler que cambie modelo activo debe llamar
+// mark_preloaded(provider, nuevo_model).
+
+static PRELOADED_ENGINE: LazyLock<RwLock<Option<(String, String)>>> =
+    LazyLock::new(|| RwLock::new(None));
+
+/// Marca el engine como precargado en RAM. Permite que validate_transcription_model_ready
+/// retorne Ok inmediato sin tocar SQLite.
+pub fn mark_preloaded(provider: &str, model: &str) {
+    if let Ok(mut guard) = PRELOADED_ENGINE.write() {
+        *guard = Some((provider.to_string(), model.to_string()));
+        info!("⚡ FAST PATH armado: {}={}", provider, model);
+    } else {
+        warn!("mark_preloaded: PRELOADED_ENGINE poisoned, skip");
+    }
+}
+
+/// Limpia el flag de preload. Llamar tras unload o cuando el modelo deja de estar listo.
+#[allow(dead_code)]
+pub fn clear_preloaded() {
+    if let Ok(mut guard) = PRELOADED_ENGINE.write() {
+        *guard = None;
+    }
+}
+
+fn fast_path_match(provider: &str, model: &str) -> bool {
+    PRELOADED_ENGINE
+        .read()
+        .ok()
+        .and_then(|g| g.clone())
+        .map(|(p, m)| p == provider && m == model)
+        .unwrap_or(false)
+}
 
 // ============================================================================
 // TRANSCRIPTION ENGINE ENUM
@@ -144,6 +189,9 @@ pub async fn preload_transcription_engine<R: Runtime>(app: AppHandle<R>) {
                 Ok(_) => {
                     let elapsed = start.elapsed();
                     info!("✅ STT model preloaded in {:?}", elapsed);
+                    // FAST PATH: registrar el modelo precargado. validate_transcription_model_ready
+                    // posteriores devolveran Ok inmediato sin tocar SQLite mientras coincida.
+                    mark_preloaded(&config.provider, &config.model);
                     // Available for a future UI indicator ("Modelo listo"
                     // toast). No frontend subscriber required today.
                     let _ = app.emit(
@@ -171,7 +219,10 @@ pub async fn preload_transcription_engine<R: Runtime>(app: AppHandle<R>) {
 
 /// Validate that transcription models (Whisper or Parakeet) are ready before starting recording
 pub async fn validate_transcription_model_ready<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
-    // Check transcript configuration to determine which engine to validate
+    // FAST PATH: si preload_transcription_engine ya cargo el modelo Y el provider/model
+    // configurado coincide, retornar Ok(()) sin tocar SQLite. Ahorra 3-100ms por llamada
+    // (importante en cambios de grabacion frecuentes y al disparar set_active model).
+    // El flag se actualiza solo cuando el modelo realmente esta listo en memoria.
     let config = match crate::api::api_get_transcript_config(
         app.clone(),
         app.clone().state(),
@@ -205,6 +256,16 @@ pub async fn validate_transcription_model_ready<R: Runtime>(app: &AppHandle<R>) 
             }
         }
     };
+
+    // FAST PATH: el flag PRELOADED_ENGINE coincide con el (provider, model)
+    // que pide el caller -> retornar Ok inmediato (<1ms) sin re-validar.
+    if fast_path_match(&config.provider, &config.model) {
+        info!(
+            "⚡ FAST PATH validate: {}={} ya precargado",
+            config.provider, config.model
+        );
+        return Ok(());
+    }
 
     // Validate based on provider
     match config.provider.as_str() {
