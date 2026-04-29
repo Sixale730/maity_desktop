@@ -5,6 +5,7 @@ import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { Sparkles, Minus, Maximize2, ThumbsUp, ThumbsDown } from 'lucide-react';
 import { useCoachTips } from '@/hooks/useCoachTips';
+import { useMeetingMetrics } from '@/hooks/useMeetingMetrics';
 
 interface AudioLevels {
   micRms: number;
@@ -49,7 +50,13 @@ const borderColor = (p: string) =>
 const iconStyle = (p: string): React.CSSProperties => ({ color: getPriorityColor(p) });
 
 export default function CoachFloatPage() {
-  const { tips, latestTip } = useCoachTips(20);
+  // §3.7 Cap historial 20 -> 50 para sesiones largas con buena cadencia.
+  const { tips, latestTip } = useCoachTips(50);
+  // §2.3 Listener meeting-metrics. Vars renombradas con prefijo _ porque el
+  // render real (HealthGauge + TalkSplitBar) viene en el siguiente commit;
+  // mientras tanto el lint exige no-unused-vars y _ marca explicitamente que
+  // estan reservadas, no olvidadas.
+  const { metrics: _metrics, isWaitingForAudio: _isWaitingForAudio } = useMeetingMetrics();
   const [compact, setCompact] = useState(false);
   const [levels, setLevels] = useState({ micRms: 0, sysRms: 0 });
   const [words, setWords] = useState({ user: 0, inter: 0 });
