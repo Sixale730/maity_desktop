@@ -1,6 +1,6 @@
 //! Prompts del coach v3.0 optimizados para modelos locales (Qwen 2.5 via llama-server).
 
-pub const DEFAULT_TIPS_MODEL: &str = "qwen25-3b-q4";
+pub const DEFAULT_TIPS_MODEL: &str = "gemma3-1b-q8";
 pub const DEFAULT_EVAL_MODEL: &str = "qwen25-7b-q4";
 pub const DEFAULT_CHAT_MODEL: &str = "qwen25-3b-q4";
 

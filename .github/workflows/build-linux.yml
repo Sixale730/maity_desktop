@@ -186,15 +186,19 @@ jobs:
           cd frontend
           pnpm install
 
-      - name: Build llama-helper sidecar
+      - name: Build llama-helper sidecar (Vulkan)
         run: |
-          echo "Building llama-helper sidecar (CPU mode)..."
-          cargo build --release -p llama-helper
-          
+          echo "Building llama-helper sidecar with Vulkan acceleration..."
+          # Vulkan SDK ya está instalado para whisper-rs en este runner.
+          # Reusamos el mismo backend para llama.cpp.
+          # vulkan-1.so en máquinas de usuarios viene del driver de la GPU,
+          # no se empaqueta en el .deb/.AppImage.
+          cargo build --release -p llama-helper --features vulkan
+
           # Copy binary to binaries directory
           mkdir -p frontend/src-tauri/binaries
           cp target/release/llama-helper frontend/src-tauri/binaries/llama-helper-x86_64-unknown-linux-gnu
-          
+
           echo "Copied llama-helper to frontend/src-tauri/binaries/"
           ls -la frontend/src-tauri/binaries/
 

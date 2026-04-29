@@ -8,8 +8,8 @@ pub fn get_default_pipelines() -> Vec<RecordingPipeline> {
             description: "100% privado. Parakeet para transcripción, Qwen 2.5 para coaching en vivo y análisis. Requiere Coach IA configurado (Ajustes → Pipeline).".to_string(),
             stt: SttConfig::Parakeet,
             live_feedback: Some(LiveFeedbackConfig {
-                model: "qwen25-3b-q4".to_string(),
-                endpoint: "http://localhost:11434".to_string(),
+                model: "gemma3-4b-q4".to_string(),
+                endpoint: "http://localhost:11436".to_string(),
                 context_window_secs: 180,
                 interval_secs: 45,
             }),
@@ -35,8 +35,8 @@ pub fn get_default_pipelines() -> Vec<RecordingPipeline> {
                 model: "base".to_string(),
             },
             live_feedback: Some(LiveFeedbackConfig {
-                model: "qwen25-3b-q4".to_string(),
-                endpoint: "http://localhost:11434".to_string(),
+                model: "gemma3-4b-q4".to_string(),
+                endpoint: "http://localhost:11436".to_string(),
                 context_window_secs: 180,
                 interval_secs: 45,
             }),

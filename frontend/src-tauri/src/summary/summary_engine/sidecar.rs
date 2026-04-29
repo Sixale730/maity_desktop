@@ -445,7 +445,8 @@ impl SidecarManager {
         })
         .to_string();
 
-        let timeout = Duration::from_secs(60); // GGUF load can take up to ~15s on slow HDD
+        // Margen amplio para CPU sin GPU: cargar Gemma 4B + 1 token puede tardar 50-90s.
+        let timeout = Duration::from_secs(120);
         let response = self.send_request(request, timeout).await.map_err(|e| {
             anyhow!("LLM-005: warmup Generate failed: {}", e)
         })?;

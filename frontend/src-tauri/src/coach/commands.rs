@@ -1,9 +1,9 @@
 //! Comandos Tauri del coach: sugerencias, configuración de modelos,
-//! estado del motor LLM local (llama.cpp), y ventana flotante always-on-top.
+//! estado del motor LLM local (sidecar Built-in AI), y ventana flotante always-on-top.
 
-use crate::coach::evaluator::{evaluate_meeting, CoachEvalResult};
+use crate::coach::evaluator::evaluate_meeting;
 use crate::coach::live_feedback::CoachTipUpdate;
-use crate::coach::llama_engine::{self, LlamaServerStatus};
+use crate::coach::llama_engine;
 use crate::coach::model_registry;
 use crate::coach::prompt::DEFAULT_CHAT_MODEL;
 use crate::state::AppState;
@@ -49,7 +49,7 @@ pub async fn coach_suggest<R: Runtime>(
     let state = app.state::<AppState>();
     let pool = state.db_manager.pool();
 
-    let (model, endpoint) = get_tips_config(pool).await;
+    let model_id = get_tips_model_id(pool).await;
     let mt = meeting_type
         .as_deref()
         .map(MeetingType::from_str_loose)
@@ -57,23 +57,30 @@ pub async fn coach_suggest<R: Runtime>(
 
     let user_prompt = build_user_prompt(&transcript, mt, 0, &[], None);
 
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("No se pudo obtener app_data_dir: {}", e))?;
+
+    let builtin_model = llama_engine::map_to_builtin_id(&model_id);
+
     let raw = generate_summary(
         &HTTP_CLIENT,
-        &LLMProvider::Ollama,
-        &model,
+        &LLMProvider::BuiltInAI,
+        builtin_model,
         "",
         crate::coach::prompt::COACH_SYSTEM_PROMPT,
         &user_prompt,
-        Some(&endpoint),
+        None,
         None,
         None,
         Some(0.3),
         None,
-        None,
+        Some(&app_data_dir),
         None,
     )
     .await
-    .map_err(|e| format!("Ollama error: {}", e))?;
+    .map_err(|e| format!("Coach LLM error: {}", e))?;
 
     parse_tip_response(&raw).ok_or_else(|| "No se pudo parsear respuesta del coach".to_string())
 }
@@ -134,13 +141,13 @@ pub async fn coach_get_models<R: Runtime>(app: AppHandle<R>) -> CoachModels {
     }
 }
 
-/// Verifica si llama-server está disponible y devuelve estado del coach.
+/// Devuelve el estado del Coach IA (modelo de tips descargado o no).
 #[tauri::command]
 pub async fn coach_get_status<R: Runtime>(app: AppHandle<R>) -> CoachStatus {
     let state = app.state::<AppState>();
     let pool = state.db_manager.pool();
 
-    let (tips_model_id, endpoint) = get_tips_config(pool).await;
+    let tips_model_id = get_tips_model_id(pool).await;
     let eval_model_id = get_eval_model_id(pool).await;
 
     let chat_model = sqlx::query_scalar::<_, String>(
@@ -152,16 +159,22 @@ pub async fn coach_get_status<R: Runtime>(app: AppHandle<R>) -> CoachStatus {
     .flatten()
     .unwrap_or_else(|| DEFAULT_CHAT_MODEL.to_string());
 
-    let (available, error) = if llama_engine::is_binary_installed(&app) {
-        let alive = llama_engine::health_check(11434).await;
-        (alive, if alive { None } else { Some("llama-server no está corriendo. Inicia una grabación o configura el Coach IA.".to_string()) })
+    let installed = llama_engine::is_model_installed(&app, &tips_model_id);
+    let (available, error) = if installed {
+        (true, None)
     } else {
-        (false, Some("llama-server.exe no instalado. Configura el Coach IA.".to_string()))
+        (
+            false,
+            Some(format!(
+                "El modelo '{}' aún no está descargado. Configura el Coach IA en Ajustes → Pipeline.",
+                tips_model_id
+            )),
+        )
     };
 
     CoachStatus {
         available,
-        endpoint,
+        endpoint: "builtin-ai-sidecar".to_string(),
         tips_model: tips_model_id,
         eval_model: eval_model_id,
         chat_model,
@@ -197,7 +210,6 @@ pub async fn coach_evaluate_meeting<R: Runtime + 'static>(
 /// Abre la ventana flotante always-on-top del coach.
 #[tauri::command]
 pub async fn open_floating_coach<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
-    // Si ya existe, solo mostrarla y enfocarla
     if let Some(w) = app.get_webview_window("coach-float") {
         w.show().map_err(|e| e.to_string())?;
         w.set_focus().map_err(|e| e.to_string())?;
@@ -237,7 +249,6 @@ pub async fn close_floating_coach<R: Runtime>(app: AppHandle<R>) -> Result<(), S
 pub async fn floating_toggle_compact<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
     if let Some(w) = app.get_webview_window("coach-float") {
         let size = w.inner_size().map_err(|e| e.to_string())?;
-        // Si la altura es mayor a 250px → modo compacto (80px), si no → expandir (430px)
         let (new_w, new_h): (u32, u32) = if size.height > 250 {
             (320, 80)
         } else {
@@ -252,7 +263,7 @@ pub async fn floating_toggle_compact<R: Runtime>(app: AppHandle<R>) -> Result<()
     Ok(())
 }
 
-// ─── Nuevos comandos GGUF ─────────────────────────────────────────────────────
+// ─── Comandos GGUF ────────────────────────────────────────────────────────────
 
 #[derive(Debug, Serialize)]
 pub struct GgufModelInfo {
@@ -292,12 +303,6 @@ pub async fn coach_list_gguf_models<R: Runtime>(app: AppHandle<R>) -> Vec<GgufMo
         .collect()
 }
 
-/// Estado actual de los servidores llama-server (ports 11434 / 11435).
-#[tauri::command]
-pub fn coach_get_engine_status() -> Vec<LlamaServerStatus> {
-    llama_engine::get_running_status()
-}
-
 /// Descarga un modelo GGUF en background, emitiendo "coach-gguf-download-progress".
 #[tauri::command]
 pub async fn coach_download_gguf_model<R: Runtime + 'static>(
@@ -325,15 +330,14 @@ pub async fn coach_download_gguf_model<R: Runtime + 'static>(
     Ok(())
 }
 
-/// Cambia el modelo activo para un propósito y reinicia el servidor si es necesario.
-/// purpose: "tips" | "eval"
+/// Cambia el modelo activo para un propósito (tips | eval) y persiste en DB.
+/// El sidecar carga modelos a demanda en la próxima generación, no hay servidor que reiniciar.
 #[tauri::command]
 pub async fn coach_switch_model<R: Runtime + 'static>(
     app: AppHandle<R>,
     purpose: String,
     model_id: String,
 ) -> Result<(), String> {
-    // Verificar que el modelo existe en el registry
     model_registry::get_model(&model_id)
         .ok_or_else(|| format!("Modelo '{}' no reconocido", model_id))?;
 
@@ -363,29 +367,16 @@ pub async fn coach_switch_model<R: Runtime + 'static>(
         .await
         .map_err(|e| format!("Error guardando modelo: {}", e))?;
 
-    // Reiniciar servidor con el nuevo modelo
-    let port: u16 = if purpose == "tips" { 11434 } else { 11435 };
-    llama_engine::stop_server(port);
-    let app2 = app.clone();
-    let model_id2 = model_id.clone();
-    let purpose2 = purpose.clone();
-    tokio::spawn(async move {
-        if let Err(e) = llama_engine::ensure_running(&app2, &model_id2, port).await {
-            warn!("Error reiniciando llama-server para {}: {}", purpose2, e);
-        } else {
-            let _ = app2.emit(
-                "coach-engine-ready",
-                serde_json::json!({ "purpose": purpose2, "model_id": model_id2, "port": port }),
-            );
-        }
-    });
+    let _ = app.emit(
+        "coach-engine-ready",
+        serde_json::json!({ "purpose": purpose, "model_id": model_id }),
+    );
 
     info!("✅ Modelo de {} cambiado a {}", purpose, model_id);
     Ok(())
 }
 
-/// Elimina el archivo GGUF descargado de un modelo. Detiene llama-server si el
-/// modelo está activo en algún puerto.
+/// Elimina el archivo GGUF descargado de un modelo.
 #[tauri::command]
 pub async fn coach_delete_gguf_model<R: Runtime + 'static>(
     app: AppHandle<R>,
@@ -399,16 +390,6 @@ pub async fn coach_delete_gguf_model<R: Runtime + 'static>(
 
     if !path.exists() {
         return Err(format!("El modelo '{}' no está descargado", model_id));
-    }
-
-    // Detener el servidor si usa este modelo
-    for port in [11434u16, 11435u16] {
-        if llama_engine::get_running_status()
-            .iter()
-            .any(|s| s.port == port && s.running)
-        {
-            llama_engine::stop_server(port);
-        }
     }
 
     tokio::fs::remove_file(&path)
@@ -436,9 +417,12 @@ async fn get_tips_model_id(pool: &sqlx::SqlitePool) -> String {
     .await
     .ok()
     .flatten()
-    .unwrap_or_else(|| "qwen25-3b-q4".to_string());
-    // Fall back to code default if the stored ID is no longer in the registry
-    if model_registry::get_model(&stored).is_some() { stored } else { "qwen25-3b-q4".to_string() }
+    .unwrap_or_else(|| "gemma3-4b-q4".to_string());
+    if model_registry::get_model(&stored).is_some() {
+        stored
+    } else {
+        "gemma3-4b-q4".to_string()
+    }
 }
 
 async fn get_eval_model_id(pool: &sqlx::SqlitePool) -> String {
@@ -450,14 +434,11 @@ async fn get_eval_model_id(pool: &sqlx::SqlitePool) -> String {
     .ok()
     .flatten()
     .unwrap_or_else(|| "qwen25-7b-q4".to_string());
-    // Fall back to code default if the stored ID is no longer in the registry
-    if model_registry::get_model(&stored).is_some() { stored } else { "qwen25-7b-q4".to_string() }
-}
-
-async fn get_tips_config(pool: &sqlx::SqlitePool) -> (String, String) {
-    let model_id = get_tips_model_id(pool).await;
-    let endpoint = "http://127.0.0.1:11434".to_string();
-    (model_id, endpoint)
+    if model_registry::get_model(&stored).is_some() {
+        stored
+    } else {
+        "qwen25-7b-q4".to_string()
+    }
 }
 
 fn parse_tip_response(raw: &str) -> Option<CoachTipUpdate> {
@@ -532,7 +513,6 @@ async fn build_agent_system_prompt(pool: &sqlx::SqlitePool, user_question: &str)
         Sé conciso y orientado a acción (máximo 3 párrafos). \
         Cita reuniones específicas por nombre cuando sea relevante.";
 
-    // ── Bloque 1: lista de reuniones con scores ──────────────────────────────
     #[derive(sqlx::FromRow)]
     struct MeetingRow {
         id: String,
@@ -554,7 +534,6 @@ async fn build_agent_system_prompt(pool: &sqlx::SqlitePool, user_question: &str)
         );
     }
 
-    // Leer scores de summary_processes
     #[derive(sqlx::FromRow)]
     struct SummaryRow {
         meeting_id: String,
@@ -619,7 +598,6 @@ async fn build_agent_system_prompt(pool: &sqlx::SqlitePool, user_question: &str)
         }
     }
 
-    // ── Bloque 2: fragmentos relevantes a la pregunta ────────────────────────
     let keywords: Vec<&str> = user_question
         .split_whitespace()
         .filter(|w| w.len() > 4)
@@ -673,67 +651,13 @@ async fn build_agent_system_prompt(pool: &sqlx::SqlitePool, user_question: &str)
     prompt
 }
 
-/// Ruta A: envía el historial al llama-server en 11434 (OpenAI-compatible HTTP).
-async fn call_coach_llama<R: tauri::Runtime>(
+/// Aplana el historial de chat a system + user prompt para el sidecar BuiltInAI.
+async fn call_coach_builtin<R: tauri::Runtime>(
     app: &AppHandle<R>,
     model_id: &str,
     system_prompt: &str,
     turns: &[ChatTurn],
 ) -> Result<String, String> {
-    use crate::summary::llm_client::{ChatMessage as LlmMsg, ChatRequest as LlmReq, ChatResponse};
-
-    llama_engine::ensure_running(app, model_id, 11434)
-        .await
-        .map_err(|e| format!("No se pudo iniciar llama-server: {}", e))?;
-
-    let mut messages: Vec<LlmMsg> = vec![LlmMsg {
-        role: "system".to_string(),
-        content: system_prompt.to_string(),
-    }];
-    for turn in turns {
-        messages.push(LlmMsg {
-            role: turn.role.clone(),
-            content: turn.content.clone(),
-        });
-    }
-
-    let body = LlmReq {
-        model: "local".to_string(),
-        messages,
-        max_tokens: Some(512),
-        temperature: Some(0.7),
-        top_p: None,
-    };
-
-    let resp = HTTP_CLIENT
-        .post("http://127.0.0.1:11434/v1/chat/completions")
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| format!("Error conectando con llama-server: {}", e))?;
-
-    let chat_resp: ChatResponse = resp
-        .json()
-        .await
-        .map_err(|e| format!("Error parseando respuesta: {}", e))?;
-
-    chat_resp
-        .choices
-        .into_iter()
-        .next()
-        .map(|c| c.message.content)
-        .ok_or_else(|| "Respuesta vacía del modelo".to_string())
-}
-
-/// Ruta B: aplana el historial y llama al sidecar Built-In AI (gemma).
-async fn call_builtin_ai<R: tauri::Runtime>(
-    app: &AppHandle<R>,
-    model_name: &str,
-    system_prompt: &str,
-    turns: &[ChatTurn],
-) -> Result<String, String> {
-    use crate::summary::llm_client::{generate_summary, LLMProvider};
-
     let app_data_dir = app
         .path()
         .app_data_dir()
@@ -755,10 +679,12 @@ async fn call_builtin_ai<R: tauri::Runtime>(
         buf
     };
 
+    let builtin_model = llama_engine::map_to_builtin_id(model_id);
+
     generate_summary(
         &HTTP_CLIENT,
         &LLMProvider::BuiltInAI,
-        model_name,
+        builtin_model,
         "",
         system_prompt,
         &user_prompt,
@@ -773,7 +699,7 @@ async fn call_builtin_ai<R: tauri::Runtime>(
     .await
 }
 
-/// Comando principal: resuelve el proveedor disponible y devuelve la respuesta.
+/// Comando principal: usa el sidecar Built-in AI con el modelo de tips configurado.
 #[tauri::command]
 pub async fn coach_chat<R: tauri::Runtime>(
     app: AppHandle<R>,
@@ -796,72 +722,23 @@ pub async fn coach_chat<R: tauri::Runtime>(
         &query.messages
     };
 
-    // ── Prioridad 1: Coach (llama-server) ────────────────────────────────────
-    if llama_engine::is_binary_installed(&app) {
-        let model_id = get_tips_model_id(pool).await;
-        match call_coach_llama(&app, &model_id, &system_prompt, turns).await {
-            Ok(content) => {
-                return Ok(ChatReply {
-                    content,
-                    model: model_id,
-                    provider: "coach".to_string(),
-                });
-            }
-            Err(e) => {
-                warn!("Coach llama-server no disponible, probando Built-In AI: {}", e);
-            }
-        }
+    let model_id = get_tips_model_id(pool).await;
+    if !llama_engine::is_model_installed(&app, &model_id) {
+        return Err(format!(
+            "El modelo '{}' aún no está descargado. Configura el Coach IA en Ajustes → Pipeline.",
+            model_id
+        ));
     }
 
-    // ── Prioridad 2: Built-In AI (gemma) ────────────────────────────────────
-    let mm_state = app.state::<crate::summary::summary_engine::ModelManagerState>();
-    {
-        let lock = mm_state.0.lock().await;
-        if lock.is_none() {
-            drop(lock);
-            crate::summary::summary_engine::init_model_manager(&app)
-                .await
-                .map_err(|e| format!("No se pudo inicializar modelo: {}", e))?;
+    match call_coach_builtin(&app, &model_id, &system_prompt, turns).await {
+        Ok(content) => Ok(ChatReply {
+            content,
+            model: model_id,
+            provider: "builtin-ai".to_string(),
+        }),
+        Err(e) => {
+            warn!("Coach Built-in AI falló: {}", e);
+            Err(format!("Coach IA no disponible: {}", e))
         }
     }
-    let manager = {
-        let lock = mm_state.0.lock().await;
-        lock.as_ref()
-            .ok_or_else(|| "Model manager no inicializado".to_string())?
-            .clone()
-    };
-
-    let all_models = manager.list_models().await;
-    let builtin_model = all_models
-        .iter()
-        .filter(|m| {
-            matches!(
-                m.status,
-                crate::summary::summary_engine::model_manager::ModelStatus::Available
-            )
-        })
-        .max_by_key(|m| match m.name.as_str() {
-            "gemma3:4b" => 2,
-            "gemma3:1b" => 1,
-            _ => 0,
-        })
-        .map(|m| m.name.clone());
-
-    if let Some(model_name) = builtin_model {
-        match call_builtin_ai(&app, &model_name, &system_prompt, turns).await {
-            Ok(content) => {
-                return Ok(ChatReply {
-                    content,
-                    model: model_name,
-                    provider: "builtin-ai".to_string(),
-                });
-            }
-            Err(e) => {
-                warn!("Built-In AI falló: {}", e);
-            }
-        }
-    }
-
-    // ── Sin proveedor disponible ─────────────────────────────────────────────
-    Err("Ningún modelo local disponible. Configura Coach IA o Built-In AI en Ajustes → Pipeline.".to_string())
 }

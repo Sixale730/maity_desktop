@@ -151,9 +151,23 @@ export function PipelineSelector() {
   };
 
   const refreshEngineStatus = async () => {
+    // Built-in AI sidecar replaced HTTP llama-server. Adapt new CoachStatus shape
+    // to the legacy LlamaServerStatus[] expected by the UI: each configured model
+    // is "running" if the GGUF is on disk (sidecar boots on first request).
     try {
-      const status = await invoke<LlamaServerStatus[]>('coach_get_engine_status');
-      setEngineStatus(status);
+      const status = await invoke<{
+        available: boolean;
+        endpoint: string;
+        tips_model: string;
+        eval_model: string;
+      }>('coach_get_status');
+      const adapted: LlamaServerStatus[] = [
+        { model_id: status.tips_model, port: 0, running: status.available, endpoint: status.endpoint },
+      ];
+      if (status.eval_model && status.eval_model !== status.tips_model) {
+        adapted.push({ model_id: status.eval_model, port: 0, running: status.available, endpoint: status.endpoint });
+      }
+      setEngineStatus(adapted);
     } catch (e) {
       console.error('Error loading engine status:', e);
     }
@@ -174,7 +188,7 @@ export function PipelineSelector() {
 
   const handleSetupCoach = async () => {
     try {
-      await invoke('install_coach_if_needed', { modelId: 'qwen25-3b-q4' });
+      await invoke('install_coach_if_needed', { modelId: 'gemma3-4b-q4' });
       refreshModels();
       refreshEngineStatus();
     } catch (e) {

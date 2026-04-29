@@ -38,6 +38,7 @@ pub mod analytics;
 pub mod api;
 pub mod audio;
 pub mod auth_server;
+pub mod builtin_ai;
 pub mod coach;
 pub mod console_utils;
 pub mod database;
@@ -831,6 +832,8 @@ pub fn run() {
             summary::summary_engine::builtin_ai_is_model_ready,
             summary::summary_engine::builtin_ai_get_available_summary_model,
             summary::summary_engine::builtin_ai_get_recommended_model,
+            builtin_ai::builtin_ai_get_models_directory,
+            builtin_ai::open_builtin_models_folder,
             openrouter::get_openrouter_models,
             audio::recording_preferences::get_recording_preferences,
             audio::recording_preferences::set_recording_preferences,
@@ -933,7 +936,6 @@ pub fn run() {
             coach::commands::coach_get_status,
             coach::commands::coach_evaluate_meeting,
             coach::commands::coach_list_gguf_models,
-            coach::commands::coach_get_engine_status,
             coach::commands::coach_download_gguf_model,
             coach::commands::coach_switch_model,
             coach::commands::coach_delete_gguf_model,
@@ -985,15 +987,12 @@ pub fn run() {
                         log::warn!("AppState not available for database cleanup (likely first launch)");
                     }
 
-                    // Clean up sidecar
+                    // Clean up sidecar (Built-in AI). El coach reusa el mismo sidecar,
+                    // así que esto cubre también la limpieza del motor del coach.
                     log::info!("Cleaning up sidecar...");
                     if let Err(e) = summary::summary_engine::force_shutdown_sidecar().await {
                         log::error!("Failed to force shutdown sidecar: {}", e);
                     }
-
-                    // Detener procesos llama-server
-                    log::info!("Stopping llama-server processes...");
-                    coach::llama_engine::stop_all();
                 });
                 log::info!("Application cleanup complete");
             }

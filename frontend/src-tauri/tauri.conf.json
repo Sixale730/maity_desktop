@@ -103,7 +103,7 @@
         "resources": [
             "templates/*.json"
         ],
-        "externalBin": [],
+        "externalBin": ["binaries/llama-helper"],
         "macOS": {
             "entitlements": "entitlements-appstore.plist",
             "signingIdentity": "0544FB2C7D06554BE285D837D96880A91781E0B7",

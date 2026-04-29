@@ -4,6 +4,7 @@
 //! corre NudgeEngine (heurístico puro) y TriggerEngine (señales léxicas),
 //! llama Ollama gemma3:4b cuando hay señal y emite "coach-tip-update".
 
+use crate::coach::llama_engine;
 use crate::coach::nudge_engine::{evaluate_nudge, ConversationSnapshot};
 use crate::coach::prompt::{build_user_prompt, MeetingType, COACH_SYSTEM_PROMPT, DEFAULT_TIPS_MODEL};
 use crate::coach::trigger::{analyze_turn_with_context, SignalPriority, TurnContext};
@@ -17,6 +18,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Listener, Manager, Runtime};
 use tokio_util::sync::CancellationToken;
+#[allow(unused_imports)]
 use tracing::{error, info, warn};
 
 // ─── Globals ──────────────────────────────────────────────────────────────────
@@ -247,20 +249,22 @@ pub async fn start<R: Runtime + 'static>(app: AppHandle<R>) -> Result<(), String
 
     // Leer config del pipeline activo
     let cfg = get_active_live_feedback_config(&app).await;
-    let model = cfg
+    let configured_model = cfg
         .as_ref()
         .map(|c| c.model.clone())
         .unwrap_or_else(|| DEFAULT_TIPS_MODEL.to_string());
-    // llama-server siempre en 127.0.0.1:11434 — API compatible con Ollama
-    let endpoint = "http://127.0.0.1:11434".to_string();
+    // Endpoint conceptual: el sidecar BuiltInAI (singleton SidecarManager) gestionado
+    // por summary::summary_engine. No hay HTTP, lo deja solo para logging compatible.
+    let endpoint = "builtin-ai-sidecar".to_string();
 
-    // Arrancar llama-server en background (puede tardar si el modelo es grande)
-    {
-        use crate::coach::llama_engine;
+    // Resolver el modelo efectivo: el configurado si está descargado, sino auto-detect.
+    // Prioridad: Gemma 4B (default actual) → Gemma 1B → otros instalados.
+    let model = {
+        use crate::coach::model_registry;
         use crate::state::AppState;
         use tauri::Manager as _;
-        let app_bg = app.clone();
-        let tips_model_id = if let Some(state) = app_bg.try_state::<AppState>() {
+
+        let from_db = if let Some(state) = app.try_state::<AppState>() {
             let pool = state.db_manager.pool();
             sqlx::query_scalar::<_, String>(
                 "SELECT tips_model_id FROM coach_settings WHERE id = '1'",
@@ -269,19 +273,42 @@ pub async fn start<R: Runtime + 'static>(app: AppHandle<R>) -> Result<(), String
             .await
             .ok()
             .flatten()
-            .unwrap_or_else(|| "qwen25-3b-q4".to_string())
         } else {
-            "qwen25-3b-q4".to_string()
+            None
         };
-        if llama_engine::is_binary_installed(&app_bg) && llama_engine::is_model_installed(&app_bg, &tips_model_id) {
-            let app2 = app_bg.clone();
-            tokio::spawn(async move {
-                if let Err(e) = llama_engine::ensure_running(&app2, &tips_model_id, 11434).await {
-                    warn!("No se pudo iniciar llama-server para tips en vivo: {}", e);
-                }
-            });
+
+        let candidates: Vec<String> = std::iter::empty::<String>()
+            .chain(from_db.into_iter())
+            .chain(std::iter::once(configured_model.clone()))
+            .chain(["gemma3-4b-q4", "gemma3-1b-q8", "qwen25-3b-q4"].iter().map(|s| s.to_string()))
+            .collect();
+
+        let installed = candidates
+            .iter()
+            .find(|id| {
+                model_registry::get_model(id).is_some()
+                    && llama_engine::is_model_installed(&app, id)
+                    && !llama_engine::map_to_builtin_id(id).is_empty()
+            })
+            .cloned()
+            .unwrap_or_else(|| DEFAULT_TIPS_MODEL.to_string());
+
+        let model_path = llama_engine::model_file_path(&app, &installed);
+        let model_ok = model_path.as_ref().map(|p| p.exists()).unwrap_or(false);
+        info!(
+            "🔍 Coach model '{}': {:?} (exists={})",
+            installed, model_path, model_ok
+        );
+
+        if !model_ok {
+            warn!(
+                "Coach: modelo '{}' no instalado — tips deshabilitados",
+                installed
+            );
         }
-    }
+
+        installed
+    };
     let window_secs = cfg.as_ref().map(|c| c.context_window_secs).unwrap_or(180);
     let interval_secs = cfg.as_ref().map(|c| c.interval_secs).unwrap_or(45);
 
@@ -304,11 +331,17 @@ pub async fn start<R: Runtime + 'static>(app: AppHandle<R>) -> Result<(), String
 
     let listener_id = app.listen("transcript-update", move |event| {
         let Ok(payload) = serde_json::from_str::<TranscriptPayload>(event.payload()) else {
+            warn!("🪲 Coach: payload transcript-update inválido");
             return;
         };
         if payload.is_partial || payload.text.trim().is_empty() {
             return;
         }
+        info!(
+            "📥 Coach listener received: speaker={:?}, words={}",
+            payload.source_type,
+            payload.text.split_whitespace().count()
+        );
 
         let speaker = payload
             .source_type
@@ -443,11 +476,23 @@ pub async fn start<R: Runtime + 'static>(app: AppHandle<R>) -> Result<(), String
                     let task = {
                         let Ok(mut st) = state_bg.lock() else { continue };
                         st.prune(window_secs);
-                        if st.window.is_empty() || !st.can_emit(false) {
+                        let win_len = st.window.len();
+                        let can_em = st.can_emit(false);
+                        if st.window.is_empty() || !can_em {
+                            info!(
+                                "⏰ Nudge tick @ {}s — skip (window={}, can_emit={})",
+                                st.session_secs(), win_len, can_em
+                            );
                             None
                         } else {
                             let snap = st.snapshot();
                             let nudge = evaluate_nudge(&snap);
+                            info!(
+                                "⏰ Nudge tick @ {}s — window={}, ratio={:.2}, mono={}s, q={}, health={}, should_nudge={} ({:?})",
+                                snap.session_duration_sec, win_len, snap.user_talk_ratio,
+                                snap.longest_user_monologue_sec, snap.user_questions, snap.health_score,
+                                nudge.should_nudge, nudge.nudge_type
+                            );
                             if !nudge.should_nudge {
                                 None
                             } else {
@@ -550,7 +595,7 @@ async fn call_ollama_and_emit<R: Runtime>(
     previous_tips: Vec<String>,
     trigger: Option<String>,
     model: &str,
-    endpoint: &str,
+    _endpoint: &str,
     cancel: CancellationToken,
 ) {
     let minute = session_secs / 60;
@@ -562,80 +607,96 @@ async fn call_ollama_and_emit<R: Runtime>(
         trigger.as_deref(),
     );
 
-    // Prioridad: gemma3:1b (más rápido, menor latencia) → Ollama/llama-server
-    // gemma3:4b es para análisis post-reunión, no para tips en vivo
-    let result = if let Ok(data_dir) = app.path().app_data_dir() {
-        let r1b = generate_summary(
-            &HTTP_CLIENT,
-            &LLMProvider::BuiltInAI,
-            "gemma3:1b",
-            "",
-            COACH_SYSTEM_PROMPT,
-            &user_prompt,
-            None, None, None, Some(0.3), None,
-            Some(&data_dir),
-            Some(&cancel),
-        )
-        .await;
-        if r1b.is_ok() {
-            r1b
-        } else {
-            generate_summary(
-                &HTTP_CLIENT,
-                &LLMProvider::Ollama,
-                model,
-                "",
-                COACH_SYSTEM_PROMPT,
-                &user_prompt,
-                Some(endpoint),
-                None, None, Some(0.3), None, None,
-                Some(&cancel),
-            )
-            .await
-        }
-    } else {
-        generate_summary(
-            &HTTP_CLIENT,
-            &LLMProvider::Ollama,
-            model,
-            "",
-            COACH_SYSTEM_PROMPT,
-            &user_prompt,
-            Some(endpoint),
-            None, None, Some(0.3), None, None,
-            Some(&cancel),
-        )
-        .await
-    };
-
-    match result {
-        Ok(raw) => {
-            if let Some(update) = parse_gemma_response(&raw, trigger.as_deref(), session_secs) {
-                // Dedup: descartar si el LLM generó un tip ya emitido antes
-                let key = update.tip.to_lowercase();
-                let is_dup = state.lock().map(|s| s.emitted_tips.contains(&key)).unwrap_or(false);
-                if is_dup {
-                    warn!("Coach: tip duplicado descartado (dedup)");
-                    return;
-                }
-                let _ = app.emit("coach-tip-update", &update);
-                info!("💡 Coach tip emitted: {}", update.tip);
-                if let Ok(mut st) = state.lock() {
-                    st.record_tip(update);
-                }
-            } else {
-                warn!("Coach: LLM respondió pero no se pudo parsear JSON");
-                if let Ok(mut st) = state.lock() {
-                    st.last_tip_at = None;
-                }
-            }
-        }
+    let app_data_dir = match app.path().app_data_dir() {
+        Ok(p) => p,
         Err(e) => {
-            warn!("Coach LLM call failed: {}", e);
+            warn!("Coach: no se pudo obtener app_data_dir: {}", e);
             if let Ok(mut st) = state.lock() {
                 st.last_tip_at = None;
             }
+            return;
         }
+    };
+
+    let builtin_model = llama_engine::map_to_builtin_id(model);
+    info!(
+        "🦙 Coach calling sidecar: model={} (builtin={}), prompt_len={} chars",
+        model, builtin_model, user_prompt.len()
+    );
+
+    // Retry on parse failure: Gemma 4B Q4 ocasionalmente genera JSON malformado
+    // (sobre todo con prompts largos). Reintentar baja la tasa de fallo de ~33% a ~5%.
+    // No reintentamos en errores de generate (red/timeout) porque generate_summary
+    // ya tiene su propia lógica interna y reintentarlo es más costoso.
+    const MAX_PARSE_ATTEMPTS: u32 = 2;
+    let mut update: Option<CoachTipUpdate> = None;
+    let mut last_raw: Option<String> = None;
+
+    for attempt in 1..=MAX_PARSE_ATTEMPTS {
+        let result = generate_summary(
+            &HTTP_CLIENT,
+            &LLMProvider::BuiltInAI,
+            builtin_model,
+            "",
+            COACH_SYSTEM_PROMPT,
+            &user_prompt,
+            None,
+            None,
+            Some(200),       // max_tokens — tips son cortos, evita timeout en CPU
+            Some(0.3),
+            None,
+            Some(&app_data_dir),
+            Some(&cancel),
+        )
+        .await;
+
+        match result {
+            Ok(raw) => {
+                if let Some(parsed) = parse_gemma_response(&raw, trigger.as_deref(), session_secs) {
+                    update = Some(parsed);
+                    break;
+                }
+                warn!(
+                    "Coach: parse JSON falló (intento {}/{}). raw preview: {}",
+                    attempt,
+                    MAX_PARSE_ATTEMPTS,
+                    &raw[..raw.len().min(120)]
+                );
+                last_raw = Some(raw);
+            }
+            Err(e) => {
+                warn!("Coach LLM call failed: {}", e);
+                if let Ok(mut st) = state.lock() {
+                    st.last_tip_at = None;
+                }
+                return;
+            }
+        }
+    }
+
+    let Some(update) = update else {
+        warn!(
+            "Coach: parse JSON falló tras {} intentos — descartando tick",
+            MAX_PARSE_ATTEMPTS
+        );
+        if let Ok(mut st) = state.lock() {
+            st.last_tip_at = None;
+        }
+        let _ = last_raw; // suppress unused
+        return;
+    };
+
+    // Dedup: descartar si el LLM generó un tip ya emitido antes
+    let key = update.tip.to_lowercase();
+    let is_dup = state.lock().map(|s| s.emitted_tips.contains(&key)).unwrap_or(false);
+    if is_dup {
+        warn!("Coach: tip duplicado descartado (dedup)");
+        return;
+    }
+    let _ = app.emit("coach-tip-update", &update);
+    info!("💡 Coach tip emitted: {}", update.tip);
+    if let Ok(mut st) = state.lock() {
+        st.record_tip(update);
     }
 }
 

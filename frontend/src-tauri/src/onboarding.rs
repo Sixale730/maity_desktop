@@ -53,7 +53,7 @@ pub async fn load_onboarding_status<R: Runtime>(
     };
 
     // Try to get the status from store
-    let status = if let Some(value) = store.get("status") {
+    let mut status = if let Some(value) = store.get("status") {
         match serde_json::from_value::<OnboardingStatus>(value.clone()) {
             Ok(s) => {
                 info!("Loaded onboarding status from store - Step: {}, Completed: {}",
@@ -70,7 +70,74 @@ pub async fn load_onboarding_status<R: Runtime>(
         OnboardingStatus::default()
     };
 
+    // Reconciliar con disco: si los modelos están descargados pero el JSON dice "not_downloaded",
+    // corregir el estado. Esto cura ediciones manuales o cambios de ubicación de los archivos.
+    let changed = reconcile_model_status_with_disk(app, &mut status);
+    if changed {
+        info!("✅ Onboarding status reconciled with disk: parakeet={}, summary={}, completed={}",
+              status.model_status.parakeet, status.model_status.summary, status.completed);
+        // Persistir el estado reconciliado para que la UI lo lea correctamente
+        if let Err(e) = save_onboarding_status(app, &status).await {
+            warn!("No se pudo persistir el estado reconciliado: {}", e);
+        }
+    }
+
     Ok(status)
+}
+
+/// Verifica el estado real de los modelos en disco y actualiza `status.model_status`.
+/// Devuelve `true` si hubo cambios.
+fn reconcile_model_status_with_disk<R: Runtime>(
+    app: &AppHandle<R>,
+    status: &mut OnboardingStatus,
+) -> bool {
+    let Ok(base) = app.path().app_data_dir() else {
+        return false;
+    };
+    let mut changed = false;
+
+    // Summary models (Gemma) — buscar en models/summary/
+    let summary_dir = base.join("models").join("summary");
+    let gemma_1b = summary_dir.join("gemma-3-1b-it-Q8_0.gguf");
+    let gemma_4b = summary_dir.join("gemma-3-4b-it-Q4_K_M.gguf");
+    let summary_present = is_valid_gguf(&gemma_1b, 800_000_000) || is_valid_gguf(&gemma_4b, 1_800_000_000);
+
+    if summary_present && status.model_status.summary != "downloaded" {
+        status.model_status.summary = "downloaded".to_string();
+        changed = true;
+    }
+
+    // Parakeet — buscar en models/parakeet/
+    let parakeet_dir = base.join("models").join("parakeet");
+    let parakeet_present = parakeet_dir.exists()
+        && parakeet_dir
+            .read_dir()
+            .map(|mut it| it.next().is_some())
+            .unwrap_or(false);
+
+    if parakeet_present && status.model_status.parakeet != "downloaded" {
+        status.model_status.parakeet = "downloaded".to_string();
+        changed = true;
+    }
+
+    // Si todo está descargado, marcar onboarding como completado
+    if status.model_status.summary == "downloaded"
+        && status.model_status.parakeet == "downloaded"
+        && !status.completed
+    {
+        status.completed = true;
+        status.current_step = 4; // último paso
+        changed = true;
+    }
+
+    changed
+}
+
+/// Verifica que un archivo existe y tiene un tamaño mínimo razonable (no es un .tmp incompleto).
+fn is_valid_gguf(path: &std::path::Path, min_size: u64) -> bool {
+    std::fs::metadata(path)
+        .map(|m| m.is_file() && m.len() >= min_size)
+        .unwrap_or(false)
 }
 
 /// Save onboarding status to store

@@ -11,6 +11,7 @@ use once_cell::sync::Lazy;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
+#[allow(unused_imports)]
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 use tracing::{info, warn};
 
@@ -295,17 +296,6 @@ async fn get_eval_model_id(pool: &SqlitePool) -> String {
     .unwrap_or_else(|| "qwen25-7b-q4".to_string())
 }
 
-async fn get_tips_model_id(pool: &SqlitePool) -> String {
-    sqlx::query_scalar::<_, String>(
-        "SELECT tips_model_id FROM coach_settings WHERE id = '1'",
-    )
-    .fetch_optional(pool)
-    .await
-    .ok()
-    .flatten()
-    .unwrap_or_else(|| "qwen25-3b-q4".to_string())
-}
-
 /// Evalúa la comunicación del usuario para un meeting_id dado.
 /// Usa prompt v5.1 — devuelve CoachEvalResult con scores 0-10 y JSON completo en `observations`.
 pub async fn evaluate_meeting<R: Runtime>(
@@ -326,34 +316,41 @@ pub async fn evaluate_meeting<R: Runtime>(
     );
 
     let eval_model_id = get_eval_model_id(pool).await;
-    let tips_model_id = get_tips_model_id(pool).await;
 
-    // Si tips y eval son modelos distintos, usar puerto 11435 para no interrumpir tips en vivo
-    let port: u16 = if eval_model_id == tips_model_id { 11434 } else { 11435 };
+    if !llama_engine::is_model_installed(app, &eval_model_id) {
+        return Err(format!(
+            "El modelo de evaluación '{}' no está descargado. Configúralo en Ajustes → Pipeline.",
+            eval_model_id
+        ));
+    }
 
-    let endpoint = llama_engine::ensure_running(app, &eval_model_id, port)
-        .await
-        .map_err(|e| format!("No se pudo iniciar el motor LLM para evaluación: {}", e))?;
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("No se pudo obtener app_data_dir: {}", e))?;
+
+    let builtin_model = llama_engine::map_to_builtin_id(&eval_model_id);
 
     let user_prompt = format!(
         "Transcripción de la reunión:\n\n{}\n\nEvalúa la comunicación del USUARIO (micrófono).",
         ctx.formatted
     );
 
-    // v5.1: temperature=0.3 según spec, max_tokens=4096 para JSON rico completo
+    // v5.1: temperature=0.3 según spec, max_tokens=4096 para JSON rico completo.
+    // El sidecar Built-in AI gestiona el modelo (singleton SidecarManager).
     let raw = generate_summary(
         &HTTP_CLIENT,
-        &LLMProvider::Ollama,
-        "local",
+        &LLMProvider::BuiltInAI,
+        builtin_model,
         "",
         EVAL_SYSTEM_PROMPT,
         &user_prompt,
-        Some(&endpoint),
+        None,
         None,
         Some(4096),
         Some(0.3),
         None,
-        None,
+        Some(&app_data_dir),
         None,
     )
     .await

@@ -12,7 +12,7 @@ pub mod setup;
 pub mod trigger;
 
 pub use commands::{
-    close_floating_coach, coach_download_gguf_model, coach_evaluate_meeting, coach_get_engine_status,
+    close_floating_coach, coach_download_gguf_model, coach_evaluate_meeting,
     coach_get_models, coach_get_status, coach_list_gguf_models, coach_set_model_for_purpose,
     coach_suggest, coach_switch_model, floating_toggle_compact, open_floating_coach,
 };
