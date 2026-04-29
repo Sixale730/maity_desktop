@@ -88,7 +88,8 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
     totalMb: 0,
     speedMbps: 0,
   });
-  const [selectedSummaryModel, setSelectedSummaryModel] = useState<string>('gemma3:1b');
+  // §4.1 Default unico: gemma3:4b (antes default era 1b). 1b queda fuera del onboarding.
+  const [selectedSummaryModel, setSelectedSummaryModel] = useState<string>('gemma3:4b');
   const [databaseExists, setDatabaseExists] = useState(false);
   const [isBackgroundDownloading, setIsBackgroundDownloading] = useState(false);
 
@@ -119,7 +120,7 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
         logger.debug('[OnboardingContext] Set recommended model:', recommendedModel);
       } catch (error) {
         console.error('[OnboardingContext] Failed to get recommended model:', error);
-        // Keep default gemma3:1b
+        // §4.1 Keep default gemma3:4b (1b ya no es opcion)
       }
     };
     fetchRecommendation();
@@ -273,8 +274,9 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
       'builtin-ai-download-progress',
       (event) => {
         const { model, progress, downloaded_mb, total_mb, speed_mbps, status } = event.payload;
-        // Check if this is the selected summary model (gemma3:1b or gemma3:4b)
-        if (model === selectedSummaryModel || model === 'gemma3:1b' || model === 'gemma3:4b') {
+        // §4.1 Solo trackeamos progreso de gemma3:4b (1b ya no se descarga en onboarding).
+        // Mantenemos el OR con selectedSummaryModel por si el backend reporta otro id.
+        if (model === selectedSummaryModel || model === 'gemma3:4b') {
           setSummaryModelProgress(progress);
           setSummaryModelProgressInfo({
             percent: progress,
@@ -446,7 +448,7 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
       if (includeGemma && !summaryModelDownloaded) {
         setTimeout(() => {
           logger.debug('[OnboardingContext] Starting Gemma download (delayed to prioritize Parakeet)');
-          invoke('builtin_ai_download_model', { modelName: selectedSummaryModel || 'gemma3:1b' })
+          invoke('builtin_ai_download_model', { modelName: selectedSummaryModel || 'gemma3:4b' })
             .catch(err => console.error('[OnboardingContext] Gemma download failed:', err));
         }, 3000); // 3 second delay to give Parakeet priority
       }

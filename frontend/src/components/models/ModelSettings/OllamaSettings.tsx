@@ -198,34 +198,34 @@ export function OllamaSettings({
                       variant="outline"
                       size="sm"
                       onClick={downloadRecommendedModel}
-                      disabled={isDownloading('gemma3:1b')}
+                      disabled={isDownloading('gemma3:4b')}
                       className="w-full"
                     >
-                      {isDownloading('gemma3:1b') ? (
+                      {isDownloading('gemma3:4b') ? (
                         <>
                           <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
-                          Descargando gemma3:1b...
+                          Descargando gemma3:4b...
                         </>
                       ) : (
                         <>
                           <Download className="mr-2 h-4 w-4" />
-                          Descargar gemma3:1b (Recomendado, ~800MB)
+                          Descargar gemma3:4b (Recomendado, ~2.4GB)
                         </>
                       )}
                     </Button>
 
-                    {isDownloading('gemma3:1b') && getProgress('gemma3:1b') !== undefined && (
+                    {isDownloading('gemma3:4b') && getProgress('gemma3:4b') !== undefined && (
                       <div className="bg-white dark:bg-gray-800 rounded-md border dark:border-gray-700 p-3">
                         <div className="flex items-center justify-between mb-2">
-                          <span className="text-sm font-medium text-[#3a4ac3] dark:text-blue-400">Descargando gemma3:1b</span>
+                          <span className="text-sm font-medium text-[#3a4ac3] dark:text-blue-400">Descargando gemma3:4b</span>
                           <span className="text-sm font-semibold text-[#3a4ac3] dark:text-blue-400">
-                            {Math.round(getProgress('gemma3:1b')!)}%
+                            {Math.round(getProgress('gemma3:4b')!)}%
                           </span>
                         </div>
                         <div className="w-full h-2 bg-[#d0d0d3] dark:bg-gray-600 rounded-full overflow-hidden">
                           <div
                             className="h-full bg-gradient-to-r from-blue-500 to-blue-600 rounded-full transition-all duration-300"
-                            style={{ width: `${getProgress('gemma3:1b')}%` }}
+                            style={{ width: `${getProgress('gemma3:4b')}%` }}
                           />
                         </div>
                       </div>
