@@ -38,6 +38,9 @@ pub fn is_model_installed<R: Runtime>(app: &tauri::AppHandle<R>, model_id: &str)
 /// "gemma3:4b" (formato familia:variante de `summary_engine::models`).
 pub fn map_to_builtin_id(coach_id: &str) -> &str {
     match coach_id {
+        // §4.1 Mantenemos el mapeo de 1b por compatibilidad transitoria (DBs viejas que
+        // todavia tengan tips_model_id='gemma3-1b-q8' antes de que la migracion corra),
+        // pero el resto del sistema prefiere 4b en candidatos y default.
         "gemma3-1b-q8" => "gemma3:1b",
         "gemma3-4b-q4" => "gemma3:4b",
         other => other,

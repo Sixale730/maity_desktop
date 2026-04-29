@@ -382,7 +382,8 @@ pub async fn start<R: Runtime + 'static>(app: AppHandle<R>) -> Result<(), String
         let candidates: Vec<String> = std::iter::empty::<String>()
             .chain(from_db.into_iter())
             .chain(std::iter::once(configured_model.clone()))
-            .chain(["gemma3-4b-q4", "gemma3-1b-q8", "qwen25-3b-q4"].iter().map(|s| s.to_string()))
+            // §4.1 Eliminar 1b de candidatos: unificamos a 4b (% JSON malformado ~33% -> ~10%).
+            .chain(["gemma3-4b-q4", "qwen25-3b-q4"].iter().map(|s| s.to_string()))
             .collect();
 
         let installed = candidates
