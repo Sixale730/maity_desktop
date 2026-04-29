@@ -907,7 +907,7 @@ impl AudioPipeline {
                                                 continue;
                                             }
 
-                                            info!("🎤 Mic VAD segment: {:.1}ms, {} samples (RMS={:.4})",
+                                            debug!("🎤 Mic VAD segment: {:.1}ms, {} samples (RMS={:.4})",
                                                   duration_ms, segment.samples.len(), segment_rms);
                                             let transcription_chunk = AudioChunk {
                                                 data: segment.samples,
@@ -989,7 +989,7 @@ impl AudioPipeline {
                                                 continue;
                                             }
 
-                                            info!("🔊 System VAD segment: {:.1}ms, {} samples (RMS={:.4})",
+                                            debug!("🔊 System VAD segment: {:.1}ms, {} samples (RMS={:.4})",
                                                   duration_ms, segment.samples.len(), segment_rms);
                                             let transcription_chunk = AudioChunk {
                                                 data: segment.samples,

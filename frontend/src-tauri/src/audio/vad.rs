@@ -248,7 +248,7 @@ impl ContinuousVadProcessor {
                 VadTransition::SpeechStart { timestamp_ms } => {
                     // Only log if state changed
                     if !self.last_logged_state {
-                        info!("VAD: Speech started at {}ms", timestamp_ms);
+                        debug!("VAD: Speech started at {}ms", timestamp_ms);
                         self.last_logged_state = true;
                     }
                     self.in_speech = true;
@@ -258,7 +258,7 @@ impl ContinuousVadProcessor {
                 VadTransition::SpeechEnd { start_timestamp_ms, end_timestamp_ms, samples } => {
                     // Only log if we were previously in speech state
                     if self.last_logged_state {
-                        info!("VAD: Speech ended at {}ms (duration: {}ms)", end_timestamp_ms, end_timestamp_ms - start_timestamp_ms);
+                        debug!("VAD: Speech ended at {}ms (duration: {}ms)", end_timestamp_ms, end_timestamp_ms - start_timestamp_ms);
                         self.last_logged_state = false;
                     }
                     self.in_speech = false;
@@ -278,7 +278,7 @@ impl ContinuousVadProcessor {
                             confidence: 0.9, // VAD confidence
                         };
 
-                        info!("VAD: Completed speech segment: {:.1}ms duration, {} samples",
+                        debug!("VAD: Completed speech segment: {:.1}ms duration, {} samples",
                               end_timestamp_ms - start_timestamp_ms, segment.samples.len());
 
                         self.speech_segments.push_back(segment);

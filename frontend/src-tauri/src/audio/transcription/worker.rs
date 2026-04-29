@@ -7,7 +7,7 @@ use super::engine::TranscriptionEngine;
 use super::provider::{TranscriptionError, TranscriptionProvider};
 use crate::audio::AudioChunk;
 use crate::audio::recording_state::DeviceType;
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -170,14 +170,13 @@ pub fn start_transcription_task<R: Runtime>(
         reset_session_counters();
 
         // Initialize transcription engine (Whisper or Parakeet based on config)
-        println!("🚀 [WORKER] Inicializando transcription engine...");
+        info!("🚀 [WORKER] Inicializando transcription engine...");
         let transcription_engine = match super::engine::get_or_init_transcription_engine(&app).await {
             Ok(engine) => {
-                println!("✅ [WORKER] Transcription engine inicializado: {}", engine.provider_name());
+                info!("✅ [WORKER] Transcription engine inicializado: {}", engine.provider_name());
                 engine
             }
             Err(e) => {
-                println!("❌ [WORKER] Error inicializando transcription engine: {}", e);
                 error!("Failed to initialize transcription engine: {}", e);
                 let _ = app.emit("transcription-error", serde_json::json!({
                     "error": e,
@@ -341,7 +340,7 @@ pub fn start_transcription_task<R: Runtime>(
                                         None => "N/A".to_string(),
                                     };
 
-                                    info!("🔍 Worker {} transcription result: text='{}', confidence={}, partial={}, threshold={:.2}",
+                                    debug!("[WORKER {}] result: text='{}' conf={} partial={} threshold={:.2}",
                                           worker_id, transcript, confidence_str, is_partial, confidence_threshold);
 
                                     // Check confidence threshold (or accept if no confidence provided)
@@ -349,7 +348,7 @@ pub fn start_transcription_task<R: Runtime>(
 
                                     if !transcript.trim().is_empty() && meets_threshold {
                                         // PERFORMANCE: Only log transcription results, not every processing step
-                                        info!("✅ Worker {} transcribed: {} (confidence: {}, partial: {})",
+                                        debug!("[WORKER {}] transcribed: {} (conf={} partial={})",
                                               worker_id, transcript, confidence_str, is_partial);
 
                                         // Emit speech-detected event for frontend UX (only on first detection per session)
@@ -399,15 +398,14 @@ pub fn start_transcription_task<R: Runtime>(
                                             source_type: chunk_source_type.clone(),
                                         };
 
-                                        println!("📤 [WORKER] Emitiendo transcript-update: '{}' (seq: {}, partial: {}, confidence: {:.2})",
+                                        debug!("[WORKER] emit transcript-update: '{}' (seq={}, partial={}, conf={:.2})",
                                                  update.text, update.sequence_id, update.is_partial, update.confidence);
 
                                         match app_clone.emit("transcript-update", &update) {
                                             Ok(_) => {
-                                                println!("✅ [WORKER] Evento transcript-update emitido correctamente");
+                                                debug!("[WORKER] transcript-update emitido OK");
                                             }
                                             Err(e) => {
-                                                println!("❌ [WORKER] Error emitiendo transcript-update: {}", e);
                                                 error!(
                                                     "Worker {}: Failed to emit transcript update: {}",
                                                     worker_id, e
@@ -1065,7 +1063,7 @@ async fn transcribe_chunk_with_provider<R: Runtime>(
         TranscriptionEngine::Provider(provider) => {
             // Trait-based provider (clean, unified interface)
             let language = crate::get_language_preference_internal();
-            println!("[WORKER] Using provider: {} (language: {:?}, {} samples)",
+            debug!("[WORKER] Using provider: {} (language: {:?}, {} samples)",
                      provider.provider_name(), language, speech_samples.len());
 
             match provider.transcribe(speech_samples, language).await {
