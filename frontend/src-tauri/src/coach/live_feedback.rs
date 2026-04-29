@@ -967,3 +967,209 @@ fn extract_json(text: &str) -> Option<String> {
         None
     }
 }
+
+// ─── Tests ────────────────────────────────────────────────────────────────────
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_tip(secs: u64, text: &str) -> CoachTipUpdate {
+        CoachTipUpdate {
+            tip: text.to_string(),
+            tip_type: "observation".to_string(),
+            category: "pacing".to_string(),
+            priority: "soft".to_string(),
+            confidence: 0.7,
+            trigger: None,
+            timestamp_secs: secs,
+        }
+    }
+
+    // §4.2 tip_similarity / is_duplicate_tip ──────────────────────────────────
+
+    #[test]
+    fn jaccard_atrapa_parafrasis_leves() {
+        // Reformulacion mínima (1 palabra extra al final) sobre frase larga: jaccard >=0.85.
+        // Atrapa el patron tipico del LLM repitiendo el mismo consejo con un detalle agregado.
+        let a = "preguntale que piensa sobre esto y por que";
+        let b = "preguntale que piensa sobre esto y por que importa";
+        let sim = tip_similarity(a, b);
+        assert!(sim >= 0.85, "esperaba >=0.85, got {}", sim);
+    }
+
+    #[test]
+    fn jaccard_separa_ideas_distintas() {
+        // Tips con tema completamente distinto deben quedar lejos del umbral.
+        let a = "Llevas más de un minuto hablando, haz pausa";
+        let b = "Pregúntale por su presupuesto disponible";
+        let sim = tip_similarity(a, b);
+        assert!(sim < 0.85, "esperaba <0.85, got {}", sim);
+    }
+
+    #[test]
+    fn jaccard_ignora_tokens_cortos() {
+        // Tokens <= 2 chars (es, lo, de, a, el) no aportan al score.
+        let a = "Es bueno escuchar más al cliente";
+        let b = "bueno escuchar al cliente más";
+        let sim = tip_similarity(a, b);
+        // Con tokens cortos filtrados ambos sets son {bueno, escuchar, más, cliente},
+        // identicos -> similarity == 1.0
+        assert!(sim >= 0.99, "esperaba ~1.0, got {}", sim);
+    }
+
+    #[test]
+    fn is_duplicate_tip_solo_revisa_ventana_5() {
+        let mut prev = vec![
+            "tip viejo lejano sin relacion alguna".to_string(),
+        ];
+        // Agregamos 5 tips intermedios distintos para que el "viejo" salga de la ventana.
+        for i in 0..5 {
+            prev.push(format!("intermedio numero {} sobre cosas distintas", i));
+        }
+        // Candidate identico al viejo, pero el viejo ya no esta en los ultimos 5.
+        let candidate = "tip viejo lejano sin relacion alguna";
+        assert!(
+            !is_duplicate_tip(candidate, &prev),
+            "no debe marcar duplicado si esta fuera de la ventana 5"
+        );
+    }
+
+    #[test]
+    fn is_duplicate_tip_marca_dentro_ventana() {
+        let prev = vec![
+            "uno dos tres cuatro cinco seis siete".to_string(),
+            "uno dos tres cuatro cinco seis siete ocho".to_string(),
+        ];
+        let candidate = "uno dos tres cuatro cinco seis siete";
+        assert!(
+            is_duplicate_tip(candidate, &prev),
+            "debe marcar duplicado: identico al ultimo"
+        );
+    }
+
+    // §5.3 hard cap 6/min ─────────────────────────────────────────────────────
+
+    #[test]
+    fn hard_cap_bloquea_a_partir_del_sexto_tip_en_60s() {
+        let mut st = FeedbackState::new();
+        // Simulamos sesion en t=120s. timestamp_secs >= 60 cae dentro del minuto.
+        // Como session_secs() depende de session_start (Instant real) y no podemos
+        // viajar en el tiempo, ajustamos session_start hacia atras:
+        st.session_start = Instant::now() - Duration::from_secs(120);
+        for i in 0..6 {
+            st.tip_history.push(make_tip(80 + i, &format!("tip #{}", i)));
+        }
+        assert!(
+            !st.can_emit(false),
+            "con 6 tips en el ultimo minuto debe rechazar"
+        );
+        assert!(
+            !st.can_emit(true),
+            "hard cap aplica incluso a critical (red de seguridad)"
+        );
+    }
+
+    #[test]
+    fn hard_cap_permite_emitir_con_5_tips() {
+        let mut st = FeedbackState::new();
+        st.session_start = Instant::now() - Duration::from_secs(120);
+        // last_tip_at lejano para que cooldown no aplique.
+        st.last_tip_at = None;
+        for i in 0..5 {
+            st.tip_history.push(make_tip(80 + i, &format!("tip #{}", i)));
+        }
+        assert!(
+            st.can_emit(false),
+            "con 5 tips en el ultimo minuto debe permitir el sexto"
+        );
+    }
+
+    // §5.2 cooldown 15s/30s/20s ────────────────────────────────────────────────
+
+    #[test]
+    fn cooldown_critical_es_15s() {
+        let mut st = FeedbackState::new();
+        st.session_start = Instant::now() - Duration::from_secs(300); // sesion madura
+        st.last_tip_at = Some(Instant::now() - Duration::from_secs(10));
+        assert!(
+            !st.can_emit(true),
+            "10s desde ultimo tip < 15s critical -> bloquea"
+        );
+        st.last_tip_at = Some(Instant::now() - Duration::from_secs(20));
+        assert!(
+            st.can_emit(true),
+            "20s desde ultimo tip >= 15s critical -> permite"
+        );
+    }
+
+    #[test]
+    fn cooldown_primer_minuto_es_30s() {
+        let mut st = FeedbackState::new();
+        // Sesion recien iniciada: session_secs < 60.
+        st.session_start = Instant::now() - Duration::from_secs(40);
+        st.last_tip_at = Some(Instant::now() - Duration::from_secs(20));
+        assert!(
+            !st.can_emit(false),
+            "20s en primer minuto < 30s -> bloquea"
+        );
+        st.last_tip_at = Some(Instant::now() - Duration::from_secs(31));
+        assert!(
+            st.can_emit(false),
+            "31s en primer minuto >= 30s -> permite"
+        );
+    }
+
+    #[test]
+    fn cooldown_sesion_madura_es_20s() {
+        let mut st = FeedbackState::new();
+        st.session_start = Instant::now() - Duration::from_secs(300);
+        st.last_tip_at = Some(Instant::now() - Duration::from_secs(15));
+        assert!(
+            !st.can_emit(false),
+            "15s en sesion madura < 20s -> bloquea"
+        );
+        st.last_tip_at = Some(Instant::now() - Duration::from_secs(21));
+        assert!(
+            st.can_emit(false),
+            "21s en sesion madura >= 20s -> permite"
+        );
+    }
+
+    // §1.5.1 TTFB primer tip ───────────────────────────────────────────────────
+
+    #[test]
+    fn mark_first_tip_solo_devuelve_ms_la_primera_vez() {
+        let mut st = FeedbackState::new();
+        let first = st.mark_first_tip_if_needed();
+        assert!(first.is_some(), "primer tip debe devolver Some(ms)");
+        let second = st.mark_first_tip_if_needed();
+        assert!(
+            second.is_none(),
+            "segundo tip debe devolver None (ya marcado)"
+        );
+    }
+
+    // §1.5.3 p95 latencia ──────────────────────────────────────────────────────
+
+    #[test]
+    fn p95_latencia_calcula_correctamente() {
+        let mut st = FeedbackState::new();
+        for ms in 1..=100u64 {
+            st.push_llm_latency(ms);
+        }
+        // p95 sobre 100 valores 1..=100 -> sorted[95] == 96.
+        assert_eq!(st.llm_latency_p95_ms(), Some(96));
+    }
+
+    #[test]
+    fn p95_latencia_caps_a_100_muestras() {
+        let mut st = FeedbackState::new();
+        // Empujamos 150, debe quedar solo con las ultimas 100.
+        for ms in 1..=150u64 {
+            st.push_llm_latency(ms);
+        }
+        assert_eq!(st.llm_latencies_ms.len(), 100);
+        // Las ultimas 100 son 51..=150. Sort y p95 -> sorted[95] == 146.
+        assert_eq!(st.llm_latency_p95_ms(), Some(146));
+    }
+}
