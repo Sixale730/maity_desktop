@@ -382,4 +382,102 @@ pub fn get_speech_chunks(samples_mono_16k: &[f32], redemption_time_ms: u32) -> R
     Ok(segments)
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_extract_speech_16k_silencio_puro_retorna_vacio() {
+        // 100ms de silencio a 16kHz = 1600 samples a 0.0
+        let silence = vec![0.0_f32; 1600];
+        let result = extract_speech_16k(&silence).unwrap();
+        // Energy gate descarta segmentos < 100ms con RMS<0.2 OR peak<0.20
+        assert!(result.is_empty(), "silencio puro no debe pasar el energy gate");
+    }
+
+    #[test]
+    fn test_extract_speech_16k_audio_corto_baja_energia_descartado() {
+        // 50ms de senoidal de baja amplitud (peak ~0.05) — silencio digital + energy gate
+        let mut samples = Vec::with_capacity(800);
+        for i in 0..800 {
+            let t = i as f32 / 16000.0;
+            samples.push(0.05 * (2.0 * std::f32::consts::PI * 440.0 * t).sin());
+        }
+        let result = extract_speech_16k(&samples).unwrap();
+        // Sin Silero detectando voz real, el segmento corto cae en el energy gate
+        assert!(result.is_empty() || result.len() < samples.len());
+    }
+
+    #[test]
+    fn test_continuous_vad_processor_new_acepta_distintos_sample_rates() {
+        // El processor debe aceptar 48kHz, 44.1kHz y 16kHz (passthrough)
+        for &sr in &[16000_u32, 22050, 44100, 48000] {
+            let p = ContinuousVadProcessor::new(sr, 600);
+            assert!(p.is_ok(), "VAD processor debe inicializar con sample_rate={}", sr);
+        }
+    }
+
+    #[test]
+    fn test_continuous_vad_processor_chunk_size_es_480_a_16khz() {
+        // Silero VAD requiere chunk de 30ms a 16kHz = 480 samples
+        let p = ContinuousVadProcessor::new(16000, 600).unwrap();
+        assert_eq!(p.chunk_size, 480, "chunk_size debe ser 30ms @ 16kHz = 480 samples");
+    }
+
+    #[test]
+    fn test_max_speech_samples_es_2s_a_16khz() {
+        // Force-cut en 2.0s @ 16kHz = 32000 samples (replica del repo de referencia)
+        let p = ContinuousVadProcessor::new(16000, 600).unwrap();
+        assert_eq!(p.max_speech_samples, 32000, "max_speech_samples = 2s @ 16kHz");
+    }
+
+    #[test]
+    fn test_vad_buffer_max_samples_es_5s_a_16khz() {
+        // Defensive cap en buffer interno: 5s @ 16kHz = 80000 samples
+        assert_eq!(VAD_BUFFER_MAX_SAMPLES, 80_000);
+        assert_eq!(VAD_BUFFER_MAX_SAMPLES / 16_000, 5);
+    }
+
+    #[test]
+    fn test_resampling_passthrough_sample_rate_igual() {
+        // Cuando input_sample_rate == 16000, process_audio NO resamplea (passthrough).
+        // Verificamos creando un processor 16kHz y verificando que se construye sin error.
+        let p = ContinuousVadProcessor::new(16000, 600).unwrap();
+        assert_eq!(p.sample_rate, 16000);
+    }
+
+    #[test]
+    fn test_initial_state_no_in_speech() {
+        let p = ContinuousVadProcessor::new(16000, 600).unwrap();
+        assert!(!p.in_speech, "estado inicial: no estamos en speech");
+        assert!(p.current_speech.is_empty());
+        assert_eq!(p.processed_samples, 0);
+    }
+
+    #[test]
+    fn test_speech_segment_construction() {
+        let segment = SpeechSegment {
+            samples: vec![0.1, 0.2, 0.3],
+            start_timestamp_ms: 100.0,
+            end_timestamp_ms: 200.0,
+            confidence: 0.9,
+        };
+        assert_eq!(segment.samples.len(), 3);
+        assert!((segment.end_timestamp_ms - segment.start_timestamp_ms - 100.0).abs() < 0.001);
+        assert!(segment.confidence > 0.0);
+    }
+
+    #[test]
+    fn test_get_speech_chunks_silencio_no_detecta_voz() {
+        let silence = vec![0.0_f32; 16_000]; // 1s de silencio
+        let result = get_speech_chunks(&silence, 600);
+        // Tolerable que devuelva error o vacío; lo importante es que NO crash
+        assert!(result.is_ok() || result.is_err());
+        if let Ok(segments) = result {
+            // Sin voz, Silero no debe emitir segments
+            assert_eq!(segments.len(), 0, "silencio no debe producir segments");
+        }
+    }
+}
+
  

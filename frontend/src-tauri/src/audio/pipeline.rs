@@ -1313,3 +1313,146 @@ impl Default for AudioPipelineManager {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_echo_constants_son_los_esperados() {
+        // Estos valores son criticos para el behavior anti-eco. Cambiarlos requiere
+        // tunning con audio real. Si fallan, evaluar el cambio antes de bumpear el test.
+        assert!((ECHO_TIME_OVERLAP_WINDOW - 0.5).abs() < 0.001);
+        assert!((ECHO_ENERGY_RATIO_THRESHOLD - 0.3).abs() < 0.001);
+        assert!((ECHO_ABSOLUTE_RMS_THRESHOLD - 0.02).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_ring_buffer_window_size_a_48khz() {
+        // 100ms window @ 48kHz = 4800 samples
+        let rb = AudioMixerRingBuffer::new(48000);
+        assert_eq!(rb.window_size_samples, 4800);
+    }
+
+    #[test]
+    fn test_ring_buffer_max_buffer_size_es_8x_window() {
+        // max_buffer_size = window_size * 8 = 400ms @ 48kHz
+        let rb = AudioMixerRingBuffer::new(48000);
+        assert_eq!(rb.max_buffer_size, 4800 * 8);
+        assert_eq!(rb.max_buffer_size, 38_400);
+    }
+
+    #[test]
+    fn test_ring_buffer_initial_state_can_mix_false() {
+        let rb = AudioMixerRingBuffer::new(48000);
+        assert!(!rb.can_mix(), "buffer vacio no debe estar listo para mix");
+    }
+
+    #[test]
+    fn test_ring_buffer_can_mix_con_solo_mic_es_true() {
+        // can_mix retorna true si CUALQUIERA de los dos buffers tiene window_size+
+        let mut rb = AudioMixerRingBuffer::new(48000);
+        rb.add_samples(DeviceType::Microphone, vec![0.1; 4800]);
+        assert!(rb.can_mix(), "mic con window completa => can_mix=true");
+    }
+
+    #[test]
+    fn test_ring_buffer_can_mix_con_solo_sys_es_true() {
+        let mut rb = AudioMixerRingBuffer::new(48000);
+        rb.add_samples(DeviceType::System, vec![0.1; 4800]);
+        assert!(rb.can_mix(), "sys con window completa => can_mix=true");
+    }
+
+    #[test]
+    fn test_ring_buffer_clear_vacia_ambos() {
+        let mut rb = AudioMixerRingBuffer::new(48000);
+        rb.add_samples(DeviceType::Microphone, vec![0.5; 1000]);
+        rb.add_samples(DeviceType::System, vec![0.3; 800]);
+        rb.clear();
+        assert_eq!(rb.mic_buffer.len(), 0);
+        assert_eq!(rb.system_buffer.len(), 0);
+    }
+
+    #[test]
+    fn test_ring_buffer_extract_window_devuelve_longitudes_correctas() {
+        let mut rb = AudioMixerRingBuffer::new(48000);
+        rb.add_samples(DeviceType::Microphone, vec![0.1; 4800]);
+        rb.add_samples(DeviceType::System, vec![0.2; 4800]);
+
+        let result = rb.extract_window();
+        assert!(result.is_some());
+        let (mic_window, sys_window) = result.unwrap();
+        assert_eq!(mic_window.len(), 4800);
+        assert_eq!(sys_window.len(), 4800);
+        // El primer sample del mic debe ser 0.1, sys 0.2
+        assert!((mic_window[0] - 0.1).abs() < 0.001);
+        assert!((sys_window[0] - 0.2).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_ring_buffer_extract_window_pad_con_zeros_cuando_un_canal_falta() {
+        let mut rb = AudioMixerRingBuffer::new(48000);
+        // Solo mic, no sys
+        rb.add_samples(DeviceType::Microphone, vec![0.1; 4800]);
+        let (mic_window, sys_window) = rb.extract_window().unwrap();
+        assert_eq!(mic_window.len(), 4800);
+        assert_eq!(sys_window.len(), 4800, "sys debe estar padded con zeros");
+        assert!(sys_window.iter().all(|&s| s == 0.0));
+    }
+
+    #[test]
+    fn test_ring_buffer_overflow_descarta_oldest() {
+        let mut rb = AudioMixerRingBuffer::new(48000);
+        // Llenar mas alla del max_buffer_size (38400)
+        let big_chunk = vec![0.5_f32; 50_000];
+        rb.add_samples(DeviceType::Microphone, big_chunk);
+        // El buffer no debe exceder max_buffer_size tras el cleanup
+        assert!(
+            rb.mic_buffer.len() <= rb.max_buffer_size,
+            "buffer debe estar capped a max_buffer_size"
+        );
+    }
+
+    #[test]
+    fn test_ring_buffer_dominante_inicial_es_microphone() {
+        let rb = AudioMixerRingBuffer::new(48000);
+        assert_eq!(rb.last_dominant_device, DeviceType::Microphone);
+    }
+
+    #[test]
+    fn test_ring_buffer_mixed_chunk_no_se_agrega() {
+        let mut rb = AudioMixerRingBuffer::new(48000);
+        rb.add_samples(DeviceType::Mixed, vec![0.5; 1000]);
+        assert_eq!(rb.mic_buffer.len(), 0);
+        assert_eq!(rb.system_buffer.len(), 0);
+    }
+
+    #[test]
+    fn test_ring_buffer_extract_actualiza_dominant_a_system_cuando_mas_energia() {
+        let mut rb = AudioMixerRingBuffer::new(48000);
+        // sys con energia alta, mic con casi cero
+        rb.add_samples(DeviceType::Microphone, vec![0.001; 4800]);
+        rb.add_samples(DeviceType::System, vec![0.5; 4800]);
+        rb.extract_window();
+        assert_eq!(rb.last_dominant_device, DeviceType::System);
+    }
+
+    #[test]
+    fn test_ring_buffer_extract_mantiene_mic_dominant_cuando_silencio_total() {
+        // Si ambos por debajo de ENERGY_THRESHOLD, mantiene el ultimo dominante
+        let mut rb = AudioMixerRingBuffer::new(48000);
+        rb.add_samples(DeviceType::Microphone, vec![0.0; 4800]);
+        rb.add_samples(DeviceType::System, vec![0.0; 4800]);
+        rb.extract_window();
+        // Default es Microphone y silencio NO debe cambiarlo
+        assert_eq!(rb.last_dominant_device, DeviceType::Microphone);
+    }
+
+    #[test]
+    fn test_ring_buffer_window_size_a_distintos_sample_rates() {
+        // 100ms a sample rates distintos
+        assert_eq!(AudioMixerRingBuffer::new(16000).window_size_samples, 1600);
+        assert_eq!(AudioMixerRingBuffer::new(44100).window_size_samples, 4410);
+        assert_eq!(AudioMixerRingBuffer::new(48000).window_size_samples, 4800);
+    }
+}
