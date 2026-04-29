@@ -767,6 +767,10 @@ pub struct AudioPipeline {
     last_echo_report_time: std::time::Instant,
     /// Gain multiplier for system audio (default 1.5)
     system_audio_gain: f32,
+    /// Heartbeat: ultimo timestamp en que el sys VAD emitio segment al transcription_sender.
+    /// Si pasan >5s sin emit Y hay actividad RMS sostenida, forzamos flush para evitar que
+    /// el interlocutor quede atrapado en silero por audio sostenido bajo umbral.
+    last_sys_vad_emit: std::time::Instant,
 }
 
 impl AudioPipeline {
@@ -852,6 +856,7 @@ impl AudioPipeline {
             echo_suppressed_sys: 0,
             last_echo_report_time: std::time::Instant::now(),
             system_audio_gain: 1.5, // Default boost; overridden by set_system_audio_gain
+            last_sys_vad_emit: std::time::Instant::now(),
         })
     }
 
@@ -981,6 +986,44 @@ impl AudioPipeline {
                             }
                         }
                         DeviceType::System => {
+                            // Heartbeat: si pasaron 5s+ sin emit del sys VAD pero hay
+                            // actividad reciente, forzamos flush para liberar audio
+                            // sostenido bajo umbral de Silero (interlocutor con voz baja
+                            // o audio constante de TV/musica).
+                            if self.last_sys_vad_emit.elapsed() >= std::time::Duration::from_secs(5)
+                                && self.sys_recent_rms > 0.005
+                            {
+                                debug!(
+                                    "Heartbeat sys VAD: 5s+ sin emit con actividad (RMS={:.4}), flush forzado",
+                                    self.sys_recent_rms
+                                );
+                                if let Ok(forced_segments) = self.sys_vad_processor.flush() {
+                                    for segment in forced_segments {
+                                        if segment.samples.len() >= 400 {
+                                            let segment_rms = (segment.samples.iter().map(|&x| x * x).sum::<f32>()
+                                                / segment.samples.len() as f32)
+                                                .sqrt();
+                                            if !self.is_likely_echo(DeviceType::System, segment_rms) {
+                                                let transcription_chunk = AudioChunk {
+                                                    data: segment.samples,
+                                                    sample_rate: 16000,
+                                                    timestamp: segment.start_timestamp_ms / 1000.0,
+                                                    chunk_id: self.chunk_id_counter,
+                                                    device_type: DeviceType::System,
+                                                };
+                                                if self.transcription_sender.send(transcription_chunk).is_ok() {
+                                                    self.chunk_id_counter += 1;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                // Reset siempre (incluso si flush no produjo segments)
+                                // para evitar gastar CPU en flushes consecutivos cuando
+                                // el sys realmente esta en silencio.
+                                self.last_sys_vad_emit = std::time::Instant::now();
+                            }
+
                             match self.sys_vad_processor.process_audio(&chunk.data) {
                                 Ok(speech_segments) => {
                                     for segment in speech_segments {
@@ -1012,6 +1055,7 @@ impl AudioPipeline {
                                                 warn!("Failed to send system VAD segment: {}", e);
                                             } else {
                                                 self.chunk_id_counter += 1;
+                                                self.last_sys_vad_emit = std::time::Instant::now();
                                             }
                                         } else {
                                             debug!("⏭️ Dropping short system VAD segment: {:.1}ms ({} samples < 400)",
