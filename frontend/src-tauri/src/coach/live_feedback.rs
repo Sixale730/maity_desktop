@@ -408,11 +408,29 @@ pub async fn start<R: Runtime + 'static>(app: AppHandle<R>) -> Result<(), String
                 st.last_price_signal_at = Some(Instant::now());
             }
 
-            let has_critical = signals
+            // §5.1 Destrabar listener: aceptar critical+important siempre, soft solo si pasaron 35s
+            // Antes solo critical pasaba el filtro, ahogando el 90% de señales útiles (price,
+            // objection, hesitation, satisfaction, enthusiasm) que vienen como Important.
+            let has_actionable = signals.iter().any(|s| {
+                matches!(
+                    s.priority,
+                    SignalPriority::Critical | SignalPriority::Important
+                )
+            });
+            let has_soft_aged = signals
+                .iter()
+                .any(|s| matches!(s.priority, SignalPriority::Soft))
+                && st
+                    .last_tip_at
+                    .map_or(true, |t| t.elapsed() >= Duration::from_secs(35));
+
+            if !(has_actionable || has_soft_aged) {
+                return;
+            }
+            let is_critical = signals
                 .iter()
                 .any(|s| matches!(s.priority, SignalPriority::Critical));
-
-            if !has_critical || !st.can_emit(true) {
+            if !st.can_emit(is_critical) {
                 return;
             }
 
