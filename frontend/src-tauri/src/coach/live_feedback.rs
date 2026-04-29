@@ -147,12 +147,16 @@ impl FeedbackState {
                 return false;
             }
         }
-        // Primer minuto: gap mínimo 30s para no abrumar al inicio
+        // §5.2 Cooldown realista: critical 15s, primer minuto 30s, sesion madura 20s.
+        // Antes era 30s/120s — el 120s madura ahogaba la cadencia (1 tip cada 2 min).
+        // 20s nos deja margen para coexistir con nudge §5.6 (15s) y futuro heuristico §6 (3s).
         let session_secs = self.session_start.elapsed().as_secs();
-        let gap = if session_secs < 60 || critical {
+        let gap = if critical {
+            Duration::from_secs(15)
+        } else if session_secs < 60 {
             Duration::from_secs(30)
         } else {
-            Duration::from_secs(120)
+            Duration::from_secs(20)
         };
         self.last_tip_at.map_or(true, |t| t.elapsed() >= gap)
     }
