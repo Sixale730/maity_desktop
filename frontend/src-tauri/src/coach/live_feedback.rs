@@ -725,6 +725,83 @@ pub async fn start<R: Runtime + 'static>(app: AppHandle<R>) -> Result<(), String
         }
     });
 
+    // ── §6 Loop heuristico cada 3s (tips directos sin LLM) ───────────────────
+    // Reutiliza can_emit (cooldown + hard cap §5.3) y dedup §4.2 (is_duplicate_tip).
+    // Cubre los casos urgentes/extremos donde la latencia LLM (2-4s) es inaceptable.
+    let state_he = Arc::clone(&state);
+    let app_he = app.clone();
+    let token_he = token.clone();
+    tokio::spawn(async move {
+        info!("🎯 Coach heuristic loop started (interval=3s)");
+        let mut ticker = tokio::time::interval(Duration::from_secs(3));
+        ticker.tick().await; // descartar primer tick inmediato
+
+        loop {
+            tokio::select! {
+                _ = ticker.tick() => {
+                    let task = {
+                        let Ok(mut st) = state_he.lock() else { continue };
+                        if st.window.is_empty() {
+                            // Sin actividad aun -> no evaluar; ahorra logs ruidosos al inicio.
+                            None
+                        } else {
+                            let snap = st.snapshot();
+                            match evaluate_health_tips(&snap) {
+                                None => None,
+                                Some(h) => {
+                                    let is_critical = h.priority == "critical";
+                                    if !st.can_emit(is_critical) {
+                                        None
+                                    } else if is_duplicate_tip(h.tip, &st.previous_tips) {
+                                        None
+                                    } else {
+                                        // Bloquear rate-limit antes de emit.
+                                        st.last_tip_at = Some(Instant::now());
+                                        Some((h, snap.session_duration_sec))
+                                    }
+                                }
+                            }
+                        }
+                    };
+
+                    let Some((h, dur)) = task else { continue };
+                    let update = CoachTipUpdate {
+                        tip: h.tip.to_string(),
+                        tip_type: "observation".to_string(),
+                        category: h.category.to_string(),
+                        priority: h.priority.to_string(),
+                        confidence: 1.0, // textos curados, alta confianza
+                        trigger: Some(h.trigger.to_string()),
+                        timestamp_secs: dur as u64,
+                    };
+                    let _ = app_he.emit("coach-tip-update", &update);
+                    info!(
+                        "[heuristic] tip directo emitido: trigger={} priority={}",
+                        h.trigger, h.priority
+                    );
+                    let ttfb_ms = if let Ok(mut st) = state_he.lock() {
+                        let ttfb = st.mark_first_tip_if_needed();
+                        st.record_tip(update);
+                        ttfb
+                    } else {
+                        None
+                    };
+                    if let Some(ms) = ttfb_ms {
+                        info!("[METRIC] TTFB primer tip: {}ms (heuristic)", ms);
+                        let _ = app_he.emit(
+                            "coach-metrics",
+                            serde_json::json!({ "ttfb_first_tip_ms": ms as u64 }),
+                        );
+                    }
+                }
+                _ = token_he.cancelled() => {
+                    info!("🛑 Coach heuristic loop cancelled");
+                    break;
+                }
+            }
+        }
+    });
+
     info!(
         "✅ Live feedback started (model={}, endpoint={})",
         model, endpoint
@@ -996,6 +1073,73 @@ fn extract_json(text: &str) -> Option<String> {
     } else {
         None
     }
+}
+
+// §6 Loop heuristico 3s — tips directos sin LLM ──────────────────────────────
+//
+// Inspiracion: Effect 5 de CoachContext.tsx de Poncho. Cada 3s recalcula health_score
+// y, cuando cae a zonas criticas, emite tips hardcoded en <10ms sin pasar por el
+// sidecar Gemma. Cubre los casos urgentes/extremos donde la latencia LLM (~2-4s)
+// es inaceptable. Reutiliza can_emit() (cooldown + hard cap §5.3) y dedup §4.2.
+
+#[derive(Debug, Clone)]
+struct HeuristicTip {
+    tip: &'static str,
+    category: &'static str,
+    priority: &'static str,
+    trigger: &'static str,
+}
+
+/// Evalua snapshot conversacional y devuelve un tip hardcoded si cae en zona critica.
+/// Orden de prioridad: monologo en curso > health <= 10 > health <= 25 > health <= 40
+/// > talk_ratio > 0.85. Solo emite uno por tick (el primero que matche).
+fn evaluate_health_tips(snap: &ConversationSnapshot) -> Option<HeuristicTip> {
+    // Monologo en curso > 90s — critico, dispara antes que health.
+    if snap.longest_user_monologue_sec > 90 {
+        return Some(HeuristicTip {
+            tip: "Llevas más de 1.5 min hablando. Haz una pausa.",
+            category: "pacing",
+            priority: "critical",
+            trigger: "heuristic_monologue_long",
+        });
+    }
+    // Health <= 10 — urgente.
+    if snap.health_score <= 10 {
+        return Some(HeuristicTip {
+            tip: "Atención: la conversación necesita mejorar urgentemente. Pregúntale: '¿cómo te sientes con lo que hemos hablado hasta ahora?'",
+            category: "service",
+            priority: "critical",
+            trigger: "heuristic_health_critical",
+        });
+    }
+    // Health <= 25 — perdiendo conexion.
+    if snap.health_score <= 25 {
+        return Some(HeuristicTip {
+            tip: "Estás perdiendo conexión. Haz una pausa y pregunta: '¿esto te está haciendo sentido?'",
+            category: "rapport",
+            priority: "important",
+            trigger: "heuristic_health_low",
+        });
+    }
+    // Health <= 40 — ritmo no fluye.
+    if snap.health_score <= 40 {
+        return Some(HeuristicTip {
+            tip: "El ritmo no está fluyendo. Cambia de tema o haz una pregunta abierta.",
+            category: "pacing",
+            priority: "important",
+            trigger: "heuristic_health_pacing",
+        });
+    }
+    // Dominancia > 0.85 con sesion > 90s.
+    if snap.user_talk_ratio > 0.85 && snap.session_duration_sec > 90 {
+        return Some(HeuristicTip {
+            tip: "Estás dominando la conversación. Pregúntale: '¿qué piensas tú sobre esto?'",
+            category: "listening",
+            priority: "important",
+            trigger: "heuristic_dominance",
+        });
+    }
+    None
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
@@ -1272,6 +1416,51 @@ mod tests {
         // 70 - 20 - 15 - 10 = 25, clampea bien arriba de 0.
         assert!(h <= 30, "muchas penalizaciones bajan a <=30, got {}", h);
         assert!(h >= 0);
+    }
+
+    // §6 evaluate_health_tips ─────────────────────────────────────────────────
+
+    fn make_snap(health: u32, ratio: f32, mono: u32, session: u32) -> ConversationSnapshot {
+        ConversationSnapshot {
+            user_talk_ratio: ratio,
+            user_questions: 0,
+            session_duration_sec: session,
+            user_wpm: 0.0,
+            longest_user_monologue_sec: mono,
+            health_score: health,
+            last_nudge_type: None,
+        }
+    }
+
+    #[test]
+    fn heuristic_dispara_critical_con_health_le_10() {
+        let snap = make_snap(8, 0.5, 0, 200);
+        let h = evaluate_health_tips(&snap).expect("debe disparar");
+        assert_eq!(h.priority, "critical");
+        assert_eq!(h.trigger, "heuristic_health_critical");
+    }
+
+    #[test]
+    fn heuristic_monologo_largo_tiene_prioridad_sobre_health() {
+        // Aunque el health sea alto, monologo > 90s dispara primero.
+        let snap = make_snap(80, 0.5, 100, 200);
+        let h = evaluate_health_tips(&snap).expect("debe disparar");
+        assert_eq!(h.trigger, "heuristic_monologue_long");
+    }
+
+    #[test]
+    fn heuristic_no_dispara_en_zona_sana() {
+        let snap = make_snap(75, 0.5, 30, 60);
+        assert!(evaluate_health_tips(&snap).is_none());
+    }
+
+    #[test]
+    fn heuristic_dispara_dominancia_solo_con_sesion_madura() {
+        let early = make_snap(60, 0.95, 0, 60); // sesion < 90s
+        assert!(evaluate_health_tips(&early).is_none());
+        let mature = make_snap(60, 0.95, 0, 120);
+        let h = evaluate_health_tips(&mature).expect("dispara con sesion >90s");
+        assert_eq!(h.trigger, "heuristic_dominance");
     }
 
     #[test]
