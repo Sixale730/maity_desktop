@@ -748,6 +748,50 @@ pub async fn start<R: Runtime + 'static>(app: AppHandle<R>) -> Result<(), String
         }
     });
 
+    // ── §1.3 Loop emisor de meeting-metrics cada 3s ──────────────────────────
+    // Lee snapshot del state, calcula health/talk pct y emite evento "meeting-metrics"
+    // que el frontend consume para HealthGauge + TalkSplitBar. 3s = mismo ritmo que
+    // Poncho; suficientemente rapido para sentirse vivo sin saturar el bus Tauri.
+    // §1.4 Cancellation: respeta el mismo CancellationToken que listener y nudge.
+    let state_mm = Arc::clone(&state);
+    let app_mm = app.clone();
+    let token_mm = token.clone();
+    tokio::spawn(async move {
+        info!("📊 Coach meeting-metrics emitter started (interval=3s)");
+        let mut ticker = tokio::time::interval(Duration::from_secs(3));
+        ticker.tick().await; // descartar primer tick inmediato
+
+        loop {
+            tokio::select! {
+                _ = ticker.tick() => {
+                    let payload = {
+                        let Ok(st) = state_mm.lock() else { continue };
+                        let total_turns = st.user_turns + st.interlocutor_turns;
+                        let (user_pct, interlocutor_pct) = if total_turns == 0 {
+                            (50u8, 50u8) // 50/50 al inicio (frontend muestra "Esperando audio")
+                        } else {
+                            let u = ((st.user_turns as f32 / total_turns as f32) * 100.0).round() as u8;
+                            (u, 100u8.saturating_sub(u))
+                        };
+                        MeetingMetrics {
+                            health: st.health_score() as u8,
+                            user_talk_pct: user_pct,
+                            interlocutor_talk_pct: interlocutor_pct,
+                            session_secs: st.session_secs(),
+                            user_turns: st.user_turns,
+                            interlocutor_turns: st.interlocutor_turns,
+                        }
+                    };
+                    let _ = app_mm.emit("meeting-metrics", &payload);
+                }
+                _ = token_mm.cancelled() => {
+                    info!("🛑 Coach meeting-metrics emitter cancelled");
+                    break;
+                }
+            }
+        }
+    });
+
     // ── §6 Loop heuristico cada 3s (tips directos sin LLM) ───────────────────
     // Reutiliza can_emit (cooldown + hard cap §5.3) y dedup §4.2 (is_duplicate_tip).
     // Cubre los casos urgentes/extremos donde la latencia LLM (2-4s) es inaceptable.
