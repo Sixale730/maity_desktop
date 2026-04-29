@@ -5,17 +5,15 @@ import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { Sparkles, Minus, Maximize2, ThumbsUp, ThumbsDown } from 'lucide-react';
 import { useCoachTips } from '@/hooks/useCoachTips';
+import { useMeetingMetrics } from '@/hooks/useMeetingMetrics';
+import { HealthGauge } from '@/components/coach/HealthGauge';
+import { TalkSplitBar } from '@/components/coach/TalkSplitBar';
 
 interface AudioLevels {
   micRms: number;
   micPeak: number;
   sysRms: number;
   sysPeak: number;
-}
-
-interface TranscriptUpdate {
-  text: string;
-  source_type: string;
 }
 
 type TipFeedback = 'like' | 'dislike' | null;
@@ -40,16 +38,19 @@ function AudioBars({ rms, scales, color }: { rms: number; scales: number[]; colo
   );
 }
 
-const borderColor = (p: string) =>
-  p === 'critical' ? 'border-red-500/50' : p === 'important' ? 'border-amber-500/50' : 'border-emerald-500/30';
-const iconColor = (p: string) =>
-  p === 'critical' ? 'text-red-400' : p === 'important' ? 'text-amber-400' : 'text-emerald-400';
+// §3.9 Adapter del color de prioridad inline (style en lugar de className porque
+// tipMeta.ts da hex y tailwind no parsea clases dinamicas). Cards usan gradient
+// con alpha-hex 8 digitos directamente, ver §3.8 en el render.
+import { getPriorityColor } from '@/components/coach/tipMeta';
+const iconStyle = (p: string): React.CSSProperties => ({ color: getPriorityColor(p) });
 
 export default function CoachFloatPage() {
-  const { tips, latestTip } = useCoachTips(20);
+  // §3.7 Cap historial 20 -> 50 para sesiones largas con buena cadencia.
+  const { tips, latestTip } = useCoachTips(50);
+  // §2.3 + §2.4 Listener meeting-metrics + render HealthGauge + TalkSplitBar.
+  const { metrics, isWaitingForAudio } = useMeetingMetrics();
   const [compact, setCompact] = useState(false);
   const [levels, setLevels] = useState({ micRms: 0, sysRms: 0 });
-  const [words, setWords] = useState({ user: 0, inter: 0 });
   const [feedback, setFeedback] = useState<TipFeedback>(null);
   const meetingIdRef = useRef<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -67,20 +68,13 @@ export default function CoachFloatPage() {
   }, [tips.length]);
 
   useEffect(() => {
+    // §2.4 Quitamos el listener transcript-update + setWords: el split-bar
+    // ahora consume meeting-metrics, no contadores locales de palabras.
     const subs = [
       listen<AudioLevels>('recording-audio-levels', (e) => {
         setLevels({ micRms: e.payload.micRms, sysRms: e.payload.sysRms });
       }),
-      listen<TranscriptUpdate>('transcript-update', (e) => {
-        const count = e.payload.text.trim().split(/\s+/).filter(Boolean).length;
-        if (e.payload.source_type === 'user') {
-          setWords((w) => ({ ...w, user: w.user + count }));
-        } else {
-          setWords((w) => ({ ...w, inter: w.inter + count }));
-        }
-      }),
       listen('recording-start-complete', () => {
-        setWords({ user: 0, inter: 0 });
         setFeedback(null);
       }),
       listen<string>('early-meeting-id', (e) => {
@@ -91,8 +85,17 @@ export default function CoachFloatPage() {
   }, []);
 
   const isRecording = levels.micRms > 0 || levels.sysRms > 0;
-  const total = words.user + words.inter;
-  const userPct = total > 0 ? Math.round((words.user / total) * 100) : 50;
+
+  // §2.4 Contador de tiempo a partir de metrics.sessionSecs (fuente de verdad
+  // backend, evita drift con timers locales). Formato MM:SS o HH:MM:SS.
+  const sessionTime = (() => {
+    const secs = metrics?.sessionSecs ?? 0;
+    const h = Math.floor(secs / 3600);
+    const m = Math.floor((secs % 3600) / 60);
+    const s = secs % 60;
+    const pad = (n: number) => n.toString().padStart(2, '0');
+    return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${pad(m)}:${pad(s)}`;
+  })();
 
   const toggleCompact = () =>
     invoke('floating_toggle_compact')
@@ -100,6 +103,21 @@ export default function CoachFloatPage() {
       .catch(console.error);
 
   const close = () => invoke('close_floating_coach').catch(console.error);
+
+  // §3.6 Drag fallback programatico para Windows. data-tauri-drag-region puede
+  // no funcionar consistentemente en Win con decorations:false + transparent:true.
+  // El handler ignora botones no-izq y elementos interactivos para no atrapar clicks.
+  const handleDragMouseDown = async (e: React.MouseEvent) => {
+    if (e.button !== 0) return;
+    const target = e.target as HTMLElement;
+    if (target.closest('button, a, input, textarea, select, [role="button"]')) return;
+    try {
+      const { getCurrentWebviewWindow } = await import('@tauri-apps/api/webviewWindow');
+      await getCurrentWebviewWindow().startDragging();
+    } catch (err) {
+      console.warn('startDragging failed', err);
+    }
+  };
 
   const sendFeedback = async (rating: 'like' | 'dislike') => {
     if (!latestTip || feedback !== null) return;
@@ -142,12 +160,26 @@ export default function CoachFloatPage() {
   }
 
   // ── Expanded ────────────────────────────────────────────────────
+  // §3.2 Glass background con backdrop-filter blur 22px. La ventana Tauri es
+  // transparent (§3.1), asi que el bg rgba(15,16,24,0.92) + blur dan el efecto.
   return (
-    <div className="h-screen flex flex-col bg-zinc-900 border border-white/10 rounded-xl overflow-hidden select-none">
+    <div
+      className="h-screen flex flex-col overflow-hidden select-none rounded-xl"
+      style={{
+        background: 'rgba(15, 16, 24, 0.92)',
+        backdropFilter: 'blur(22px) saturate(180%)',
+        WebkitBackdropFilter: 'blur(22px) saturate(180%)',
+        border: '1px solid rgba(255,255,255,0.14)',
+        boxShadow: '0 12px 40px rgba(0,0,0,0.5)',
+      }}
+    >
 
-      {/* Title bar */}
+      {/* Title bar — §3.6 doble drag: data-tauri-drag-region nativo + onMouseDown
+          fallback que llama startDragging() programatico (Win con decorations:false
+          + transparent:true a veces ignora el atributo nativo). */}
       <div
         data-tauri-drag-region
+        onMouseDown={handleDragMouseDown}
         className="flex items-center justify-between px-3 py-2 border-b border-white/10 cursor-move shrink-0"
       >
         <div className="flex items-center gap-2">
@@ -179,23 +211,29 @@ export default function CoachFloatPage() {
           </div>
         </div>
         {isRecording && (
-          <span className="text-[10px] font-mono text-red-400 flex items-center gap-1">
-            <span className="w-1.5 h-1.5 rounded-full bg-red-500 inline-block animate-pulse" />
-            REC
-          </span>
+          <div className="flex items-center gap-2">
+            {/* §2.4 Timer de sesion (fuente: metrics.sessionSecs del backend) */}
+            <span className="text-[10px] font-mono text-zinc-300 tabular-nums">{sessionTime}</span>
+            <span className="text-[10px] font-mono text-red-400 flex items-center gap-1">
+              <span className="w-1.5 h-1.5 rounded-full bg-red-500 inline-block animate-pulse" />
+              REC
+            </span>
+          </div>
         )}
       </div>
 
-      {/* Word split bar */}
-      <div className="px-3 py-2 border-b border-white/5 shrink-0">
-        <div className="flex items-center justify-between text-[10px] text-zinc-500 mb-1">
-          <span>Tú {total > 0 ? `${userPct}%` : '—'}</span>
-          <span className="text-zinc-700">palabras</span>
-          <span>Ellos {total > 0 ? `${100 - userPct}%` : '—'}</span>
-        </div>
-        <div className="flex rounded-full overflow-hidden h-1.5 bg-white/5">
-          <div className="bg-[#485df4] transition-all duration-500" style={{ width: `${userPct}%` }} />
-          <div className="bg-emerald-500 transition-all duration-500" style={{ width: `${100 - userPct}%` }} />
+      {/* §2.4 Header de metricas: HealthGauge 96x96 + TalkSplitBar.
+          Reemplaza la barra word-split simplificada anterior. Datos vienen del
+          evento meeting-metrics (3s) — antes se calculaban a partir de
+          `words` (eventos transcript-update) que ya no son la fuente de verdad. */}
+      <div className="px-3 py-3 border-b border-white/5 shrink-0 flex items-center gap-3">
+        <HealthGauge value={metrics?.health ?? 70} />
+        <div className="flex-1">
+          <TalkSplitBar
+            userPct={metrics?.userTalkPct ?? 50}
+            interlocutorPct={metrics?.interlocutorTalkPct ?? 50}
+            empty={isWaitingForAudio}
+          />
         </div>
       </div>
 
@@ -203,12 +241,22 @@ export default function CoachFloatPage() {
       <div ref={scrollRef} className="flex-1 overflow-y-auto p-3 flex flex-col gap-3">
         {tips.length > 0 ? (
           <>
-            {/* Tip más reciente: estilo completo + like/dislike */}
+            {/* Tip más reciente: estilo completo + like/dislike.
+                §3.8 Card con gradient lineal por priority — alpha-hex 8 digitos
+                (1a=10%, 55=33%) sobre el color base de tipMeta.ts. El border
+                simple anterior hacia que todos los tips se vieran iguales. */}
             {latestTip && (
               <>
-                <div className={`rounded-lg border p-3 ${borderColor(latestTip.priority)}`}>
+                <div
+                  className="rounded-lg border p-3"
+                  style={{
+                    background: `linear-gradient(135deg, ${getPriorityColor(latestTip.priority)}1a 0%, rgba(255,255,255,0.04) 100%)`,
+                    borderColor: `${getPriorityColor(latestTip.priority)}55`,
+                    transition: 'border-color 0.3s ease, background 0.3s ease',
+                  }}
+                >
                   <div className="flex items-start gap-2">
-                    <Sparkles className={`w-4 h-4 mt-0.5 shrink-0 ${iconColor(latestTip.priority)}`} />
+                    <Sparkles className="w-4 h-4 mt-0.5 shrink-0" style={iconStyle(latestTip.priority)} />
                     <p className="text-sm text-white leading-snug">{latestTip.tip}</p>
                   </div>
                   {(latestTip.category || latestTip.trigger) && (

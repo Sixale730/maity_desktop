@@ -20,7 +20,7 @@ pub struct OnboardingStatus {
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct ModelStatus {
     pub parakeet: String,  // "downloaded" | "not_downloaded" | "downloading"
-    pub summary: String,   // Generic field for summary model (gemma3:1b or gemma3:4b)
+    pub summary: String,   // §4.1 Solo gemma3:4b (1b retirado del onboarding)
 }
 
 impl Default for OnboardingStatus {
@@ -96,15 +96,32 @@ fn reconcile_model_status_with_disk<R: Runtime>(
     };
     let mut changed = false;
 
-    // Summary models (Gemma) — buscar en models/summary/
+    // §4.1 Summary models — solo aceptamos gemma3:4b descargado para considerar
+    // el onboarding completo. Si el usuario actualizo desde una version anterior y
+    // tiene 1b instalado pero NO 4b, el onboarding debe abrirse para descargar 4b.
+    // Razon: 1b genero JSON malformado ~33% en sesion real y se retiro del proyecto.
     let summary_dir = base.join("models").join("summary");
     let gemma_1b = summary_dir.join("gemma-3-1b-it-Q8_0.gguf");
     let gemma_4b = summary_dir.join("gemma-3-4b-it-Q4_K_M.gguf");
-    let summary_present = is_valid_gguf(&gemma_1b, 800_000_000) || is_valid_gguf(&gemma_4b, 1_800_000_000);
+    let has_4b = is_valid_gguf(&gemma_4b, 1_800_000_000);
+    let has_only_1b = !has_4b && is_valid_gguf(&gemma_1b, 800_000_000);
 
-    if summary_present && status.model_status.summary != "downloaded" {
+    if has_4b && status.model_status.summary != "downloaded" {
         status.model_status.summary = "downloaded".to_string();
         changed = true;
+    }
+
+    if has_only_1b {
+        // Usuario post-update con solo 1b: forzar re-download de 4b reabriendo el step.
+        if status.model_status.summary != "needs_4b_upgrade" {
+            warn!("Onboarding: detectado 1b sin 4b — forzando re-descarga de 4b (§4.1)");
+            status.model_status.summary = "needs_4b_upgrade".to_string();
+            status.completed = false;
+            // Llevamos al step 3 (descarga de modelos) para que el usuario lo vea.
+            // El frontend interpreta needs_4b_upgrade como "abrir ModelDownloadStep".
+            status.current_step = 3;
+            changed = true;
+        }
     }
 
     // Parakeet — buscar en models/parakeet/
@@ -120,7 +137,9 @@ fn reconcile_model_status_with_disk<R: Runtime>(
         changed = true;
     }
 
-    // Si todo está descargado, marcar onboarding como completado
+    // Si todo está descargado, marcar onboarding como completado.
+    // §4.1 "downloaded" implica gemma3-4b-q4 valido en disco; el caso has_only_1b
+    // mas arriba ya bloqueo este path al setear "needs_4b_upgrade".
     if status.model_status.summary == "downloaded"
         && status.model_status.parakeet == "downloaded"
         && !status.completed

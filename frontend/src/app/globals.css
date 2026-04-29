@@ -2,6 +2,34 @@
 @tailwind components;
 @tailwind utilities;
 
+/* §3.10 Glass utilities + CSS vars compartidas. Reusable por HealthGauge,
+   modales y paneles. Antes hardcodeabamos backdrop-filter por componente. */
+:root {
+  --glass-bg: rgba(15, 16, 24, 0.92);
+  --glass-bg-soft: rgba(17, 24, 39, 0.7);
+  --glass-border: rgba(255, 255, 255, 0.14);
+  --glass-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+}
+
+@layer components {
+  .glass-panel {
+    background: var(--glass-bg);
+    backdrop-filter: blur(22px) saturate(180%);
+    -webkit-backdrop-filter: blur(22px) saturate(180%);
+    border: 1px solid var(--glass-border);
+    box-shadow: var(--glass-shadow);
+  }
+  .glass-panel-soft {
+    background: var(--glass-bg-soft);
+    backdrop-filter: blur(22px) saturate(180%);
+    -webkit-backdrop-filter: blur(22px) saturate(180%);
+    border: 1px solid var(--glass-border);
+  }
+  .btn-press {
+    @apply transition-transform active:scale-95;
+  }
+}
+
 @keyframes vibrate {
   0% {
     transform: translate(0);

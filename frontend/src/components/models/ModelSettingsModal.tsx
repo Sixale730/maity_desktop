@@ -534,7 +534,8 @@ export function ModelSettingsModal({
 
   // Function to download recommended model
   const downloadRecommendedModel = async () => {
-    const recommendedModel = 'gemma3:1b';
+    // §4.1 Default unificado a gemma3:4b (antes era 1b).
+    const recommendedModel = 'gemma3:4b';
 
     // Prevent duplicate downloads (defense in depth - backend also checks)
     if (isDownloading(recommendedModel)) {

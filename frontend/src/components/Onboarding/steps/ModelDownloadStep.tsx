@@ -3,30 +3,24 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { Zap, BarChart2, Download, CheckCircle, Loader2, AlertTriangle } from 'lucide-react';
+import { BarChart2, Download, CheckCircle, Loader2, AlertTriangle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { OnboardingContainer } from '../OnboardingContainer';
 import { useOnboarding } from '@/contexts/OnboardingContext';
 import { useUserRole } from '@/hooks/useUserRole';
 
+// §4.1 Solo gemma3:4b: tips en vivo + evaluacion post-reunion con un solo modelo.
+// Antes descargabamos 1b (1 GB) + 4b (2.4 GB). Ahora solo 4b (2.4 GB) — ahorro de
+// 1 GB de descarga y ~1 GB en RAM, y baja % JSON malformado de ~33% a ~10%.
 const MODEL_DEFS = [
   {
-    name: 'gemma3:1b',
-    label: 'Tips en vivo',
-    Icon: Zap,
-    iconColor: 'text-emerald-500',
-    size: '~1 GB',
-    sizeMb: 1019,
-    description: 'Sugerencias instantáneas durante la reunión. Respuesta en < 2 s.',
-  },
-  {
     name: 'gemma3:4b',
-    label: 'Evaluación post-reunión',
+    label: 'Tips + evaluación',
     Icon: BarChart2,
     iconColor: 'text-[#485df4]',
     size: '~2.4 GB',
     sizeMb: 2374,
-    description: 'Análisis detallado de tu comunicación. Mayor calidad en resúmenes.',
+    description: 'Sugerencias durante la reunión y análisis detallado al final. Calidad balanceada.',
   },
 ] as const;
 
@@ -50,7 +44,6 @@ export function ModelDownloadStep() {
   const { isAdmin } = useUserRole();
 
   const [state, setState] = useState<Record<ModelName, ModelProgress>>({
-    'gemma3:1b': makeInitial(1019),
     'gemma3:4b': makeInitial(2374),
   });
   const [isDownloading, setIsDownloading] = useState(false);
@@ -144,12 +137,12 @@ export function ModelDownloadStep() {
   }, [state, completeOnboarding]);
 
   const allInstalled = MODEL_DEFS.every(m => state[m.name].installed);
-  const totalGb = ((1019 + 2374) / 1024).toFixed(1);
+  const totalGb = (2374 / 1024).toFixed(1);
 
   return (
     <OnboardingContainer
       title="Tu IA personal"
-      description="Maity descarga dos modelos pequeños que funcionan sin internet ni suscripción."
+      description="Maity descarga un modelo local que funciona sin internet ni suscripción."
       step={3}
       totalSteps={3}
     >
@@ -220,7 +213,7 @@ export function ModelDownloadStep() {
             className="w-full h-11 bg-[#1bea9a] hover:bg-[#17d48b] text-gray-900 font-medium"
           >
             <Download className="w-4 h-4 mr-2" />
-            Descargar modelos ({totalGb} GB total)
+            Descargar modelo (~{totalGb} GB)
           </Button>
         )}
 
