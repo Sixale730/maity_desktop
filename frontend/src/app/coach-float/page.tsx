@@ -38,12 +38,10 @@ function AudioBars({ rms, scales, color }: { rms: number; scales: number[]; colo
   );
 }
 
-// §3.9 Adapters de la metadata centralizada (tipMeta.ts) a clases Tailwind para
-// no romper el look actual. Importar desde tipMeta directamente cuando se haga
-// la migracion full-glass de Fase 6.
+// §3.9 Adapter del color de prioridad inline (style en lugar de className porque
+// tipMeta.ts da hex y tailwind no parsea clases dinamicas). Cards usan gradient
+// con alpha-hex 8 digitos directamente, ver §3.8 en el render.
 import { getPriorityColor } from '@/components/coach/tipMeta';
-const borderColor = (p: string) =>
-  p === 'critical' ? 'border-red-500/50' : p === 'important' ? 'border-amber-500/50' : 'border-emerald-500/30';
 const iconStyle = (p: string): React.CSSProperties => ({ color: getPriorityColor(p) });
 
 export default function CoachFloatPage() {
@@ -243,10 +241,20 @@ export default function CoachFloatPage() {
       <div ref={scrollRef} className="flex-1 overflow-y-auto p-3 flex flex-col gap-3">
         {tips.length > 0 ? (
           <>
-            {/* Tip más reciente: estilo completo + like/dislike */}
+            {/* Tip más reciente: estilo completo + like/dislike.
+                §3.8 Card con gradient lineal por priority — alpha-hex 8 digitos
+                (1a=10%, 55=33%) sobre el color base de tipMeta.ts. El border
+                simple anterior hacia que todos los tips se vieran iguales. */}
             {latestTip && (
               <>
-                <div className={`rounded-lg border p-3 ${borderColor(latestTip.priority)}`}>
+                <div
+                  className="rounded-lg border p-3"
+                  style={{
+                    background: `linear-gradient(135deg, ${getPriorityColor(latestTip.priority)}1a 0%, rgba(255,255,255,0.04) 100%)`,
+                    borderColor: `${getPriorityColor(latestTip.priority)}55`,
+                    transition: 'border-color 0.3s ease, background 0.3s ease',
+                  }}
+                >
                   <div className="flex items-start gap-2">
                     <Sparkles className="w-4 h-4 mt-0.5 shrink-0" style={iconStyle(latestTip.priority)} />
                     <p className="text-sm text-white leading-snug">{latestTip.tip}</p>
