@@ -14,6 +14,7 @@ use once_cell::sync::Lazy;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Listener, Manager, Runtime};
@@ -30,6 +31,11 @@ static FEEDBACK_STATE: Lazy<Mutex<Option<Arc<Mutex<FeedbackState>>>>> =
     Lazy::new(|| Mutex::new(None));
 
 static HTTP_CLIENT: Lazy<Client> = Lazy::new(Client::new);
+
+// §1.5.2 % JSON malformado del LLM. Globals para que cualquier path (worker, listener
+// directo) pueda contribuir sin pasar el state por todos lados. Reset en start().
+static LLM_PARSE_TOTAL: AtomicU64 = AtomicU64::new(0);
+static LLM_PARSE_FAILED: AtomicU64 = AtomicU64::new(0);
 
 // ─── Public types (emitted to frontend) ──────────────────────────────────────
 
@@ -74,6 +80,10 @@ struct FeedbackState {
     /// None hasta que record_tip() detecta que es el primero. Se emite "coach-metrics"
     /// con ttfb_first_tip_ms en ese momento.
     first_tip_emitted_at: Option<Instant>,
+    /// §1.5.3 Sliding window de las ultimas 100 latencias del sidecar Gemma en ms.
+    /// Se calcula p95 al cierre de sesion para detectar tail latency. 4b es ~2-4x mas
+    /// lento que 1b; si p95 > 6s hay que rever cooldown 20s o considerar 3b como fallback.
+    llm_latencies_ms: VecDeque<u64>,
 }
 
 impl FeedbackState {
@@ -95,7 +105,28 @@ impl FeedbackState {
             last_interlocutor_text: None,
             turn_ctx: TurnContext::default(),
             first_tip_emitted_at: None,
+            llm_latencies_ms: VecDeque::with_capacity(100),
         }
+    }
+
+    /// §1.5.3 Registra una latencia LLM en la sliding window (cap 100).
+    fn push_llm_latency(&mut self, ms: u64) {
+        self.llm_latencies_ms.push_back(ms);
+        if self.llm_latencies_ms.len() > 100 {
+            self.llm_latencies_ms.pop_front();
+        }
+    }
+
+    /// §1.5.3 Calcula p95 sobre la sliding window de latencias. Devuelve None si vacia.
+    fn llm_latency_p95_ms(&self) -> Option<u64> {
+        if self.llm_latencies_ms.is_empty() {
+            return None;
+        }
+        let mut sorted: Vec<u64> = self.llm_latencies_ms.iter().copied().collect();
+        sorted.sort_unstable();
+        let idx = ((sorted.len() as f64) * 0.95) as usize;
+        let idx = idx.min(sorted.len() - 1);
+        Some(sorted[idx])
     }
 
     fn session_secs(&self) -> u32 {
@@ -312,6 +343,11 @@ struct GemmaCoachJson {
 pub async fn start<R: Runtime + 'static>(app: AppHandle<R>) -> Result<(), String> {
     // Detener sesión anterior si existe
     stop(&app);
+
+    // §1.5.5 Reset de contadores globales por sesion.
+    // FeedbackState::new() resetea los campos del state mas abajo automaticamente.
+    LLM_PARSE_TOTAL.store(0, Ordering::Relaxed);
+    LLM_PARSE_FAILED.store(0, Ordering::Relaxed);
 
     // Leer config del pipeline activo
     let cfg = get_active_live_feedback_config(&app).await;
@@ -678,6 +714,38 @@ pub fn stop<R: Runtime>(app: &AppHandle<R>) {
             app.unlisten(id);
         }
     }
+
+    // §1.5.2 + §1.5.3 Emit summary de metricas LLM al cierre de sesion.
+    let parse_total = LLM_PARSE_TOTAL.load(Ordering::Relaxed);
+    let parse_failed = LLM_PARSE_FAILED.load(Ordering::Relaxed);
+    let p95_ms = if let Ok(outer) = FEEDBACK_STATE.lock() {
+        outer
+            .as_ref()
+            .and_then(|arc| arc.lock().ok().and_then(|s| s.llm_latency_p95_ms()))
+    } else {
+        None
+    };
+    let parse_failed_pct = if parse_total > 0 {
+        (parse_failed as f64 / parse_total as f64) * 100.0
+    } else {
+        0.0
+    };
+    info!(
+        "[METRIC] session-summary llm_parse_total={} llm_parse_failed={} ({:.1}%) llm_latency_p95_ms={:?}",
+        parse_total, parse_failed, parse_failed_pct, p95_ms
+    );
+    let _ = app.emit(
+        "coach-metrics",
+        serde_json::json!({
+            "session_summary": {
+                "llm_parse_total": parse_total,
+                "llm_parse_failed": parse_failed,
+                "llm_parse_failed_pct": parse_failed_pct,
+                "llm_latency_p95_ms": p95_ms,
+            }
+        }),
+    );
+
     if let Ok(mut lock) = FEEDBACK_STATE.lock() {
         *lock = None;
     }
@@ -732,6 +800,8 @@ async fn call_ollama_and_emit<R: Runtime>(
     let mut last_raw: Option<String> = None;
 
     for attempt in 1..=MAX_PARSE_ATTEMPTS {
+        // §1.5.3 Medir latencia LLM por llamada para sliding window p95.
+        let llm_start = Instant::now();
         let result = generate_summary(
             &HTTP_CLIENT,
             &LLMProvider::BuiltInAI,
@@ -748,15 +818,26 @@ async fn call_ollama_and_emit<R: Runtime>(
             Some(&cancel),
         )
         .await;
+        let latency_ms = llm_start.elapsed().as_millis() as u64;
 
         match result {
             Ok(raw) => {
+                if let Ok(mut st) = state.lock() {
+                    st.push_llm_latency(latency_ms);
+                }
+                // §1.5.2 Contar parse total/failed para % JSON malformado.
+                let total = LLM_PARSE_TOTAL.fetch_add(1, Ordering::Relaxed) + 1;
                 if let Some(parsed) = parse_gemma_response(&raw, trigger.as_deref(), session_secs) {
                     update = Some(parsed);
                     break;
                 }
+                let failed = LLM_PARSE_FAILED.fetch_add(1, Ordering::Relaxed) + 1;
+                let pct = (failed as f64 / total.max(1) as f64) * 100.0;
                 warn!(
-                    "Coach: parse JSON falló (intento {}/{}). raw preview: {}",
+                    "[METRIC] LLM JSON malformed {}/{} ({:.1}%). intento {}/{}, raw preview: {}",
+                    failed,
+                    total,
+                    pct,
                     attempt,
                     MAX_PARSE_ATTEMPTS,
                     &raw[..raw.len().min(120)]
