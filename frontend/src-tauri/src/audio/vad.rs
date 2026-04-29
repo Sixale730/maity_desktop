@@ -35,6 +35,11 @@ pub struct ContinuousVadProcessor {
     in_speech: bool,
     processed_samples: usize,
     speech_start_sample: usize,
+    /// Force-cut threshold para habla continua: corta segmento aunque siga voz
+    /// para garantizar emision periodica al accumulator/transcripcion. Replica
+    /// MAX_SPEECH_MS=2000 del repo de referencia.
+    /// 2.0s @ 16kHz = 32000 samples.
+    max_speech_samples: usize,
     // State tracking for smart logging
     last_logged_state: bool,
 }
@@ -78,6 +83,10 @@ impl ContinuousVadProcessor {
         info!("VAD processor created: input={}Hz, vad={}Hz, chunk_size={} samples",
               input_sample_rate, VAD_SAMPLE_RATE, vad_chunk_size);
 
+        // Force-cut a 2s en habla continua: garantiza chunk al accumulator cada ~2s
+        // aunque Silero no detecte silencio. Usa SAMPLE_RATE 16kHz (interno del VAD).
+        let max_speech_samples = (VAD_SAMPLE_RATE as f64 * 2.0) as usize; // 32000
+
         Ok(Self {
             session,
             chunk_size: vad_chunk_size,
@@ -88,6 +97,7 @@ impl ContinuousVadProcessor {
             in_speech: false,
             processed_samples: 0,
             speech_start_sample: 0,
+            max_speech_samples,
             // Initialize state tracking
             last_logged_state: false,
         })
@@ -282,6 +292,36 @@ impl ContinuousVadProcessor {
         // Accumulate speech if we're currently in a speech state
         if self.in_speech {
             self.current_speech.extend_from_slice(chunk);
+
+            // Force-cut: si el segmento alcanzo max_speech_samples, emitir segmento
+            // forzado y reiniciar buffer pero mantener in_speech=true para continuar
+            // capturando la siguiente ventana sin perder audio.
+            if self.current_speech.len() >= self.max_speech_samples {
+                let speech_samples = std::mem::take(&mut self.current_speech);
+                let chunk_samples = speech_samples.len();
+                let start_ms = (self.speech_start_sample as f64
+                    / self.sample_rate as f64) * 1000.0;
+                let end_ms = ((self.processed_samples + chunk.len()) as f64
+                    / self.sample_rate as f64) * 1000.0;
+
+                let segment = SpeechSegment {
+                    samples: speech_samples,
+                    start_timestamp_ms: start_ms,
+                    end_timestamp_ms: end_ms,
+                    confidence: 0.85, // segmento force-cut (ligeramente menor que natural 0.9)
+                };
+
+                debug!(
+                    "VAD force-cut: emitiendo segmento de {} samples (~{:.1}s) por max_speech_samples",
+                    chunk_samples,
+                    chunk_samples as f64 / 16_000.0
+                );
+
+                self.speech_segments.push_back(segment);
+
+                // Mantener in_speech=true; reiniciar speech_start_sample para el proximo segmento
+                self.speech_start_sample = self.processed_samples + chunk.len();
+            }
         }
 
         self.processed_samples += chunk.len();
