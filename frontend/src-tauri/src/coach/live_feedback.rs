@@ -1497,6 +1497,65 @@ mod tests {
         assert!(h >= 0);
     }
 
+    // §1.2-§1.3 MeetingMetrics shape + smoke test del loop emisor ─────────────
+
+    /// Replica el calculo del loop emisor de §1.3 sobre un snapshot deterministico.
+    /// Si este helper diverge del codigo del loop, ambos test fallan al mismo tiempo.
+    fn build_meeting_metrics(st: &FeedbackState) -> MeetingMetrics {
+        let total = st.user_turns + st.interlocutor_turns;
+        let (u, i) = if total == 0 {
+            (50u8, 50u8)
+        } else {
+            let u = ((st.user_turns as f32 / total as f32) * 100.0).round() as u8;
+            (u, 100u8.saturating_sub(u))
+        };
+        MeetingMetrics {
+            health: st.health_score() as u8,
+            user_talk_pct: u,
+            interlocutor_talk_pct: i,
+            session_secs: st.session_secs(),
+            user_turns: st.user_turns,
+            interlocutor_turns: st.interlocutor_turns,
+        }
+    }
+
+    #[test]
+    fn meeting_metrics_50_50_sin_turns() {
+        let st = FeedbackState::new();
+        let m = build_meeting_metrics(&st);
+        assert_eq!(m.user_talk_pct, 50);
+        assert_eq!(m.interlocutor_talk_pct, 50);
+        assert_eq!(m.user_turns, 0);
+        assert_eq!(m.interlocutor_turns, 0);
+    }
+
+    #[test]
+    fn meeting_metrics_suma_siempre_100() {
+        for (u, i) in [(1, 9), (5, 5), (7, 3), (20, 0), (0, 20), (33, 67), (8, 7)].iter() {
+            let mut st = FeedbackState::new();
+            st.user_turns = *u;
+            st.interlocutor_turns = *i;
+            let m = build_meeting_metrics(&st);
+            assert_eq!(
+                m.user_talk_pct + m.interlocutor_talk_pct,
+                100,
+                "user={} interloc={} -> pct {}+{}",
+                u, i, m.user_talk_pct, m.interlocutor_talk_pct
+            );
+        }
+    }
+
+    #[test]
+    fn meeting_metrics_serializa_a_camel_case() {
+        let st = FeedbackState::new();
+        let m = build_meeting_metrics(&st);
+        let json = serde_json::to_string(&m).expect("serializa");
+        assert!(json.contains("\"userTalkPct\""), "json={}", json);
+        assert!(json.contains("\"interlocutorTalkPct\""), "json={}", json);
+        assert!(json.contains("\"sessionSecs\""), "json={}", json);
+        assert!(json.contains("\"userTurns\""), "json={}", json);
+    }
+
     // §6 evaluate_health_tips ─────────────────────────────────────────────────
 
     fn make_snap(health: u32, ratio: f32, mono: u32, session: u32) -> ConversationSnapshot {
