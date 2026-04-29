@@ -317,6 +317,18 @@ pub fn start_transcription_task<R: Runtime>(
                             .await
                             {
                                 Ok((transcript, confidence_opt, is_partial)) => {
+                                    // Post-procesado heuristico ES: descarta hallucinations clasicas
+                                    // de Parakeet/Canary y aplica capitalizacion + tildes interrogativas
+                                    // + anti-stutter. Idempotente y barato.
+                                    let transcript = if transcript.trim().is_empty() {
+                                        transcript
+                                    } else if crate::audio::transcription::spanish_postprocess::is_hallucination(&transcript) {
+                                        info!("🚫 Worker {} descarta hallucination: '{}'", worker_id, transcript);
+                                        String::new()
+                                    } else {
+                                        crate::audio::transcription::spanish_postprocess::enhance(&transcript, "es")
+                                    };
+
                                     // Provider-aware confidence threshold
                                     let confidence_threshold = match &engine_clone {
                                         TranscriptionEngine::Whisper(_) | TranscriptionEngine::Provider(_) => 0.3,

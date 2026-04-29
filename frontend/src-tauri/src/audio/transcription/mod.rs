@@ -9,6 +9,7 @@ pub mod deepgram_provider;  // Deepgram cloud transcription
 pub mod deepgram_commands;  // Tauri commands for Deepgram cloud proxy tokens
 pub mod engine;
 pub mod worker;
+pub mod spanish_postprocess;  // Heuristic post-processor for Spanish transcripts
 
 // Re-export commonly used types
 pub use provider::{TranscriptionError, TranscriptionProvider, TranscriptResult};
