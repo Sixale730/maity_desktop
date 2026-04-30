@@ -111,12 +111,17 @@ impl From<std::io::Error> for ParakeetEngineError {
     }
 }
 
-/// UX-012: recycle the ONNX session every N inferences to contain the slow
-/// native-memory growth of onnxruntime's internal arenas. 100 is a
-/// conservative value — Parakeet inference is ~0.5s on CPU, so a recycle
-/// every 100 calls is roughly once per ~50s of continuous speech, which is
-/// well below the noticeable user threshold.
-const PARAKEET_RECYCLE_EVERY: u64 = 100;
+/// UX-012: cuántas inferencias entre recycles de la sesión ONNX. La defensa
+/// principal contra bloat de memoria nativa es la config en `model.rs`
+/// (with_arena_allocator(false) + with_memory_pattern(false)). Este threshold
+/// es la red de seguridad: si el bloat reaparece, el helper recicla en
+/// background sin bloquear al worker. Subido de 100 (UX-012 viejo) a 200
+/// porque la fix de raíz ya redujo la presión sobre la memoria.
+const PARAKEET_RECYCLE_EVERY: u64 = 200;
+
+/// Tiempo mínimo entre recycles consecutivos (anti-storm). Si el contador se
+/// disparara por algún edge case, este gap evita reciclar en bucle.
+const PARAKEET_RECYCLE_MIN_GAP_SECS: u64 = 60;
 
 pub struct ParakeetEngine {
     models_dir: PathBuf,
@@ -126,9 +131,10 @@ pub struct ParakeetEngine {
     cancel_download_flag: Arc<RwLock<Option<String>>>, // Model name being cancelled
     // Active downloads tracking to prevent concurrent downloads
     pub(crate) active_downloads: Arc<RwLock<HashSet<String>>>, // Set of models currently being downloaded
-    /// UX-012: running counter of successful inferences, used to decide when
-    /// to recycle the ONNX session to bound native memory.
-    inference_count: Arc<std::sync::atomic::AtomicU64>,
+    /// Lifecycle de la sesión ONNX. Cuenta inferencias y dispara recycle en
+    /// background cuando se cruza el threshold. Reemplaza el counter inline
+    /// del UX-012 viejo, que bloqueaba el worker durante el reload.
+    lifecycle: Arc<crate::audio::transcription::onnx_lifecycle::OnnxSessionLifecycle>,
 }
 
 impl ParakeetEngine {
@@ -170,7 +176,13 @@ impl ParakeetEngine {
             cancel_download_flag: Arc::new(RwLock::new(None)),
             // Initialize active downloads tracking
             active_downloads: Arc::new(RwLock::new(HashSet::new())),
-            inference_count: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            lifecycle: Arc::new(
+                crate::audio::transcription::onnx_lifecycle::OnnxSessionLifecycle::new(
+                    "parakeet",
+                    PARAKEET_RECYCLE_EVERY,
+                    std::time::Duration::from_secs(PARAKEET_RECYCLE_MIN_GAP_SECS),
+                ),
+            ),
         })
     }
 
@@ -463,63 +475,99 @@ impl ParakeetEngine {
 
     /// Transcribe audio samples using the loaded Parakeet model.
     ///
-    /// UX-012: every `PARAKEET_RECYCLE_EVERY` successful inferences we drop
-    /// the current ONNX session and reload it from disk. This contains the
-    /// slow native-memory growth of onnxruntime's internal arenas without
-    /// affecting correctness — the model weights on disk haven't changed,
-    /// only the in-memory session state is reset.
+    /// Hot path limpio: toma el lock SOLO durante la inferencia (~0.5s en CPU),
+    /// libera, y al final dispara `lifecycle.maybe_recycle()` que evalúa si toca
+    /// reciclar la sesión y, si sí, lanza el reload en `tokio::spawn` SIN bloquear.
+    ///
+    /// La fix principal del bloat de memoria nativa es la config en `model.rs`
+    /// (with_arena_allocator(false) + with_memory_pattern(false)). El reciclaje
+    /// es red de seguridad: si el bloat reaparece en sesiones de muchas horas,
+    /// el helper limpia la sesión sin pausar al worker.
     pub async fn transcribe_audio(&self, audio_data: Vec<f32>) -> Result<String> {
-        use std::sync::atomic::Ordering;
+        // FAST PATH: take lock, infer, release. NO recycle here.
+        let result_text = {
+            let mut model_guard = self.current_model.write().await;
+            let model = model_guard
+                .as_mut()
+                .ok_or_else(|| anyhow!("No Parakeet model loaded. Please load a model first."))?;
 
-        // Step 1: check if we need to recycle BEFORE taking the write lock on
-        // current_model, so the recycle path doesn't hold two locks.
-        let current_count = self.inference_count.load(Ordering::Relaxed);
-        if current_count > 0 && current_count % PARAKEET_RECYCLE_EVERY == 0 {
-            if let Some(model_name) = self.current_model_name.read().await.clone() {
-                log::info!(
-                    "UX-012: recycling ONNX session after {} inferences (model={})",
-                    current_count,
-                    model_name
-                );
-                // Drop the existing model first to free native memory.
-                *self.current_model.write().await = None;
-                // current_model_name is cleared by load_model's "already loaded"
-                // check — force a true reload by clearing it explicitly.
-                *self.current_model_name.write().await = None;
-                if let Err(e) = self.load_model(&model_name).await {
-                    log::warn!(
-                        "UX-012: session recycle reload failed for {}: {} — continuing with fresh model load attempt on next call",
-                        model_name,
-                        e
-                    );
-                    return Err(anyhow!("Parakeet session recycle failed: {}", e));
+            let duration_seconds = audio_data.len() as f64 / 16000.0; // 16kHz
+            log::debug!(
+                "Parakeet transcribing {} samples ({:.1}s duration)",
+                audio_data.len(),
+                duration_seconds
+            );
+
+            let result = model
+                .transcribe_samples(audio_data)
+                .map_err(|e| anyhow!("Parakeet transcription failed: {}", e))?;
+
+            log::debug!("Parakeet transcription result: '{}'", result.text);
+            result.text
+        };
+
+        // Note inference + decide si toca recycle (en background, no bloquea).
+        self.lifecycle.note_inference();
+
+        // Snapshot de Arc clones para el cierre del background recycle. NO toma
+        // ningún lock — solo clona los Arc.
+        let current_model = self.current_model.clone();
+        let current_model_name = self.current_model_name.clone();
+        let available_models = self.available_models.clone();
+
+        self.lifecycle.maybe_recycle(move || async move {
+            // Snapshot del nombre del modelo ANTES del reload lento. Si el usuario
+            // cambia de modelo durante el reload, el swap se aborta.
+            let model_name = match current_model_name.read().await.clone() {
+                Some(n) => n,
+                None => return Ok(()), // user descargó modelo; nada que reciclar
+            };
+
+            // Lookup info del modelo (path + quantization) sin tomar locks de model.
+            let model_info = {
+                let guard = available_models.read().await;
+                guard.get(&model_name).cloned()
+            };
+            let model_info = match model_info {
+                Some(mi) => mi,
+                None => {
+                    return Err(anyhow!(
+                        "Recycle aborted: model {} no longer in available_models",
+                        model_name
+                    ));
                 }
+            };
+            let quantized = matches!(model_info.quantization, QuantizationType::Int8);
+
+            // SLOW: cargar ParakeetModel en variable LOCAL. Sin lock de current_model.
+            // Si esto falla, el modelo viejo queda intacto.
+            let new_model = ParakeetModel::new(&model_info.path, quantized)
+                .map_err(|e| anyhow!("Recycle reload failed for {}: {}", model_name, e))?;
+
+            // ATOMIC SWAP: re-leer current_model_name. Si el usuario cambió de
+            // modelo durante el reload, abortar (descartar new_model).
+            let name_guard = current_model_name.read().await;
+            if name_guard.as_deref() != Some(&model_name) {
+                log::info!(
+                    "Parakeet recycle aborted: model changed during reload \
+                     (was {}, now {:?})",
+                    model_name,
+                    *name_guard
+                );
+                return Ok(());
             }
-        }
+            drop(name_guard);
 
-        let mut model_guard = self.current_model.write().await;
-        let model = model_guard
-            .as_mut()
-            .ok_or_else(|| anyhow!("No Parakeet model loaded. Please load a model first."))?;
+            // Swap: reemplazar current_model con el nuevo. El viejo Drop libera
+            // su memoria nativa.
+            let mut model_guard = current_model.write().await;
+            *model_guard = Some(new_model);
+            drop(model_guard);
 
-        let duration_seconds = audio_data.len() as f64 / 16000.0; // Assuming 16kHz
-        log::debug!(
-            "Parakeet transcribing {} samples ({:.1}s duration)",
-            audio_data.len(),
-            duration_seconds
-        );
+            Ok(())
+        });
 
-        // Transcribe using Parakeet model
-        let result = model
-            .transcribe_samples(audio_data)
-            .map_err(|e| anyhow!("Parakeet transcription failed: {}", e))?;
-
-        // Only count successful inferences toward the recycle threshold.
-        self.inference_count.fetch_add(1, Ordering::Relaxed);
-
-        log::debug!("Parakeet transcription result: '{}'", result.text);
-
-        Ok(result.text)
+        Ok(result_text)
     }
 
     /// Get the models directory path
