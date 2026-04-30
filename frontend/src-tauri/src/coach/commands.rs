@@ -267,17 +267,23 @@ pub async fn close_floating_coach<R: Runtime>(app: AppHandle<R>) -> Result<(), S
 }
 
 /// Alterna entre modo compacto y expandido en la ventana flotante.
+/// Compact 140x110 (cuadradito tipo widget) — match con el repo de referencia.
+/// Antes 320x80 (barra horizontal estirada) hacia que el contenido del compact
+/// no se viera coherente con el resto de la UI.
 #[tauri::command]
 pub async fn floating_toggle_compact<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
     if let Some(w) = app.get_webview_window("coach-float") {
         let size = w.inner_size().map_err(|e| e.to_string())?;
-        // §3.1 Expandido 320x480 (antes 320x430) para el header de gauge + split.
-        let (new_w, new_h): (u32, u32) = if size.height > 250 {
-            (320, 80)
+        let scale = w.scale_factor().unwrap_or(1.0);
+        let logical_height = size.height as f64 / scale;
+        // Threshold 200 logical px: arriba de eso = expandido -> ir a compact;
+        // abajo = compact -> ir a expandido.
+        let (new_w, new_h): (f64, f64) = if logical_height > 200.0 {
+            (140.0, 110.0)
         } else {
-            (320, 480)
+            (320.0, 480.0)
         };
-        w.set_size(tauri::Size::Physical(tauri::PhysicalSize {
+        w.set_size(tauri::Size::Logical(tauri::LogicalSize {
             width: new_w,
             height: new_h,
         }))

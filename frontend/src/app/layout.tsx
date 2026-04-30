@@ -482,11 +482,17 @@ export default function RootLayout({
 }) {
   const pathname = usePathname()
 
-  // Coach float window: bypass all auth/sidebar/provider logic
+  // Coach float window: bypass all auth/sidebar/provider logic.
+  // Background transparente en html+body para que el blur de la ventana Tauri
+  // (transparent: true) llegue al SO. El body global tiene `bg-background`
+  // (negro solido en dark mode) que tapaba el glass effect — override aqui.
   if (pathname === '/coach-float') {
     return (
-      <html lang="es" className="dark">
-        <body className={`${sourceSans3.variable} font-sans antialiased`}>
+      <html lang="es" className="dark" style={{ background: 'transparent' }}>
+        <body
+          className={`${sourceSans3.variable} font-sans antialiased`}
+          style={{ background: 'transparent' }}
+        >
           {children}
         </body>
       </html>
