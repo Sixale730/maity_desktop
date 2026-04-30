@@ -42,6 +42,7 @@ pub mod builtin_ai;
 pub mod coach;
 pub mod console_utils;
 pub mod database;
+pub mod llm;
 pub mod logging;
 pub mod meeting_detector;
 pub mod notifications;
