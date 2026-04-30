@@ -5,17 +5,13 @@
 
 use crate::coach::context::{build_context, ContextMode};
 use crate::coach::llama_engine;
+use crate::coach::llm_helper::build_coach_service_with_model;
 use crate::state::AppState;
-use crate::summary::llm_client::{generate_summary, LLMProvider};
-use once_cell::sync::Lazy;
-use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 #[allow(unused_imports)]
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 use tracing::{info, warn};
-
-static HTTP_CLIENT: Lazy<Client> = Lazy::new(Client::new);
 
 // Prompt v5.1 — Análisis de comunicación multi-dimensión (0-100).
 // Produce JSON rico: radiografía, dimensiones, insights, recomendaciones, calidad_global.
@@ -324,37 +320,21 @@ pub async fn evaluate_meeting<R: Runtime>(
         ));
     }
 
-    let app_data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("No se pudo obtener app_data_dir: {}", e))?;
-
-    let builtin_model = llama_engine::map_to_builtin_id(&eval_model_id);
+    let builtin_model = llama_engine::map_to_builtin_id(&eval_model_id).to_string();
 
     let user_prompt = format!(
         "Transcripción de la reunión:\n\n{}\n\nEvalúa la comunicación del USUARIO (micrófono).",
         ctx.formatted
     );
 
-    // v5.1: temperature=0.3 según spec, max_tokens=4096 para JSON rico completo.
-    // El sidecar Built-in AI gestiona el modelo (singleton SidecarManager).
-    let raw = generate_summary(
-        &HTTP_CLIENT,
-        &LLMProvider::BuiltInAI,
-        builtin_model,
-        "",
-        EVAL_SYSTEM_PROMPT,
-        &user_prompt,
-        None,
-        None,
-        Some(4096),
-        Some(0.3),
-        None,
-        Some(&app_data_dir),
-        None,
-    )
-    .await
-    .map_err(|e| format!("Error llamando al motor LLM: {}", e))?;
+    // v5.1: temperature=0.3, max_tokens=4096, n_ctx=4096 para JSON rico completo.
+    // CoachLlmService::evaluate_meeting_with_template aplica template gemma3 +
+    // sampling correcto via SidecarPool (reusa sidecar si esta vivo).
+    let coach_service = build_coach_service_with_model(app, builtin_model).await?;
+    let raw = coach_service
+        .evaluate_meeting_with_template(EVAL_SYSTEM_PROMPT, &user_prompt, None)
+        .await
+        .map_err(|e| format!("Error llamando al motor LLM: {}", e))?;
 
     let json_str = extract_json(&raw).ok_or_else(|| {
         format!(
