@@ -5,6 +5,7 @@ pub mod context;
 pub mod evaluator;
 pub mod live_feedback;
 pub mod llama_engine;
+pub mod llm_service;
 pub mod model_registry;
 pub mod nudge_engine;
 pub mod prompt;
