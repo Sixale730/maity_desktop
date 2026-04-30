@@ -504,3 +504,163 @@ pub mod mock {
         }
     }
 }
+
+// ─── Tests ───────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::mock::MockCoachLlmService;
+    use super::*;
+    use std::sync::Arc;
+    use std::time::Instant;
+
+    // ─── Tests del Mock (verifican infra de testing) ─────────────────────────
+
+    #[tokio::test]
+    async fn mock_records_call_count_correctly() {
+        let mock = MockCoachLlmService::new()
+            .responds_with("tip 1")
+            .responds_with("tip 2")
+            .responds_with("tip 3");
+        let _ = mock.generate_tip("p1", None).await;
+        let _ = mock.generate_tip("p2", None).await;
+        let _ = mock.generate_tip("p3", None).await;
+        assert_eq!(mock.call_count(), 3);
+    }
+
+    #[tokio::test]
+    async fn mock_captures_prompts_in_order() {
+        let mock = MockCoachLlmService::new()
+            .responds_with("a")
+            .responds_with("b");
+        let _ = mock.generate_tip("first prompt", None).await;
+        let _ = mock.generate_tip("second prompt", None).await;
+        let prompts = mock.all_prompts();
+        assert_eq!(prompts, vec!["first prompt", "second prompt"]);
+        assert_eq!(mock.last_prompt(), Some("second prompt".to_string()));
+    }
+
+    #[tokio::test]
+    async fn mock_responds_with_sequence_fifo() {
+        let mock = MockCoachLlmService::new().responds_with_sequence(vec![
+            Ok("first".into()),
+            Ok("second".into()),
+            Err(LlmError::Timeout(30)),
+            Ok("fourth".into()),
+        ]);
+        assert_eq!(mock.generate_tip("p", None).await.unwrap(), "first");
+        assert_eq!(mock.generate_tip("p", None).await.unwrap(), "second");
+        assert!(matches!(
+            mock.generate_tip("p", None).await,
+            Err(LlmError::Timeout(30))
+        ));
+        assert_eq!(mock.generate_tip("p", None).await.unwrap(), "fourth");
+    }
+
+    #[tokio::test]
+    async fn mock_responds_with_error_returns_correct_error() {
+        let mock = MockCoachLlmService::new()
+            .responds_with_error(LlmError::ModelNotFound("gemma3:99b".into()));
+        let result = mock.generate_tip("any prompt", None).await;
+        match result {
+            Err(LlmError::ModelNotFound(name)) => assert_eq!(name, "gemma3:99b"),
+            other => panic!("Esperaba ModelNotFound, recibi {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn mock_cancellation_returns_cancelled_error() {
+        let mock = Arc::new(
+            MockCoachLlmService::new()
+                .responds_with("never returned")
+                .latency_ms(5000),
+        );
+        let cancel = CancellationToken::new();
+        let mock_clone = Arc::clone(&mock);
+        let cancel_clone = cancel.clone();
+        let task = tokio::spawn(async move {
+            mock_clone
+                .generate_tip("slow prompt", Some(&cancel_clone))
+                .await
+        });
+        // Esperar un poco a que arranque el sleep, despues cancelar
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let started = Instant::now();
+        cancel.cancel();
+        let result = task.await.unwrap();
+        let elapsed = started.elapsed();
+        assert!(matches!(result, Err(LlmError::Cancelled)));
+        // Debe haber retornado pronto (no esperado los 5s del latency_ms)
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "Cancelacion tardo demasiado: {:?}",
+            elapsed
+        );
+    }
+
+    #[tokio::test]
+    async fn mock_metrics_count_success_failure_cancellation() {
+        let mock = MockCoachLlmService::new().responds_with_sequence(vec![
+            Ok("ok 1".into()),
+            Err(LlmError::Sidecar("crashed".into())),
+            Ok("ok 2".into()),
+        ]);
+        let _ = mock.generate_tip("p1", None).await;
+        let _ = mock.generate_tip("p2", None).await;
+        let _ = mock.generate_tip("p3", None).await;
+
+        let snap = mock.metrics().snapshot();
+        assert_eq!(snap.total_requests, 3);
+        assert_eq!(snap.successful_requests, 2);
+        assert_eq!(snap.failed_requests, 1);
+    }
+
+    // ─── Tests de configs por caso de uso ────────────────────────────────────
+
+    #[tokio::test]
+    async fn mock_generate_tip_uses_tip_config_max_tokens_200() {
+        let mock = MockCoachLlmService::new().responds_with("ok");
+        let _ = mock.generate_tip("prompt", None).await;
+        let used = mock.last_config().expect("config registrada");
+        assert_eq!(used.max_tokens, 200, "tip debe usar max_tokens=200");
+        assert_eq!(used.timeout_secs, 30, "tip debe usar timeout=30s");
+        assert_eq!(used.n_ctx, 4096, "REGRESION: tip debe usar n_ctx=4096");
+    }
+
+    #[tokio::test]
+    async fn mock_evaluate_meeting_uses_eval_config_max_tokens_4096() {
+        let mock = MockCoachLlmService::new().responds_with("eval ok");
+        let _ = mock.evaluate_meeting("prompt", None).await;
+        let used = mock.last_config().expect("config registrada");
+        assert_eq!(used.max_tokens, 4096, "eval debe usar max_tokens=4096");
+        assert_eq!(used.timeout_secs, 120, "eval debe usar timeout=120s");
+        assert_eq!(used.n_ctx, 4096, "REGRESION: eval debe usar n_ctx=4096");
+    }
+
+    // ─── Tests de invariantes del servicio real (sin sidecar) ────────────────
+
+    #[test]
+    fn coach_tip_config_has_n_ctx_4096_regression() {
+        // REGRESION: el bug original tenia n_ctx=32768 hardcodeado en
+        // summary_engine/models.rs. Esto reservaba ~640 MB de KV cache en
+        // VRAM y rompia con OOM en RTX 3050. Test garantiza que no regresemos.
+        let cfg = COACH_TIP_CONFIG.to_llm_config();
+        assert_eq!(cfg.n_ctx, 4096, "Bug fix: tip debe usar n_ctx=4096");
+        assert_eq!(cfg.max_tokens, 200);
+        assert_eq!(cfg.temperature, 0.3);
+    }
+
+    #[test]
+    fn coach_eval_config_has_n_ctx_4096_regression() {
+        let cfg = COACH_EVAL_CONFIG.to_llm_config();
+        assert_eq!(cfg.n_ctx, 4096, "Bug fix: eval debe usar n_ctx=4096");
+        assert_eq!(cfg.max_tokens, 4096);
+        assert_eq!(cfg.temperature, 0.3);
+        assert_eq!(cfg.timeout_secs, 120);
+    }
+
+    #[test]
+    fn coach_default_model_is_gemma3_4b() {
+        assert_eq!(DEFAULT_COACH_MODEL, "gemma3:4b");
+    }
+}
