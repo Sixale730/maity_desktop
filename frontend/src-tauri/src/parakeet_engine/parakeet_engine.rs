@@ -111,17 +111,33 @@ impl From<std::io::Error> for ParakeetEngineError {
     }
 }
 
-/// UX-012: cuántas inferencias entre recycles de la sesión ONNX. La defensa
-/// principal contra bloat de memoria nativa es la config en `model.rs`
-/// (with_arena_allocator(false) + with_memory_pattern(false)). Este threshold
-/// es la red de seguridad: si el bloat reaparece, el helper recicla en
-/// background sin bloquear al worker. Subido de 100 (UX-012 viejo) a 200
-/// porque la fix de raíz ya redujo la presión sobre la memoria.
-const PARAKEET_RECYCLE_EVERY: u64 = 200;
+/// Cuántas inferencias entre recycles de la sesión ONNX.
+///
+/// La defensa principal contra bloat de memoria nativa es la config en
+/// `model.rs` (with_arena_allocator(false) + with_memory_pattern(false));
+/// con esa fix, en condiciones normales NO debería hacer falta reciclar.
+///
+/// Este threshold es la red de seguridad pasiva por si el bloat reaparece
+/// en sesiones muy largas. Calibrado a partir de uso real (sesión de 10 min
+/// generó 448 inferencias):
+///   1 inferencia ≈ 1.34 s
+///   2700 inferencias ≈ 60 min de uso continuo
+///
+/// Filosofía: en reuniones típicas (5-30 min) NO dispara → cero overhead.
+/// En sesiones largas (1 h+) dispara 1 vez en background, transparente para
+/// el worker. Microsoft documenta (issues #5176, #11118) que reciclar
+/// sesiones agresivamente puede empeorar la memoria, no mejorarla, por eso
+/// preferimos un threshold alto.
+const PARAKEET_RECYCLE_EVERY: u64 = 2700;
 
-/// Tiempo mínimo entre recycles consecutivos (anti-storm). Si el contador se
-/// disparara por algún edge case, este gap evita reciclar en bucle.
-const PARAKEET_RECYCLE_MIN_GAP_SECS: u64 = 60;
+/// Tiempo mínimo entre recycles consecutivos (anti-storm).
+///
+/// Con threshold=2700 esta guarda casi nunca activa, pero protege contra un
+/// edge case donde un bug inflara el contador rápido (ej. doble incremento
+/// por race) y disparara dos reciclajes encadenados que cargarían 670 MB de
+/// disco innecesariamente. 5 min da margen cómodo para que un bug así
+/// aparezca en logs antes de que se encadenen reciclajes.
+const PARAKEET_RECYCLE_MIN_GAP_SECS: u64 = 300;
 
 pub struct ParakeetEngine {
     models_dir: PathBuf,
