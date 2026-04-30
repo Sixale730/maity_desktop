@@ -22,4 +22,7 @@ pub use commands::{
     builtin_ai_list_models, init_model_manager, ModelManagerState,
 };
 pub use model_manager::{ModelInfo, ModelStatus};
-pub use models::{get_available_models, get_default_model, get_model_by_name, ModelDef};
+pub use models::{
+    get_available_models, get_default_model, get_model_by_name, get_models_for_tier, ModelDef,
+    ModelTier,
+};
