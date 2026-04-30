@@ -88,7 +88,17 @@ impl ParakeetModel {
         intra_threads: Option<usize>,
         try_quantized: bool,
     ) -> Result<Session, ParakeetError> {
-        let providers = vec![CPUExecutionProvider::default().build()];
+        // ONNX Runtime CPU usa BFCArena con kNextPowerOfTwo por default. Para shapes
+        // dinamicos (Parakeet recibe chunks de 14k-78k samples, distintos por chunk),
+        // la arena acumula buffers para cada tamaño visto y nunca encoge — causa
+        // memoria nativa creciente y eventualmente cuelgue de transcripcion.
+        // Microsoft (issue #11627) recomienda desactivar arena + memory pattern para
+        // shapes dinamicos. Costo: ~5-10% throughput, ~25ms extra en chunks de 500ms.
+        let providers = vec![
+            CPUExecutionProvider::default()
+                .with_arena_allocator(false)
+                .build(),
+        ];
 
         // Try quantized version first if requested, fallback to regular version
         let model_filename = if try_quantized {
@@ -114,6 +124,9 @@ impl ParakeetModel {
         let mut builder = Session::builder()?
             .with_optimization_level(GraphOptimizationLevel::Level3)?
             .with_execution_providers(providers)?
+            // with_memory_pattern(false) es REQUERIDO cuando arena esta desactivada:
+            // memory pattern depende de arena para optimizar allocations entre runs.
+            .with_memory_pattern(false)?
             .with_parallel_execution(true)?;
 
         if let Some(threads) = intra_threads {
