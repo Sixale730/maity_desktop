@@ -4,9 +4,8 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, Result};
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use std::sync::RwLock;
@@ -138,6 +137,14 @@ fn get_cached_model_path(app_data_dir: &PathBuf, model_name: &str) -> Result<Pat
 
 /// Generate text using built-in AI
 ///
+/// Wrapper sobre `SummaryLlmService::generate_summary()` para mantener la API
+/// publica usada por `summary/llm_client.rs` y otros callers historicos.
+///
+/// La logica de generacion (sidecar pool, timeouts, cancellation, parsing)
+/// vive en `SummaryLlmService`. Este wrapper construye el servicio on-the-fly
+/// para cada request — no es problemma porque los `Arc<SidecarPool>` y los
+/// `ModelDef` son cheap-to-clone, y el sidecar real se reusa via pool.
+///
 /// # Arguments
 /// * `app_data_dir` - Application data directory (for model resolution)
 /// * `model_name` - Model name (e.g., "gemma3:1b")
@@ -154,98 +161,20 @@ pub async fn generate_with_builtin(
     user_prompt: &str,
     cancellation_token: Option<&CancellationToken>,
 ) -> Result<String> {
-    // Check cancellation at start
-    if let Some(token) = cancellation_token {
-        if token.is_cancelled() {
-            return Err(anyhow!("Generation cancelled before starting"));
-        }
-    }
+    use crate::summary::llm_service::SummaryLlmService;
 
-    log::info!("Built-in AI generation request");
-    log::info!("Model: {}", model_name);
+    // Verifica que el archivo del modelo exista y popula la cache de paths
+    // (mantiene el contrato historico de error temprano si el modelo no esta
+    // descargado).
+    let _ = get_cached_model_path(app_data_dir, model_name)?;
 
-    // Get model definition
-    let model_def = models::get_model_by_name(model_name)
-        .ok_or_else(|| anyhow!("Unknown model: {}", model_name))?;
-
-    // Resolve model path with caching (avoids repeated filesystem I/O)
-    let model_path = get_cached_model_path(app_data_dir, model_name)?;
-
-    // Apply model-specific chat template
-    let formatted_prompt =
-        models::format_prompt(&model_def.template, system_prompt, user_prompt)?;
-
-    // Get sidecar via pool (spawns if needed; reuses if model already loaded)
     let pool = get_sidecar_pool(app_data_dir).await?;
-    let manager = pool.get_or_spawn(model_name, model_path.clone()).await?;
+    let service = SummaryLlmService::new_from_model_name(pool, app_data_dir.clone(), model_name)?;
 
-    // Check cancellation after sidecar startup
-    if let Some(token) = cancellation_token {
-        if token.is_cancelled() {
-            return Err(anyhow!("Generation cancelled during sidecar startup"));
-        }
-    }
-
-    // Prepare generation request with model-specific sampling parameters
-    let request = Request::Generate {
-        prompt: formatted_prompt,
-        max_tokens: Some(models::DEFAULT_MAX_TOKENS),
-        context_size: Some(model_def.context_size),
-        model_path: Some(model_path.to_string_lossy().to_string()),
-        temperature: Some(model_def.sampling.temperature),
-        top_k: Some(model_def.sampling.top_k),
-        top_p: Some(model_def.sampling.top_p),
-        stop_tokens: Some(model_def.sampling.stop_tokens.clone()),
-    };
-
-    let request_json = serde_json::to_string(&request)?;
-
-    // Send request with timeout
-    let timeout = Duration::from_secs(models::GENERATION_TIMEOUT_SECS);
-
-    log::info!("Sending generation request to sidecar (model={})", model_name);
-
-    // Race between send_request and cancellation token
-    let response_json = if let Some(token) = cancellation_token {
-        tokio::select! {
-            result = manager.send_request(request_json, timeout) => {
-                result?
-            }
-            _ = token.cancelled() => {
-                log::warn!("Generation cancelled by user, shutting down sidecar");
-                // Shutdown sidecar to stop generation immediately
-                if let Err(e) = manager.shutdown().await {
-                    log::error!("Failed to shutdown sidecar during cancellation: {}", e);
-                }
-                return Err(anyhow!("Generation cancelled by user"));
-            }
-        }
-    } else {
-        manager.send_request(request_json, timeout).await?
-    };
-
-    // Check cancellation before parsing response
-    if let Some(token) = cancellation_token {
-        if token.is_cancelled() {
-            return Err(anyhow!("Generation cancelled"));
-        }
-    }
-
-    // Parse response
-    let response: Response = serde_json::from_str(&response_json)
-        .with_context(|| format!("Failed to parse response: {}", response_json))?;
-
-    match response {
-        Response::Response { text, error } => {
-            if let Some(err_msg) = error {
-                Err(anyhow!("Generation failed: {}", err_msg))
-            } else {
-                log::info!("Generation completed: {} chars", text.len());
-                Ok(text)
-            }
-        }
-        Response::Error { message } => Err(anyhow!("Sidecar error: {}", message)),
-    }
+    service
+        .generate_summary(system_prompt, user_prompt, cancellation_token)
+        .await
+        .map_err(|e| anyhow!(e))
 }
 
 /// Shutdown all sidecars gracefully (waits for active requests to complete).
