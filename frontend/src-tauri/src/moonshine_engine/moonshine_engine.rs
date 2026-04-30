@@ -98,6 +98,19 @@ impl From<std::io::Error> for MoonshineEngineError {
     }
 }
 
+// TODO(onnx-lifecycle): si Moonshine se vuelve el motor default y se observan
+// sintomas similares al cuelgue de Parakeet a los 5 min en sesiones largas,
+// agregar `lifecycle: Arc<OnnxSessionLifecycle>` siguiendo el patron de
+// parakeet_engine.rs:
+//   1. Importar `crate::audio::transcription::onnx_lifecycle::OnnxSessionLifecycle`.
+//   2. Agregar el field con threshold 200 y min_gap 60s.
+//   3. En transcribe_audio: hacer inferencia dentro de bloque que libere el
+//      lock inmediatamente, luego note_inference + maybe_recycle con cierre
+//      que clone Arcs y haga reload+swap atomico.
+//
+// La fix de raiz del bloat de memoria (with_arena_allocator(false) +
+// with_memory_pattern(false)) ya esta aplicada en model.rs, asi que en
+// principio el helper no deberia ser necesario. Es red de seguridad.
 pub struct MoonshineEngine {
     models_dir: PathBuf,
     current_model: Arc<RwLock<Option<MoonshineModel>>>,

@@ -226,7 +226,15 @@ impl MoonshineModel {
         model_dir: P,
         model_name: &str,
     ) -> Result<Session, MoonshineError> {
-        let providers = vec![CPUExecutionProvider::default().build()];
+        // ONNX Runtime CPU usa BFCArena con kNextPowerOfTwo por default. Para shapes
+        // dinamicos (audio variable), la arena acumula buffers y nunca encoge.
+        // Microsoft (issue #11627) recomienda desactivar arena + memory pattern.
+        // Mismo patron aplicado en parakeet_engine/model.rs y canary_engine/model.rs.
+        let providers = vec![
+            CPUExecutionProvider::default()
+                .with_arena_allocator(false)
+                .build(),
+        ];
 
         let model_filename = format!("{}.onnx", model_name);
         log::info!("Loading Moonshine model from {}...", model_filename);
@@ -234,6 +242,8 @@ impl MoonshineModel {
         let session = Session::builder()?
             .with_optimization_level(GraphOptimizationLevel::Level3)?
             .with_execution_providers(providers)?
+            // Required when arena is disabled.
+            .with_memory_pattern(false)?
             .with_parallel_execution(true)?
             .commit_from_file(model_dir.as_ref().join(&model_filename))?;
 
