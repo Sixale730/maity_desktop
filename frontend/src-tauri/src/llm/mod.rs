@@ -13,9 +13,11 @@ pub mod metrics;
 pub mod request;
 pub mod response;
 pub mod service;
+pub mod transport;
 
 pub use error::LlmError;
 pub use metrics::{LlmMetrics, LlmMetricsSnapshot};
 pub use request::GenerationRequest;
 pub use response::GenerationResponse;
 pub use service::{LlmConfig, LlmService};
+pub use transport::SidecarPool;

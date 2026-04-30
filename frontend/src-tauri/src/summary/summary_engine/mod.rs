@@ -7,6 +7,10 @@ pub mod model_manager;
 pub mod models;
 pub mod sidecar;
 
+// Re-export sidecar manager para que el SidecarPool pueda usarlo desde
+// fuera del modulo summary_engine.
+pub use sidecar::SidecarManager;
+
 // Re-export commonly used types
 pub use client::{generate_with_builtin, is_sidecar_healthy, shutdown_sidecar_gracefully, force_shutdown_sidecar};
 pub use commands::{

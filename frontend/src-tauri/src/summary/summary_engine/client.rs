@@ -1,5 +1,5 @@
 // High-level client API for built-in AI summary generation
-// Provides simple interface for generating text using the sidecar
+// Provides simple interface for generating text using the sidecar pool
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -14,10 +14,11 @@ use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 use super::models;
-use super::sidecar::SidecarManager;
+use crate::llm::transport::SidecarPool;
 
 // ============================================================================
-// Request/Response Types
+// Request/Response Types (en este modulo por compat — los del modulo `llm/`
+// son equivalentes pero los servicios nuevos los usan directamente)
 // ============================================================================
 
 #[derive(Debug, Serialize)]
@@ -44,32 +45,52 @@ enum Response {
 }
 
 // ============================================================================
-// Global Sidecar Manager
+// Global Sidecar Pool
 // ============================================================================
 
-lazy_static::lazy_static! {
-    static ref SIDECAR_MANAGER: Arc<Mutex<Option<Arc<SidecarManager>>>> = Arc::new(Mutex::new(None));
-}
+/// Pool global de sidecars indexados por nombre de modelo. Reemplaza al antiguo
+/// `SIDECAR_MANAGER` singleton. Permite que coach (ej. Gemma 1B) y summary
+/// (ej. Gemma 4B) tengan procesos llama-helper independientes en paralelo, sin
+/// que cambiar de modelo en uno desaloje al otro.
+///
+/// Se inicializa en el primer `init_sidecar_manager(app_data_dir)` o en el
+/// primer `generate_with_builtin(...)` (lazy si nadie llamo init).
+pub static SIDECAR_POOL: Lazy<Arc<Mutex<Option<Arc<SidecarPool>>>>> =
+    Lazy::new(|| Arc::new(Mutex::new(None)));
 
 // Model path cache to avoid repeated filesystem I/O and model lookups
 static MODEL_PATH_CACHE: Lazy<RwLock<HashMap<String, PathBuf>>> = Lazy::new(|| {
     RwLock::new(HashMap::new())
 });
 
-/// Initialize the global sidecar manager
+/// Initialize the global sidecar pool with the app data directory.
+///
+/// Idempotente: si ya esta inicializado con el mismo `app_data_dir`, no hace
+/// nada. Si el directorio cambio (caso raro de reinit), reemplaza el pool y
+/// los sidecars del pool anterior se apagan al ser dropeados.
 pub async fn init_sidecar_manager(app_data_dir: PathBuf) -> Result<()> {
-    let manager = SidecarManager::new(app_data_dir)?;
-    let mut global_manager = SIDECAR_MANAGER.lock().await;
-    *global_manager = Some(Arc::new(manager));
+    let mut global = SIDECAR_POOL.lock().await;
+    if global.is_none() {
+        log::info!(
+            "Inicializando SidecarPool con app_data_dir={}",
+            app_data_dir.display()
+        );
+        *global = Some(Arc::new(SidecarPool::new(app_data_dir)));
+    }
     Ok(())
 }
 
-/// Get the global sidecar manager
-async fn get_sidecar_manager() -> Result<Arc<SidecarManager>> {
-    let global_manager = SIDECAR_MANAGER.lock().await;
-    global_manager
-        .clone()
-        .ok_or_else(|| anyhow!("Sidecar manager not initialized. Call init_sidecar_manager first."))
+/// Get the global sidecar pool, initializing it lazily if needed.
+pub async fn get_sidecar_pool(app_data_dir: &PathBuf) -> Result<Arc<SidecarPool>> {
+    let mut global = SIDECAR_POOL.lock().await;
+    if global.is_none() {
+        log::info!(
+            "Lazy-init SidecarPool con app_data_dir={}",
+            app_data_dir.display()
+        );
+        *global = Some(Arc::new(SidecarPool::new(app_data_dir.clone())));
+    }
+    Ok(global.clone().unwrap())
 }
 
 /// Get cached model path with read-through caching to avoid repeated filesystem I/O
@@ -153,19 +174,10 @@ pub async fn generate_with_builtin(
     // Apply model-specific chat template
     let formatted_prompt =
         models::format_prompt(&model_def.template, system_prompt, user_prompt)?;
-    // Get or initialize sidecar manager
-    let manager = {
-        let mut global_manager = SIDECAR_MANAGER.lock().await;
-        if global_manager.is_none() {
-            log::info!("Initializing sidecar manager");
-            let new_manager = SidecarManager::new(app_data_dir.clone())?;
-            *global_manager = Some(Arc::new(new_manager));
-        }
-        global_manager.clone().unwrap()
-    };
 
-    // Ensure sidecar is running with this model
-    manager.ensure_running(model_path.clone()).await?;
+    // Get sidecar via pool (spawns if needed; reuses if model already loaded)
+    let pool = get_sidecar_pool(app_data_dir).await?;
+    let manager = pool.get_or_spawn(model_name, model_path.clone()).await?;
 
     // Check cancellation after sidecar startup
     if let Some(token) = cancellation_token {
@@ -191,7 +203,7 @@ pub async fn generate_with_builtin(
     // Send request with timeout
     let timeout = Duration::from_secs(models::GENERATION_TIMEOUT_SECS);
 
-    log::info!("Sending generation request to sidecar");
+    log::info!("Sending generation request to sidecar (model={})", model_name);
 
     // Race between send_request and cancellation token
     let response_json = if let Some(token) = cancellation_token {
@@ -236,21 +248,20 @@ pub async fn generate_with_builtin(
     }
 }
 
-/// Shutdown the global sidecar (graceful cleanup)
-/// Detaches the current manager and spawns a background task to drain active requests
+/// Shutdown all sidecars gracefully (waits for active requests to complete).
+/// Useful for app exit or coordinated shutdown.
 pub async fn shutdown_sidecar_gracefully() -> Result<()> {
-    let manager_opt = {
-        let mut global_manager = SIDECAR_MANAGER.lock().await;
-        global_manager.take()
+    let pool_opt = {
+        let mut global = SIDECAR_POOL.lock().await;
+        global.take()
     };
 
-    if let Some(manager) = manager_opt {
-        log::info!("Detaching sidecar manager for graceful shutdown");
-
-        // Spawn background task to wait for active requests and then kill
+    if let Some(pool) = pool_opt {
+        log::info!("SidecarPool: graceful shutdown de todos los sidecars");
+        // Spawn background task para no bloquear la llamada
         tokio::spawn(async move {
-            if let Err(e) = manager.shutdown_gracefully().await {
-                log::error!("Error during graceful shutdown: {}", e);
+            if let Err(e) = pool.shutdown_all().await {
+                log::error!("Error en graceful shutdown del pool: {}", e);
             }
         });
     }
@@ -258,28 +269,28 @@ pub async fn shutdown_sidecar_gracefully() -> Result<()> {
     Ok(())
 }
 
-/// Force shutdown the global sidecar (for app exit)
-/// Directly kills the process without waiting for active requests to complete.
-/// This is synchronous and blocks until the sidecar is terminated.
+/// Force shutdown all sidecars (for app exit).
+/// Synchronous: blocks until all sidecars are terminated.
 pub async fn force_shutdown_sidecar() -> Result<()> {
-    let manager_opt = {
-        let mut global_manager = SIDECAR_MANAGER.lock().await;
-        global_manager.take()
+    let pool_opt = {
+        let mut global = SIDECAR_POOL.lock().await;
+        global.take()
     };
 
-    if let Some(manager) = manager_opt {
-        log::info!("Force shutting down sidecar for app exit");
-        // Call shutdown() directly - sends shutdown command and force kills after 3s
-        manager.shutdown().await?;
+    if let Some(pool) = pool_opt {
+        log::info!("SidecarPool: force shutdown de todos los sidecars (app exit)");
+        pool.shutdown_all().await?;
     }
 
     Ok(())
 }
 
-/// Check if sidecar is healthy
+/// Check if at least one sidecar is healthy. True si hay alguno con `is_healthy()=true`.
 pub async fn is_sidecar_healthy() -> bool {
-    if let Ok(manager) = get_sidecar_manager().await {
-        manager.is_healthy()
+    let global = SIDECAR_POOL.lock().await;
+    if let Some(pool) = global.as_ref() {
+        let map = pool.sidecars_for_health_check().await;
+        map.into_iter().any(|m| m.is_healthy())
     } else {
         false
     }
