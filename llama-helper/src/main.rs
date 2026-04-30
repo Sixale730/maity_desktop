@@ -249,11 +249,15 @@ impl ModelState {
 
         eprintln!("📥 Loading model: {}", model_path.display());
 
-        // Detect GPU layers
-        let gpu_layers = get_default_gpu_layers(&model_path, context_size);
-
+        // Delegamos la decisión de offload a llama.cpp: pasamos 999 (más capas
+        // que cualquier modelo realista) y llama.cpp internamente consulta la
+        // VRAM real del driver de GPU, conoce la geometría exacta del modelo
+        // (leyendo el GGUF), y ofloadea cuántas capas quepan. Si una capa no
+        // cabe, la deja en CPU sin error. Patrón estándar documentado:
+        //   https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md
+        //   https://github.com/ggml-org/llama.cpp/discussions/7678
         // Configure model parameters with GPU offload
-        let model_params = LlamaModelParams::default().with_n_gpu_layers(gpu_layers);
+        let model_params = LlamaModelParams::default().with_n_gpu_layers(999);
         let model_params = pin!(model_params);
 
         let model = LlamaModel::load_from_file(&self.backend, model_path.clone(), &model_params)
