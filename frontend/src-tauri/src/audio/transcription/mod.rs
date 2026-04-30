@@ -10,6 +10,7 @@ pub mod deepgram_commands;  // Tauri commands for Deepgram cloud proxy tokens
 pub mod engine;
 pub mod worker;
 pub mod spanish_postprocess;  // Heuristic post-processor for Spanish transcripts
+pub mod onnx_lifecycle;       // Helper para reciclaje de sesion ONNX en background
 
 // Re-export commonly used types
 pub use provider::{TranscriptionError, TranscriptionProvider, TranscriptResult};
