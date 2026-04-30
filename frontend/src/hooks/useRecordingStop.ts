@@ -345,27 +345,39 @@ export function useRecordingStop(
     if (!effectiveMaityUser?.id || freshTranscripts.length === 0) return;
 
     try {
-      const transcriptText = freshTranscripts.map(t => {
+      // Sort chronologically: dual-channel (mic + system) chunks arrive out of order in
+      // transcriptsRef. Sorting here guarantees transcript_text reads naturally and that
+      // duration/started_at are computed off the real first/last samples.
+      const sortedTranscripts = [...freshTranscripts].sort(
+        (a, b) => (a.audio_start_time ?? 0) - (b.audio_start_time ?? 0)
+      );
+
+      const transcriptText = sortedTranscripts.map(t => {
         const speaker = t.source_type === 'user' ? 'Usuario' : 'Interlocutor';
         return `${speaker}: ${t.text}`;
       }).join('\n');
 
-      let durationSec = 0;
-      if (freshTranscripts.length > 0) {
-        const lastT = freshTranscripts[freshTranscripts.length - 1];
-        durationSec = Math.round(lastT.audio_end_time || lastT.audio_start_time || 0);
-      }
+      // Use the max audio_end_time across all chunks, not the last array element —
+      // see bug post-mortem: out-of-order arrivals made `last` carry a tiny end time.
+      const durationSec = sortedTranscripts.length > 0
+        ? Math.round(
+            sortedTranscripts.reduce(
+              (max, t) => Math.max(max, t.audio_end_time ?? t.audio_start_time ?? 0),
+              0
+            )
+          )
+        : 0;
 
-      const wordsCount = freshTranscripts
+      const wordsCount = sortedTranscripts
         .map(t => t.text.split(/\s+/).length)
         .reduce((a, b) => a + b, 0);
 
       const now = new Date().toISOString();
-      const startedAt = freshTranscripts[0]?.audio_start_time
+      const startedAt = sortedTranscripts[0]?.audio_start_time !== undefined
         ? new Date(Date.now() - (durationSec * 1000)).toISOString()
         : now;
 
-      const segments = freshTranscripts.map((t, i) => ({
+      const segments = sortedTranscripts.map((t, i) => ({
         segment_index: t.sequence_id ?? i,
         text: t.text,
         speaker: t.source_type === 'user' ? 'user' : 'interlocutor',
