@@ -9,6 +9,66 @@ pub struct MeetingModel {
     pub created_at: DateTimeUtc,
     pub updated_at: DateTimeUtc,
     pub folder_path: Option<String>,
+
+    // Local analysis fields (3-phase async with Gemma sidecar).
+    // Each phase has independent status + data so the UI can render
+    // partial progress and the user can regenerate any phase alone.
+    #[serde(default = "default_idle_status")]
+    pub analysis_quick_status: String,
+    pub analysis_quick_data: Option<String>,
+    pub analysis_quick_error: Option<String>,
+
+    #[serde(default = "default_idle_status")]
+    pub analysis_full_status: String,
+    pub analysis_full_data: Option<String>,
+    pub analysis_full_error: Option<String>,
+
+    #[serde(default = "default_idle_status")]
+    pub minutes_status: String,
+    pub minutes_data: Option<String>,
+    pub minutes_error: Option<String>,
+
+    pub deterministic_data: Option<String>,
+    #[serde(default = "default_cloud_source")]
+    pub analysis_source: String,
+}
+
+fn default_idle_status() -> String {
+    "idle".to_string()
+}
+
+fn default_cloud_source() -> String {
+    "cloud".to_string()
+}
+
+/// Status of a single analysis phase.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AnalysisPhaseStatus {
+    Idle,
+    Running,
+    Done,
+    Failed,
+}
+
+impl AnalysisPhaseStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Idle => "idle",
+            Self::Running => "running",
+            Self::Done => "done",
+            Self::Failed => "failed",
+        }
+    }
+}
+
+/// Which of the 3 phases an analysis update applies to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AnalysisPhaseKind {
+    Quick,
+    Full,
+    Minutes,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::Type)]

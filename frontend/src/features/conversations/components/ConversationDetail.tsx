@@ -14,37 +14,27 @@ import {
   OmiConversation,
   getOmiTranscriptSegments,
   getLocalMeetingDetail,
+  getOmiConversation,
   reanalyzeConversation,
   toggleActionItemCompleted,
   isAnalysisSkipped,
   isFullAnalysis,
 } from '../services/conversations.service';
+import { supabase } from '@/lib/supabase';
 import { useAnalysisPolling } from '../hooks/useAnalysisPolling';
 import { AnalysisStatusBanner } from './AnalysisStatusBanner';
 import { SessionFeedbackModal } from '@/components/recording/SessionFeedbackModal';
-import {
-  ResumenHero,
-  TuRadarCard,
-  EmotionProfiles,
-  KPIGrid,
-  PatronCard,
-  InsightsGrid,
-  HallazgosSection,
-  PuertasDetalleSection,
-  RecomendacionesSection,
-  RealTimelineChart,
-  TranscriptSection,
-} from './analysis';
-import {
-  MinutaHeroSummary,
-  MinutaKPIStrip,
-  MinutaGauge,
-  MinutaEfectividad,
-  MinutaDecisions,
-  MinutaActions,
-  MinutaIncompleteActions,
-  MinutaSeguimiento,
-} from './minuta';
+import { TranscriptSection } from './analysis';
+import { ResumenHero as ResumenHeroV1 } from './analysis/dashboard-v1/ResumenHero';
+import { TuRadarCard } from './analysis/dashboard-v1/TuRadarCard';
+import { KPIGrid } from './analysis/dashboard-v1/KPIGrid';
+import { InsightsGrid } from './analysis/dashboard-v1/InsightsGrid';
+import { HallazgosSection } from './analysis/dashboard-v1/HallazgosSection';
+import { RecomendacionesSection as RecomendacionesSectionV1 } from './analysis/dashboard-v1/RecomendacionesSection';
+import { CapaLabel } from './analysis/dashboard-v1/CapaLabel';
+import { cloudV4ToDashboardV1 } from './analysis/dashboard-v1/adapter';
+import { MinutaDashboardV1 } from './analysis/dashboard-v1/MinutaDashboardV1';
+import './analysis/dashboard-v1/dashboard.css';
 import { normalizeMeetingMinutes } from '../utils/normalize-meeting-minutes';
 import { isMinutaInsufficient } from '../utils/minuta-helpers';
 import { ErrorBoundary } from '@/components/shared/ErrorBoundary';
@@ -54,16 +44,6 @@ interface ConversationDetailProps {
   onClose: () => void;
   onConversationUpdate?: (updated: OmiConversation) => void;
   isAnalyzing?: boolean;
-}
-
-function SectionLabel({ text }: { text: string }) {
-  return (
-    <div className="text-xs font-bold uppercase tracking-widest text-muted-foreground mt-8 mb-3 pl-1 flex items-center gap-2">
-      <div className="h-px flex-1 border-t border-border" />
-      <span>{text}</span>
-      <div className="h-px flex-1 border-t border-border" />
-    </div>
-  );
 }
 
 function buildTranscriptText(segments: { is_user: boolean | null; text: string }[]): string {
@@ -139,6 +119,7 @@ export function ConversationDetail({ conversation: initialConversation, onClose,
   const isAnalysisActive = analysisPolling.isActive;
 
   const isLocalOnly = conversation.source === 'local';
+  const conversationId = conversation.id;
 
   // For local conversations selected from the list, transcript_text may be null.
   // Fetch the full detail (with transcript) from SQLite.
@@ -152,6 +133,74 @@ export function ConversationDetail({ conversation: initialConversation, onClose,
     }).catch((err) => console.warn('Error fetching local transcript detail:', err));
   }, [isLocalOnly, conversation._localId, conversation.id, conversation.transcript_text]);
 
+  // Capa 2 — Refetch al mount: la prop puede traer datos stale del cache de la lista.
+  // Trae datos frescos al entrar para evitar mostrar análisis viejo brevemente.
+  useEffect(() => {
+    if (isLocalOnly) return;
+    let cancelled = false;
+    getOmiConversation(conversationId)
+      .then((fresh) => {
+        if (cancelled || !fresh) return;
+        setConversation((prev) => ({ ...prev, ...fresh }));
+        onConversationUpdate?.(fresh);
+      })
+      .catch((err) => console.warn('Refetch al mount falló:', err));
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [conversationId, isLocalOnly]);
+
+  // Capa 3 — Polling rápido (3s) mientras analysis_status === 'processing'.
+  // Fallback robusto si Realtime falla. Auto-stop cuando cambia o desmonta.
+  useEffect(() => {
+    if (isLocalOnly || conversation.analysis_status !== 'processing') return;
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const fresh = await getOmiConversation(conversationId);
+        if (cancelled || !fresh) return;
+        setConversation((prev) => ({ ...prev, ...fresh }));
+        onConversationUpdate?.(fresh);
+      } catch (err) {
+        console.warn('Polling rápido error:', err);
+      }
+    };
+    const intervalId = setInterval(tick, 3000);
+    return () => {
+      cancelled = true;
+      clearInterval(intervalId);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [conversationId, conversation.analysis_status, isLocalOnly]);
+
+  // Capa 4 — Supabase Realtime: push instantáneo cuando cambia analysis_status.
+  // Si Realtime falla (no habilitado, conexión cortada), Capa 3 lo cubre.
+  useEffect(() => {
+    if (isLocalOnly) return;
+    const channel = supabase
+      .channel(`omi-conv-${conversationId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'maity',
+          table: 'omi_conversations',
+          filter: `id=eq.${conversationId}`,
+        },
+        (payload) => {
+          const updated = payload.new as Partial<OmiConversation>;
+          setConversation((prev) => ({ ...prev, ...updated }));
+          if (updated.id) onConversationUpdate?.(updated as OmiConversation);
+        },
+      )
+      .subscribe();
+    return () => {
+      void channel.unsubscribe();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [conversationId, isLocalOnly]);
+
   const { data: segments, isLoading: loadingSegments, error: segmentsError } = useQuery({
     queryKey: ['omi-segments', conversation.id],
     queryFn: () => getOmiTranscriptSegments(conversation.id),
@@ -163,14 +212,22 @@ export function ConversationDetail({ conversation: initialConversation, onClose,
   const reanalyzeMutation = useMutation({
     mutationFn: (transcriptText: string) =>
       reanalyzeConversation(conversation.id, transcriptText, conversation.language || 'es'),
+    onMutate: () => {
+      // Optimistic: spinner aparece al instante sin esperar al backend
+      setConversation((prev) => ({ ...prev, analysis_status: 'processing' as const }));
+    },
     onSuccess: (updated) => {
-      setConversation(updated);
+      setConversation((prev) => ({ ...prev, ...updated, analysis_status: 'processing' as const }));
       onConversationUpdate?.(updated);
       queryClient.invalidateQueries({ queryKey: ['omi-conversations'] });
       toast.info('Reanálisis iniciado. Te avisaremos cuando esté listo.');
       analysisPolling.startPolling();
     },
     onError: (error: Error) => {
+      // Revierte el optimistic si la mutation falla
+      setConversation((prev) =>
+        prev.analysis_status === 'processing' ? { ...prev, analysis_status: null } : prev,
+      );
       toast.error('Error al analizar', { description: error.message });
     },
   });
@@ -254,10 +311,10 @@ export function ConversationDetail({ conversation: initialConversation, onClose,
 
   const canAnalyze = !reanalyzeMutation.isPending && !loadingSegments &&
     ((segments && segments.length > 0) || !!conversation.transcript_text);
-  const speakerNameMap = buildSpeakerNameMap(
-    maityUser?.first_name ?? undefined,
-    minutaData?.meta?.participantes,
-  );
+  // speakerNameMap removed: lo usaban solo los componentes V4 viejos. El
+  // Dashboard V1 no lo necesita. buildSpeakerNameMap se conserva por si se
+  // re-introducen perfiles emocionales en el futuro.
+  void buildSpeakerNameMap;
 
   const truncateId = (id: string) =>
     id.length > 14 ? `${id.slice(0, 6)}...${id.slice(-6)}` : id;
@@ -366,20 +423,33 @@ export function ConversationDetail({ conversation: initialConversation, onClose,
           </TabsTrigger>
         </TabsList>
 
-        {/* Tab: Análisis */}
+        {/* Tab: Análisis (Dashboard V1) */}
         <TabsContent value="analisis">
-          {hasAnalysis && feedbackV4 ? (
-            <div className="space-y-8 py-2">
-              <ResumenHero feedback={feedbackV4} />
-              <TuRadarCard feedback={feedbackV4} />
-              <EmotionProfiles feedback={feedbackV4} speakerNameMap={speakerNameMap} />
-              <KPIGrid feedback={feedbackV4} speakerNameMap={speakerNameMap} />
-              <PatronCard feedback={feedbackV4} />
-              <InsightsGrid feedback={feedbackV4} />
-              <RealTimelineChart feedback={feedbackV4} speakerNameMap={speakerNameMap} />
-              <HallazgosSection feedback={feedbackV4} />
-              <PuertasDetalleSection feedback={feedbackV4} speakerNameMap={speakerNameMap} />
-              <RecomendacionesSection feedback={feedbackV4} />
+          {reanalyzeMutation.isPending || conversation.analysis_status === 'processing' ? (
+            <Card>
+              <CardContent className="p-12 text-center">
+                <Loader2 className="h-12 w-12 mx-auto text-primary mb-4 animate-spin" />
+                <h3 className="text-lg font-medium mb-2 text-foreground">Reanalizando…</h3>
+                <p className="text-muted-foreground">
+                  Estamos generando un nuevo análisis. Esto puede tardar 30-60 segundos.
+                </p>
+              </CardContent>
+            </Card>
+          ) : hasAnalysis && feedbackV4 ? (
+            (() => {
+              const data = cloudV4ToDashboardV1(feedbackV4);
+              return (
+            <div className="dashboard-v1-scope space-y-4 py-2">
+              <ResumenHeroV1 feedback={data} />
+              <TuRadarCard feedback={data} />
+              <CapaLabel text="Radiografía Rápida" />
+              <KPIGrid feedback={data} />
+              <CapaLabel text="Lo Que Quizás No Notaste" />
+              <InsightsGrid feedback={data} />
+              <CapaLabel text="Capa 2 — Hallazgos Detallados" />
+              <HallazgosSection feedback={data} />
+              <CapaLabel text="Top 3 Recomendaciones" />
+              <RecomendacionesSectionV1 feedback={data} />
 
               {/* Action Items (if present) */}
               {conversation.action_items && conversation.action_items.length > 0 && (
@@ -420,6 +490,8 @@ export function ConversationDetail({ conversation: initialConversation, onClose,
                 </div>
               )}
             </div>
+              );
+            })()
           ) : analysisSkipped ? (
             /* Analysis was skipped due to insufficient data */
             <Card>
@@ -496,10 +568,6 @@ export function ConversationDetail({ conversation: initialConversation, onClose,
               }
 
               const userName = maityUser?.first_name ?? undefined;
-              const radiografia = conversation.communication_feedback?.radiografia;
-              const normalizedComponentes = Array.isArray(nm.efectividad?.componentes)
-                ? nm.efectividad.componentes
-                : [];
 
               // Red de seguridad: si algun subcomponente futuro encuentra un
               // edge case y crashea, el ErrorBoundary lo contiene en el tab y
@@ -521,47 +589,8 @@ export function ConversationDetail({ conversation: initialConversation, onClose,
 
               return (
                 <ErrorBoundary fallback={minutaErrorFallback}>
-                  <div className="space-y-6 py-2">
-                    {/* Efectividad gauge */}
-                    {nm.efectividad && <MinutaGauge efectividad={nm.efectividad} />}
-
-                    {/* En 30 segundos */}
-                    <SectionLabel text="En 30 segundos" />
-                    <MinutaHeroSummary meta={nm.meta} temas={nm.temas} />
-
-                    {/* KPI strip */}
-                    <MinutaKPIStrip
-                      meta={nm.meta}
-                      decisiones={nm.decisiones}
-                      accionesIncompletas={nm.acciones_incompletas}
-                      acciones={nm.acciones?.lista || []}
-                      graficas={nm.graficas}
-                      userName={userName}
-                      radiografia={radiografia}
-                    />
-
-                    {/* Seguimiento */}
-                    <SectionLabel text="Seguimiento" />
-                    <MinutaSeguimiento
-                      seguimiento={nm.acciones?.seguimiento || null}
-                      userName={userName}
-                    />
-
-                    {/* Decisiones */}
-                    <SectionLabel text="Decisiones" />
-                    <MinutaDecisions decisiones={nm.decisiones} />
-
-                    {/* Desglose de Efectividad */}
-                    <SectionLabel text="Desglose de Efectividad" />
-                    <MinutaEfectividad componentes={normalizedComponentes} />
-
-                    {/* Acciones */}
-                    <SectionLabel text="Acciones" />
-                    <MinutaActions acciones={nm.acciones?.lista || []} />
-
-                    {/* Acciones Incompletas */}
-                    <SectionLabel text="Acciones Incompletas" />
-                    <MinutaIncompleteActions acciones={nm.acciones_incompletas} />
+                  <div className="dashboard-v1-scope">
+                    <MinutaDashboardV1 minuta={nm} userName={userName} />
                   </div>
                 </ErrorBoundary>
               );
