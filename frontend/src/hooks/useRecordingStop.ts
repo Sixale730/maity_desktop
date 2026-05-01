@@ -285,6 +285,14 @@ export function useRecordingStop(
           sessionStorage.removeItem('last_recording_folder_path');
           sessionStorage.removeItem('last_recording_meeting_name');
         }
+
+        // Mark IndexedDB meeting as saved when there's nothing useful to recover.
+        // Without this, empty/cancelled sessions stay flagged savedToSQLite=false
+        // and the recovery dialog appears on the next cold start with nothing to
+        // offer the user.
+        if (transcriptsRef.current.length === 0) {
+          await markMeetingAsSaved();
+        }
         setStatus(RecordingStatus.IDLE);
       }
 
