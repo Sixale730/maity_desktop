@@ -2,7 +2,7 @@
 
 import { invoke } from '@tauri-apps/api/core';
 import { appDataDir } from '@tauri-apps/api/path';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Play, Pause, Square, Mic, AlertCircle, X } from 'lucide-react';
 import { ProcessSummaryResponse } from '@/types/summary';
 import { listen } from '@tauri-apps/api/event';
@@ -261,9 +261,19 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
     };
   }, []);
 
+  // Latest-ref pattern: keep callbacks in refs so the listener useEffect can be
+  // mount-once ([] deps) without capturing stale closures. Without this, the
+  // useEffect re-ran on every render of the parent and accumulated zombie
+  // listeners during the async setupListeners gap on rapid mount/unmount.
+  const onRecordingStopRef = useRef(onRecordingStop);
+  const onTranscriptionErrorRef = useRef(onTranscriptionError);
+  useEffect(() => { onRecordingStopRef.current = onRecordingStop; }, [onRecordingStop]);
+  useEffect(() => { onTranscriptionErrorRef.current = onTranscriptionError; }, [onTranscriptionError]);
+
   useEffect(() => {
     logger.debug('Setting up recording event listeners');
-    let unsubscribes: (() => void)[] = [];
+    let cancelled = false;
+    const unsubscribes: (() => void)[] = [];
 
     const setupListeners = async () => {
       try {
@@ -292,10 +302,8 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
           }
 
           logger.debug('Calling onRecordingStop(false) due to transcript error');
-          onRecordingStop(false);
-          if (onTranscriptionError) {
-            onTranscriptionError(errorMessage);
-          }
+          onRecordingStopRef.current(false);
+          onTranscriptionErrorRef.current?.(errorMessage);
         });
 
         // Transcription error listener - handles structured error objects with actionable flag
@@ -333,13 +341,13 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
           }
 
           logger.debug('Calling onRecordingStop(false) due to transcription error');
-          onRecordingStop(false);
+          onRecordingStopRef.current(false);
 
           // For actionable errors (like model loading failures), the main page will handle showing the model selector
           // For regular errors, they are handled by useModalState global listener which shows a toast
           // We don't want to show a modal (via onTranscriptionError) AND a toast, so we skip the callback here
-          /* if (onTranscriptionError && !isActionable) {
-            onTranscriptionError(errorMessage);
+          /* if (onTranscriptionError && !_isActionable) {
+            onTranscriptionErrorRef.current?.(errorMessage);
           } */
         });
 
@@ -352,11 +360,21 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
           setSpeechDetected(true);
         });
 
-        unsubscribes = [
+        unsubscribes.push(
           transcriptErrorUnsubscribe,
           transcriptionErrorUnsubscribe,
           speechDetectedUnsubscribe
-        ];
+        );
+
+        // Race fix: if cleanup ran before setupListeners finished, unsubscribe
+        // immediately so we don't leave zombie listeners attached.
+        if (cancelled) {
+          unsubscribes.forEach(fn => fn());
+          unsubscribes.length = 0;
+          logger.debug('Listeners arrived after unmount — unsubscribed immediately');
+          return;
+        }
+
         logger.debug('Recording event listeners set up successfully');
       } catch (error) {
         console.error('Failed to set up recording event listeners:', error);
@@ -367,13 +385,14 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
 
     return () => {
       logger.debug('Cleaning up recording event listeners');
+      cancelled = true;
       unsubscribes.forEach(unsubscribe => {
         if (unsubscribe && typeof unsubscribe === 'function') {
           unsubscribe();
         }
       });
     };
-  }, [onRecordingStop, onTranscriptionError]);
+  }, []);
 
   return (
     <TooltipProvider>
