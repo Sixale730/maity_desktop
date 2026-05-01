@@ -1,11 +1,10 @@
 'use client';
 
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { motion } from 'framer-motion';
 import { invoke } from '@tauri-apps/api/core';
 import { RecordingControls } from '@/components/recording/RecordingControls';
 import { LiveFeedbackPanel } from '@/components/coach/LiveFeedbackPanel';
-import { SessionFeedbackModal } from '@/components/recording/SessionFeedbackModal';
 import { useSidebar } from '@/components/Sidebar/SidebarProvider';
 import { usePermissionCheck } from '@/hooks/usePermissionCheck';
 import { useRecordingState, RecordingStatus } from '@/contexts/RecordingStateContext';
@@ -35,25 +34,10 @@ export default function Home() {
   const [showRecoveryDialog, setShowRecoveryDialog] = useState(false);
   const [isRecordingDisabled, setIsRecordingDisabled] = useState(false);
 
-  // Feedback modal state — shown after recording stop, before navigation
-  const [feedbackModal, setFeedbackModal] = useState<{ open: boolean; meetingId: string | null }>({
-    open: false,
-    meetingId: null,
-  });
-  const feedbackResolveRef = useRef<(() => void) | null>(null);
-
-  const onBeforeNavigate = useCallback((meetingId: string): Promise<void> => {
-    return new Promise((resolve) => {
-      feedbackResolveRef.current = resolve;
-      setFeedbackModal({ open: true, meetingId });
-    });
-  }, []);
-
-  const handleFeedbackSubmit = useCallback(() => {
-    setFeedbackModal({ open: false, meetingId: null });
-    feedbackResolveRef.current?.();
-    feedbackResolveRef.current = null;
-  }, []);
+  // El modal de feedback se mostraba aqui antes y bloqueaba la navegacion
+  // hasta que el usuario lo contestaba. Ahora useRecordingStop escribe
+  // 'feedback_pending_meeting_id' en sessionStorage y navega de inmediato;
+  // ConversationDetail lo lee y muestra el modal sobre la evaluacion.
 
   // Use contexts for state management
   const { meetingTitle } = useTranscripts();
@@ -72,8 +56,7 @@ export default function Home() {
 
   // Get handleRecordingStop function and setIsStopping (state comes from global context)
   const { handleRecordingStop, setIsStopping } = useRecordingStop(
-    setIsRecordingDisabled,
-    onBeforeNavigate
+    setIsRecordingDisabled
   );
 
   // Memoized callbacks for RecordingControls — stable identity prevents listener
@@ -226,13 +209,6 @@ export default function Home() {
         modals={modals}
         messages={messages}
         onClose={hideModal}
-      />
-
-      {/* Session feedback modal (shown after recording stop) */}
-      <SessionFeedbackModal
-        open={feedbackModal.open}
-        meetingId={feedbackModal.meetingId}
-        onSubmit={handleFeedbackSubmit}
       />
 
       {/* Recovery Dialog */}

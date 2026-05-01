@@ -476,6 +476,38 @@ pub fn run() {
                 log::error!("Failed to create system tray: {}", e);
             }
 
+            // Interceptar el cierre de la ventana principal: en lugar de matar
+            // el proceso, esconder la ventana en el tray y limpiar tareas de
+            // idle (audio level monitor, coach-float). El usuario debe usar
+            // "Quit" del menu del tray para terminar la app del todo.
+            // Si esta grabando, useWindowCloseGuard del frontend ya muestra
+            // un confirm antes de invocar appWindow.close() — no se duplica.
+            if let Some(main_window) = _app.get_webview_window("main") {
+                let app_handle_for_close = _app.handle().clone();
+                main_window.on_window_event(move |event| {
+                    if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                        api.prevent_close();
+                        log::info!("Main window close requested — hiding to tray with idle cleanup");
+
+                        if let Some(win) = app_handle_for_close.get_webview_window("main") {
+                            let _ = win.hide();
+                        }
+                        if let Some(coach) = app_handle_for_close.get_webview_window("coach-float") {
+                            let _ = coach.close();
+                        }
+
+                        // stop_monitoring es async — spawnear sin bloquear el
+                        // handler del evento de cierre.
+                        tauri::async_runtime::spawn(async {
+                            if let Err(e) = audio::simple_level_monitor::stop_monitoring().await {
+                                log::warn!("Failed to stop level monitor on hide: {}", e);
+                            }
+                            log::info!("Window hidden — idle cleanup completed");
+                        });
+                    }
+                });
+            }
+
             // Initialize notification system with proper defaults
             log::info!("Initializing notification system...");
             let app_for_notif = _app.handle().clone();

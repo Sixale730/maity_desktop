@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { updateService, UpdateInfo } from '@/services/updateService';
 import { showUpdateNotification } from '@/components/updates/UpdateNotification';
+import { logger } from '@/lib/logger';
 
 interface UseUpdateCheckOptions {
   checkOnMount?: boolean;
@@ -21,15 +22,18 @@ export function useUpdateCheck(options: UseUpdateCheckOptions = {}) {
   const checkForUpdates = async (force = false) => {
     // Skip if checked recently (unless forced)
     if (!force && updateService.wasCheckedRecently()) {
+      logger.info('[useUpdateCheck] Skip — wasCheckedRecently=true (force=false)');
       return;
     }
 
+    logger.info(`[useUpdateCheck] Starting check (force=${force})`);
     setIsChecking(true);
     try {
       const info = await updateService.checkForUpdates(force);
       setUpdateInfo(info);
 
       if (info.available) {
+        logger.info(`[useUpdateCheck] Update found: ${info.version}`);
         if (onUpdateAvailable) {
           onUpdateAvailable(info);
         } else if (showNotification) {
@@ -37,9 +41,13 @@ export function useUpdateCheck(options: UseUpdateCheckOptions = {}) {
             // This will be handled by the component that uses this hook
           });
         }
+      } else {
+        logger.info(`[useUpdateCheck] No update available (current: ${info.currentVersion})`);
       }
-    } catch (error) {
-      console.error('Failed to check for updates:', error);
+    } catch (_error) {
+      // El service ya hace logger.error con el detalle. Aqui solo dejamos
+      // rastro local del path para que el grep en logs muestre el flujo.
+      logger.warn('[useUpdateCheck] Update check threw — see updateService log');
       // Silently fail on startup checks to avoid disrupting user experience
     } finally {
       setIsChecking(false);

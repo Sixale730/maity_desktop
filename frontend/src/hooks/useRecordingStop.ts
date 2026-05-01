@@ -28,11 +28,12 @@ interface UseRecordingStopReturn {
 
 /**
  * Custom hook for managing recording stop lifecycle.
- * Local-first flow: Stop -> flush buffer (max 5s) -> save SQLite -> [onBeforeNavigate?] -> navigate -> enqueue cloud sync (fire-and-forget).
+ * Local-first flow: Stop -> flush buffer (max 5s) -> save SQLite -> navigate -> enqueue cloud sync (fire-and-forget).
+ * El feedback modal se muestra desde ConversationDetail leyendo
+ * sessionStorage 'feedback_pending_meeting_id', sin bloquear la navegacion.
  */
 export function useRecordingStop(
-  setIsRecordingDisabled: (value: boolean) => void,
-  onBeforeNavigate?: (meetingId: string) => Promise<void>
+  setIsRecordingDisabled: (value: boolean) => void
 ): UseRecordingStopReturn {
   // Auth and config for Supabase save
   const { maityUser } = useAuth();
@@ -215,10 +216,11 @@ export function useRecordingStop(
           sessionStorage.removeItem('early_meeting_id');
           sessionStorage.removeItem('indexeddb_current_meeting_id');
 
-          // Show optional pre-navigation gate (e.g., feedback modal) before navigating
-          if (onBeforeNavigate) {
-            await onBeforeNavigate(meetingId);
-          }
+          // Marcar que esta sesion debe pedir feedback. ConversationDetail lee
+          // este flag al montarse y muestra el modal sobre la evaluacion. La
+          // navegacion no espera al feedback — la evaluacion arranca de
+          // inmediato.
+          sessionStorage.setItem('feedback_pending_meeting_id', meetingId);
 
           // Navigate to conversations with localId
           logger.debug(`[RecordingStop] Navigating to /conversations?localId=${meetingId}`);
@@ -323,7 +325,6 @@ export function useRecordingStop(
     router,
     maityUser,
     transcriptModelConfig,
-    onBeforeNavigate,
   ]);
 
   // Fire-and-forget cloud sync enqueue

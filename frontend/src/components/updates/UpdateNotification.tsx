@@ -40,8 +40,11 @@ export function showUpdateNotification(updateInfo: UpdateInfo, onUpdateClick?: (
       </button>
     </div>,
     {
-      duration: 10000,
+      // Persistente: el user lo cierra explicitamente o abre el dialog.
+      // Antes era 10s y se perdia si el user no estaba mirando la pantalla.
+      duration: Infinity,
       position: 'bottom-center',
+      closeButton: true,
     }
   );
 }

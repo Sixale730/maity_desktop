@@ -107,19 +107,28 @@ export function SessionFeedbackModal({ open, meetingId, onSubmit }: SessionFeedb
           <span className="text-xs text-muted-foreground/50 text-right">{message.length}/280</span>
         </div>
 
-        {/* Submit */}
-        <button
-          onClick={handleSubmit}
-          disabled={!selected || submitting}
-          className={[
-            'w-full py-2.5 rounded-xl text-sm font-semibold transition-all',
-            selected && !submitting
-              ? 'bg-[#485df4] hover:bg-[#3a4edb] text-white'
-              : 'bg-white/10 text-muted-foreground cursor-not-allowed',
-          ].join(' ')}
-        >
-          {submitting ? 'Enviando...' : 'Enviar →'}
-        </button>
+        {/* Submit + Skip */}
+        <div className="flex gap-2">
+          <button
+            onClick={onSubmit}
+            disabled={submitting}
+            className="flex-1 py-2.5 rounded-xl text-sm font-medium transition-all bg-white/5 hover:bg-white/10 text-muted-foreground border border-white/10"
+          >
+            Despues
+          </button>
+          <button
+            onClick={handleSubmit}
+            disabled={!selected || submitting}
+            className={[
+              'flex-1 py-2.5 rounded-xl text-sm font-semibold transition-all',
+              selected && !submitting
+                ? 'bg-[#485df4] hover:bg-[#3a4edb] text-white'
+                : 'bg-white/10 text-muted-foreground cursor-not-allowed',
+            ].join(' ')}
+          >
+            {submitting ? 'Enviando...' : 'Enviar →'}
+          </button>
+        </div>
       </div>
     </div>
   );

@@ -49,7 +49,7 @@ export class UpdateService {
     if (!force && this.lastCheckTime) {
       const timeSinceLastCheck = Date.now() - this.lastCheckTime;
       if (timeSinceLastCheck < this.CHECK_INTERVAL_MS) {
-        logger.debug('Skipping update check - checked recently');
+        logger.info(`[updateService] Skipping check — checked ${Math.round(timeSinceLastCheck / 1000)}s ago (interval: ${this.CHECK_INTERVAL_MS / 1000}s)`);
         return {
           available: false,
           currentVersion: await getVersion(),
@@ -62,9 +62,11 @@ export class UpdateService {
 
     try {
       const currentVersion = await getVersion();
+      logger.info(`[updateService] Checking for updates (current: ${currentVersion}, force: ${force})`);
       const update = await check();
 
       if (update?.available) {
+        logger.info(`[updateService] Update available: ${update.version} (current: ${currentVersion})`);
         return {
           available: true,
           currentVersion,
@@ -74,12 +76,15 @@ export class UpdateService {
         };
       }
 
+      logger.info(`[updateService] No update available (current: ${currentVersion} is latest)`);
       return {
         available: false,
         currentVersion,
       };
     } catch (error) {
-      console.error('Failed to check for updates:', error);
+      // Antes este catch tragaba el error con console.error que nadie miraba.
+      // Ahora va al logger que llega al backend file logger y a DevTools.
+      logger.error('[updateService] Update check failed', error);
       throw error;
     } finally {
       this.updateCheckInProgress = false;
