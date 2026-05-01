@@ -21,6 +21,7 @@ import {
 } from '../services/conversations.service';
 import { useAnalysisPolling } from '../hooks/useAnalysisPolling';
 import { AnalysisStatusBanner } from './AnalysisStatusBanner';
+import { SessionFeedbackModal } from '@/components/recording/SessionFeedbackModal';
 import {
   ResumenHero,
   TuRadarCard,
@@ -97,8 +98,28 @@ function buildSpeakerNameMap(
 export function ConversationDetail({ conversation: initialConversation, onClose, onConversationUpdate, isAnalyzing }: ConversationDetailProps) {
   const [conversation, setConversation] = useState(initialConversation);
   const [copied, setCopied] = useState(false);
+  const [showFeedbackModal, setShowFeedbackModal] = useState(false);
+  const [feedbackMeetingId, setFeedbackMeetingId] = useState<string | null>(null);
   const queryClient = useQueryClient();
   const { maityUser } = useAuth();
+
+  // Si la grabacion recien terminada apunta a esta conversation, mostrar
+  // modal de feedback como overlay sin bloquear el polling de evaluacion.
+  useEffect(() => {
+    const pending = sessionStorage.getItem('feedback_pending_meeting_id');
+    if (!pending) return;
+    const localId = conversation._localId || conversation.id;
+    if (pending === localId) {
+      setFeedbackMeetingId(pending);
+      setShowFeedbackModal(true);
+      sessionStorage.removeItem('feedback_pending_meeting_id');
+    }
+  }, [conversation._localId, conversation.id]);
+
+  const handleFeedbackClose = useCallback(() => {
+    setShowFeedbackModal(false);
+    setFeedbackMeetingId(null);
+  }, []);
 
   // Analysis polling hook — handles both local and cloud conversations,
   // auto-retries on timeout, and listens for sync worker events.
@@ -538,6 +559,15 @@ export function ConversationDetail({ conversation: initialConversation, onClose,
           </Card>
         </TabsContent>
       </Tabs>
+
+      {/* Modal de feedback de sesion. Aparece solo si la grabacion recien
+          terminada apunta a esta conversation. No bloquea el polling de
+          evaluacion — solo es un overlay visible. */}
+      <SessionFeedbackModal
+        open={showFeedbackModal}
+        meetingId={feedbackMeetingId}
+        onSubmit={handleFeedbackClose}
+      />
     </div>
   );
 }
