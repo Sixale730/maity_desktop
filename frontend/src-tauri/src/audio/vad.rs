@@ -42,6 +42,11 @@ pub struct ContinuousVadProcessor {
     max_speech_samples: usize,
     // State tracking for smart logging
     last_logged_state: bool,
+    /// Tracking del end_ms del último force-cut emitido. Se usa para trim los samples
+    /// del SpeechEnd natural posterior (que vendría con TODO el audio acumulado por
+    /// silero_rs, incluyendo lo ya emitido en force-cuts → duplicación de audio).
+    /// None cuando no ha habido force-cut desde el último SpeechEnd o SpeechStart.
+    last_force_cut_end_ms: Option<f64>,
 }
 
 impl ContinuousVadProcessor {
@@ -100,6 +105,7 @@ impl ContinuousVadProcessor {
             max_speech_samples,
             // Initialize state tracking
             last_logged_state: false,
+            last_force_cut_end_ms: None,
         })
     }
 
@@ -215,8 +221,11 @@ impl ContinuousVadProcessor {
 
         // Force end any ongoing speech
         if self.in_speech && !self.current_speech.is_empty() {
-            let start_ms = (self.speech_start_sample as f64 / self.sample_rate as f64) * 1000.0;
-            let end_ms = (self.processed_samples as f64 / self.sample_rate as f64) * 1000.0;
+            // FIX UNIDADES: current_speech está a 16kHz (silero_rs internal rate),
+            // NO al input rate (self.sample_rate, ej. 48kHz). Dividir por 16_000
+            // garantiza que start_ms y end_ms reflejen la duración real de los samples.
+            let start_ms = (self.speech_start_sample as f64 / 16_000.0) * 1000.0;
+            let end_ms = (self.processed_samples as f64 / 16_000.0) * 1000.0;
 
             let segment = SpeechSegment {
                 samples: self.current_speech.clone(),
@@ -252,8 +261,12 @@ impl ContinuousVadProcessor {
                         self.last_logged_state = true;
                     }
                     self.in_speech = true;
-                    self.speech_start_sample = self.processed_samples + (timestamp_ms * self.sample_rate as usize / 1000);
+                    // FIX UNIDADES: processed_samples cuenta samples a 16kHz (silero_rs
+                    // chunk_size=480 @ 16kHz). Sumar offset también en samples a 16kHz.
+                    self.speech_start_sample = self.processed_samples + (timestamp_ms * 16_000 / 1000);
                     self.current_speech.clear();
+                    // Reset tracking: nuevo speech segment, no hay force-cuts previos.
+                    self.last_force_cut_end_ms = None;
                 }
                 VadTransition::SpeechEnd { start_timestamp_ms, end_timestamp_ms, samples } => {
                     // Only log if we were previously in speech state
@@ -264,17 +277,70 @@ impl ContinuousVadProcessor {
                     self.in_speech = false;
 
                     // Use samples from VAD transition if available, otherwise use accumulated samples
-                    let speech_samples = if !samples.is_empty() {
+                    let speech_samples_raw = if !samples.is_empty() {
                         samples
                     } else {
                         self.current_speech.clone()
                     };
 
+                    // FIX duplicación post force-cut (Patrón #3 del análisis):
+                    // Si hubo force-cuts en este speech segment, silero_rs entrega samples
+                    // que cubren TODO el speech (desde SpeechStart hasta SpeechEnd), incluyendo
+                    // lo ya emitido en los force-cuts. Trim los samples para emitir solo la
+                    // porción posterior al último force-cut.
+                    let (effective_start_ms, speech_samples) = if let Some(last_cut_ms) =
+                        self.last_force_cut_end_ms
+                    {
+                        let start_f = start_timestamp_ms as f64;
+                        if last_cut_ms > start_f {
+                            // Calcular cuántos samples descartar del inicio.
+                            let trim_ms = last_cut_ms - start_f;
+                            let trim_samples = (trim_ms / 1000.0 * 16_000.0) as usize;
+                            if trim_samples >= speech_samples_raw.len() {
+                                // Todos los samples ya se emitieron en force-cuts → descartar.
+                                debug!(
+                                    "VAD natural-drop: todo el speech ya emitido en force-cuts \
+                                     (last_cut={:.1}ms, end={:.1}ms, samples={}, trim={})",
+                                    last_cut_ms, end_timestamp_ms as f64,
+                                    speech_samples_raw.len(), trim_samples
+                                );
+                                self.current_speech.clear();
+                                continue;
+                            }
+                            let trimmed: Vec<f32> = speech_samples_raw[trim_samples..].to_vec();
+                            debug!(
+                                "VAD natural-trim: last_cut={:.1}ms, raw_start={:.1}ms, \
+                                 trimmed {} samples ({:.1}ms) -> effective_start={:.1}ms",
+                                last_cut_ms, start_f, trim_samples,
+                                trim_ms, last_cut_ms
+                            );
+                            (last_cut_ms, trimmed)
+                        } else {
+                            (start_f, speech_samples_raw)
+                        }
+                    } else {
+                        (start_timestamp_ms as f64, speech_samples_raw)
+                    };
+
+                    // Reset tracking: el speech terminó.
+                    self.last_force_cut_end_ms = None;
+
                     if !speech_samples.is_empty() {
+                        // FIX UNIDADES: derivar end_ms desde samples para garantizar consistencia
+                        // (los timestamps de silero_rs pueden ser inconsistentes con samples).
+                        let derived_end_ms =
+                            effective_start_ms + (speech_samples.len() as f64 / 16.0);
+                        debug!(
+                            "VAD natural-end: start={:.1}ms end={:.1}ms samples={} dur={:.1}ms",
+                            effective_start_ms,
+                            derived_end_ms,
+                            speech_samples.len(),
+                            speech_samples.len() as f64 / 16.0
+                        );
                         let segment = SpeechSegment {
                             samples: speech_samples,
-                            start_timestamp_ms: start_timestamp_ms as f64,
-                            end_timestamp_ms: end_timestamp_ms as f64,
+                            start_timestamp_ms: effective_start_ms,
+                            end_timestamp_ms: derived_end_ms,
                             confidence: 0.9, // VAD confidence
                         };
 
@@ -289,39 +355,54 @@ impl ContinuousVadProcessor {
             }
         }
 
-        // Accumulate speech if we're currently in a speech state
-        if self.in_speech {
-            self.current_speech.extend_from_slice(chunk);
-
-            // Force-cut: si el segmento alcanzo max_speech_samples, emitir segmento
-            // forzado y reiniciar buffer pero mantener in_speech=true para continuar
-            // capturando la siguiente ventana sin perder audio.
-            if self.current_speech.len() >= self.max_speech_samples {
-                let speech_samples = std::mem::take(&mut self.current_speech);
-                let chunk_samples = speech_samples.len();
+        // Force-cut (patrón Poncho): chequear ANTES de extend_from_slice. El cálculo
+        // de end_ms se DERIVA de la duración real de samples, garantizando la
+        // invariante: end_ms - start_ms == samples.len() / sample_rate. Sin esta
+        // derivación, end_ms (basado en processed_samples + chunk.len()) y los samples
+        // (basados en current_speech.len()) se desincronizan en habla continua,
+        // produciendo timestamps inconsistentes (end < start) → overlap visible en
+        // transcripts.json. Bug histórico: c4b3cea (29 abril 2026), fix por
+        // comparación con ponchovillalobos/maity-copiloto.
+        if self.in_speech && !self.current_speech.is_empty() {
+            let speech_duration_samples = self.current_speech.len();
+            if speech_duration_samples >= self.max_speech_samples {
+                // FIX UNIDADES: current_speech está a 16kHz (silero_rs internal),
+                // NO al input rate. Dividir por 16_000 garantiza duración real.
+                let speech_duration_ms = (speech_duration_samples as f64
+                    / 16_000.0) * 1000.0;
                 let start_ms = (self.speech_start_sample as f64
-                    / self.sample_rate as f64) * 1000.0;
-                let end_ms = ((self.processed_samples + chunk.len()) as f64
-                    / self.sample_rate as f64) * 1000.0;
+                    / 16_000.0) * 1000.0;
+                // KEY FIX: end derivado de la duración real de samples.
+                let end_ms = start_ms + speech_duration_ms;
 
                 let segment = SpeechSegment {
-                    samples: speech_samples,
+                    samples: self.current_speech.clone(),
                     start_timestamp_ms: start_ms,
                     end_timestamp_ms: end_ms,
                     confidence: 0.85, // segmento force-cut (ligeramente menor que natural 0.9)
                 };
 
                 debug!(
-                    "VAD force-cut: emitiendo segmento de {} samples (~{:.1}s) por max_speech_samples",
-                    chunk_samples,
-                    chunk_samples as f64 / 16_000.0
+                    "VAD force-cut: start={:.1}ms end={:.1}ms samples={} dur={:.1}ms",
+                    start_ms, end_ms, speech_duration_samples, speech_duration_ms
                 );
 
                 self.speech_segments.push_back(segment);
+                self.current_speech.clear();
+                // KEY FIX: speech_start_sample = processed_samples (sin sumar chunk.len()).
+                // El próximo segment empieza al final del stream procesado hasta este punto.
+                self.speech_start_sample = self.processed_samples;
+                // Mantener in_speech=true: seguimos detectando voz, solo cortamos por tiempo.
 
-                // Mantener in_speech=true; reiniciar speech_start_sample para el proximo segmento
-                self.speech_start_sample = self.processed_samples + chunk.len();
+                // Trackear el end_ms del último force-cut para luego trim el SpeechEnd
+                // natural y evitar duplicación de audio (ver SpeechEnd handler).
+                self.last_force_cut_end_ms = Some(end_ms);
             }
+        }
+
+        // Accumulate speech if we're currently in a speech state
+        if self.in_speech {
+            self.current_speech.extend_from_slice(chunk);
         }
 
         self.processed_samples += chunk.len();
@@ -477,6 +558,110 @@ mod tests {
             // Sin voz, Silero no debe emitir segments
             assert_eq!(segments.len(), 0, "silencio no debe producir segments");
         }
+    }
+
+    /// Test directo de la lógica del force-cut sin depender de Silero detectando voz.
+    /// Manipula el estado interno del processor para simular la condición exacta
+    /// (in_speech=true + current_speech.len() >= max_speech_samples) y luego dispara
+    /// `process_chunk` con un chunk vacío de silencio para que entre al force-cut path
+    /// sin provocar transitions de Silero.
+    ///
+    /// INVARIANTE VERIFICADA: para el SpeechSegment producido por force-cut,
+    ///   end_timestamp_ms - start_timestamp_ms == samples.len() / sample_rate * 1000
+    ///
+    /// Si esta invariante se rompe, el worker calcula audio_end_time =
+    /// chunk.timestamp + chunk_duration (basado en samples) que diverge de los
+    /// timestamps del segment → audio_start_time desordenados → overlap en
+    /// transcripts.json. Bug histórico arreglado en commit anterior.
+    #[test]
+    fn test_force_cut_invariante_end_minus_start_eq_samples_duration() {
+        let mut processor = ContinuousVadProcessor::new(16_000, 600).unwrap();
+
+        // Simular estado en que el force-cut DEBE dispararse:
+        // - Estamos detectando speech (in_speech = true)
+        // - current_speech ya tiene >= max_speech_samples (32000)
+        // - speech_start_sample y processed_samples reflejan posición real en el stream
+        processor.in_speech = true;
+        // Llenamos current_speech con 32500 samples (un poco más que el threshold de 32000)
+        // para asegurar que dispare. Valores 0.5 (irrelevantes para el test).
+        processor.current_speech = vec![0.5_f32; 32_500];
+        // Speech empezó en sample 1600 (= 100ms al inicio del stream)
+        processor.speech_start_sample = 1_600;
+        // processed_samples representa cuánto ya consumimos del stream antes de este chunk.
+        // Si speech_start_sample=1600 y current_speech tiene 32500 samples, processed=34100.
+        processor.processed_samples = 34_100;
+
+        // Disparar process_chunk con silencio para entrar al force-cut sin provocar
+        // transitions de Silero (silencio puro no produce SpeechStart/End).
+        let silence_chunk = vec![0.0_f32; 480]; // 30ms a 16kHz
+        processor.process_chunk(&silence_chunk).unwrap();
+
+        // Force-cut debió emitir UN segment al speech_segments queue.
+        let segment = processor
+            .speech_segments
+            .pop_front()
+            .expect("force-cut debió emitir un segment");
+
+        // ─── VERIFICACIONES ───────────────────────────────────────────────
+        // 1. La invariante crítica: end - start coincide con samples.duration
+        let timestamp_duration_ms = segment.end_timestamp_ms - segment.start_timestamp_ms;
+        let samples_duration_ms = segment.samples.len() as f64 / 16.0; // 16 samples/ms @ 16kHz
+        let diff = (timestamp_duration_ms - samples_duration_ms).abs();
+        assert!(
+            diff < 0.001,
+            "INVARIANTE ROTA: timestamp_dur={:.3}ms vs samples_dur={:.3}ms (diff={:.3}ms). \
+             end - start DEBE coincidir con samples.len() / sample_rate",
+            timestamp_duration_ms, samples_duration_ms, diff
+        );
+
+        // 2. end_timestamp_ms >= start_timestamp_ms (no negativo)
+        assert!(
+            segment.end_timestamp_ms >= segment.start_timestamp_ms,
+            "end_timestamp_ms ({}) < start_timestamp_ms ({}): timestamps invertidos",
+            segment.end_timestamp_ms, segment.start_timestamp_ms
+        );
+
+        // 3. start_ms refleja speech_start_sample antes del cut
+        let expected_start_ms = (1_600.0_f64 / 16_000.0) * 1000.0; // = 100ms
+        assert!(
+            (segment.start_timestamp_ms - expected_start_ms).abs() < 0.001,
+            "start_ms esperado {:.3}ms, recibido {:.3}ms",
+            expected_start_ms, segment.start_timestamp_ms
+        );
+
+        // 4. samples emitidos == lo que pusimos en current_speech (32500)
+        assert_eq!(
+            segment.samples.len(),
+            32_500,
+            "force-cut debe emitir TODOS los samples acumulados, no truncarlos"
+        );
+
+        // 5. Estado post force-cut:
+        //    - current_speech contiene el chunk que se procesó tras el force-cut (los 480
+        //      samples del chunk de silencio se acumulan para el siguiente segment, porque
+        //      in_speech sigue true)
+        //    - speech_start_sample = processed_samples ANTES del incremento del chunk
+        //    - in_speech sigue true (seguimos detectando voz)
+        assert_eq!(
+            processor.current_speech.len(),
+            480,
+            "current_speech post force-cut debe contener solo el chunk actual (480 samples), \
+             no los 32500 viejos. Actual: {}",
+            processor.current_speech.len()
+        );
+        // processed_samples al final del process_chunk = 34100 + 480 = 34580
+        // speech_start_sample debe ser processed_samples ANTES del incremento del chunk = 34100
+        // (porque la lógica setea speech_start_sample = self.processed_samples ANTES de procesar el chunk)
+        // Verificamos que speech_start_sample sea 34100, NO 34100+480 (=34580 sería el bug viejo)
+        assert_eq!(
+            processor.speech_start_sample, 34_100,
+            "speech_start_sample post force-cut debe ser processed_samples antes del chunk \
+             (sin sumar chunk.len()). Bug histórico = 34580; correcto = 34100"
+        );
+        assert!(
+            processor.in_speech,
+            "in_speech debe seguir true tras force-cut (seguimos detectando voz)"
+        );
     }
 }
 
