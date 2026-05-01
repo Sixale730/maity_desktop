@@ -75,7 +75,9 @@ export default function CoachFloatPage() {
   const { metrics, isWaitingForAudio } = useMeetingMetrics();
   const [compact, setCompact] = useState(false);
   const [levels, setLevels] = useState({ micRms: 0, sysRms: 0 });
-  const [feedback, setFeedback] = useState<TipFeedback>(null);
+  // Feedback persistido por tip. Permite votar tips anteriores sin perder los
+  // ratings ya dados. El tipKey es estable por (timestamp_secs, tip_type).
+  const [feedbackByTip, setFeedbackByTip] = useState<Record<string, Exclude<TipFeedback, null>>>({});
   // tipIndex 0 = mas reciente. Reverse local del array de useCoachTips
   // (que llega cronologico, mas viejo primero).
   const [tipIndex, setTipIndex] = useState(0);
@@ -93,20 +95,15 @@ export default function CoachFloatPage() {
   const canNext = tipIndex > 0;
   const goPrev = () => canPrev && setTipIndex(i => i + 1);
   const goNext = () => canNext && setTipIndex(i => i - 1);
-  const isLatest = tipIndex === 0;
+  const tipKey = tip ? `${tip.timestamp_secs}-${tip.tip_type ?? ''}` : null;
+  const feedback: TipFeedback = tipKey ? feedbackByTip[tipKey] ?? null : null;
 
-  // Cuando llega tip nuevo (totalTips cambia), saltar al mas reciente y
-  // resetear feedback. Tambien cubre el caso de recording-start-complete
-  // (useCoachTips limpia el array internamente -> totalTips = 0).
+  // Cuando llega tip nuevo (totalTips cambia), saltar al mas reciente.
+  // El feedback se persiste por tipKey, asi que NO se resetea aqui ni al
+  // navegar — los ratings dados sobreviven.
   useEffect(() => {
     setTipIndex(0);
-    setFeedback(null);
   }, [totalTips]);
-
-  // Reset feedback al navegar entre tips manualmente.
-  useEffect(() => {
-    setFeedback(null);
-  }, [tipIndex]);
 
   useEffect(() => {
     const subs = [
@@ -180,8 +177,10 @@ export default function CoachFloatPage() {
   };
 
   const sendFeedback = async (rating: 'like' | 'dislike') => {
-    if (!tip || !isLatest || feedback !== null) return;
-    setFeedback(rating);
+    // Permitir feedback en cualquier tip, no solo el mas reciente. El gate
+    // ahora es solo "ya votado" — un tip con rating registrado queda fijo.
+    if (!tip || !tipKey || feedback !== null) return;
+    setFeedbackByTip(prev => ({ ...prev, [tipKey]: rating }));
     try {
       await invoke('save_user_feedback', {
         meetingId: meetingIdRef.current ?? undefined,
@@ -189,14 +188,22 @@ export default function CoachFloatPage() {
         rating,
         message: undefined,
         metadata: JSON.stringify({
+          tip_key: tipKey,
           tip_text: tip.tip,
           tip_category: tip.category,
           tip_priority: tip.priority,
           tip_type: tip.tip_type,
+          tip_timestamp_secs: tip.timestamp_secs,
         }),
       });
     } catch (e) {
       console.error('[CoachFloat] feedback save failed:', e);
+      // Revertir el optimistic update para que el usuario pueda reintentar
+      setFeedbackByTip(prev => {
+        const next = { ...prev };
+        delete next[tipKey];
+        return next;
+      });
     }
   };
 
@@ -434,8 +441,8 @@ export default function CoachFloatPage() {
           </div>
         </div>
 
-        {/* Like/Dislike — solo en el tip mas reciente */}
-        {tip && isLatest && (
+        {/* Like/Dislike — disponible en cualquier tip; disabled si ya votado */}
+        {tip && (
           <div className="flex gap-2 justify-center shrink-0">
             {(['like', 'dislike'] as const).map((r) => (
               <button
