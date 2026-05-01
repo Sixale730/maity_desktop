@@ -4,18 +4,18 @@ import { render, cleanup } from '@testing-library/react';
 type EventHandler = (event: { payload: unknown }) => void | Promise<void>;
 const handlers = new Map<string, EventHandler>();
 
-const listenMock = vi.fn(async (event: string, handler: EventHandler) => {
+const listenMock = vi.fn((event: string, handler: EventHandler) => {
   handlers.set(event, handler);
-  return () => handlers.delete(event);
+  return Promise.resolve(() => handlers.delete(event));
 });
-const invokeMock = vi.fn(async () => undefined);
+const invokeMock = vi.fn((..._args: unknown[]) => Promise.resolve(undefined as unknown));
 
 vi.mock('@tauri-apps/api/event', () => ({
-  listen: (event: string, handler: EventHandler) => listenMock(event, handler),
+  listen: (...args: unknown[]) => listenMock(...(args as [string, EventHandler])),
 }));
 
 vi.mock('@tauri-apps/api/core', () => ({
-  invoke: (cmd: string, args: unknown) => invokeMock(cmd, args),
+  invoke: (...args: unknown[]) => invokeMock(...args),
 }));
 
 vi.mock('@/hooks/useCoachTips', () => ({
@@ -56,7 +56,7 @@ describe('CoachFloatPage — auto-close on recording-stopped', () => {
     render(<CoachFloatPage />);
     await flush();
 
-    const subscribed = listenMock.mock.calls.map(([event]) => event);
+    const subscribed = listenMock.mock.calls.map((call) => call[0]);
     expect(subscribed).toContain('recording-stopped');
     cleanup();
   });
@@ -70,7 +70,7 @@ describe('CoachFloatPage — auto-close on recording-stopped', () => {
     await handler!({ payload: undefined });
     await flush();
 
-    const closeCalls = invokeMock.mock.calls.filter(([cmd]) => cmd === 'close_floating_coach');
+    const closeCalls = invokeMock.mock.calls.filter((call) => call[0] === 'close_floating_coach');
     expect(closeCalls).toHaveLength(1);
     cleanup();
   });
@@ -84,7 +84,7 @@ describe('CoachFloatPage — auto-close on recording-stopped', () => {
     await handler!({ payload: { micRms: 0.1, micPeak: 0.2, sysRms: 0.05, sysPeak: 0.1 } });
     await flush();
 
-    const closeCalls = invokeMock.mock.calls.filter(([cmd]) => cmd === 'close_floating_coach');
+    const closeCalls = invokeMock.mock.calls.filter((call) => call[0] === 'close_floating_coach');
     expect(closeCalls).toHaveLength(0);
     cleanup();
   });
