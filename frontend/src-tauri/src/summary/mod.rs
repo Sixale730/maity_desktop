@@ -34,6 +34,7 @@ pub mod commands;
 pub mod communication_evaluator;
 pub mod communication_types;
 pub mod llm_client;
+pub mod llm_service;
 pub mod processor;
 pub mod service;
 pub mod summary_engine;

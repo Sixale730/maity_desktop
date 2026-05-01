@@ -4,6 +4,7 @@
 use crate::coach::evaluator::evaluate_meeting;
 use crate::coach::live_feedback::CoachTipUpdate;
 use crate::coach::llama_engine;
+use crate::coach::llm_helper::build_coach_service_with_model;
 use crate::coach::model_registry;
 use crate::coach::prompt::DEFAULT_CHAT_MODEL;
 use crate::state::AppState;
@@ -57,30 +58,19 @@ pub async fn coach_suggest<R: Runtime>(
 
     let user_prompt = build_user_prompt(&transcript, mt, 0, &[], None);
 
-    let app_data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("No se pudo obtener app_data_dir: {}", e))?;
+    let builtin_model = llama_engine::map_to_builtin_id(&model_id).to_string();
 
-    let builtin_model = llama_engine::map_to_builtin_id(&model_id);
-
-    let raw = generate_summary(
-        &HTTP_CLIENT,
-        &LLMProvider::BuiltInAI,
-        builtin_model,
-        "",
-        crate::coach::prompt::COACH_SYSTEM_PROMPT,
-        &user_prompt,
-        None,
-        None,
-        None,
-        Some(0.3),
-        None,
-        Some(&app_data_dir),
-        None,
-    )
-    .await
-    .map_err(|e| format!("Coach LLM error: {}", e))?;
+    // Usar CoachLlmService::generate_tip_with_template aplica n_ctx=4096 +
+    // max_tokens=200 + temp=0.3 (COACH_TIP_CONFIG). Reusa sidecar via pool.
+    let coach_service = build_coach_service_with_model(&app, builtin_model).await?;
+    let raw = coach_service
+        .generate_tip_with_template(
+            crate::coach::prompt::COACH_SYSTEM_PROMPT,
+            &user_prompt,
+            None,
+        )
+        .await
+        .map_err(|e| format!("Coach LLM error: {}", e))?;
 
     parse_tip_response(&raw).ok_or_else(|| "No se pudo parsear respuesta del coach".to_string())
 }

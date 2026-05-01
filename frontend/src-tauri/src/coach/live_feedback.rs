@@ -5,19 +5,18 @@
 //! llama Ollama gemma3:4b cuando hay señal y emite "coach-tip-update".
 
 use crate::coach::llama_engine;
+use crate::coach::llm_helper::build_coach_service_with_model;
 use crate::coach::nudge_engine::{evaluate_nudge, ConversationSnapshot};
 use crate::coach::prompt::{build_user_prompt, MeetingType, COACH_SYSTEM_PROMPT, DEFAULT_TIPS_MODEL};
 use crate::coach::trigger::{analyze_turn_with_context, SignalPriority, TurnContext};
 use crate::recording_pipeline::get_active_live_feedback_config;
-use crate::summary::llm_client::{generate_summary, LLMProvider};
 use once_cell::sync::Lazy;
-use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tauri::{AppHandle, Emitter, Listener, Manager, Runtime};
+use tauri::{AppHandle, Emitter, Listener, Runtime};
 use tokio_util::sync::CancellationToken;
 #[allow(unused_imports)]
 use tracing::{error, info, warn};
@@ -29,8 +28,6 @@ static EVENT_LISTENER: Mutex<Option<tauri::EventId>> = Mutex::new(None);
 
 static FEEDBACK_STATE: Lazy<Mutex<Option<Arc<Mutex<FeedbackState>>>>> =
     Lazy::new(|| Mutex::new(None));
-
-static HTTP_CLIENT: Lazy<Client> = Lazy::new(Client::new);
 
 // §1.5.2 % JSON malformado del LLM. Globals para que cualquier path (worker, listener
 // directo) pueda contribuir sin pasar el state por todos lados. Reset en start().
@@ -959,10 +956,20 @@ async fn call_ollama_and_emit<R: Runtime>(
         trigger.as_deref(),
     );
 
-    let app_data_dir = match app.path().app_data_dir() {
-        Ok(p) => p,
+    let builtin_model = llama_engine::map_to_builtin_id(model).to_string();
+    info!(
+        "🦙 Coach calling sidecar: model={} (builtin={}), prompt_len={} chars",
+        model, builtin_model, user_prompt.len()
+    );
+
+    // Construir CoachLlmService con el modelo configurado. El servicio aplica
+    // n_ctx=4096 + max_tokens=200 + temp=0.3 (configs definidas en coach/llm_service.rs
+    // como COACH_TIP_CONFIG). CRITICO: n_ctx=4096 evita que el KV cache reviente
+    // VRAM en RTX 3050 (640 MB -> ~80 MB).
+    let coach_service = match build_coach_service_with_model(app, builtin_model.clone()).await {
+        Ok(s) => s,
         Err(e) => {
-            warn!("Coach: no se pudo obtener app_data_dir: {}", e);
+            warn!("Coach: no se pudo construir CoachLlmService: {}", e);
             if let Ok(mut st) = state.lock() {
                 st.last_tip_at = None;
             }
@@ -970,16 +977,10 @@ async fn call_ollama_and_emit<R: Runtime>(
         }
     };
 
-    let builtin_model = llama_engine::map_to_builtin_id(model);
-    info!(
-        "🦙 Coach calling sidecar: model={} (builtin={}), prompt_len={} chars",
-        model, builtin_model, user_prompt.len()
-    );
-
     // Retry on parse failure: Gemma 4B Q4 ocasionalmente genera JSON malformado
     // (sobre todo con prompts largos). Reintentar baja la tasa de fallo de ~33% a ~5%.
-    // No reintentamos en errores de generate (red/timeout) porque generate_summary
-    // ya tiene su propia lógica interna y reintentarlo es más costoso.
+    // No reintentamos en errores de generate (red/timeout) — el servicio ya gestiona
+    // sus propios timeouts y reintentar empeora.
     const MAX_PARSE_ATTEMPTS: u32 = 2;
     let mut update: Option<CoachTipUpdate> = None;
     let mut last_raw: Option<String> = None;
@@ -987,22 +988,9 @@ async fn call_ollama_and_emit<R: Runtime>(
     for attempt in 1..=MAX_PARSE_ATTEMPTS {
         // §1.5.3 Medir latencia LLM por llamada para sliding window p95.
         let llm_start = Instant::now();
-        let result = generate_summary(
-            &HTTP_CLIENT,
-            &LLMProvider::BuiltInAI,
-            builtin_model,
-            "",
-            COACH_SYSTEM_PROMPT,
-            &user_prompt,
-            None,
-            None,
-            Some(200),       // max_tokens — tips son cortos, evita timeout en CPU
-            Some(0.3),
-            None,
-            Some(&app_data_dir),
-            Some(&cancel),
-        )
-        .await;
+        let result = coach_service
+            .generate_tip_with_template(COACH_SYSTEM_PROMPT, &user_prompt, Some(&cancel))
+            .await;
         let latency_ms = llm_start.elapsed().as_millis() as u64;
 
         match result {

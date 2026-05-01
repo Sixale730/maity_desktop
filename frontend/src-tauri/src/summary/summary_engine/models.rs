@@ -25,6 +25,27 @@ pub struct SamplingParams {
     pub stop_tokens: Vec<String>,
 }
 
+/// Caso de uso para el cual el modelo esta optimizado.
+/// Usado por la UI de seleccion de modelos para sugerir el modelo correcto
+/// segun el caso (coach=tips rapidos, summary=resumenes largos, both=ambos).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ModelTier {
+    /// Optimo para tips rapidos del coach (modelos chicos: Gemma 1B Q8).
+    /// Usar n_ctx pequeno y max_tokens bajo para minimizar latencia.
+    Coach,
+    /// Optimo para resumenes y evaluaciones largas (modelos balanceados o grandes).
+    Summary,
+    /// Sirve para ambos casos. Default para no-romper compat con setup actual.
+    Both,
+}
+
+impl Default for ModelTier {
+    fn default() -> Self {
+        ModelTier::Both
+    }
+}
+
 /// Definition of a built-in AI model with all metadata
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelDef {
@@ -59,13 +80,18 @@ pub struct ModelDef {
 
     /// Short description for UI
     pub description: String,
+
+    /// Caso de uso optimo: coach (tips rapidos), summary (resumenes), both.
+    /// Default = Both para no romper compat con modelos viejos.
+    #[serde(default)]
+    pub tier: ModelTier,
 }
 
 /// Get all available built-in AI models
 /// Add new models here - the system will automatically detect and manage them
 pub fn get_available_models() -> Vec<ModelDef> {
     vec![
-        // Gemma 3 1B - Fast tier
+        // Gemma 3 1B - Fast tier (optimo para tips del coach)
         ModelDef {
             name: "gemma3:1b".to_string(),
             display_name: "Gemma 3 1B (Fast)".to_string(),
@@ -73,8 +99,8 @@ pub fn get_available_models() -> Vec<ModelDef> {
             template: "gemma3".to_string(),
             download_url: "https://meetily.towardsgeneralintelligence.com/models/gemma-3-1b-it-Q8_0.gguf".to_string(),
             size_mb: 1019,
-            context_size: 32768, 
-            layer_count: 26,     
+            context_size: 32768,
+            layer_count: 26,
             sampling: SamplingParams {
                 temperature: 1.0,
                 top_k: 64,
@@ -82,6 +108,7 @@ pub fn get_available_models() -> Vec<ModelDef> {
                 stop_tokens: vec!["<end_of_turn>".to_string()],
             },
             description: "Fastest model. Runs on any hardware with ~1GB RAM. Good for quick summaries.".to_string(),
+            tier: ModelTier::Coach,
         },
         ModelDef {
             name: "gemma3:4b".to_string(),
@@ -99,8 +126,19 @@ pub fn get_available_models() -> Vec<ModelDef> {
                 stop_tokens: vec!["<end_of_turn>".to_string()],
             },
             description: "Balanced model. Great quality/speed trade-off. Requires ~3.5GB RAM.".to_string(),
+            tier: ModelTier::Both,
         },
     ]
+}
+
+/// Devuelve los modelos optimos para un caso de uso (coach o summary).
+/// Util para que la UI sugiera modelos al usuario segun donde los va a usar.
+/// Modelos con tier=Both aparecen en ambos listados.
+pub fn get_models_for_tier(tier: ModelTier) -> Vec<ModelDef> {
+    get_available_models()
+        .into_iter()
+        .filter(|m| m.tier == tier || m.tier == ModelTier::Both)
+        .collect()
 }
 
 /// Get a specific model by name
@@ -183,3 +221,38 @@ pub const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 300; // 5 minutes
 
 /// Generation timeout (how long to wait for a response)
 pub const GENERATION_TIMEOUT_SECS: u64 = 900; // 15 minutes
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gemma3_1b_is_coach_tier() {
+        let m = get_model_by_name("gemma3:1b").expect("gemma3:1b en registry");
+        assert_eq!(m.tier, ModelTier::Coach);
+    }
+
+    #[test]
+    fn gemma3_4b_is_both_tier() {
+        let m = get_model_by_name("gemma3:4b").expect("gemma3:4b en registry");
+        assert_eq!(m.tier, ModelTier::Both);
+    }
+
+    #[test]
+    fn coach_tier_includes_1b_and_4b() {
+        // Coach tier debe incluir modelos Coach + Both (4b sirve como fallback).
+        let coach_models = get_models_for_tier(ModelTier::Coach);
+        let names: Vec<String> = coach_models.iter().map(|m| m.name.clone()).collect();
+        assert!(names.contains(&"gemma3:1b".to_string()), "1b deberia estar en coach tier");
+        assert!(names.contains(&"gemma3:4b".to_string()), "4b (Both) deberia estar en coach tier");
+    }
+
+    #[test]
+    fn summary_tier_excludes_coach_only() {
+        // Summary tier debe incluir solo modelos Summary + Both, NO Coach-only.
+        let summary_models = get_models_for_tier(ModelTier::Summary);
+        let names: Vec<String> = summary_models.iter().map(|m| m.name.clone()).collect();
+        assert!(!names.contains(&"gemma3:1b".to_string()), "1b (Coach-only) NO debe aparecer en summary tier");
+        assert!(names.contains(&"gemma3:4b".to_string()), "4b (Both) debe aparecer en summary tier");
+    }
+}
