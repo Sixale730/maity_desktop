@@ -70,6 +70,13 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
   const [, setTranscriptionErrors] = useState(0);
   const [isValidatingModel] = useState(false);
 
+  // Circuit breaker: only stop recording after several consecutive transcription
+  // errors. Single transient errors (a chunk that timed out, a temporary GPU
+  // hiccup) shouldn't tear down a 10-min meeting. Actionable errors (model not
+  // loaded, missing permissions) bypass the threshold and stop immediately.
+  const TRANSCRIPTION_ERROR_THRESHOLD = 5;
+  const stoppedByErrorRef = useRef(false);
+
   // Global guard: prevents ANY action while another is in progress (prevents deadlocks from rapid clicking)
   const isBusy = isStarting || isStopping || isPausing || isResuming || isProcessing || isValidatingModel;
   const [, setSpeechDetected] = useState(false);
@@ -97,6 +104,14 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
     };
     checkTauri();
   }, []);
+
+  // Reset error counter and breaker when a new recording starts
+  useEffect(() => {
+    if (isRecording) {
+      setTranscriptionErrors(0);
+      stoppedByErrorRef.current = false;
+    }
+  }, [isRecording]);
 
   const handleStartRecording = useCallback(async () => {
     if (isStarting || isValidatingModel) return;
@@ -275,80 +290,74 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
     let cancelled = false;
     const unsubscribes: (() => void)[] = [];
 
+    // Unified error handler with circuit breaker. Both transcript-error and
+    // transcription-error funnel through here so we count them globally and
+    // only invoke stop_recording once the threshold is hit (or immediately on
+    // actionable errors).
+    const handleErrorEvent = async (errorMessage: string, isActionable: boolean) => {
+      Analytics.trackTranscriptionError(errorMessage);
+      setIsProcessing(false);
+
+      let shouldStop = false;
+      let finalCount = 0;
+      setTranscriptionErrors(prev => {
+        finalCount = prev + 1;
+        if (isActionable || finalCount >= TRANSCRIPTION_ERROR_THRESHOLD) {
+          shouldStop = true;
+        }
+        logger.debug(
+          `Transcription error ${finalCount}/${TRANSCRIPTION_ERROR_THRESHOLD}` +
+          (isActionable ? ' (actionable)' : '') +
+          (shouldStop ? ' — stopping' : '')
+        );
+        return finalCount;
+      });
+
+      if (!shouldStop) return;
+      if (stoppedByErrorRef.current) {
+        // Already stopped from a prior event; ignore subsequent ones.
+        return;
+      }
+      stoppedByErrorRef.current = true;
+
+      try {
+        await invoke('stop_recording', { args: { save_path: '' } });
+      } catch (stopErr) {
+        console.warn('stop_recording failed (may already be stopped):', stopErr);
+      }
+
+      onRecordingStopRef.current(false);
+
+      // Actionable errors get the modal; transient errors are surfaced by the
+      // global toast listener (useModalState) so we don't double-notify.
+      if (isActionable) {
+        onTranscriptionErrorRef.current?.(errorMessage);
+      }
+    };
+
     const setupListeners = async () => {
       try {
-        // Transcript error listener - handles both regular and actionable errors
-        const transcriptErrorUnsubscribe = await listen('transcript-error', async (event) => {
+        const transcriptErrorUnsubscribe = await listen('transcript-error', (event) => {
           logger.debug('transcript-error event received:', event);
-          console.error('Transcription error received:', event.payload);
           const errorMessage = event.payload as string;
-
-          Analytics.trackTranscriptionError(errorMessage);
-          logger.debug('Tracked transcription error:', errorMessage);
-
-          setTranscriptionErrors(prev => {
-            const newCount = prev + 1;
-            logger.debug('Transcription error count incremented:', newCount);
-            return newCount;
-          });
-          setIsProcessing(false);
-
-          // Stop Rust recording first, then notify frontend
-          try {
-            logger.debug('Stopping Rust recording before resetting frontend state...');
-            await invoke('stop_recording', { args: { save_path: '' } });
-          } catch (stopErr) {
-            console.warn('stop_recording failed (may already be stopped):', stopErr);
-          }
-
-          logger.debug('Calling onRecordingStop(false) due to transcript error');
-          onRecordingStopRef.current(false);
-          onTranscriptionErrorRef.current?.(errorMessage);
+          handleErrorEvent(errorMessage, false);
         });
 
-        // Transcription error listener - handles structured error objects with actionable flag
-        const transcriptionErrorUnsubscribe = await listen('transcription-error', async (event) => {
+        const transcriptionErrorUnsubscribe = await listen('transcription-error', (event) => {
           logger.debug('transcription-error event received:', event);
-          console.error('Transcription error received:', event.payload);
 
           let errorMessage: string;
-          let _isActionable = false;
+          let isActionable = false;
 
           if (typeof event.payload === 'object' && event.payload !== null) {
-            const payload = event.payload as { error: string, userMessage: string, actionable: boolean };
+            const payload = event.payload as { error: string; userMessage: string; actionable: boolean };
             errorMessage = payload.userMessage || payload.error;
-            _isActionable = payload.actionable || false;
+            isActionable = payload.actionable || false;
           } else {
             errorMessage = String(event.payload);
           }
 
-          Analytics.trackTranscriptionError(errorMessage);
-          logger.debug('Tracked transcription error:', errorMessage);
-
-          setTranscriptionErrors(prev => {
-            const newCount = prev + 1;
-            logger.debug('Transcription error count incremented:', newCount);
-            return newCount;
-          });
-          setIsProcessing(false);
-
-          // Stop Rust recording first, then notify frontend
-          try {
-            logger.debug('Stopping Rust recording before resetting frontend state...');
-            await invoke('stop_recording', { args: { save_path: '' } });
-          } catch (stopErr) {
-            console.warn('stop_recording failed (may already be stopped):', stopErr);
-          }
-
-          logger.debug('Calling onRecordingStop(false) due to transcription error');
-          onRecordingStopRef.current(false);
-
-          // For actionable errors (like model loading failures), the main page will handle showing the model selector
-          // For regular errors, they are handled by useModalState global listener which shows a toast
-          // We don't want to show a modal (via onTranscriptionError) AND a toast, so we skip the callback here
-          /* if (onTranscriptionError && !_isActionable) {
-            onTranscriptionErrorRef.current?.(errorMessage);
-          } */
+          handleErrorEvent(errorMessage, isActionable);
         });
 
         // Pause/Resume events are now handled by RecordingStateContext
