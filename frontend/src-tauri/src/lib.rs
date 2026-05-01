@@ -686,20 +686,27 @@ pub fn run() {
                         builtin_id
                     );
                     let warm_start = std::time::Instant::now();
-                    match summary::summary_engine::generate_with_builtin(
-                        &app_data_dir,
-                        builtin_id,
-                        "warmup",
-                        "ok",
-                        None,
+                    // Usa CoachLlmService (n_ctx=4096) en lugar de generate_with_builtin
+                    // (n_ctx=32768 de model_def). Sin esto el warmup falla con OOM en
+                    // KV cache en GPUs con <4GB VRAM libre — y al fallar deja el sidecar
+                    // inutilizable, rompiendo todas las llamadas posteriores del coach.
+                    match crate::coach::llm_helper::build_coach_service_with_model(
+                        &app_for_sidecar,
+                        builtin_id.to_string(),
                     )
                     .await
                     {
-                        Ok(_) => log::info!(
-                            "✅ Sidecar Built-in AI warm en {:.1}s — primer tip/chat será rápido",
-                            warm_start.elapsed().as_secs_f32()
+                        Ok(service) => match service.generate_tip("warmup", None).await {
+                            Ok(_) => log::info!(
+                                "✅ Sidecar Built-in AI warm en {:.1}s — primer tip/chat será rápido",
+                                warm_start.elapsed().as_secs_f32()
+                            ),
+                            Err(e) => log::warn!("Sidecar warmup falló (no fatal): {}", e),
+                        },
+                        Err(e) => log::warn!(
+                            "Sidecar warmup: build_coach_service_with_model falló: {}",
+                            e
                         ),
-                        Err(e) => log::warn!("Sidecar warmup falló (no fatal): {}", e),
                     }
                 });
             });
