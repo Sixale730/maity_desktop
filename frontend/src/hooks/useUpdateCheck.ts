@@ -44,8 +44,9 @@ export function useUpdateCheck(options: UseUpdateCheckOptions = {}) {
       } else {
         logger.info(`[useUpdateCheck] No update available (current: ${info.currentVersion})`);
       }
-    } catch (error) {
-      // El service ya hace logger.error, pero dejamos rastro local del path.
+    } catch (_error) {
+      // El service ya hace logger.error con el detalle. Aqui solo dejamos
+      // rastro local del path para que el grep en logs muestre el flujo.
       logger.warn('[useUpdateCheck] Update check threw — see updateService log');
       // Silently fail on startup checks to avoid disrupting user experience
     } finally {
