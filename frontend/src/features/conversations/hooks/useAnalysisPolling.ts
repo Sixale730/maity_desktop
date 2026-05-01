@@ -102,6 +102,24 @@ export function useAnalysisPolling({
     }
   }, [enabled, conversation.id, conversation._localId, conversation.source, conversation.duration_seconds]);
 
+  // Auto-start polling cuando el backend marca analysis_status === 'processing'.
+  // Source of truth en DB: sobrevive navegación, no depende del estado local de la mutación.
+  useEffect(() => {
+    const conv = conversationRef.current;
+    if (conv.analysis_status !== 'processing') return;
+    const state = analysisPollingService.getState(conv.id, conv._localId);
+    if (!state || state.phase === 'idle' || state.phase === 'completed' || state.phase === 'failed') {
+      analysisPollingService.track({
+        conversationId: conv.id,
+        localId: conv._localId,
+        source: conv.source ?? null,
+        durationSeconds: conv.duration_seconds ?? 0,
+        initialHasV4: checkV4(conv),
+        initialHasMinuta: checkMinuta(conv),
+      });
+    }
+  }, [conversation.analysis_status, conversation.id, conversation._localId]);
+
   // Reset when viewing a different conversation
   useEffect(() => {
     if (convIdRef.current !== conversation.id) {
