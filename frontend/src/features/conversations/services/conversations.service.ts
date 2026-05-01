@@ -269,7 +269,12 @@ export function isAnalysisSkipped(v4: unknown): v4 is AnalysisSkipped {
 }
 
 export function isFullAnalysis(v4: unknown): v4 is CommunicationFeedbackV4 {
-  return v4 !== null && typeof v4 === 'object' && 'resumen' in (v4 as Record<string, unknown>);
+  if (v4 === null || typeof v4 !== 'object') return false;
+  const obj = v4 as Record<string, unknown>;
+  // Acepta el shape viejo (con `resumen` top-level) Y el nuevo del prompt
+  // actualizado (con `calidad_global` top-level y los datos de resumen
+  // anidados ahí). El adapter `cloudV4ToDashboardV1` se encarga de derivar.
+  return 'resumen' in obj || 'calidad_global' in obj;
 }
 
 // ─── Meeting Minutes Types ──────────────────────────────────────────

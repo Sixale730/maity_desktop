@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useLayoutEffect, useRef, useMemo } from 'react';
-import { ArrowLeft, Settings2, Mic, Database as DatabaseIcon, SparkleIcon } from 'lucide-react';
+import { ArrowLeft, Settings2, Mic, Database as DatabaseIcon, SparkleIcon, LayoutDashboard } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { invoke } from '@tauri-apps/api/core';
 import { motion } from 'framer-motion';
@@ -98,6 +98,16 @@ export default function SettingsPage() {
                   <span className="px-2 py-0.5 text-xs font-medium rounded-full bg-primary/15 text-primary">
                     Admin
                   </span>
+                )}
+                {isAdmin && (
+                  <button
+                    onClick={() => router.push('/dev/dashboard-v1')}
+                    className="flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded-md bg-primary/10 text-primary hover:bg-primary/20 transition-colors"
+                    title="Ver el preview del nuevo Dashboard V1 con datos de ejemplo"
+                  >
+                    <LayoutDashboard className="w-3.5 h-3.5" />
+                    Preview Dashboard V1
+                  </button>
                 )}
               </div>
               {isAdmin && (
