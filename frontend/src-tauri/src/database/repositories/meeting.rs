@@ -62,9 +62,10 @@ impl MeetingsRepository {
         let mut conn = pool.acquire().await?;
         let mut transaction = conn.begin().await?;
 
-        // Get meeting details
+        // Get meeting details (SELECT * to include all analysis columns
+        // — FromRow on MeetingModel needs every NOT NULL column).
         let meeting: Option<MeetingModel> =
-            sqlx::query_as("SELECT id, title, created_at, updated_at, folder_path FROM meetings WHERE id = ?")
+            sqlx::query_as("SELECT * FROM meetings WHERE id = ?")
                 .bind(meeting_id)
                 .fetch_optional(&mut *transaction)
                 .await?;
@@ -123,12 +124,96 @@ impl MeetingsRepository {
         }
 
         let meeting: Option<MeetingModel> =
-            sqlx::query_as("SELECT id, title, created_at, updated_at, folder_path FROM meetings WHERE id = ?")
+            sqlx::query_as("SELECT * FROM meetings WHERE id = ?")
                 .bind(meeting_id)
                 .fetch_optional(pool)
                 .await?;
 
         Ok(meeting)
+    }
+
+    /// Update the status + data + error of a single analysis phase
+    /// (quick / full / minutes). Used by the analysis module to persist
+    /// progress as each Gemma sidecar invocation completes or fails.
+    pub async fn update_analysis_phase(
+        pool: &SqlitePool,
+        meeting_id: &str,
+        kind: crate::database::models::AnalysisPhaseKind,
+        status: crate::database::models::AnalysisPhaseStatus,
+        data: Option<&str>,
+        error: Option<&str>,
+    ) -> Result<(), SqlxError> {
+        use crate::database::models::AnalysisPhaseKind;
+        let (status_col, data_col, error_col) = match kind {
+            AnalysisPhaseKind::Quick => (
+                "analysis_quick_status",
+                "analysis_quick_data",
+                "analysis_quick_error",
+            ),
+            AnalysisPhaseKind::Full => (
+                "analysis_full_status",
+                "analysis_full_data",
+                "analysis_full_error",
+            ),
+            AnalysisPhaseKind::Minutes => ("minutes_status", "minutes_data", "minutes_error"),
+        };
+
+        let now = Utc::now();
+        let sql = format!(
+            "UPDATE meetings SET {status} = ?, {data} = ?, {err} = ?, updated_at = ? WHERE id = ?",
+            status = status_col,
+            data = data_col,
+            err = error_col,
+        );
+
+        sqlx::query(&sql)
+            .bind(status.as_str())
+            .bind(data)
+            .bind(error)
+            .bind(now)
+            .bind(meeting_id)
+            .execute(pool)
+            .await?;
+
+        Ok(())
+    }
+
+    /// Persist deterministic data (muletillas, ratios, preguntas, etc.)
+    /// computed in Rust without an LLM. Stored separately from analysis
+    /// phases so KPIs can render in seconds while the LLM runs.
+    pub async fn set_deterministic_data(
+        pool: &SqlitePool,
+        meeting_id: &str,
+        data: &str,
+    ) -> Result<(), SqlxError> {
+        sqlx::query(
+            "UPDATE meetings SET deterministic_data = ?, updated_at = ? WHERE id = ?",
+        )
+        .bind(data)
+        .bind(Utc::now())
+        .bind(meeting_id)
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Mark the meeting's analysis as coming from local Gemma vs cloud.
+    /// Default 'cloud' for migrated meetings; set to 'local_gemma' when
+    /// the local analysis pipeline runs.
+    pub async fn set_analysis_source(
+        pool: &SqlitePool,
+        meeting_id: &str,
+        source: &str,
+    ) -> Result<(), SqlxError> {
+        sqlx::query(
+            "UPDATE meetings SET analysis_source = ?, updated_at = ? WHERE id = ?",
+        )
+        .bind(source)
+        .bind(Utc::now())
+        .bind(meeting_id)
+        .execute(pool)
+        .await?;
+        Ok(())
     }
 
     /// Get meeting transcripts with pagination support
