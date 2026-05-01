@@ -46,6 +46,8 @@ import {
   MinutaSeguimiento,
 } from './minuta';
 import { normalizeMeetingMinutes } from '../utils/normalize-meeting-minutes';
+import { isMinutaInsufficient } from '../utils/minuta-helpers';
+import { ErrorBoundary } from '@/components/shared/ErrorBoundary';
 
 interface ConversationDetailProps {
   conversation: OmiConversation;
@@ -472,55 +474,96 @@ export function ConversationDetail({ conversation: initialConversation, onClose,
           {hasMinuta && minutaData ? (
             () => {
               const nm = normalizeMeetingMinutes(minutaData);
+
+              // Si todos los campos clave estan vacios, mostrar placeholder
+              // generico en vez de un render parcial que crashea cuando algun
+              // subcomponente con guard incompleto encuentra un undefined.
+              if (isMinutaInsufficient(nm)) {
+                return (
+                  <Card>
+                    <CardContent className="p-12 text-center">
+                      <FileText className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
+                      <h3 className="text-lg font-medium mb-2 text-foreground">
+                        Conversación muy corta para generar minuta
+                      </h3>
+                      <p className="text-muted-foreground">
+                        La minuta se genera cuando hay decisiones, acciones o temas suficientes
+                        para resumir. Intenta con una conversación más larga.
+                      </p>
+                    </CardContent>
+                  </Card>
+                );
+              }
+
               const userName = maityUser?.first_name ?? undefined;
               const radiografia = conversation.communication_feedback?.radiografia;
               const normalizedComponentes = Array.isArray(nm.efectividad?.componentes)
                 ? nm.efectividad.componentes
                 : [];
 
+              // Red de seguridad: si algun subcomponente futuro encuentra un
+              // edge case y crashea, el ErrorBoundary lo contiene en el tab y
+              // no rompe toda la pagina /conversations.
+              const minutaErrorFallback = (
+                <Card>
+                  <CardContent className="p-12 text-center">
+                    <FileText className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
+                    <h3 className="text-lg font-medium mb-2 text-foreground">
+                      No pudimos renderizar la minuta
+                    </h3>
+                    <p className="text-muted-foreground">
+                      Los datos parciales estan guardados en la conversacion. Si el problema
+                      persiste, exporta los logs desde Configuración para reportarlo.
+                    </p>
+                  </CardContent>
+                </Card>
+              );
+
               return (
-                <div className="space-y-6 py-2">
-                  {/* Efectividad gauge */}
-                  {nm.efectividad && <MinutaGauge efectividad={nm.efectividad} />}
+                <ErrorBoundary fallback={minutaErrorFallback}>
+                  <div className="space-y-6 py-2">
+                    {/* Efectividad gauge */}
+                    {nm.efectividad && <MinutaGauge efectividad={nm.efectividad} />}
 
-                  {/* En 30 segundos */}
-                  <SectionLabel text="En 30 segundos" />
-                  <MinutaHeroSummary meta={nm.meta} temas={nm.temas} />
+                    {/* En 30 segundos */}
+                    <SectionLabel text="En 30 segundos" />
+                    <MinutaHeroSummary meta={nm.meta} temas={nm.temas} />
 
-                  {/* KPI strip */}
-                  <MinutaKPIStrip
-                    meta={nm.meta}
-                    decisiones={nm.decisiones}
-                    accionesIncompletas={nm.acciones_incompletas}
-                    acciones={nm.acciones?.lista || []}
-                    graficas={nm.graficas}
-                    userName={userName}
-                    radiografia={radiografia}
-                  />
+                    {/* KPI strip */}
+                    <MinutaKPIStrip
+                      meta={nm.meta}
+                      decisiones={nm.decisiones}
+                      accionesIncompletas={nm.acciones_incompletas}
+                      acciones={nm.acciones?.lista || []}
+                      graficas={nm.graficas}
+                      userName={userName}
+                      radiografia={radiografia}
+                    />
 
-                  {/* Seguimiento */}
-                  <SectionLabel text="Seguimiento" />
-                  <MinutaSeguimiento
-                    seguimiento={nm.acciones?.seguimiento || null}
-                    userName={userName}
-                  />
+                    {/* Seguimiento */}
+                    <SectionLabel text="Seguimiento" />
+                    <MinutaSeguimiento
+                      seguimiento={nm.acciones?.seguimiento || null}
+                      userName={userName}
+                    />
 
-                  {/* Decisiones */}
-                  <SectionLabel text="Decisiones" />
-                  <MinutaDecisions decisiones={nm.decisiones} />
+                    {/* Decisiones */}
+                    <SectionLabel text="Decisiones" />
+                    <MinutaDecisions decisiones={nm.decisiones} />
 
-                  {/* Desglose de Efectividad */}
-                  <SectionLabel text="Desglose de Efectividad" />
-                  <MinutaEfectividad componentes={normalizedComponentes} />
+                    {/* Desglose de Efectividad */}
+                    <SectionLabel text="Desglose de Efectividad" />
+                    <MinutaEfectividad componentes={normalizedComponentes} />
 
-                  {/* Acciones */}
-                  <SectionLabel text="Acciones" />
-                  <MinutaActions acciones={nm.acciones?.lista || []} />
+                    {/* Acciones */}
+                    <SectionLabel text="Acciones" />
+                    <MinutaActions acciones={nm.acciones?.lista || []} />
 
-                  {/* Acciones Incompletas */}
-                  <SectionLabel text="Acciones Incompletas" />
-                  <MinutaIncompleteActions acciones={nm.acciones_incompletas} />
-                </div>
+                    {/* Acciones Incompletas */}
+                    <SectionLabel text="Acciones Incompletas" />
+                    <MinutaIncompleteActions acciones={nm.acciones_incompletas} />
+                  </div>
+                </ErrorBoundary>
               );
             }
           )() : (

@@ -5,12 +5,15 @@ import type { MinutaMeta, MinutaTema } from '../../services/conversations.servic
 
 interface MinutaHeroSummaryProps {
   meta: MinutaMeta;
-  temas: MinutaTema[];
+  temas?: MinutaTema[];
 }
 
 export function MinutaHeroSummary({ meta, temas }: MinutaHeroSummaryProps) {
-  const firstTemaResumen = temas[0]?.resumen;
-  const temasResumen = temas.slice(0, 3).map(t => t.nombre || t.titulo).join(' · ');
+  // En conversaciones cortas el LLM puede no generar `temas`. Defendemos
+  // contra undefined para no crashear el render con "Cannot read '0'".
+  const safeTemas = Array.isArray(temas) ? temas : [];
+  const firstTemaResumen = safeTemas[0]?.resumen;
+  const temasResumen = safeTemas.slice(0, 3).map(t => t.nombre || t.titulo).join(' · ');
 
   return (
     <Card className="bg-card border-border">
