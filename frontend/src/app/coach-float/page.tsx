@@ -116,6 +116,13 @@ export default function CoachFloatPage() {
       listen<string>('early-meeting-id', (e) => {
         meetingIdRef.current = e.payload;
       }),
+      // Cerrar la ventana flotante automaticamente al terminar la sesion. Sin
+      // esto, el modal queda huerfano mostrando el reloj corriendo porque
+      // isRecording se deriva de levels (residuales tras stop) y no del estado
+      // real de grabacion.
+      listen('recording-stopped', () => {
+        invoke('close_floating_coach').catch(console.error);
+      }),
     ];
     return () => { subs.forEach(p => p.then(fn => fn())); };
   }, []);
