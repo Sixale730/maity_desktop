@@ -205,6 +205,15 @@ pub async fn stop_recording<R: Runtime>(
         return Ok(());
     }
 
+    // Bajar IS_RECORDING al inicio del flujo. Esto cierra inmediatamente el
+    // loop de emision de `recording-audio-levels` (recording_helpers.rs)
+    // que checa is_recording() en cada tick — antes seguia emitiendo niveles
+    // ~1.7s tras el stop hasta que se ponia a false al final del flujo.
+    // Los workers de transcripcion siguen procesando la cola normalmente; el
+    // flag solo controla la emision de eventos al frontend y queries externas.
+    info!("🔍 Setting IS_RECORDING to false (early)");
+    IS_RECORDING.store(false, Ordering::SeqCst);
+
     // Emit shutdown progress to frontend
     let _ = app.emit(
         "recording-shutdown-progress",
@@ -450,9 +459,8 @@ pub async fn stop_recording<R: Runtime>(
         (None, None)
     };
 
-    // Set recording flag to false
-    info!("🔍 Setting IS_RECORDING to false");
-    IS_RECORDING.store(false, Ordering::SeqCst);
+    // IS_RECORDING ya se bajo al inicio del flujo (ver arriba) para que el
+    // loop de recording-audio-levels termine rapido. Aqui no es necesario.
 
     // Prepare metadata for frontend
     let (folder_path_str, meeting_name_str) = match (&meeting_folder, &meeting_name) {

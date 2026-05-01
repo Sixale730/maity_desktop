@@ -76,6 +76,21 @@ export default function Home() {
     onBeforeNavigate
   );
 
+  // Memoized callbacks for RecordingControls — stable identity prevents listener
+  // re-subscription churn in the child useEffect deps.
+  const handleRecordingStopCallback = useCallback(
+    (callApi: boolean = true) => handleRecordingStop(callApi),
+    [handleRecordingStop]
+  );
+  const handleTranscriptionErrorCallback = useCallback(
+    (message: string) => showModal('errorAlert', message),
+    [showModal]
+  );
+  const handleStopInitiatedCallback = useCallback(
+    () => setIsStopping(true),
+    [setIsStopping]
+  );
+
   // Recovery hook
   const {
     recoverableMeetings,
@@ -284,15 +299,13 @@ export default function Home() {
               <div className="bg-white dark:bg-gray-900 rounded-full shadow-lg flex items-center overflow-visible">
                 <RecordingControls
                   isRecording={isRecording}
-                  onRecordingStop={(callApi = true) => handleRecordingStop(callApi)}
+                  onRecordingStop={handleRecordingStopCallback}
                   onRecordingStart={handleRecordingStart}
                   onTranscriptReceived={() => { }}
-                  onStopInitiated={() => setIsStopping(true)}
+                  onStopInitiated={handleStopInitiatedCallback}
                   barHeights={barHeights}
                   audioLevels={audioLevels}
-                  onTranscriptionError={(message) => {
-                    showModal('errorAlert', message);
-                  }}
+                  onTranscriptionError={handleTranscriptionErrorCallback}
                   isRecordingDisabled={isRecordingDisabled || (isParakeetDownloading && !isParakeetModelReady)}
                   isParentProcessing={isProcessingStop}
                   selectedDevices={selectedDevices}
