@@ -5,6 +5,7 @@ import {
   getOmiConversations,
   getOmiConversationDates,
   getFormResponses,
+  getRecentConversationScores,
   OmiConversation,
   CommunicationFeedback,
   FormResponse,
@@ -88,6 +89,7 @@ export interface GamifiedDashboardDataV2 {
   recentActivity: RecentActivity[];
   conversations: OmiConversation[];
   formData: FormResponse | null;
+  scoreSparkline: Array<{ v: number }>;
   loading: boolean;
 }
 
@@ -240,6 +242,7 @@ export function useGamifiedDashboardDataV2(): GamifiedDashboardDataV2 {
   const [conversations, setConversations] = useState<OmiConversation[]>([]);
   const [conversationDates, setConversationDates] = useState<{ created_at: string }[]>([]);
   const [formData, setFormData] = useState<FormResponse | null>(null);
+  const [recentScores, setRecentScores] = useState<Array<{ created_at: string; score: number }>>([]);
   const [streakData, setStreakData] = useState<{ streak_days: number; bonus_days: number }>({ streak_days: 0, bonus_days: 0 });
   const [xpFromRPC, setXpFromRPC] = useState<number>(0);
   const [loading, setLoading] = useState(false);
@@ -267,6 +270,7 @@ export function useGamifiedDashboardDataV2(): GamifiedDashboardDataV2 {
             getOmiConversations(maityUser.id),
             getOmiConversationDates(maityUser.id, getFirstDayOfMonth()),
             getFormResponses(maityUser.id),
+            getRecentConversationScores(maityUser.id, 6),
           ]),
           8000,
         );
@@ -274,10 +278,11 @@ export function useGamifiedDashboardDataV2(): GamifiedDashboardDataV2 {
         if (cancelled) return;
 
         if (result) {
-          const [listData, datesData, formResponse] = result;
+          const [listData, datesData, formResponse, scoresData] = result;
           setConversations(listData);
           setConversationDates(datesData);
           setFormData(formResponse);
+          setRecentScores(scoresData);
           if (!formResponse) {
             console.warn('[Gamification] formData is null — getFormResponses() returned no data');
           }
@@ -370,6 +375,17 @@ export function useGamifiedDashboardDataV2(): GamifiedDashboardDataV2 {
   const streakDays = streakData.streak_days;
   const bonusDays = streakData.bonus_days;
 
+  // Sparkline data for global score evolution: last 6 conversations,
+  // chronological left→right. Service already returns score normalized to 0-100
+  // (V4 calidad_global.puntaje is 0-100; legacy overall_score is 0-10 ×10 in service).
+  const scoreSparkline = useMemo(
+    () =>
+      [...recentScores]
+        .reverse()
+        .map((s) => ({ v: Math.round(s.score) })),
+    [recentScores],
+  );
+
   // Score from last 2 conversations
   const score = useMemo(() => {
     const scored = conversations.filter(c => c.communication_feedback?.overall_score);
@@ -455,6 +471,7 @@ export function useGamifiedDashboardDataV2(): GamifiedDashboardDataV2 {
     recentActivity,
     conversations,
     formData,
+    scoreSparkline,
     loading,
   };
 }

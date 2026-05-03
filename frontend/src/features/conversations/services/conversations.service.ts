@@ -769,6 +769,55 @@ export async function getOmiConversationDates(
   return data || [];
 }
 
+/**
+ * Fetch normalized 0-100 score + timestamp from the user's most recent conversations.
+ * Coalesces two schemas: V4 (`communication_feedback_v4.calidad_global.puntaje`, already 0-100)
+ * with fallback to legacy (`communication_feedback.overall_score`, 0-10 → ×10).
+ *
+ * Returns conversations in DESC order (newest first); caller reverses for chart.
+ */
+export async function getRecentConversationScores(
+  userId: string,
+  limit = 6,
+): Promise<Array<{ created_at: string; score: number }>> {
+  if (!userId) return [];
+
+  // Overfetch since some recent conversations may not have a completed analysis yet
+  // Single-hop JSONB extraction (multi-hop with alias is unreliable in supabase-js).
+  // Pull the small `calidad_global` object whole and drill in JS.
+  const { data, error } = await supabase
+    .from('omi_conversations')
+    .select(
+      'created_at, calidad_global:communication_feedback_v4->calidad_global, legacy_score:communication_feedback->overall_score',
+    )
+    .eq('user_id', userId)
+    .eq('deleted', false)
+    .order('created_at', { ascending: false })
+    .limit(limit * 3);
+
+  if (error) {
+    console.error('[getRecentConversationScores] supabase error:', error);
+    return [];
+  }
+
+  const mapped = (data || []).map((row: Record<string, unknown>) => {
+    const cg = row.calidad_global as { puntaje?: unknown } | null;
+    const v4 = Number(cg?.puntaje);
+    const legacy = Number(row.legacy_score);
+    // Prefer V4 (already 0-100); fall back to legacy 0-10 normalized to 0-100
+    const score = Number.isFinite(v4) && v4 > 0
+      ? v4
+      : Number.isFinite(legacy) && legacy > 0
+      ? legacy * 10
+      : NaN;
+    return { created_at: row.created_at as string, score };
+  });
+
+  return mapped
+    .filter((row) => Number.isFinite(row.score) && row.score > 0)
+    .slice(0, limit);
+}
+
 export async function getOmiConversation(conversationId: string): Promise<OmiConversation | null> {
   const { data, error } = await supabase
     .from('omi_conversations')

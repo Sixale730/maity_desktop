@@ -8,18 +8,13 @@ import { Button } from '@/components/ui/button';
 import { RadarChartV2 } from './RadarChartV2';
 import { ProgressChartsSection } from './ProgressChartsSection';
 import {
-  AreaChart, Area, ResponsiveContainer, YAxis,
+  AreaChart, Area, ResponsiveContainer, YAxis, XAxis, CartesianGrid, LabelList, Tooltip,
 } from 'recharts';
 import {
   Zap, Flame, ArrowRight, ChevronRight,
   Activity, Crown, Swords,
   TrendingUp, TrendingDown, Target,
 } from 'lucide-react';
-
-// Sparkline data for global score evolution
-const SCORE_SPARKLINE = [
-  { v: 38 }, { v: 42 }, { v: 47 }, { v: 45 }, { v: 50 }, { v: 55 },
-];
 
 // ============================================================================
 // REUSABLE COMPONENTS
@@ -183,15 +178,16 @@ export function GamifiedDashboardV2() {
               className="absolute inset-0 w-full h-full object-cover object-[center_30%] opacity-60 group-hover:opacity-70 group-hover:scale-105 transition-all duration-700"
             />
 
-            {/* Sparkline overlay */}
-            <div className="absolute inset-0 z-[11] flex items-end pointer-events-none opacity-[0.12]">
-              <div className="w-full h-[60%]">
+            {/* Sparkline overlay — last 6 conversations' score (0-100). Hidden when <2 points.
+                Absolute pixel positioning (not flex+%) so ResponsiveContainer can measure its parent. */}
+            {data.scoreSparkline.length >= 2 && (
+              <div className="absolute inset-x-0 bottom-[140px] h-[180px] z-[11] pointer-events-none opacity-[0.18] px-4">
                 <ResponsiveContainer width="100%" height="100%">
-                  <AreaChart data={SCORE_SPARKLINE} margin={{ top: 0, right: 0, left: 0, bottom: 0 }}>
+                  <AreaChart data={data.scoreSparkline} margin={{ top: 0, right: 0, left: 0, bottom: 0 }}>
                     <YAxis domain={[0, 100]} hide />
                     <defs>
                       <linearGradient id="sparklineGrad" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="0%" stopColor="#ff0050" stopOpacity={0.5} />
+                        <stop offset="0%" stopColor="#ff0050" stopOpacity={0.6} />
                         <stop offset="100%" stopColor="#ff0050" stopOpacity={0} />
                       </linearGradient>
                     </defs>
@@ -199,7 +195,7 @@ export function GamifiedDashboardV2() {
                   </AreaChart>
                 </ResponsiveContainer>
               </div>
-            </div>
+            )}
 
             {/* Content */}
             <div className="relative z-20 p-8 flex-1">
@@ -322,6 +318,87 @@ export function GamifiedDashboardV2() {
           </Card>
         </div>
       </div>
+
+      {/* ================================================================== */}
+      {/* SCORE EVOLUTION */}
+      {/* ================================================================== */}
+      <Card className="p-5 mb-6 bg-[#0F0F0F] border border-white/10">
+        <div className="flex justify-between items-start mb-4 gap-3">
+          <div className="flex items-start gap-2">
+            <TrendingUp size={18} className="text-pink-500 mt-0.5 shrink-0" />
+            <div>
+              <h3 className="font-bold text-white leading-tight">Cómo va tu Comunicación</h3>
+              <p className="text-xs text-gray-500 mt-0.5">
+                Calificación de tus últimas conversaciones
+              </p>
+            </div>
+          </div>
+          {data.scoreSparkline.length >= 2 && (
+            <span className="text-xs text-gray-500 whitespace-nowrap mt-0.5">
+              {data.scoreSparkline.length} más recientes
+            </span>
+          )}
+        </div>
+
+        {data.scoreSparkline.length >= 2 ? (
+          <div style={{ width: '100%', height: 240 }}>
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={data.scoreSparkline} margin={{ top: 30, right: 20, left: 10, bottom: 10 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#1f1f2e" vertical={false} />
+                <XAxis
+                  dataKey="v"
+                  tick={false}
+                  axisLine={{ stroke: '#1f1f2e' }}
+                />
+                <YAxis
+                  domain={[0, 100]}
+                  ticks={[0, 25, 50, 75, 100]}
+                  tick={{ fill: '#6b7280', fontSize: 11 }}
+                  axisLine={false}
+                  tickLine={false}
+                  width={32}
+                />
+                <Tooltip
+                  contentStyle={{ background: '#0F0F0F', border: '1px solid #ff0050', borderRadius: 8, fontSize: 12 }}
+                  labelStyle={{ color: '#ff0050' }}
+                  formatter={(value) => [String(value), 'Score'] as [string, string]}
+                  separator=": "
+                />
+                <defs>
+                  <linearGradient id="scoreEvolutionGrad" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor="#ff0050" stopOpacity={0.5} />
+                    <stop offset="100%" stopColor="#ff0050" stopOpacity={0} />
+                  </linearGradient>
+                </defs>
+                <Area
+                  type="monotone"
+                  dataKey="v"
+                  stroke="#ff0050"
+                  strokeWidth={3}
+                  fill="url(#scoreEvolutionGrad)"
+                  dot={{ fill: '#ff0050', stroke: '#fff', strokeWidth: 2, r: 5 }}
+                  activeDot={{ r: 7, fill: '#ff0050', stroke: '#fff', strokeWidth: 2 }}
+                  isAnimationActive
+                >
+                  <LabelList
+                    dataKey="v"
+                    position="top"
+                    fill="#fff"
+                    fontSize={12}
+                    fontWeight={600}
+                  />
+                </Area>
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
+        ) : (
+          <div className="text-center py-10 text-gray-500">
+            <TrendingUp size={40} className="mx-auto mb-3 opacity-20" />
+            <p className="text-sm font-medium">Aún no hay suficientes datos</p>
+            <p className="text-xs mt-1">Necesitas al menos 2 conversaciones analizadas</p>
+          </div>
+        )}
+      </Card>
 
       {/* ================================================================== */}
       {/* BOTTOM GRID: Activity + Ranking */}
