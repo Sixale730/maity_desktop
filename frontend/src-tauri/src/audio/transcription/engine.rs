@@ -223,9 +223,31 @@ pub async fn validate_transcription_model_ready<R: Runtime>(app: &AppHandle<R>) 
     // configurado coincide, retornar Ok(()) sin tocar SQLite. Ahorra 3-100ms por llamada
     // (importante en cambios de grabacion frecuentes y al disparar set_active model).
     // El flag se actualiza solo cuando el modelo realmente esta listo en memoria.
+
+    // Defensive: AppState may not be managed if DB init failed silently
+    // (e.g. sqlx migration checksum mismatch). Convert what would be a panic
+    // from `app.state::<AppState>()` into an actionable error event.
+    let app_state = match app.try_state::<crate::state::AppState>() {
+        Some(s) => s,
+        None => {
+            let msg = "Database not initialized — cannot validate transcription. \
+                       Check earlier logs for DB init errors (sqlx migration checksum mismatch?).";
+            log::error!("{}", msg);
+            let _ = app.emit(
+                "transcription-error",
+                serde_json::json!({
+                    "error": msg,
+                    "userMessage": "La base de datos no se pudo inicializar. Reinicia la app o contacta soporte si persiste.",
+                    "actionable": true
+                }),
+            );
+            return Err(msg.to_string());
+        }
+    };
+
     let config = match crate::api::api_get_transcript_config(
         app.clone(),
-        app.clone().state(),
+        app_state,
         None,
     )
     .await

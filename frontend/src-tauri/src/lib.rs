@@ -433,7 +433,21 @@ pub fn run() {
         .manage(summary::summary_engine::ModelManagerState(Arc::new(tokio::sync::Mutex::new(None))))
         .manage(Arc::new(RwLock::new(meeting_detector::MeetingDetector::new())) as meeting_detector::commands::MeetingDetectorState)
         .setup(|_app| {
-            log::info!("Application setup complete");
+            log::info!("Application setup starting");
+
+            // CRITICAL: Initialize database FIRST, before any spawn that might
+            // access AppState. Tauri commands can be invoked before setup completes,
+            // and async tasks spawned later (notifications, tray refresh) might race
+            // ahead and call `app.state::<AppState>()` before `manage()` runs → panic.
+            // See setup.rs — always calls `app.manage(AppState)`, even on first launch.
+            match tauri::async_runtime::block_on(async {
+                database::setup::initialize_database_on_startup(&_app.handle()).await
+            }) {
+                Ok(_) => log::info!("Database initialization completed"),
+                Err(e) => {
+                    log::error!("Failed to initialize database: {}. App will continue but some features may not work.", e);
+                }
+            }
 
             // Listen for "app-ready" event from frontend to show the window.
             // The window starts hidden (visible: false in tauri.conf.json) to avoid
@@ -534,16 +548,7 @@ pub fn run() {
                 }
             });
 
-            // Initialize database FIRST (handles first launch detection and conditional setup)
-            // This must happen before engine initialization so we can read config
-            match tauri::async_runtime::block_on(async {
-                database::setup::initialize_database_on_startup(&_app.handle()).await
-            }) {
-                Ok(_) => log::info!("Database initialization completed"),
-                Err(e) => {
-                    log::error!("Failed to initialize database: {}. App will continue but some features may not work.", e);
-                }
-            }
+            // (Database init was already done at the start of setup() — see top of this callback)
 
             // Reset stale sync queue jobs (in_progress > 5 min → pending)
             if let Some(app_state) = _app.try_state::<state::AppState>() {

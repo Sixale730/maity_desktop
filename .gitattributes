@@ -1,0 +1,45 @@
+# Force LF line endings on SQL migration files.
+# sqlx::migrate! computes sha384 over file bytes, so CRLF/LF mismatches
+# between machines (Windows core.autocrlf=true) cause checksum validation
+# failures and silently break DB initialization → AppState never managed
+# → state() panics on commands like start_recording. See v0.2.38 → v0.2.39 hotfix.
+frontend/src-tauri/migrations/*.sql text eol=lf
+
+# Defensive: normalize other text formats too
+*.sql        text eol=lf
+*.toml       text eol=lf
+*.rs         text eol=lf
+*.ts         text eol=lf
+*.tsx        text eol=lf
+*.js         text eol=lf
+*.json       text eol=lf
+*.md         text eol=lf
+*.yml        text eol=lf
+*.yaml       text eol=lf
+*.sh         text eol=lf
+
+# Windows-specific scripts keep CRLF
+*.cmd        text eol=crlf
+*.bat        text eol=crlf
+*.ps1        text eol=crlf
+
+# Binary files — never normalize
+*.png        binary
+*.jpg        binary
+*.jpeg       binary
+*.gif        binary
+*.ico        binary
+*.icns       binary
+*.exe        binary
+*.dll        binary
+*.dylib      binary
+*.so         binary
+*.onnx       binary
+*.gguf       binary
+*.bin        binary
+*.wav        binary
+*.mp3        binary
+*.mp4        binary
+*.zip        binary
+*.tar        binary
+*.gz         binary
