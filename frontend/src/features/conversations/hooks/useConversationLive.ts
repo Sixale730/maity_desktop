@@ -77,6 +77,11 @@ export function useConversationLive(
     if (!enabled) return;
 
     let degradedTimer: ReturnType<typeof setTimeout> | null = null;
+    // Distinguishes a real server-side CLOSED (RLS reject, network) from the
+    // CLOSED that the subscribe callback receives synchronously when our
+    // cleanup calls channel.unsubscribe() — those are expected and must not
+    // surface as 'degraded' or warn-log noise.
+    let cleanedUp = false;
     setRealtimeStatus('connecting');
 
     const channel = supabase
@@ -95,6 +100,7 @@ export function useConversationLive(
         },
       )
       .subscribe((status, err) => {
+        if (cleanedUp) return;
         if (status === 'SUBSCRIBED') {
           if (degradedTimer) {
             clearTimeout(degradedTimer);
@@ -116,6 +122,7 @@ export function useConversationLive(
     }, REALTIME_CONNECT_TIMEOUT_MS);
 
     return () => {
+      cleanedUp = true;
       if (degradedTimer) clearTimeout(degradedTimer);
       void channel.unsubscribe();
     };

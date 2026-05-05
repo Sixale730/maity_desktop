@@ -232,6 +232,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         const { data: { session: existingSession } } = await supabase.auth.getSession()
         if (existingSession && isMounted) {
           logger.debug('[Auth] Restored existing session')
+          // Propagate JWT to Realtime synchronously, BEFORE the UI unblocks.
+          // onAuthStateChange's INITIAL_SESSION fires async (microtask), so
+          // without this call useConversationLive can mount and subscribe()
+          // with the anon key, RLS rejects, and the channel closes before
+          // setAuth ever runs. Ref:
+          // https://github.com/supabase/supabase/blob/master/apps/docs/content/guides/realtime/postgres-changes.mdx
+          supabase.realtime.setAuth(existingSession.access_token)
           setSession(existingSession)
           setUser(existingSession.user)
           await fetchOrCreateMaityUserRef.current(existingSession.user)
@@ -252,6 +259,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         if (isSigningOut.current) {
           logger.debug('[Auth] Ignoring auth state change during sign out')
           return
+        }
+
+        // Propagate JWT to the Realtime WebSocket. The Realtime module keeps its
+        // own token (separate from REST), so RLS-protected channels (e.g.
+        // postgres_changes on maity.omi_conversations) reject the subscription
+        // unless setAuth is called after every session change — including
+        // TOKEN_REFRESHED, which fires hourly while the app is open.
+        // Ref: https://github.com/supabase/supabase/blob/master/apps/docs/content/guides/realtime/postgres-changes.mdx
+        if (newSession?.access_token) {
+          supabase.realtime.setAuth(newSession.access_token)
+        } else {
+          supabase.realtime.setAuth(null)
         }
 
         setSession(newSession)
