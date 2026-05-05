@@ -362,7 +362,7 @@ pub async fn stop_recording<R: Runtime>(
 
         let transcription_config = match crate::api::api_get_transcript_config(
             app.clone(),
-            app.clone().state(),
+            app.clone().state(), // state-allow: pre-existing, refactor in separate PR
             None,
         )
         .await
@@ -376,7 +376,7 @@ pub async fn stop_recording<R: Runtime>(
 
         let summary_config = match crate::api::api_get_model_config(
             app.clone(),
-            app.clone().state(),
+            app.clone().state(), // state-allow: pre-existing, refactor in separate PR
             None,
         )
         .await

@@ -298,7 +298,7 @@ pub async fn evaluate_meeting<R: Runtime>(
     app: &AppHandle<R>,
     meeting_id: &str,
 ) -> Result<CoachEvalResult, String> {
-    let state = app.state::<AppState>();
+    let state = app.state::<AppState>(); // state-allow: pre-existing, refactor in separate PR
     let pool = state.db_manager.pool();
 
     let ctx = build_context(pool, meeting_id, ContextMode::Full).await?;

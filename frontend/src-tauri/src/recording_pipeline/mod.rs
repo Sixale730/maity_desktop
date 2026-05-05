@@ -14,7 +14,7 @@ pub async fn get_available_pipelines() -> Vec<RecordingPipeline> {
 
 #[tauri::command]
 pub async fn get_active_pipeline_id<R: Runtime>(app: AppHandle<R>) -> String {
-    let state = app.state::<AppState>();
+    let state = app.state::<AppState>(); // state-allow: pre-existing, refactor in separate PR
     let pool = state.db_manager.pool();
 
     sqlx::query_scalar::<_, String>(
@@ -38,7 +38,7 @@ pub async fn set_active_pipeline<R: Runtime>(
         .find(|p| p.id == pipeline_id)
         .ok_or_else(|| format!("Pipeline '{}' not found", pipeline_id))?;
 
-    let state = app.state::<AppState>();
+    let state = app.state::<AppState>(); // state-allow: pre-existing, refactor in separate PR
     let pool = state.db_manager.pool();
 
     sqlx::query(
@@ -87,7 +87,7 @@ pub async fn get_pipeline_config(pipeline_id: String) -> Result<RecordingPipelin
 pub async fn get_active_live_feedback_config<R: Runtime>(
     app: &AppHandle<R>,
 ) -> Option<LiveFeedbackConfig> {
-    let state = app.state::<AppState>();
+    let state = app.state::<AppState>(); // state-allow: pre-existing, refactor in separate PR
     let pool = state.db_manager.pool();
 
     let pipeline_id = sqlx::query_scalar::<_, String>(

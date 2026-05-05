@@ -167,7 +167,7 @@ pub async fn preload_transcription_engine<R: Runtime>(app: AppHandle<R>) {
 
     let config = match crate::api::api_get_transcript_config(
         app.clone(),
-        app.clone().state(),
+        app.clone().state(), // state-allow: pre-existing, refactor in separate PR
         None,
     )
     .await
@@ -394,7 +394,7 @@ pub async fn get_or_init_transcription_engine<R: Runtime>(
     // Get provider configuration from API
     let config = match crate::api::api_get_transcript_config(
         app.clone(),
-        app.clone().state(),
+        app.clone().state(), // state-allow: pre-existing, refactor in separate PR
         None,
     )
     .await
@@ -641,7 +641,7 @@ pub async fn get_or_init_whisper<R: Runtime>(
             // NEW: Check if loaded model matches saved config
             let configured_model = match crate::api::api_get_transcript_config(
                 app.clone(),
-                app.clone().state(),
+                app.clone().state(), // state-allow: pre-existing, refactor in separate PR
                 None,
             )
             .await
@@ -719,7 +719,7 @@ pub async fn get_or_init_whisper<R: Runtime>(
 
     // Get model configuration from API
     let model_to_load =
-        match crate::api::api_get_transcript_config(app.clone(), app.clone().state(), None)
+        match crate::api::api_get_transcript_config(app.clone(), app.clone().state(), None) // state-allow: pre-existing, refactor in separate PR
             .await
         {
             Ok(Some(config)) => {

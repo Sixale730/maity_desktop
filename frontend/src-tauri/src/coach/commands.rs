@@ -47,7 +47,7 @@ pub async fn coach_suggest<R: Runtime>(
 ) -> Result<CoachTipUpdate, String> {
     use crate::coach::prompt::{build_user_prompt, MeetingType};
 
-    let state = app.state::<AppState>();
+    let state = app.state::<AppState>(); // state-allow: pre-existing, refactor in separate PR
     let pool = state.db_manager.pool();
 
     let model_id = get_tips_model_id(pool).await;
@@ -82,7 +82,7 @@ pub async fn coach_set_model_for_purpose<R: Runtime>(
     purpose: String,
     model: String,
 ) -> Result<(), String> {
-    let state = app.state::<AppState>();
+    let state = app.state::<AppState>(); // state-allow: pre-existing, refactor in separate PR
     let pool = state.db_manager.pool();
 
     let col = match purpose.as_str() {
@@ -109,7 +109,7 @@ pub async fn coach_set_model_for_purpose<R: Runtime>(
 /// Devuelve los modelos configurados actualmente.
 #[tauri::command]
 pub async fn coach_get_models<R: Runtime>(app: AppHandle<R>) -> CoachModels {
-    let state = app.state::<AppState>();
+    let state = app.state::<AppState>(); // state-allow: pre-existing, refactor in separate PR
     let pool = state.db_manager.pool();
 
     let tips_model = get_tips_model_id(pool).await;
@@ -134,7 +134,7 @@ pub async fn coach_get_models<R: Runtime>(app: AppHandle<R>) -> CoachModels {
 /// Devuelve el estado del Coach IA (modelo de tips descargado o no).
 #[tauri::command]
 pub async fn coach_get_status<R: Runtime>(app: AppHandle<R>) -> CoachStatus {
-    let state = app.state::<AppState>();
+    let state = app.state::<AppState>(); // state-allow: pre-existing, refactor in separate PR
     let pool = state.db_manager.pool();
 
     let tips_model_id = get_tips_model_id(pool).await;
@@ -300,7 +300,7 @@ pub struct GgufModelInfo {
 /// Lista todos los modelos GGUF del registry con estado de instalación.
 #[tauri::command]
 pub async fn coach_list_gguf_models<R: Runtime>(app: AppHandle<R>) -> Vec<GgufModelInfo> {
-    let state = app.state::<AppState>();
+    let state = app.state::<AppState>(); // state-allow: pre-existing, refactor in separate PR
     let pool = state.db_manager.pool();
 
     let tips_id = get_tips_model_id(pool).await;
@@ -367,7 +367,7 @@ pub async fn coach_switch_model<R: Runtime + 'static>(
         ));
     }
 
-    let state = app.state::<AppState>();
+    let state = app.state::<AppState>(); // state-allow: pre-existing, refactor in separate PR
     let pool = state.db_manager.pool();
 
     let col = match purpose.as_str() {
@@ -724,7 +724,7 @@ pub async fn coach_chat<R: tauri::Runtime>(
     app: AppHandle<R>,
     query: ChatQuery,
 ) -> Result<ChatReply, String> {
-    let state = app.state::<AppState>();
+    let state = app.state::<AppState>(); // state-allow: pre-existing, refactor in separate PR
     let pool = state.db_manager.pool();
 
     let user_question = query
