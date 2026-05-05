@@ -1,0 +1,42 @@
+name: Validate Migration Line Endings
+
+# sqlx::migrate! hashes file bytes at compile time. CRLF on the build machine
+# silently breaks DB initialization for users upgrading from a previous version
+# (whose stored checksum is LF). This caused the v0.2.38 incident.
+#
+# This check runs against the source files in git, ensuring nobody commits a
+# .sql migration with CRLF. The .gitattributes file enforces LF on checkout,
+# but this is a belt-and-suspenders defense.
+
+on:
+  pull_request:
+    paths: ['frontend/src-tauri/migrations/**']
+  push:
+    branches: [main]
+    paths: ['frontend/src-tauri/migrations/**']
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fail if any .sql migration has CRLF line endings
+        run: |
+          set -e
+          fail=0
+          for f in frontend/src-tauri/migrations/*.sql; do
+            if file "$f" | grep -q CRLF; then
+              echo "::error file=$f::Migration has CRLF line endings — must be LF (sqlx::migrate hashes file bytes; CRLF causes checksum mismatch on upgrades)"
+              fail=1
+            fi
+          done
+          if [ $fail -eq 1 ]; then
+            echo ""
+            echo "Fix locally:"
+            echo "  dos2unix frontend/src-tauri/migrations/*.sql"
+            echo ""
+            echo "Or in bash:"
+            echo "  for f in frontend/src-tauri/migrations/*.sql; do tr -d '\\r' < \"\$f\" > \"\$f.lf\" && mv \"\$f.lf\" \"\$f\"; done"
+            exit 1
+          fi
+          echo "✅ All migrations have LF line endings"

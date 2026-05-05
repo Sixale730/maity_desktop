@@ -1,0 +1,21 @@
+name: Lint Rust State Access
+
+# Forbids direct app.state::<AppState>() — must use try_state with explicit
+# None handling. Direct .state() panics if AppState is not managed; if DB
+# init fails silently (as in v0.2.38), the panic happens deep in a tokio
+# worker and the user sees the app become unresponsive.
+
+on:
+  pull_request:
+    paths: ['frontend/src-tauri/src/**/*.rs']
+  push:
+    branches: [main]
+    paths: ['frontend/src-tauri/src/**/*.rs']
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run state-access lint
+        run: bash scripts/lint-state-access.sh

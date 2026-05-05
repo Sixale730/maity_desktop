@@ -16,6 +16,13 @@ El build incluye **dos tipos de firma**:
 
 ## Instrucciones
 
+> **Nota**: `pnpm run tauri:build` ahora encadena automaticamente un pre-check de lint
+> (`scripts/lint-state-access.sh`) antes del build. Si el lint falla, el build aborta
+> antes de quemar la firma de Certum. Para `pnpm run tauri:build:debug` ademas se
+> ejecuta un smoke test post-build que valida que el binario arranque sin panics.
+>
+> Si necesitas saltar los checks (raro), usa `pnpm run tauri:build:skip-checks`.
+
 ### Paso 0: Verificar prerequisitos de firma
 
 **ANTES de cualquier otra cosa**, verificar que el code signing este listo:

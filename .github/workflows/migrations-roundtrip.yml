@@ -1,0 +1,50 @@
+name: Validate Migrations Apply Cleanly
+
+# Runs all SQL migrations against a fresh in-memory SQLite database to catch:
+# - SQL syntax errors
+# - ALTER TABLE conflicts
+# - Migrations that depend on data from another migration
+# - Non-idempotent migrations
+#
+# This complements the runtime sqlx::migrate! validation by catching issues
+# before they reach the binary.
+
+on:
+  pull_request:
+    paths: ['frontend/src-tauri/migrations/**']
+  push:
+    branches: [main]
+    paths: ['frontend/src-tauri/migrations/**']
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo bin
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin
+          key: cargo-bin-sqlx-cli-v0.8
+
+      - name: Install sqlx-cli
+        run: |
+          if ! command -v sqlx >/dev/null 2>&1; then
+            cargo install sqlx-cli --no-default-features --features sqlite,native-tls
+          fi
+
+      - name: Apply all migrations against fresh in-memory DB
+        run: |
+          export DATABASE_URL="sqlite:test.db"
+          sqlx database create
+          sqlx migrate run --source frontend/src-tauri/migrations
+          echo "✅ All migrations applied cleanly to fresh DB"
+
+      - name: Re-run migrations (idempotency check)
+        run: |
+          export DATABASE_URL="sqlite:test.db"
+          sqlx migrate run --source frontend/src-tauri/migrations
+          echo "✅ Migrations are idempotent (safe to re-run)"

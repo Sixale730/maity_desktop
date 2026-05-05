@@ -1,0 +1,50 @@
+name: Validate Migration Checksums
+
+# Each migration .sql has a paired .sha384 file committed to the repo.
+# This validates that the migration content has not drifted (CRLF, BOM,
+# encoding, accidental edit, etc.) since it was last "blessed".
+#
+# To intentionally modify a migration: run scripts/migrations-regen-checksums.sh
+# and commit both the .sql change AND the new .sha384 in the same PR.
+
+on:
+  pull_request:
+    paths: ['frontend/src-tauri/migrations/**']
+  push:
+    branches: [main]
+    paths: ['frontend/src-tauri/migrations/**']
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate sha384 of each migration matches committed value
+        run: |
+          set -e
+          fail=0
+          cd frontend/src-tauri/migrations
+          for f in *.sql; do
+            if [ ! -f "$f.sha384" ]; then
+              echo "::error file=frontend/src-tauri/migrations/$f::Missing $f.sha384 — run scripts/migrations-regen-checksums.sh"
+              fail=1
+              continue
+            fi
+            expected=$(cat "$f.sha384")
+            actual=$(sha384sum "$f" | awk '{print $1}')
+            if [ "$expected" != "$actual" ]; then
+              echo "::error file=frontend/src-tauri/migrations/$f::Migration content drifted from committed checksum"
+              echo "   Expected: $expected"
+              echo "   Actual:   $actual"
+              fail=1
+            fi
+          done
+          if [ $fail -eq 1 ]; then
+            echo ""
+            echo "If the migration change is intentional:"
+            echo "  bash scripts/migrations-regen-checksums.sh"
+            echo "  git add frontend/src-tauri/migrations/*.sha384"
+            echo "  git commit"
+            exit 1
+          fi
+          echo "✅ All migration checksums match committed values"
