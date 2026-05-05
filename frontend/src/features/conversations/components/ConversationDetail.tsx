@@ -14,14 +14,12 @@ import {
   OmiConversation,
   getOmiTranscriptSegments,
   getLocalMeetingDetail,
-  getOmiConversation,
   reanalyzeConversation,
   toggleActionItemCompleted,
   isAnalysisSkipped,
   isFullAnalysis,
 } from '../services/conversations.service';
-import { supabase } from '@/lib/supabase';
-import { useAnalysisPolling } from '../hooks/useAnalysisPolling';
+import { useConversationLive } from '../hooks/useConversationLive';
 import { AnalysisStatusBanner } from './AnalysisStatusBanner';
 import { SessionFeedbackModal } from '@/components/recording/SessionFeedbackModal';
 import { TranscriptSection } from './analysis';
@@ -43,6 +41,9 @@ interface ConversationDetailProps {
   conversation: OmiConversation;
   onClose: () => void;
   onConversationUpdate?: (updated: OmiConversation) => void;
+  /** Hint from parent that this convo just finished recording. Only used while
+   * the row may not yet exist in Supabase (local-only); for cloud rows the
+   * authoritative state comes from `useConversationLive` and this is ignored. */
   isAnalyzing?: boolean;
 }
 
@@ -78,7 +79,19 @@ function buildSpeakerNameMap(
 }
 
 export function ConversationDetail({ conversation: initialConversation, onClose, onConversationUpdate, isAnalyzing }: ConversationDetailProps) {
-  const [conversation, setConversation] = useState(initialConversation);
+  const isLocalOnly = initialConversation.source === 'local';
+  const conversationId = initialConversation.id;
+
+  // For local-only convos (not yet in Supabase) we keep state locally and fetch
+  // the transcript from SQLite. For cloud convos, useConversationLive is the
+  // single source of truth: TanStack Query + Realtime hint + 3s polling floor +
+  // visibility/online refetch + 6 min stalled timeout.
+  const [localConversation, setLocalConversation] = useState(initialConversation);
+  const live = useConversationLive(conversationId, isLocalOnly ? undefined : initialConversation, !isLocalOnly);
+
+  const conversation = isLocalOnly ? localConversation : live.conversation;
+  const realtimeStatus = isLocalOnly ? undefined : live.realtimeStatus;
+
   const [copied, setCopied] = useState(false);
   const [showFeedbackModal, setShowFeedbackModal] = useState(false);
   const [feedbackMeetingId, setFeedbackMeetingId] = useState<string | null>(null);
@@ -103,103 +116,41 @@ export function ConversationDetail({ conversation: initialConversation, onClose,
     setFeedbackMeetingId(null);
   }, []);
 
-  // Analysis polling hook — handles both local and cloud conversations,
-  // auto-retries on timeout, and listens for sync worker events.
-  const analysisPolling = useAnalysisPolling({
-    conversation,
-    enabled: isAnalyzing ?? false,
-    onUpdate: (updated) => {
-      setConversation(updated);
-      onConversationUpdate?.(updated);
-    },
-    onComplete: () => {
-      toast.success('Análisis completado');
-    },
-  });
-  const isAnalysisActive = analysisPolling.isActive;
-
-  const isLocalOnly = conversation.source === 'local';
-  const conversationId = conversation.id;
-
-  // For local conversations selected from the list, transcript_text may be null.
-  // Fetch the full detail (with transcript) from SQLite.
+  // Notify parent when the live query produces fresher data.
+  const lastNotifiedRef = useRef<string | null>(null);
   useEffect(() => {
-    if (!isLocalOnly || conversation.transcript_text) return;
-    const localId = conversation._localId || conversation.id;
+    if (isLocalOnly || !onConversationUpdate) return;
+    const fingerprint = `${conversation.analysis_status ?? ''}|${conversation.communication_feedback_v4 ? 'v4' : ''}|${conversation.meeting_minutes_data ? 'm' : ''}|${conversation.title}`;
+    if (lastNotifiedRef.current === fingerprint) return;
+    lastNotifiedRef.current = fingerprint;
+    onConversationUpdate(conversation);
+  }, [isLocalOnly, conversation, onConversationUpdate]);
+
+  // Toast when phase reaches completed (only fires once per conversationId).
+  const completedToastedRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (isLocalOnly) return;
+    if (live.phase !== 'completed') return;
+    if (completedToastedRef.current === conversationId) return;
+    completedToastedRef.current = conversationId;
+    toast.success('Análisis completado');
+  }, [isLocalOnly, live.phase, conversationId]);
+
+  // Local transcript hydration — fetch from SQLite when needed.
+  useEffect(() => {
+    if (!isLocalOnly || localConversation.transcript_text) return;
+    const localId = localConversation._localId || localConversation.id;
     getLocalMeetingDetail(localId).then((detail) => {
       if (detail?.transcript_text) {
-        setConversation((prev) => ({ ...prev, transcript_text: detail.transcript_text }));
+        setLocalConversation((prev) => ({ ...prev, transcript_text: detail.transcript_text }));
       }
     }).catch((err) => console.warn('Error fetching local transcript detail:', err));
-  }, [isLocalOnly, conversation._localId, conversation.id, conversation.transcript_text]);
+  }, [isLocalOnly, localConversation._localId, localConversation.id, localConversation.transcript_text]);
 
-  // Capa 2 — Refetch al mount: la prop puede traer datos stale del cache de la lista.
-  // Trae datos frescos al entrar para evitar mostrar análisis viejo brevemente.
-  useEffect(() => {
-    if (isLocalOnly) return;
-    let cancelled = false;
-    getOmiConversation(conversationId)
-      .then((fresh) => {
-        if (cancelled || !fresh) return;
-        setConversation((prev) => ({ ...prev, ...fresh }));
-        onConversationUpdate?.(fresh);
-      })
-      .catch((err) => console.warn('Refetch al mount falló:', err));
-    return () => {
-      cancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [conversationId, isLocalOnly]);
-
-  // Capa 3 — Polling rápido (3s) mientras analysis_status === 'processing'.
-  // Fallback robusto si Realtime falla. Auto-stop cuando cambia o desmonta.
-  useEffect(() => {
-    if (isLocalOnly || conversation.analysis_status !== 'processing') return;
-    let cancelled = false;
-    const tick = async () => {
-      try {
-        const fresh = await getOmiConversation(conversationId);
-        if (cancelled || !fresh) return;
-        setConversation((prev) => ({ ...prev, ...fresh }));
-        onConversationUpdate?.(fresh);
-      } catch (err) {
-        console.warn('Polling rápido error:', err);
-      }
-    };
-    const intervalId = setInterval(tick, 3000);
-    return () => {
-      cancelled = true;
-      clearInterval(intervalId);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [conversationId, conversation.analysis_status, isLocalOnly]);
-
-  // Capa 4 — Supabase Realtime: push instantáneo cuando cambia analysis_status.
-  // Si Realtime falla (no habilitado, conexión cortada), Capa 3 lo cubre.
-  useEffect(() => {
-    if (isLocalOnly) return;
-    const channel = supabase
-      .channel(`omi-conv-${conversationId}`)
-      .on(
-        'postgres_changes',
-        {
-          event: 'UPDATE',
-          schema: 'maity',
-          table: 'omi_conversations',
-          filter: `id=eq.${conversationId}`,
-        },
-        (payload) => {
-          const updated = payload.new as Partial<OmiConversation>;
-          setConversation((prev) => ({ ...prev, ...updated }));
-          if (updated.id) onConversationUpdate?.(updated as OmiConversation);
-        },
-      )
-      .subscribe();
-    return () => {
-      void channel.unsubscribe();
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [conversationId, isLocalOnly]);
+  // Banner phase: cloud comes from derived state; local relies on parent's
+  // `isAnalyzing` hint until the row exists in Supabase and we switch to live.
+  const phase = isLocalOnly ? (isAnalyzing ? 'polling' : 'idle') : live.phase;
+  const isAnalysisActive = phase === 'polling' || phase === 'stalled';
 
   const { data: segments, isLoading: loadingSegments, error: segmentsError } = useQuery({
     queryKey: ['omi-segments', conversation.id],
@@ -213,21 +164,41 @@ export function ConversationDetail({ conversation: initialConversation, onClose,
     mutationFn: (transcriptText: string) =>
       reanalyzeConversation(conversation.id, transcriptText, conversation.language || 'es'),
     onMutate: () => {
-      // Optimistic: spinner aparece al instante sin esperar al backend
-      setConversation((prev) => ({ ...prev, analysis_status: 'processing' as const }));
+      if (isLocalOnly) {
+        setLocalConversation((prev) => ({ ...prev, analysis_status: 'processing' as const }));
+      } else {
+        // Optimistic update of the live cache; useConversationLive will reconcile.
+        queryClient.setQueryData<OmiConversation>(['omi-conversation', conversationId], (old) =>
+          old ? { ...old, analysis_status: 'processing' as const } : old,
+        );
+      }
     },
     onSuccess: (updated) => {
-      setConversation((prev) => ({ ...prev, ...updated, analysis_status: 'processing' as const }));
+      if (isLocalOnly) {
+        setLocalConversation((prev) => ({ ...prev, ...updated, analysis_status: 'processing' as const }));
+      } else {
+        queryClient.setQueryData<OmiConversation>(['omi-conversation', conversationId], (old) => ({
+          ...(old ?? updated),
+          ...updated,
+          analysis_status: 'processing' as const,
+        }));
+        // Invalidate so the polling floor immediately picks up the new state.
+        queryClient.invalidateQueries({ queryKey: ['omi-conversation', conversationId] });
+      }
       onConversationUpdate?.(updated);
       queryClient.invalidateQueries({ queryKey: ['omi-conversations'] });
+      // Reset the completed-toast guard so the next completion fires it again.
+      completedToastedRef.current = null;
       toast.info('Reanálisis iniciado. Te avisaremos cuando esté listo.');
-      analysisPolling.startPolling();
     },
     onError: (error: Error) => {
-      // Revierte el optimistic si la mutation falla
-      setConversation((prev) =>
-        prev.analysis_status === 'processing' ? { ...prev, analysis_status: null } : prev,
-      );
+      if (isLocalOnly) {
+        setLocalConversation((prev) =>
+          prev.analysis_status === 'processing' ? { ...prev, analysis_status: null } : prev,
+        );
+      } else {
+        queryClient.invalidateQueries({ queryKey: ['omi-conversation', conversationId] });
+      }
       toast.error('Error al analizar', { description: error.message });
     },
   });
@@ -398,12 +369,9 @@ export function ConversationDetail({ conversation: initialConversation, onClose,
 
       {/* Analysis status banner */}
       <AnalysisStatusBanner
-        phase={analysisPolling.phase}
-        hasV4={analysisPolling.hasV4}
-        hasMinuta={analysisPolling.hasMinuta}
-        retryCount={analysisPolling.retryCount}
-        error={analysisPolling.error}
-        onRetry={analysisPolling.retryManually}
+        phase={phase}
+        realtimeStatus={realtimeStatus}
+        onRetry={canAnalyze ? handleReanalyze : undefined}
       />
 
       {/* 3 Tabs: Análisis + Minuta + Transcripción */}
