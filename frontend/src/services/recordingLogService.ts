@@ -95,6 +95,12 @@ class RecordingLogService {
   /**
    * Sync unsynced logs to Supabase (maity.platform_logs).
    * Call after the recording stop flow completes.
+   *
+   * Uses the canonical RPC `insert_platform_log` (SECURITY DEFINER server-side
+   * resolves user_id from auth.uid() → maity.users.id, bypassing RLS in a
+   * controlled way). Same pattern as platformLogger.ts and the web app's logger.
+   * Direct INSERTs are NOT allowed by RLS because user_id must equal
+   * maity.users.id (the internal FK), not auth.users.id.
    */
   async syncToCloud(): Promise<void> {
     try {
@@ -107,34 +113,38 @@ class RecordingLogService {
       const unsynced: RecordingLog[] = await invoke('get_unsynced_recording_logs', { limit: 200 });
       if (unsynced.length === 0) return;
 
-      // Map to Supabase table shape
-      const rows = unsynced.map((log) => ({
-        user_id: session.user.id,
-        platform: 'desktop' as const,
-        session_id: log.session_id,
-        event_type: log.event_type,
-        event_data: log.event_data ? JSON.parse(log.event_data) : null,
-        status: log.status,
-        error: log.error,
-        meeting_id: log.meeting_id,
-        app_version: log.app_version,
-        device_info: log.device_info,
-        created_at: log.created_at,
-      }));
+      const results = await Promise.allSettled(
+        unsynced.map((log) =>
+          supabase.rpc('insert_platform_log', {
+            p_session_id: log.session_id,
+            p_platform: 'desktop',
+            p_event_type: log.event_type,
+            p_event_data: log.event_data ? JSON.parse(log.event_data) : null,
+            p_status: log.status,
+            p_error: log.error,
+            p_meeting_id: log.meeting_id,
+            p_app_version: log.app_version,
+            p_device_info: log.device_info,
+          }),
+        ),
+      );
 
-      const { error } = await supabase
-        .from('platform_logs')
-        .insert(rows);
+      const succeededIds = unsynced
+        .filter((_, i) => {
+          const r = results[i];
+          return r.status === 'fulfilled' && !r.value.error;
+        })
+        .map((l) => l.id);
 
-      if (error) {
-        console.warn('[RecordingLog] Supabase sync error:', error.message);
-        return;
+      if (succeededIds.length > 0) {
+        await invoke('mark_recording_logs_synced', { ids: succeededIds });
+        logger.debug(`[RecordingLog] Synced ${succeededIds.length}/${unsynced.length} logs to cloud`);
       }
 
-      // Mark as synced
-      const ids = unsynced.map((l) => l.id);
-      await invoke('mark_recording_logs_synced', { ids });
-      logger.debug(`[RecordingLog] Synced ${ids.length} logs to cloud`);
+      const failedCount = unsynced.length - succeededIds.length;
+      if (failedCount > 0) {
+        console.warn(`[RecordingLog] ${failedCount} logs failed to sync; will retry on next sync`);
+      }
     } catch (err) {
       console.warn('[RecordingLog] syncToCloud failed:', err);
     }
