@@ -5,15 +5,37 @@
 // To skip (NOT recommended), use: pnpm run tauri:build:debug:skip-checks
 
 const { spawnSync } = require('child_process');
+const fs = require('fs');
 const path = require('path');
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
 const LINT_SCRIPT = path.join(REPO_ROOT, 'scripts', 'lint-state-access.sh');
+// On Windows, bash (Git Bash/MINGW) treats backslashes as escapes, mangling
+// `C:\maity_desktop\...` into `C:maity_desktop...`. Forward slashes work on
+// every platform.
+const BASH_LINT_SCRIPT = LINT_SCRIPT.replace(/\\/g, '/');
+
+// On Windows, `bash` in PATH may resolve to WSL's bash (C:\Windows\System32\bash.exe),
+// which only sees `/mnt/c/...` paths. Force Git Bash when available so we can pass
+// native Windows paths.
+function resolveBash() {
+    if (process.platform !== 'win32') return 'bash';
+    const candidates = [
+        'C:\\Program Files\\Git\\bin\\bash.exe',
+        'C:\\Program Files\\Git\\usr\\bin\\bash.exe',
+        'C:\\Program Files (x86)\\Git\\bin\\bash.exe',
+    ];
+    for (const c of candidates) {
+        if (fs.existsSync(c)) return c;
+    }
+    return 'bash';
+}
+
+const BASH = resolveBash();
 
 console.log('[pre-build] Running state-access lint...');
 
-// `bash` works on Windows too (git bash) and natively on mac/linux
-const result = spawnSync('bash', [LINT_SCRIPT], {
+const result = spawnSync(BASH, [BASH_LINT_SCRIPT], {
     stdio: 'inherit',
     shell: false,
 });
