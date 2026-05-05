@@ -448,6 +448,10 @@ export interface OmiConversation {
   meeting_minutes_data: MeetingMinutesData | null;
   /** Explicit analysis status field — source of truth for polling */
   analysis_status?: 'pending' | 'processing' | 'completed' | 'failed' | 'skipped' | null;
+  /** Stripe-style dedup key. UNIQUE on omi_conversations — present on cloud
+   *  rows that were created via the idempotent save_conversation flow.
+   *  Local rows expose the same value via cloud_idempotency_key (alias). */
+  idempotency_key?: string | null;
   /** Local SQLite meeting ID (present when loaded from local storage) */
   _localId?: string;
 }
@@ -574,6 +578,7 @@ interface LocalMeetingMetadata {
   created_at: string;
   updated_at: string;
   folder_path?: string | null;
+  cloud_idempotency_key?: string | null;
 }
 
 interface LocalMeetingTranscript {
@@ -636,6 +641,7 @@ export async function getLocalConversations(): Promise<OmiConversation[]> {
         communication_feedback: null,
         communication_feedback_v4: null,
         meeting_minutes_data: null,
+        idempotency_key: meta?.cloud_idempotency_key ?? null,
         _localId: meeting.id,
       };
     });
@@ -703,8 +709,14 @@ export async function getLocalMeetingDetail(meetingId: string): Promise<OmiConve
 
 /**
  * Merge local and cloud conversations.
- * Cloud data wins when it has more complete info; local-only items are kept.
- * Matching is done by title + close created_at timestamp (within 5 minutes).
+ *
+ * Primary path: deterministic match by `idempotency_key` (Stripe pattern).
+ * Local rows carry the same UUID that was used as the UNIQUE key on the
+ * cloud INSERT, so a key match means same conversation — no heuristics.
+ *
+ * Fallback: legacy rows (created before this fix) lack a key on either
+ * side, so we fall back to started_at proximity (2 min). The match-by-title
+ * approach was removed earlier because LLM-generated titles mutate post-analysis.
  */
 export function mergeConversations(
   local: OmiConversation[],
@@ -712,28 +724,34 @@ export function mergeConversations(
 ): OmiConversation[] {
   const merged = new Map<string, OmiConversation>();
 
-  // Index cloud by id
+  // Index cloud by id and by idempotency_key for O(1) deterministic lookup.
+  const cloudByKey = new Map<string, OmiConversation>();
   for (const c of cloud) {
     merged.set(c.id, c);
+    if (c.idempotency_key) cloudByKey.set(c.idempotency_key, c);
   }
 
-  // For each local, try to find a matching cloud entry
   for (const loc of local) {
-    // Match by started_at proximity (immutable, not affected by AI title changes)
-    // Title matching was removed because the cloud title changes after analysis,
-    // breaking dedup and causing duplicate entries in the list.
-    const match = cloud.find((c) => {
+    // 1. Deterministic match by idempotency_key
+    if (loc.idempotency_key && cloudByKey.has(loc.idempotency_key)) {
+      const match = cloudByKey.get(loc.idempotency_key)!;
+      merged.set(match.id, { ...match, _localId: loc._localId ?? loc.id });
+      continue;
+    }
+
+    // 2. Legacy fallback: started_at proximity within 2 min (only triggers
+    // when neither side has the idempotency_key — i.e. rows created before
+    // this fix landed).
+    const heuristicMatch = cloud.find((c) => {
+      if (c.idempotency_key || loc.idempotency_key) return false;
       const cloudTime = new Date(c.started_at || c.created_at).getTime();
       const localTime = new Date(loc.started_at || loc.created_at).getTime();
-      return Math.abs(cloudTime - localTime) < 2 * 60 * 1000; // 2 minutes
+      return Math.abs(cloudTime - localTime) < 2 * 60 * 1000;
     });
 
-    if (match) {
-      // Cloud has this conversation — cloud wins (more complete data)
-      // Attach localId for reference
-      merged.set(match.id, { ...match, _localId: loc._localId });
+    if (heuristicMatch) {
+      merged.set(heuristicMatch.id, { ...heuristicMatch, _localId: loc._localId ?? loc.id });
     } else {
-      // Local-only conversation
       const localId = loc._localId || loc.id;
       merged.set(`local:${localId}`, loc);
     }
@@ -973,6 +991,9 @@ export interface SaveConversationData {
   language?: string;
   words_count?: number;
   duration_seconds?: number;
+  /** Stripe-style key. With UNIQUE (idempotency_key) on omi_conversations,
+   * a retry of save_conversation collapses to the original row. */
+  idempotency_key?: string;
 }
 
 export interface SaveSegmentData {
@@ -997,21 +1018,30 @@ export interface UpdateEvaluationData {
 export async function saveConversationToSupabase(
   data: SaveConversationData
 ): Promise<string> {
-  const { data: inserted, error } = await supabase
-    .from('omi_conversations')
-    .insert({
-      user_id: data.user_id,
-      title: data.title ?? null,
-      started_at: data.started_at,
-      finished_at: data.finished_at,
-      transcript_text: data.transcript_text,
-      source: data.source ?? 'maity_desktop',
-      language: data.language ?? null,
-      words_count: data.words_count ?? null,
-      duration_seconds: data.duration_seconds ?? null,
-    })
-    .select('id')
-    .single();
+  const row = {
+    user_id: data.user_id,
+    title: data.title ?? null,
+    started_at: data.started_at,
+    finished_at: data.finished_at,
+    transcript_text: data.transcript_text,
+    source: data.source ?? 'maity_desktop',
+    language: data.language ?? null,
+    words_count: data.words_count ?? null,
+    duration_seconds: data.duration_seconds ?? null,
+    ...(data.idempotency_key ? { idempotency_key: data.idempotency_key } : {}),
+  };
+
+  // When an idempotency_key is provided, use UPSERT on its UNIQUE constraint
+  // so retries return the original row's id (no duplicate INSERTs). This is
+  // the canonical pattern Stripe uses for safe POST retries.
+  // Ref: https://stripe.com/docs/api/idempotent_requests
+  const query = data.idempotency_key
+    ? supabase
+        .from('omi_conversations')
+        .upsert(row, { onConflict: 'idempotency_key', ignoreDuplicates: false })
+    : supabase.from('omi_conversations').insert(row);
+
+  const { data: inserted, error } = await query.select('id').single();
 
   if (error) {
     console.error('Error saving conversation to Supabase:', error);

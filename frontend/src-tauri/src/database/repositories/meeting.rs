@@ -17,6 +17,39 @@ impl MeetingsRepository {
         Ok(meetings)
     }
 
+    /// Atomically read-or-create the cloud idempotency key for a meeting.
+    ///
+    /// Returns the existing key if one was already persisted (e.g. from a
+    /// previous attempt that failed mid-sync). Otherwise generates a UUID v4,
+    /// stores it, and returns it. Subsequent calls for the same meeting always
+    /// return the same value — that's what makes save_conversation idempotent
+    /// across retries.
+    pub async fn get_or_create_idempotency_key(
+        pool: &SqlitePool,
+        meeting_id: &str,
+    ) -> Result<String, SqlxError> {
+        if meeting_id.trim().is_empty() {
+            return Err(SqlxError::Protocol(
+                "meeting_id cannot be empty".to_string(),
+            ));
+        }
+
+        // Single statement: only updates when current value is NULL, returns
+        // the resulting key either way. RETURNING is supported in SQLite ≥3.35.
+        let row: Option<(String,)> = sqlx::query_as(
+            "UPDATE meetings
+             SET cloud_idempotency_key = COALESCE(cloud_idempotency_key, ?)
+             WHERE id = ?
+             RETURNING cloud_idempotency_key",
+        )
+        .bind(uuid::Uuid::new_v4().to_string())
+        .bind(meeting_id)
+        .fetch_optional(pool)
+        .await?;
+
+        row.map(|(k,)| k).ok_or(SqlxError::RowNotFound)
+    }
+
     pub async fn delete_meeting(pool: &SqlitePool, meeting_id: &str) -> Result<bool, SqlxError> {
         if meeting_id.trim().is_empty() {
             return Err(SqlxError::Protocol(

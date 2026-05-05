@@ -31,6 +31,12 @@ pub struct MeetingModel {
     pub deterministic_data: Option<String>,
     #[serde(default = "default_cloud_source")]
     pub analysis_source: String,
+
+    // Stripe-style idempotency key for the cloud sync of this meeting.
+    // Generated client-side on the first save_conversation attempt and reused
+    // on retries so duplicate INSERTs into maity.omi_conversations collapse via
+    // its UNIQUE (idempotency_key) constraint instead of creating duplicate rows.
+    pub cloud_idempotency_key: Option<String>,
 }
 
 fn default_idle_status() -> String {
