@@ -17,9 +17,24 @@ type TableMock = {
   then: (resolve: (v: QueryResult) => void) => Promise<void>;
 };
 
+type RealtimeStatus = 'SUBSCRIBED' | 'CHANNEL_ERROR' | 'TIMED_OUT' | 'CLOSED';
+type ChangeHandler = (payload: { eventType: string; new: Record<string, unknown>; old: Record<string, unknown> }) => void;
+
+export interface MockChannel {
+  topic: string;
+  on: ReturnType<typeof vi.fn>;
+  subscribe: ReturnType<typeof vi.fn>;
+  unsubscribe: ReturnType<typeof vi.fn>;
+  /** Test-only: simulate the server emitting a status to the subscribe callback. */
+  emitStatus: (status: RealtimeStatus, err?: Error) => void;
+  /** Test-only: simulate a postgres_changes payload arriving to all matching listeners. */
+  emitChange: (payload: { eventType?: string; new?: Record<string, unknown>; old?: Record<string, unknown> }) => void;
+}
+
 export function createMockSupabaseClient() {
   const rpcHandlers = new Map<string, (args: unknown) => QueryResult>();
   const tableResults = new Map<string, QueryResult>();
+  const channels = new Map<string, MockChannel>();
 
   const makeTable = (name: string): TableMock => {
     const chain: Partial<TableMock> = {};
@@ -43,6 +58,36 @@ export function createMockSupabaseClient() {
     return chain as TableMock;
   };
 
+  const makeChannel = (topic: string): MockChannel => {
+    const changeHandlers: ChangeHandler[] = [];
+    let statusCallback: ((s: RealtimeStatus, err?: Error) => void) | null = null;
+
+    const channel: MockChannel = {
+      topic,
+      on: vi.fn((_event: string, _filter: unknown, handler: ChangeHandler) => {
+        changeHandlers.push(handler);
+        return channel;
+      }),
+      subscribe: vi.fn((cb?: (s: RealtimeStatus, err?: Error) => void) => {
+        if (cb) statusCallback = cb;
+        return channel;
+      }),
+      unsubscribe: vi.fn(async () => 'ok'),
+      emitStatus: (status, err) => {
+        statusCallback?.(status, err);
+      },
+      emitChange: (payload) => {
+        const full = {
+          eventType: payload.eventType ?? 'UPDATE',
+          new: payload.new ?? {},
+          old: payload.old ?? {},
+        };
+        for (const h of changeHandlers) h(full);
+      },
+    };
+    return channel;
+  };
+
   const client = {
     from: vi.fn((name: string) => makeTable(name)),
     rpc: vi.fn(async (fn: string, args: unknown) => {
@@ -58,6 +103,12 @@ export function createMockSupabaseClient() {
     schema: vi.fn(function (this: unknown) {
       return this;
     }),
+    channel: vi.fn((topic: string) => {
+      const ch = makeChannel(topic);
+      channels.set(topic, ch);
+      return ch;
+    }),
+    removeChannel: vi.fn(async () => 'ok'),
   };
 
   return {
@@ -68,9 +119,14 @@ export function createMockSupabaseClient() {
     setTableResult(table: string, result: QueryResult) {
       tableResults.set(table, result);
     },
+    /** Get a previously-created channel by topic (for emitStatus/emitChange). */
+    getChannel(topic: string): MockChannel | undefined {
+      return channels.get(topic);
+    },
     reset() {
       rpcHandlers.clear();
       tableResults.clear();
+      channels.clear();
     },
   };
 }
