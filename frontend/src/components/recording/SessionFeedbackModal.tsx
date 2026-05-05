@@ -3,7 +3,6 @@
 import { useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { supabase } from '@/lib/supabase';
-import { useAuth } from '@/contexts/AuthContext';
 
 type Rating = 'useful' | 'sometimes' | 'not_useful';
 
@@ -20,7 +19,6 @@ const RATINGS: { value: Rating; emoji: string; label: string }[] = [
 ];
 
 export function SessionFeedbackModal({ open, meetingId, onSubmit }: SessionFeedbackModalProps) {
-  const { maityUser } = useAuth();
   const [selected, setSelected] = useState<Rating | null>(null);
   const [message, setMessage] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -41,23 +39,24 @@ export function SessionFeedbackModal({ open, meetingId, onSubmit }: SessionFeedb
         metadata: undefined,
       });
 
-      // 2. Sync to Supabase (fire-and-forget — non-blocking)
-      if (maityUser?.id) {
-        supabase
-          .from('user_feedback')
-          .insert({
-            id: feedbackId,
-            user_id: maityUser.id,
-            feedback_type: 'session_rating',
-            message: message.trim() || selected,
-            metadata: { rating: selected, meeting_id: meetingId },
+      // 2. Sync to Supabase via RPC (fire-and-forget).
+      // The RPC (SECURITY DEFINER) resolves user_id and auth_id from auth.uid()
+      // server-side; client only sends business fields. Same canonical pattern
+      // as platformLogger.ts → insert_platform_log.
+      supabase
+        .rpc('insert_user_feedback', {
+          p_feedback_type: 'session_rating',
+          p_message: message.trim() || selected,
+          p_id: feedbackId,
+          p_metadata: {
             platform: 'desktop',
-            app_version: undefined,
-          })
-          .then(({ error }) => {
-            if (error) console.warn('[SessionFeedback] Supabase sync failed (non-fatal):', error);
-          });
-      }
+            rating: selected,
+            meeting_id: meetingId,
+          },
+        })
+        .then(({ error }) => {
+          if (error) console.warn('[SessionFeedback] Supabase sync failed (non-fatal):', error);
+        });
     } catch (e) {
       console.error('[SessionFeedback] Failed to save feedback:', e);
     } finally {
