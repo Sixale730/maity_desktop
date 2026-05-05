@@ -396,6 +396,16 @@ export function useRecordingStop(
         end_time: t.audio_end_time || 0,
       }));
 
+      // Resolve (or create + persist) the cloud idempotency key for this
+      // meeting. Reused across job retries so a network failure mid-INSERT
+      // does NOT create duplicate rows in maity.omi_conversations (its
+      // UNIQUE (idempotency_key) constraint collapses the second attempt
+      // and we get the original conversation_id back).
+      const idempotencyKey = await invoke<string>(
+        'api_get_or_create_meeting_idempotency_key',
+        { meetingId },
+      );
+
       // Job 1: save_conversation
       const job1Id = await invoke<number>('sync_queue_enqueue', {
         jobType: 'save_conversation',
@@ -410,6 +420,7 @@ export function useRecordingStop(
           language: transcriptModelConfig?.language || 'es',
           words_count: wordsCount,
           duration_seconds: durationSec,
+          idempotency_key: idempotencyKey,
         }),
       });
 

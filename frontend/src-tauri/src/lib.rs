@@ -1010,6 +1010,7 @@ pub fn run() {
             database::commands::get_database_directory,
             database::commands::open_database_folder,
             database::commands::save_user_feedback,
+            database::commands::api_get_or_create_meeting_idempotency_key,
             // Sync queue commands (offline-first cloud save)
             database::sync_queue_commands::sync_queue_enqueue,
             database::sync_queue_commands::sync_queue_get_ready_jobs,

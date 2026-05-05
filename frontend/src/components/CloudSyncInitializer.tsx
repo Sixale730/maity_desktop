@@ -1,6 +1,8 @@
 'use client';
 
 import { useEffect } from 'react';
+import { useRouter } from 'next/navigation';
+import { toast } from 'sonner';
 import { useAuth } from '@/contexts/AuthContext';
 import { cloudSyncWorker } from '@/services/cloudSyncWorker';
 import { logger } from '@/lib/logger';
@@ -11,6 +13,7 @@ import { logger } from '@/lib/logger';
  */
 export function CloudSyncInitializer() {
   const { isAuthenticated } = useAuth();
+  const router = useRouter();
 
   useEffect(() => {
     if (isAuthenticated) {
@@ -33,6 +36,27 @@ export function CloudSyncInitializer() {
     window.addEventListener('online', handleOnline);
     return () => window.removeEventListener('online', handleOnline);
   }, []);
+
+  // Notify user (non-blocking toast) when the cloud-side analysis pipeline
+  // completes for a conversation they recorded. The cloudSyncWorker emits
+  // 'finalize-completed' once the finalize_conversation job succeeds.
+  useEffect(() => {
+    const handleFinalize = (e: Event) => {
+      const detail = (e as CustomEvent<{ conversationId?: string }>).detail;
+      const id = detail?.conversationId;
+      if (!id) return;
+      toast.success('Análisis listo', {
+        description: 'Tu conversación ya tiene resumen y análisis completos.',
+        duration: 6000,
+        action: {
+          label: 'Ver',
+          onClick: () => router.push(`/conversations?id=${id}`),
+        },
+      });
+    };
+    window.addEventListener('finalize-completed', handleFinalize as EventListener);
+    return () => window.removeEventListener('finalize-completed', handleFinalize as EventListener);
+  }, [router]);
 
   return null;
 }

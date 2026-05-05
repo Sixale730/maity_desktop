@@ -219,6 +219,7 @@ class CloudSyncWorkerImpl {
       language: payload.language as string | undefined,
       words_count: payload.words_count as number | undefined,
       duration_seconds: payload.duration_seconds as number | undefined,
+      idempotency_key: payload.idempotency_key as string | undefined,
     });
 
     return { conversation_id: conversationId };

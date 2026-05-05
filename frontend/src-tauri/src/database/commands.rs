@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 
 use super::manager::DatabaseManager;
+use super::repositories::meeting::MeetingsRepository;
 use super::repositories::recording_log::RecordingLogRepository;
 use crate::database::models::RecordingLog;
 use crate::state::AppState;
@@ -392,4 +393,24 @@ pub async fn save_user_feedback<R: Runtime>(
 
     info!("Saved user feedback: type={} id={}", feedback_type, id);
     Ok(id)
+}
+
+/// Atomically read-or-create the cloud idempotency key for a meeting.
+/// First call generates a UUID v4 and persists it; subsequent calls return
+/// the same value. Used by the cloud sync flow so retries of save_conversation
+/// collapse via the UNIQUE (idempotency_key) constraint on omi_conversations.
+#[tauri::command]
+pub async fn api_get_or_create_meeting_idempotency_key(
+    state: tauri::State<'_, AppState>,
+    meeting_id: String,
+) -> Result<String, String> {
+    MeetingsRepository::get_or_create_idempotency_key(state.db_manager.pool(), &meeting_id)
+        .await
+        .map_err(|e| {
+            error!(
+                "Failed to get_or_create idempotency key for meeting {}: {}",
+                meeting_id, e
+            );
+            e.to_string()
+        })
 }

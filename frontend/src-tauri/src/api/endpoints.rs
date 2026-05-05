@@ -535,6 +535,7 @@ pub async fn api_get_meeting_metadata<R: Runtime>(
                 created_at: meeting.created_at.0.to_rfc3339(),
                 updated_at: meeting.updated_at.0.to_rfc3339(),
                 folder_path: meeting.folder_path,
+                cloud_idempotency_key: meeting.cloud_idempotency_key,
             })
         }
         Ok(None) => {

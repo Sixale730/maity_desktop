@@ -134,6 +134,11 @@ pub struct MeetingMetadata {
     pub updated_at: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub folder_path: Option<String>,
+    /// Cloud dedup key (UUID v4) — present when this meeting has been synced
+    /// (or attempted) to maity.omi_conversations. Used by the frontend list
+    /// to match local rows against cloud rows deterministically.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cloud_idempotency_key: Option<String>,
 }
 
 /// Paginated transcripts response with total count
