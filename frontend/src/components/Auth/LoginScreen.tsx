@@ -118,10 +118,11 @@ export function LoginScreen() {
 
   const handleEmailSignIn = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!email || !password) return
+    const trimmedEmail = email.trim()
+    if (!trimmedEmail || !password) return
     setSubmitting(true)
     try {
-      await signInWithEmail(email, password)
+      await signInWithEmail(trimmedEmail, password)
     } catch {
       // Error already mapped to context error state
     } finally {
@@ -131,13 +132,15 @@ export function LoginScreen() {
 
   const handleSignUp = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!email || !password || !fullName) return
+    const trimmedEmail = email.trim()
+    const trimmedFullName = fullName.trim()
+    if (!trimmedEmail || !password || !trimmedFullName) return
     if (!validatePassword(password).isValid) return
     setSubmitting(true)
     try {
-      const result = await signUpWithEmail(email, password, fullName)
+      const result = await signUpWithEmail(trimmedEmail, password, trimmedFullName)
       if (result.needsVerification) {
-        setSuccessMessage(`Te enviamos un correo a ${email}. Confirma tu cuenta para continuar.`)
+        setSuccessMessage(`Te enviamos un correo a ${trimmedEmail}. Confirma tu cuenta para continuar.`)
       }
     } catch {
       // Error already mapped to context error state

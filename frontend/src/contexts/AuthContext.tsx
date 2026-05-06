@@ -54,6 +54,20 @@ function extractTokensFromUrl(url: string): { accessToken: string; refreshToken:
   }
 }
 
+const AUTH_REQUEST_TIMEOUT_MS = 30_000
+
+function withTimeout<T>(promise: Promise<T>, label: string): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) =>
+      setTimeout(
+        () => reject(new Error(`Auth ${label} timeout (${AUTH_REQUEST_TIMEOUT_MS}ms)`)),
+        AUTH_REQUEST_TIMEOUT_MS,
+      ),
+    ),
+  ])
+}
+
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [session, setSession] = useState<Session | null>(null)
   const [user, setUser] = useState<User | null>(null)
@@ -569,14 +583,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const signInWithEmail = useCallback(async (email: string, password: string) => {
     setError(null)
     await waitForSignOut()
+    logger.debug('[Auth] signIn start', { email })
+    const t0 = performance.now()
     try {
-      const { error: signInError } = await supabase.auth.signInWithPassword({ email, password })
+      const { error: signInError } = await withTimeout(
+        supabase.auth.signInWithPassword({ email, password }),
+        'signInWithPassword',
+      )
+      logger.debug('[Auth] signIn resolved', { ms: Math.round(performance.now() - t0), ok: !signInError })
       if (signInError) {
-        logger.debug('[Auth] Email sign-in error:', signInError.message)
         setError(translateAuthError(signInError))
         throw signInError
       }
     } catch (err) {
+      logger.debug('[Auth] signIn error', { ms: Math.round(performance.now() - t0), err })
       setError((prev) => prev ?? translateAuthError(err))
       throw err
     }
@@ -585,14 +605,24 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const signUpWithEmail = useCallback(async (email: string, password: string, fullName: string) => {
     setError(null)
     await waitForSignOut()
+    logger.debug('[Auth] signUp start', { email })
+    const t0 = performance.now()
     try {
-      const { data, error: signUpError } = await supabase.auth.signUp({
-        email,
-        password,
-        options: {
-          emailRedirectTo: 'https://maity.com.mx/auth/confirm',
-          data: { full_name: fullName },
-        },
+      const { data, error: signUpError } = await withTimeout(
+        supabase.auth.signUp({
+          email,
+          password,
+          options: {
+            emailRedirectTo: 'https://maity.com.mx/auth/confirm',
+            data: { full_name: fullName },
+          },
+        }),
+        'signUp',
+      )
+      logger.debug('[Auth] signUp resolved', {
+        ms: Math.round(performance.now() - t0),
+        needsVerification: !data?.session,
+        ok: !signUpError,
       })
       if (signUpError) {
         setError(translateAuthError(signUpError))
@@ -600,6 +630,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
       return { needsVerification: !data.session }
     } catch (err) {
+      logger.debug('[Auth] signUp error', { ms: Math.round(performance.now() - t0), err })
       setError((prev) => prev ?? translateAuthError(err))
       throw err
     }
@@ -607,15 +638,22 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const sendPasswordReset = useCallback(async (email: string) => {
     setError(null)
+    logger.debug('[Auth] reset start', { email })
+    const t0 = performance.now()
     try {
-      const { error: resetError } = await supabase.auth.resetPasswordForEmail(email, {
-        redirectTo: 'https://maity.com.mx/auth/reset',
-      })
+      const { error: resetError } = await withTimeout(
+        supabase.auth.resetPasswordForEmail(email, {
+          redirectTo: 'https://maity.com.mx/auth/reset',
+        }),
+        'resetPasswordForEmail',
+      )
+      logger.debug('[Auth] reset resolved', { ms: Math.round(performance.now() - t0), ok: !resetError })
       if (resetError) {
         setError(translateAuthError(resetError))
         throw resetError
       }
     } catch (err) {
+      logger.debug('[Auth] reset error', { ms: Math.round(performance.now() - t0), err })
       setError((prev) => prev ?? translateAuthError(err))
       throw err
     }

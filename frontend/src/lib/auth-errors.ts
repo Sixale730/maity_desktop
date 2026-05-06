@@ -6,5 +6,6 @@ export function translateAuthError(error: unknown): string {
   if (msg.includes('password should be at least')) return 'La contraseña no cumple los requisitos mínimos.'
   if (msg.includes('rate limit')) return 'Demasiados intentos. Espera unos minutos antes de reintentar.'
   if (msg.includes('network') || msg.includes('failed to fetch')) return 'Sin conexión. Verifica tu internet.'
+  if (msg.includes('timeout') || msg.includes('aborted')) return 'La solicitud tardó demasiado. Verifica tu conexión e intenta de nuevo.'
   return (error instanceof Error && error.message) || 'Error inesperado. Intenta de nuevo.'
 }
