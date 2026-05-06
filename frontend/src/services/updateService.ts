@@ -58,12 +58,15 @@ export class UpdateService {
     }
 
     this.updateCheckInProgress = true;
-    this.lastCheckTime = Date.now();
 
     try {
       const currentVersion = await getVersion();
       logger.info(`[updateService] Checking for updates (current: ${currentVersion}, force: ${force})`);
       const update = await check();
+      // Solo marcamos cooldown cuando check() retorna sin lanzar. Si falla
+      // (red, plugin no listo, etc.) no envenenamos el cooldown 24h y el
+      // siguiente intento puede reintentar inmediatamente.
+      this.lastCheckTime = Date.now();
 
       if (update?.available) {
         logger.info(`[updateService] Update available: ${update.version} (current: ${currentVersion})`);

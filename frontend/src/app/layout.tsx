@@ -512,12 +512,12 @@ export default function RootLayout({
             <ThemeProvider>
               <AnalyticsProvider>
                 <AuthProvider>
-                  <UpdateCheckProvider>
-                    <AuthGate>
+                  <AuthGate>
+                    <UpdateCheckProvider>
                       <CloudSyncInitializer />
                       <AppContent>{children}</AppContent>
-                    </AuthGate>
-                  </UpdateCheckProvider>
+                    </UpdateCheckProvider>
+                  </AuthGate>
                 </AuthProvider>
               </AnalyticsProvider>
             </ThemeProvider>
