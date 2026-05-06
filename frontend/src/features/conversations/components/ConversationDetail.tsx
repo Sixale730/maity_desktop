@@ -330,18 +330,20 @@ export function ConversationDetail({ conversation: initialConversation, onClose,
               Analizando...
             </Button>
           ) : hasAnalysis ? (
-            <Button variant="outline" size="sm" onClick={handleReanalyze} disabled={!canAnalyze}>
+            <Button variant="outline" size="sm" onClick={handleRetryStalled} disabled={!canAnalyze}>
               <RefreshCw className="h-4 w-4 mr-2" />
               Reanalizar
             </Button>
           ) : analysisSkipped ? (
             null /* Don't show retry button — insufficient data won't produce a different result */
-          ) : (
-            <Button size="sm" onClick={handleReanalyze} disabled={!canAnalyze}>
-              <Sparkles className="h-4 w-4 mr-2" />
-              Analizar conversación
+          ) : phase === 'failed' ? (
+            /* Only show the retry button once failure is confirmed by the backend.
+             * For idle/unknown states, hide it to avoid users double-firing analyses. */
+            <Button size="sm" onClick={handleRetryStalled} disabled={!canAnalyze}>
+              <RefreshCw className="h-4 w-4 mr-2" />
+              Reintentar análisis
             </Button>
-          )}
+          ) : null}
           <Button variant="ghost" size="icon" onClick={onClose}>
             <X className="h-5 w-5" />
           </Button>
@@ -390,7 +392,7 @@ export function ConversationDetail({ conversation: initialConversation, onClose,
       <AnalysisStatusBanner
         phase={phase}
         realtimeStatus={realtimeStatus}
-        onRetry={canAnalyze ? (phase === 'stalled' ? handleRetryStalled : handleReanalyze) : undefined}
+        onRetry={canAnalyze ? handleRetryStalled : undefined}
       />
 
       {/* 3 Tabs: Análisis + Minuta + Transcripción */}
@@ -505,22 +507,33 @@ export function ConversationDetail({ conversation: initialConversation, onClose,
                     <h3 className="text-lg font-medium mb-2 text-foreground">Analizando con Maity...</h3>
                     <p className="text-muted-foreground">Las métricas se mostrarán automáticamente</p>
                   </>
-                ) : (
+                ) : phase === 'failed' ? (
+                  /* Confirmed failure — show the retry button. handleRetryStalled
+                   * refetches first and only re-fires if the row is still
+                   * non-terminal, so multiple clicks are safe. */
                   <>
                     <Sparkles className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
-                    <h3 className="text-lg font-medium mb-2 text-foreground">Sin análisis disponible</h3>
-                    <p className="text-muted-foreground mb-4">Analiza la conversación para obtener métricas de comunicación</p>
+                    <h3 className="text-lg font-medium mb-2 text-foreground">El análisis falló</h3>
+                    <p className="text-muted-foreground mb-4">Reintenta para generar las métricas de comunicación</p>
                     {reanalyzeMutation.isPending ? (
                       <Button disabled>
                         <Loader2 className="h-4 w-4 mr-2 animate-spin" />
                         Analizando...
                       </Button>
                     ) : (
-                      <Button onClick={handleReanalyze} disabled={!canAnalyze}>
-                        <Sparkles className="h-4 w-4 mr-2" />
-                        Analizar conversación
+                      <Button onClick={handleRetryStalled} disabled={!canAnalyze}>
+                        <RefreshCw className="h-4 w-4 mr-2" />
+                        Reintentar análisis
                       </Button>
                     )}
+                  </>
+                ) : (
+                  /* Idle / unknown / waiting — passive state, no button to avoid
+                   * users double-firing while the system catches up. */
+                  <>
+                    <Loader2 className="h-12 w-12 mx-auto text-muted-foreground mb-4 animate-spin" />
+                    <h3 className="text-lg font-medium mb-2 text-foreground">Esperando análisis</h3>
+                    <p className="text-muted-foreground">El análisis aún no está disponible para esta conversación</p>
                   </>
                 )}
               </CardContent>

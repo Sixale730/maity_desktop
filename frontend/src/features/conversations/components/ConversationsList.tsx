@@ -36,11 +36,26 @@ export function ConversationsList({ onSelect, selectedId }: ConversationsListPro
     enabled: !!maityUser?.id,
   });
 
-  // Cloud data loads in background
+  // Cloud data loads in background. Polling floor: while at least one row is
+  // non-terminal (processing/pending/null), refetch every 15s as a fallback for
+  // the cases where Realtime is silently degraded (RLS/JWT desync, Tauri WebView
+  // suspending the WS, etc.). Stops automatically when all rows are terminal.
   const { data: cloudConversations, isLoading: isCloudLoading, error, refetch, isFetching } = useQuery({
     queryKey: ['omi-conversations', maityUser?.id],
     queryFn: () => getOmiConversations(maityUser?.id),
     enabled: !!maityUser?.id,
+    refetchInterval: (q) => {
+      const data = q.state.data as OmiConversation[] | undefined;
+      if (!data || data.length === 0) return false;
+      const hasInFlight = data.some((c) =>
+        c.analysis_status === 'processing' ||
+        c.analysis_status === 'pending' ||
+        c.analysis_status === null,
+      );
+      return hasInFlight ? 15_000 : false;
+    },
+    refetchOnWindowFocus: true,
+    refetchOnReconnect: true,
   });
 
   // Merge: local shows first, cloud enriches
