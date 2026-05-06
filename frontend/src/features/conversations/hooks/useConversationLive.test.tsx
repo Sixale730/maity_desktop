@@ -241,8 +241,8 @@ describe('useConversationLive', () => {
     });
   });
 
-  it('derives phase=stalled when finished_at is older than 6 minutes and not terminal', async () => {
-    const old = new Date(Date.now() - 7 * 60_000).toISOString();
+  it('derives phase=stalled when finished_at is older than STALL_TIMEOUT_MS and not terminal', async () => {
+    const old = new Date(Date.now() - 11 * 60_000).toISOString();
     const stuck = makeConversation({ analysis_status: 'processing', finished_at: old });
     getOmiConversationMock.mockResolvedValue(stuck);
 

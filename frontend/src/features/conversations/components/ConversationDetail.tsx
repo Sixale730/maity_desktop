@@ -20,6 +20,7 @@ import {
   isFullAnalysis,
 } from '../services/conversations.service';
 import { useConversationLive } from '../hooks/useConversationLive';
+import { derivePhase } from '../utils/derivePhase';
 import { AnalysisStatusBanner } from './AnalysisStatusBanner';
 import { SessionFeedbackModal } from '@/components/recording/SessionFeedbackModal';
 import { TranscriptSection } from './analysis';
@@ -84,8 +85,8 @@ export function ConversationDetail({ conversation: initialConversation, onClose,
 
   // For local-only convos (not yet in Supabase) we keep state locally and fetch
   // the transcript from SQLite. For cloud convos, useConversationLive is the
-  // single source of truth: TanStack Query + Realtime hint + 3s polling floor +
-  // visibility/online refetch + 6 min stalled timeout.
+  // single source of truth: TanStack Query + Realtime hint with auto-reconnect
+  // + 3s polling floor (15s when stalled) + visibility/online refetch.
   const [localConversation, setLocalConversation] = useState(initialConversation);
   const live = useConversationLive(conversationId, isLocalOnly ? undefined : initialConversation, !isLocalOnly);
 
@@ -227,6 +228,24 @@ export function ConversationDetail({ conversation: initialConversation, onClose,
       return;
     }
     reanalyzeMutation.mutate(text);
+  };
+
+  // Stalled retry: refetch first, only re-trigger analysis if the row
+  // still isn't done. Avoids burning an OpenAI call when the backend
+  // already finished but the client got stuck.
+  const handleRetryStalled = async () => {
+    if (isLocalOnly) {
+      handleReanalyze();
+      return;
+    }
+    const fresh = await live.refetch();
+    if (!fresh) {
+      handleReanalyze();
+      return;
+    }
+    const freshPhase = derivePhase(fresh);
+    if (freshPhase === 'completed' || freshPhase === 'skipped') return;
+    handleReanalyze();
   };
 
   const formatDuration = (seconds: number | null) => {
@@ -371,7 +390,7 @@ export function ConversationDetail({ conversation: initialConversation, onClose,
       <AnalysisStatusBanner
         phase={phase}
         realtimeStatus={realtimeStatus}
-        onRetry={canAnalyze ? handleReanalyze : undefined}
+        onRetry={canAnalyze ? (phase === 'stalled' ? handleRetryStalled : handleReanalyze) : undefined}
       />
 
       {/* 3 Tabs: Análisis + Minuta + Transcripción */}

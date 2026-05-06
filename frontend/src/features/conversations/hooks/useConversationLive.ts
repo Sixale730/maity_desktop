@@ -9,6 +9,7 @@ import type { OmiConversation } from '../services/conversations.service';
 import { derivePhase, isTerminalPhase, type AnalysisPhase } from '../utils/derivePhase';
 
 const POLL_INTERVAL_MS = 3_000;
+const STALLED_POLL_INTERVAL_MS = 15_000;
 const REALTIME_CONNECT_TIMEOUT_MS = 5_000;
 
 export type RealtimeStatus = 'connecting' | 'live' | 'degraded';
@@ -17,7 +18,7 @@ export interface UseConversationLiveResult {
   conversation: OmiConversation;
   phase: AnalysisPhase;
   realtimeStatus: RealtimeStatus;
-  refetch: () => Promise<void>;
+  refetch: () => Promise<OmiConversation | undefined>;
 }
 
 const conversationQueryKey = (id: string) => ['omi-conversation', id] as const;
@@ -65,7 +66,9 @@ export function useConversationLive(
       const data = q.state.data as OmiConversation | undefined;
       if (!data) return POLL_INTERVAL_MS;
       const phase = derivePhase(data);
-      return isTerminalPhase(phase) || phase === 'stalled' ? false : POLL_INTERVAL_MS;
+      if (isTerminalPhase(phase)) return false;
+      if (phase === 'stalled') return STALLED_POLL_INTERVAL_MS;
+      return POLL_INTERVAL_MS;
     },
     retry: 2,
   });
@@ -73,58 +76,103 @@ export function useConversationLive(
   const conversation = (query.data ?? initialData) as OmiConversation;
 
   // Realtime subscription — only cloud rows.
+  // Self-healing: if the channel ever drops (RLS, network, Tauri WebView
+  // suspending WS on focus loss, etc.) we reconnect with exponential backoff
+  // (2s → 4s → 8s → 16s → 30s cap, ±20% jitter). The polling floor keeps
+  // correctness while we're degraded; this just restores the low-latency path.
   useEffect(() => {
     if (!enabled) return;
 
-    let degradedTimer: ReturnType<typeof setTimeout> | null = null;
-    // Distinguishes a real server-side CLOSED (RLS reject, network) from the
-    // CLOSED that the subscribe callback receives synchronously when our
-    // cleanup calls channel.unsubscribe() — those are expected and must not
-    // surface as 'degraded' or warn-log noise.
     let cleanedUp = false;
-    setRealtimeStatus('connecting');
+    let attempt = 0;
+    let connectTimer: ReturnType<typeof setTimeout> | null = null;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let currentChannel: ReturnType<typeof supabase.channel> | null = null;
 
-    const channel = supabase
-      .channel(`omi-conv-${conversationId}`)
-      .on(
-        'postgres_changes',
-        {
-          event: 'UPDATE',
-          schema: 'maity',
-          table: 'omi_conversations',
-          filter: `id=eq.${conversationId}`,
-        },
-        () => {
-          // Hint only — invalidate so TanStack refetches authoritative state.
-          queryClient.invalidateQueries({ queryKey: conversationQueryKey(conversationId) });
-        },
-      )
-      .subscribe((status, err) => {
-        if (cleanedUp) return;
-        if (status === 'SUBSCRIBED') {
-          if (degradedTimer) {
-            clearTimeout(degradedTimer);
-            degradedTimer = null;
+    const computeBackoffMs = (n: number) => {
+      const base = Math.min(2_000 * 2 ** n, 30_000);
+      const jitter = base * 0.2 * (Math.random() * 2 - 1);
+      return Math.max(500, Math.floor(base + jitter));
+    };
+
+    const scheduleReconnect = () => {
+      if (cleanedUp || reconnectTimer) return;
+      const delay = computeBackoffMs(attempt);
+      attempt += 1;
+      logger.warn(`[useConversationLive] Realtime reconnect scheduled in ${delay}ms (attempt ${attempt}) for ${conversationId}`);
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = null;
+        subscribe();
+      }, delay);
+    };
+
+    const subscribe = () => {
+      if (cleanedUp) return;
+
+      // Tear down prior channel and any pending timers before opening a new one.
+      if (currentChannel) {
+        try { void currentChannel.unsubscribe(); } catch { /* ignore */ }
+        currentChannel = null;
+      }
+      if (connectTimer) { clearTimeout(connectTimer); connectTimer = null; }
+
+      setRealtimeStatus('connecting');
+
+      // Per-attempt staleness flag: ignore late callbacks from a channel we
+      // already abandoned (e.g. CLOSED arriving after the connect timer fired).
+      let stale = false;
+
+      const channel = supabase
+        .channel(`omi-conv-${conversationId}`)
+        .on(
+          'postgres_changes',
+          {
+            event: 'UPDATE',
+            schema: 'maity',
+            table: 'omi_conversations',
+            filter: `id=eq.${conversationId}`,
+          },
+          () => {
+            queryClient.invalidateQueries({ queryKey: conversationQueryKey(conversationId) });
+          },
+        )
+        .subscribe((status, err) => {
+          if (cleanedUp || stale) return;
+          if (status === 'SUBSCRIBED') {
+            if (connectTimer) { clearTimeout(connectTimer); connectTimer = null; }
+            attempt = 0;
+            setRealtimeStatus('live');
+            logger.debug(`[useConversationLive] Realtime SUBSCRIBED for ${conversationId}`);
+          } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
+            stale = true;
+            setRealtimeStatus('degraded');
+            if (err) logger.warn(`[useConversationLive] Realtime ${status} for ${conversationId}: ${err.message}`);
+            else logger.warn(`[useConversationLive] Realtime ${status} for ${conversationId}`);
+            scheduleReconnect();
           }
-          setRealtimeStatus('live');
-          logger.debug(`[useConversationLive] Realtime SUBSCRIBED for ${conversationId}`);
-        } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
-          setRealtimeStatus('degraded');
-          if (err) logger.warn(`[useConversationLive] Realtime ${status} for ${conversationId}: ${err.message}`);
-          else logger.warn(`[useConversationLive] Realtime ${status} for ${conversationId}`);
-        }
-      });
+        });
 
-    // If we don't reach SUBSCRIBED within 5s, surface degraded state. Polling floor still rescues.
-    degradedTimer = setTimeout(() => {
-      setRealtimeStatus((prev) => (prev === 'connecting' ? 'degraded' : prev));
-      logger.warn(`[useConversationLive] Realtime did not reach SUBSCRIBED in ${REALTIME_CONNECT_TIMEOUT_MS}ms for ${conversationId}`);
-    }, REALTIME_CONNECT_TIMEOUT_MS);
+      currentChannel = channel;
+
+      connectTimer = setTimeout(() => {
+        if (cleanedUp || stale) return;
+        stale = true;
+        setRealtimeStatus((prev) => (prev === 'connecting' ? 'degraded' : prev));
+        logger.warn(`[useConversationLive] Realtime did not reach SUBSCRIBED in ${REALTIME_CONNECT_TIMEOUT_MS}ms for ${conversationId}`);
+        scheduleReconnect();
+      }, REALTIME_CONNECT_TIMEOUT_MS);
+    };
+
+    subscribe();
 
     return () => {
       cleanedUp = true;
-      if (degradedTimer) clearTimeout(degradedTimer);
-      void channel.unsubscribe();
+      if (connectTimer) clearTimeout(connectTimer);
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      if (currentChannel) {
+        try { void currentChannel.unsubscribe(); } catch { /* ignore */ }
+        currentChannel = null;
+      }
     };
   }, [conversationId, enabled, queryClient]);
 
@@ -171,7 +219,8 @@ export function useConversationLive(
     phase,
     realtimeStatus,
     refetch: async () => {
-      await query.refetch();
+      const result = await query.refetch();
+      return result.data;
     },
   };
 }

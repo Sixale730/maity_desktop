@@ -10,7 +10,7 @@ export type AnalysisPhase =
   | 'stalled';
 
 /** Hard timeout: if `finished_at` is older than this and analysis is not terminal, surface 'stalled'. */
-export const STALL_TIMEOUT_MS = 6 * 60 * 1000;
+export const STALL_TIMEOUT_MS = 10 * 60 * 1000;
 
 /**
  * Derive the user-facing analysis phase from the conversation's authoritative state in DB.
