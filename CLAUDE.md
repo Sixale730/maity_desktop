@@ -436,6 +436,39 @@ Fire-and-forget: sync cloud via sync_queue (background)
 ConversationDetail: muestra datos locales, poll cloud analysis
 ```
 
+### Patron Visual: Dashboard de Gamificacion (DPI Scaling Windows)
+
+El componente `GamifiedDashboardV2.tsx` y el Card de "Mision Actual" tienen reglas estrictas — violarlas ha causado 4 regresiones documentadas (commits `5400b67`, `2b90533`, `7ed9829` + iter 2 mayo 2026).
+
+**Reglas (NO eliminar al refactorizar):**
+
+1. **CERO breakpoints `md:`/`lg:` dentro del Card de la mision ni en el header del dashboard.** El DPI scaling de Windows (125%, 150%) hace que el viewport reportado al webview de Tauri caiga entre breakpoints de Tailwind, asi clases `md:flex-row` no se aplican y el layout colapsa a la version mobile (todo apilado vertical). Usar siempre flexbox de ancho fijo (`flex-1`, `w-1/2`, `w-[460px]`).
+
+2. **Imagen como `<img>` con `object-cover object-[center_30%]`** — NO `bg-cover bg-bottom` (causo zoom/recorte feo en commit `5400b67`) ni `object-center` (puede mostrar solo cielo si la imagen es vertical). El `[center_30%]` ancla las cumbres en el area visible.
+
+3. **Estructura HÍBRIDA: imagen full-width del Card + cartel der con `bg-[#0F0F0F]` propio.** Despues de iterar 4 veces (mayo 2026), el patron que funciona en desktop NO es ni full-width-puro (cartel se ve translucido sobre la imagen — iter 3) ni side-by-side-encerrado-puro (linea marcada vertical donde termina `w-1/2 overflow-hidden` — iter 4). Es un hibrido:
+    ```tsx
+    <Card className="relative overflow-hidden bg-[#0F0F0F]">
+      {/* Imagen full-width del Card, NO encerrada */}
+      <img className="absolute inset-0 w-full h-full object-cover object-[center_30%]" />
+      <div className="absolute inset-0 bg-gradient-to-r from-black/40 via-transparent to-[#0F0F0F]" />
+
+      <div className="relative flex min-h-[320px]">
+        <div className="w-1/2 flex flex-col justify-end p-5">{/* texto Mision sobre la imagen, sin bg propio */}</div>
+        <div className="w-1/2 bg-[#0F0F0F] p-5 ...">{/* cartel CON bg propio para tapar imagen detras */}</div>
+      </div>
+    </Card>
+    ```
+    **Por que funciona:** la imagen abarca todo el card sin borde fisico (no hay wrapper `overflow-hidden` cortandola). El cartel der tiene su propio `bg-[#0F0F0F]` que tapa la imagen visualmente desde el 50% del card. Como el gradient termina en `to-[#0F0F0F]` Y el cartel ES `bg-[#0F0F0F]`, ambos son el mismo color y la transicion es invisible.
+
+4. **Gradient simetrico cinematografico** — `bg-gradient-to-r from-black/40 via-transparent to-[#0F0F0F]`. Inspirado del web (`to-card`). La SIMETRÍA visual `oscuro → claro → oscuro` da efecto cinematografico ademas de ayudar a ocultar la transicion. NO usar gradient asimetrico tipo `from-transparent ... to-[#0F0F0F]` sin `from-black/40` (causa "linea marcada" iter 2). NO usar stops arbitrarios `from-30% to-65%` (iter 2 fix-attempt) — la simetria tradicional `from-X via-transparent to-Y` es suficiente cuando el cartel der tiene bg propio. Si `bg-[#0F0F0F]` del Card padre cambia, este `to-[...]` Y el `bg-[...]` del cartel der deben coincidir exactamente.
+
+5. **Layout outer del grid principal:** `<div className="flex gap-6 mb-6">` con `flex-1 min-w-0` (izquierda: misión + comunicación) y `w-[460px] shrink-0` (derecha: radar + ranking). El `min-w-0` evita que `flex-1` se desborde por contenido grande dentro.
+
+**Imagen:** `frontend/public/images/mission-mountain.jpg` — bundleada localmente (eliminamos dependencia de Unsplash en `5400b67`).
+
+**Si necesitas cambiar el split 50/50 dentro del Card,** modificar AMBOS lados con anchos consistentes (ej. `w-[55%]` + `w-[45%]`) sin breakpoints. Probar con DPI 125% y 150% en Windows antes de mergear.
+
 ## Depuracion
 
 ```bash

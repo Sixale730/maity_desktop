@@ -1,58 +1,71 @@
 'use client';
 
-import { useRouter } from 'next/navigation';
+import { useMemo } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useGamifiedDashboardDataV2 } from '../hooks/useGamifiedDashboardDataV2';
+import { useProgressChartsData } from '../hooks/useProgressChartsData';
+import { useFormResponsesRadar } from '../hooks/useFormResponsesRadar';
 import { Card } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
-import { RadarChartV2 } from './RadarChartV2';
-import { ProgressChartsSection } from './ProgressChartsSection';
+import { RadarChartV2, type RadarSeriesPoint } from './RadarChartV2';
 import {
-  AreaChart, Area, ResponsiveContainer, YAxis, XAxis, CartesianGrid, LabelList, Tooltip,
+  AreaChart, Area, ResponsiveContainer, YAxis,
+  XAxis, CartesianGrid, Tooltip,
 } from 'recharts';
 import {
-  Zap, Flame, ArrowRight, ChevronRight,
-  Activity, Crown, Swords,
-  TrendingUp, TrendingDown, Target,
+  Zap, Flame,
+  Crown, Swords,
+  TrendingUp, Target,
 } from 'lucide-react';
+
+// ============================================================================
+// CONSTANTS (idénticas al web)
+// ============================================================================
+
+const COMPETENCY_TO_DIM: Record<string, string> = {
+  'Claridad':   'Claridad',
+  'Estructura': 'Estructura',
+  'Empatía':    'Empatía',
+  'Adaptación': 'Adaptación',
+  'Persuasión': 'Vocabulario',
+  'Propósito':  'Objetivo',
+};
+
+const GENERIC_TIPS = [
+  {
+    num: 1,
+    title: 'Estructura tus mensajes',
+    desc: 'Antes de hablar, define 3 puntos clave que quieres comunicar. Usa la estructura: contexto → mensaje principal → acción esperada.',
+    meta: 'Impacto: Claridad y Estructura',
+    accent: 'hsl(var(--maity-blue))',
+  },
+  {
+    num: 2,
+    title: 'Reduce muletillas con pausas',
+    desc: 'Sustituye los "este", "o sea" y "bueno" por pausas breves de silencio. Graba 1 minuto de habla diario y cuenta tus muletillas para ganar conciencia.',
+    meta: 'Impacto: Credibilidad y fluidez verbal',
+    accent: '#f97316',
+  },
+  {
+    num: 3,
+    title: 'Convierte ideas en acciones concretas',
+    desc: 'Cada vez que digas "hay que hacer X", reformula a "[Nombre] hace [X] para [fecha]". Esto mejora tu orientación a objetivo y tu liderazgo.',
+    meta: 'Impacto: Objetivo y Persuasión',
+    accent: '#ffd93d',
+  },
+  {
+    num: 4,
+    title: 'Practica la escucha activa',
+    desc: 'Antes de responder, parafrasea lo que dijo la otra persona. Esto demuestra empatía, evita malentendidos y mejora la calidad de la conversación.',
+    meta: 'Impacto: Empatía y Adaptación',
+    accent: 'hsl(var(--accent))',
+  },
+];
 
 // ============================================================================
 // REUSABLE COMPONENTS
 // ============================================================================
 
-const CircularScore = ({ value, label, color, size = 80 }: {
-  value: number;
-  label: string;
-  color: string;
-  size?: number;
-}) => {
-  const radius = (size - 12) / 2;
-  const circumference = 2 * Math.PI * radius;
-  const progress = (value / 10) * circumference;
-
-  return (
-    <div className="flex flex-col items-center">
-      <div className="relative" style={{ width: size, height: size }}>
-        <svg className="transform -rotate-90" width={size} height={size}>
-          <circle cx={size / 2} cy={size / 2} r={radius} fill="none" stroke="#1a1a2e" strokeWidth="6" />
-          <circle
-            cx={size / 2} cy={size / 2} r={radius} fill="none" stroke={color} strokeWidth="6"
-            strokeLinecap="round" strokeDasharray={circumference}
-            strokeDashoffset={circumference - progress}
-            className="transition-all duration-1000 ease-out"
-            style={{ filter: `drop-shadow(0 0 6px ${color}40)` }}
-          />
-        </svg>
-        <div className="absolute inset-0 flex items-center justify-center">
-          <span className="text-xl font-bold text-white">{value.toFixed(1)}</span>
-        </div>
-      </div>
-      <span className="text-xs text-gray-500 mt-2 uppercase font-bold tracking-wider">{label}</span>
-    </div>
-  );
-};
-
-const ProgressBar = ({ value, max = 100, color = '#485df4', height = 'h-2', glow = false }: {
+const ProgressBar = ({ value, max = 100, color = 'hsl(var(--maity-blue))', height = 'h-2', glow = false }: {
   value: number;
   max?: number;
   color?: string;
@@ -71,7 +84,6 @@ const ProgressBar = ({ value, max = 100, color = '#485df4', height = 'h-2', glow
   </div>
 );
 
-// Letter Avatar (replaces VoxelAvatar from web)
 const LetterAvatar = ({ name }: { name: string }) => {
   const initials = name
     .split(' ')
@@ -88,22 +100,59 @@ const LetterAvatar = ({ name }: { name: string }) => {
 };
 
 // ============================================================================
-// MAIN COMPONENT
+// MAIN COMPONENT (clon del web — solo imports/hooks adaptados)
 // ============================================================================
 
 export function GamifiedDashboardV2() {
-  const router = useRouter();
   const { maityUser } = useAuth();
   const data = useGamifiedDashboardDataV2();
+  const { radarData, sessionHistory } = useProgressChartsData(data.conversations);
+  const { radarData: selfAssessmentData } = useFormResponsesRadar();
 
   const firstName = maityUser?.first_name || 'Usuario';
 
+  // Communication trend: real session global scores in chronological order
+  const communicationTrend = useMemo(() => {
+    if (!sessionHistory.length) return [];
+    return [...sessionHistory].reverse().map(row => ({
+      fecha: row.fecha,
+      score: row.global,
+    }));
+  }, [sessionHistory]);
+
+  // Build enriched radar data: each competency carries s1/s6/auto
+  const enrichedRadarData = useMemo<RadarSeriesPoint[]>(() => {
+    return data.competencies.map((comp) => {
+      const dimKey = COMPETENCY_TO_DIM[comp.name] ?? comp.name;
+      const aiMatch = radarData.find(r => r.dim === dimKey);
+      const autoMatch = selfAssessmentData.find(sa => sa.competencia === comp.name);
+      return {
+        name: comp.name,
+        color: comp.color,
+        s1: aiMatch?.s1 ?? 0,
+        s6: aiMatch?.s6 ?? 0,
+        auto: autoMatch?.usuario ?? comp.value ?? 0,
+      };
+    });
+  }, [data.competencies, radarData, selfAssessmentData]);
+
+  if (data.loading) {
+    return (
+      <div className="flex items-center justify-center h-[60vh]">
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-pink-500" />
+      </div>
+    );
+  }
+
+  // Find strongest and weakest competency (based on autoevaluation, as before)
   const strongest = data.competencies.length > 0
     ? data.competencies.reduce((max, c) => c.value > max.value ? c : max, data.competencies[0])
     : { name: '—', value: 0, color: '#485df4' };
   const weakest = data.competencies.length > 0
     ? data.competencies.reduce((min, c) => c.value < min.value ? c : min, data.competencies[0])
     : { name: '—', value: 0, color: '#ef4444' };
+
+  // Calculate XP progress percentage
   const xpProgress = Math.min((data.xp / data.nextLevelXP) * 100, 100);
 
   return (
@@ -115,17 +164,20 @@ export function GamifiedDashboardV2() {
       <div className="flex flex-row justify-between items-center mb-8 gap-6">
         {/* Left: Avatar + Greeting */}
         <div className="flex items-center gap-5">
+          {/* Avatar */}
           <div className="relative">
             <div className="w-20 h-20 rounded-full bg-gradient-to-br from-[#ff0050] to-[#485df4] p-1 shadow-lg shadow-pink-500/20">
               <div className="w-full h-full rounded-full bg-[#0a0a12] overflow-hidden flex items-center justify-center">
                 <LetterAvatar name={firstName} />
               </div>
             </div>
+            {/* Level badge */}
             <div className="absolute -bottom-1 -right-1 bg-[#485df4] text-white text-xs font-bold px-2 py-0.5 rounded-full border-2 border-[#0a0a12]">
               Lv.{data.level}
             </div>
           </div>
 
+          {/* Greeting */}
           <div>
             <h1 className="text-3xl font-bold text-white mb-1">
               Hola, {firstName}! <span className="inline-block animate-pulse">👋</span>
@@ -133,6 +185,7 @@ export function GamifiedDashboardV2() {
             <p className="text-gray-400 text-sm">
               <span className="text-[#1bea9a] font-semibold">{data.rank}</span> • {data.xp} / {data.nextLevelXP} XP
             </p>
+            {/* XP Progress Bar */}
             <div className="mt-2 w-48">
               <ProgressBar value={xpProgress} color="#ff0050" height="h-1.5" glow />
             </div>
@@ -141,6 +194,7 @@ export function GamifiedDashboardV2() {
 
         {/* Right: Quick Stats */}
         <div className="flex gap-3">
+          {/* Streak */}
           <div className="flex items-center gap-3 bg-gradient-to-r from-orange-500/10 to-red-500/10 px-5 py-3 rounded-2xl border border-orange-500/20">
             <div className="p-2 bg-orange-500/20 rounded-xl">
               <Flame size={22} className="text-orange-500" />
@@ -151,6 +205,7 @@ export function GamifiedDashboardV2() {
             </div>
           </div>
 
+          {/* XP */}
           <div className="flex items-center gap-3 bg-gradient-to-r from-pink-500/10 to-purple-500/10 px-5 py-3 rounded-2xl border border-pink-500/20">
             <div className="p-2 bg-pink-500/20 rounded-xl">
               <Zap size={22} className="text-pink-500" />
@@ -164,117 +219,134 @@ export function GamifiedDashboardV2() {
       </div>
 
       {/* ================================================================== */}
-      {/* MAIN GRID: Mission + Radar + Score */}
+      {/* MAIN GRID: Mission + Communication Trend (left) | Radar + Ranking (right) */}
       {/* ================================================================== */}
       <div className="flex gap-6 mb-6">
 
-        {/* LEFT: Mission Card */}
-        <div className="flex-1 min-w-0">
-          <Card className="h-full relative overflow-hidden border-2 border-pink-500/20 hover:border-pink-500/40 transition-all bg-[#0F0F0F] group flex flex-col">
-            <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/40 to-transparent z-10" />
+        {/* LEFT: Mission + Communication Trend */}
+        <div className="flex-1 min-w-0 flex flex-col gap-6">
+          {/* Mission Card — HÍBRIDO: imagen full-width del card (sin borde físico de wrapper) + cartel der con su propio bg sólido que tapa la imagen detrás.
+              Combina lo mejor del patrón web (gradient simétrico cinematográfico) sin el problema del overflow-hidden side-by-side.
+              Como el gradient termina en to-[#0F0F0F] y el cartel der tiene bg-[#0F0F0F], la transición es visualmente invisible. */}
+          <Card className="relative overflow-hidden border-2 border-pink-500/20 hover:border-pink-500/40 transition-all bg-[#0F0F0F] group">
+            {/* IMAGEN: cubre TODO el card, no encerrada en w-1/2 */}
             <img
               src="/images/mission-mountain.jpg"
               alt=""
-              className="absolute inset-0 w-full h-full object-cover object-[center_30%] opacity-60 group-hover:opacity-70 group-hover:scale-105 transition-all duration-700"
+              className="absolute inset-0 w-full h-full object-cover object-[center_30%] group-hover:scale-105 transition-transform duration-700"
             />
+            {/* GRADIENT WEB simétrico: oscuro-claro-card */}
+            <div className="absolute inset-0 bg-gradient-to-r from-black/40 via-transparent to-[#0F0F0F]" />
 
-            {/* Sparkline overlay — last 6 conversations' score (0-100). Hidden when <2 points.
-                Absolute pixel positioning (not flex+%) so ResponsiveContainer can measure its parent. */}
-            {data.scoreSparkline.length >= 2 && (
-              <div className="absolute inset-x-0 bottom-[140px] h-[180px] z-[11] pointer-events-none opacity-[0.18] px-4">
+            <div className="relative flex min-h-[320px]">
+              {/* IZQ: texto Misión Actual + título sobre la imagen (sin bg, transparente) */}
+              <div className="w-1/2 flex flex-col justify-end p-5">
+                <div className="flex items-center gap-2 text-pink-500 font-bold tracking-widest uppercase text-xs mb-1 drop-shadow-lg">
+                  <Swords size={14} /> Misión Actual
+                </div>
+                <h2 className="text-3xl font-bold text-white leading-tight drop-shadow-lg">
+                  {data.mission.map}
+                </h2>
+              </div>
+
+              {/* DER: cartel + progreso — bg-[#0F0F0F] PROPIO para tapar la imagen detrás (sin esto se vería translúcido) */}
+              <div className="w-1/2 bg-[#0F0F0F] p-5 flex flex-col justify-between gap-4">
+                {/* TOP: solo badge 30 días alineado a la derecha */}
+                <div className="flex items-center justify-end">
+                  <div className="flex items-center gap-2 bg-black/40 px-3 py-1.5 rounded-full border border-white/10">
+                    <span className="text-yellow-500 text-xs">📅</span>
+                    <span className="text-xs text-white font-medium">30 días</span>
+                  </div>
+                </div>
+
+                {/* MEDIO: Enemigo Final full width */}
+                <div className="flex items-center gap-3 bg-black/40 px-4 py-3 rounded-xl border border-red-500/30">
+                  <span className="text-4xl">{data.mission.enemyIcon}</span>
+                  <div className="min-w-0">
+                    <div className="text-[10px] text-red-400 uppercase font-bold tracking-wider mb-0.5">
+                      ⚔️ Enemigo Final
+                    </div>
+                    <div className="text-white font-bold text-base leading-tight">{data.mission.enemy}</div>
+                    <div className="text-xs text-gray-400 truncate">{data.mission.enemyDesc}</div>
+                  </div>
+                </div>
+
+                {/* BOTTOM: progreso */}
+                <div>
+                  <div className="flex justify-between items-center text-xs mb-1.5">
+                    <span className="text-gray-300 flex items-center gap-1.5">
+                      <span>🗺️</span> Día {Math.ceil(data.mission.progress * 0.3)} de 30
+                    </span>
+                    <span className="text-pink-400 font-bold text-sm">{data.mission.progress}%</span>
+                  </div>
+                  <ProgressBar value={data.mission.progress} color="#ff0050" height="h-2.5" glow />
+                </div>
+              </div>
+            </div>
+          </Card>
+
+          {/* Cómo va tu Comunicación — debajo de Misión, columna izq */}
+          {communicationTrend.length > 0 && (
+            <Card className="p-5 bg-[#0F0F0F] border border-white/10 flex-1 flex flex-col">
+              <div className="flex items-start justify-between mb-4">
+                <div>
+                  <h3 className="font-bold text-white flex items-center gap-2">
+                    <TrendingUp size={18} className="text-pink-500" />
+                    Cómo va tu Comunicación
+                  </h3>
+                  <p className="text-xs text-gray-500 mt-0.5">
+                    Calificación de tus últimas conversaciones
+                  </p>
+                </div>
+                <span className="text-xs text-gray-500">
+                  {communicationTrend.length} más recientes
+                </span>
+              </div>
+              <div className="flex-1 min-h-[240px]">
                 <ResponsiveContainer width="100%" height="100%">
-                  <AreaChart data={data.scoreSparkline} margin={{ top: 0, right: 0, left: 0, bottom: 0 }}>
-                    <YAxis domain={[0, 100]} hide />
+                  <AreaChart data={communicationTrend} margin={{ top: 10, right: 10, left: -10, bottom: 0 }}>
                     <defs>
-                      <linearGradient id="sparklineGrad" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="0%" stopColor="#ff0050" stopOpacity={0.6} />
-                        <stop offset="100%" stopColor="#ff0050" stopOpacity={0} />
+                      <linearGradient id="commTrendGrad" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stopColor="#ec4899" stopOpacity={0.4} />
+                        <stop offset="100%" stopColor="#ec4899" stopOpacity={0} />
                       </linearGradient>
                     </defs>
-                    <Area type="monotone" dataKey="v" stroke="#ff0050" strokeWidth={2} fill="url(#sparklineGrad)" />
+                    <CartesianGrid stroke="#1a1a2e" strokeDasharray="3 3" vertical={false} />
+                    <XAxis dataKey="fecha" tick={{ fontSize: 10, fill: '#6b7280' }} axisLine={false} tickLine={false} />
+                    <YAxis domain={[0, 100]} ticks={[0, 25, 50, 75, 100]} tick={{ fontSize: 10, fill: '#6b7280' }} axisLine={false} tickLine={false} />
+                    <Tooltip
+                      contentStyle={{ background: '#141418', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, fontSize: 12 }}
+                      labelStyle={{ color: '#a0a0b0' }}
+                      itemStyle={{ color: '#fff' }}
+                      formatter={(v: number | undefined) => [v ?? 0, 'Score']}
+                    />
+                    <Area
+                      type="monotone"
+                      dataKey="score"
+                      stroke="#ec4899"
+                      strokeWidth={2.5}
+                      fill="url(#commTrendGrad)"
+                      dot={{ r: 5, fill: '#0a0a12', stroke: '#ec4899', strokeWidth: 2 }}
+                      activeDot={{ r: 7, fill: '#ec4899', stroke: '#fff', strokeWidth: 2 }}
+                    />
                   </AreaChart>
                 </ResponsiveContainer>
               </div>
-            )}
-
-            {/* Content */}
-            <div className="relative z-20 p-8 flex-1">
-              <div className="flex items-center justify-between mb-4">
-                <div className="flex items-center gap-2 text-pink-500 font-bold tracking-widest uppercase text-xs">
-                  <Swords size={14} /> Misión Actual
-                </div>
-                <div className="flex items-center gap-2 bg-black/50 backdrop-blur-sm px-3 py-1.5 rounded-full border border-white/10">
-                  <span className="text-yellow-500">📅</span>
-                  <span className="text-xs text-white font-medium">30 días</span>
-                </div>
-              </div>
-
-              <h2 className="text-4xl font-bold text-white mb-4 leading-tight drop-shadow-lg">
-                {data.mission.map}
-              </h2>
-
-              <div className="inline-flex items-center gap-4 bg-black/60 backdrop-blur-sm px-4 py-3 rounded-2xl border border-red-500/30 mb-4 shadow-lg">
-                <div className="text-5xl drop-shadow-lg">{data.mission.enemyIcon}</div>
-                <div>
-                  <div className="text-[10px] text-red-400 uppercase font-bold tracking-wider mb-0.5">⚔️ Enemigo Final</div>
-                  <div className="text-white font-bold text-lg">{data.mission.enemy}</div>
-                  <div className="text-xs text-gray-400">{data.mission.enemyDesc}</div>
-                </div>
-              </div>
-
-              <div className="flex flex-wrap gap-2">
-                <span className="text-xs text-gray-400 mr-1">🎒 Equipo:</span>
-                {data.mission.items.map((item, i) => (
-                  <span key={i} className="px-3 py-1.5 bg-black/40 backdrop-blur-sm rounded-full text-xs text-white border border-white/10 flex items-center gap-2">
-                    <span className="text-base">{item.icon}</span> {item.name}
-                  </span>
-                ))}
-              </div>
-            </div>
-
-            {/* Footer: Progress + CTA */}
-            <div className="relative z-20 px-8 pb-6 pt-4 bg-gradient-to-t from-black/90 to-transparent">
-              <div className="mb-4">
-                <div className="flex justify-between items-center text-xs mb-2">
-                  <span className="text-gray-300 flex items-center gap-2">
-                    <span className="text-lg">🗺️</span> Progreso del mapa
-                  </span>
-                  <div className="flex items-center gap-3">
-                    <span className="text-gray-500 text-[10px]">Día {Math.ceil(data.mission.progress * 0.3)} de 30</span>
-                    <span className="text-pink-400 font-bold text-sm">{data.mission.progress}%</span>
-                  </div>
-                </div>
-                <div className="relative">
-                  <ProgressBar value={data.mission.progress} color="#ff0050" height="h-3" glow />
-                  <div className="absolute top-0 left-0 right-0 h-3 flex justify-between px-0.5 pointer-events-none">
-                    {[0, 25, 50, 75, 100].map((mark) => (
-                      <div key={mark} className={`w-0.5 h-full ${mark <= data.mission.progress ? 'bg-white/30' : 'bg-white/10'}`} />
-                    ))}
-                  </div>
-                </div>
-              </div>
-
-              <Button
-                onClick={() => router.push('/conversations')}
-                className="w-full sm:w-auto bg-gradient-to-r from-[#ff0050] to-[#485df4] hover:opacity-90 text-white font-bold px-8 py-4 text-lg shadow-lg shadow-pink-500/30 hover:shadow-pink-500/50 hover:-translate-y-0.5 transition-all"
-              >
-                <Swords size={20} className="mr-2" /> Ver Conversaciones <ArrowRight size={20} className="ml-2" />
-              </Button>
-            </div>
-          </Card>
+            </Card>
+          )}
         </div>
 
-        {/* RIGHT: Radar + Score (4 cols) */}
-        <div className="w-80 shrink-0 space-y-6">
+        {/* RIGHT: Radar + Ranking — w-[460px] da más respiro horizontal (ver CLAUDE.md §"Patron Visual: Dashboard de Gamificacion") */}
+        <div className="w-[460px] shrink-0 flex flex-col gap-6">
           {/* Radar Card */}
           <Card className="p-4 bg-[#0F0F0F] border border-white/10 hover:border-blue-500/30 transition-colors">
             <div className="flex justify-between items-center mb-2">
               <h3 className="font-bold text-white flex items-center gap-2">
-                <Target size={16} className="text-blue-400" /> Tu Radar
+                <Target size={16} className="text-blue-400" /> Tu Radar: IA vs Autoevaluación
               </h3>
             </div>
             <div className="flex justify-center -mx-2">
-              <RadarChartV2 data={data.competencies} size={260} />
+              <RadarChartV2 data={enrichedRadarData} size={260} />
             </div>
             <div className="pt-2 border-t border-white/5 grid grid-cols-2 gap-2 text-xs">
               <div className="bg-green-500/10 rounded-lg p-2 text-center">
@@ -288,219 +360,72 @@ export function GamifiedDashboardV2() {
             </div>
           </Card>
 
-          {/* Score Comparison Card */}
-          <Card className="p-5 bg-[#0F0F0F] border border-white/10">
+          {/* Ranking Card — debajo del Radar en columna der */}
+          <Card className="p-5 bg-[#0F0F0F] border border-white/10 flex-1">
             <h3 className="font-bold text-white mb-4 flex items-center gap-2">
-              {data.score.today >= data.score.yesterday ? (
-                <TrendingUp size={18} className="text-green-400" />
-              ) : (
-                <TrendingDown size={18} className="text-red-400" />
-              )}
-              Score Diario
+              <Crown size={18} className="text-yellow-500" /> Ranking
             </h3>
-            <div className="flex items-center justify-center gap-8">
-              <CircularScore value={data.score.yesterday} label="Ayer" color="#6b7280" size={70} />
-              <div className="flex flex-col items-center">
-                <div className={`text-2xl font-bold ${data.score.today >= data.score.yesterday ? 'text-green-400' : 'text-red-400'}`}>
-                  {data.score.today >= data.score.yesterday ? '↑' : '↓'}
+            <div className="space-y-2">
+              {data.ranking.map((entry, i) => (
+                <div
+                  key={i}
+                  className={`flex items-center justify-between p-2.5 rounded-xl transition-all ${
+                    entry.isCurrentUser
+                      ? 'bg-white/[0.06] border border-white/10'
+                      : 'bg-[#141418] hover:bg-[#1a1a22]'
+                  }`}
+                >
+                  <div className="flex items-center gap-3">
+                    <div className="w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold bg-[#1a1a2e] text-gray-500">
+                      {entry.position <= 3 ? (
+                        entry.position === 1 ? '🥇' : entry.position === 2 ? '🥈' : '🥉'
+                      ) : entry.position}
+                    </div>
+                    <span className={`font-medium text-sm ${entry.isCurrentUser ? 'text-white' : 'text-gray-300'}`}>
+                      {entry.name}
+                    </span>
+                  </div>
+                  <span className="text-xs text-gray-400 font-mono">
+                    {entry.xp >= 1000 ? `${(entry.xp / 1000).toFixed(1)}K` : entry.xp}
+                  </span>
                 </div>
-                <div className={`text-sm font-bold ${data.score.today >= data.score.yesterday ? 'text-green-400' : 'text-red-400'}`}>
-                  {data.score.today >= data.score.yesterday ? '+' : ''}{(data.score.today - data.score.yesterday).toFixed(1)}
-                </div>
-              </div>
-              <CircularScore
-                value={data.score.today}
-                label="Hoy"
-                color={data.score.today >= data.score.yesterday ? '#1bea9a' : '#ef4444'}
-                size={70}
-              />
+              ))}
             </div>
           </Card>
         </div>
       </div>
 
       {/* ================================================================== */}
-      {/* SCORE EVOLUTION */}
+      {/* COMMUNICATION TIPS (4 cards, full width) */}
       {/* ================================================================== */}
-      <Card className="p-5 mb-6 bg-[#0F0F0F] border border-white/10">
-        <div className="flex justify-between items-start mb-4 gap-3">
-          <div className="flex items-start gap-2">
-            <TrendingUp size={18} className="text-pink-500 mt-0.5 shrink-0" />
-            <div>
-              <h3 className="font-bold text-white leading-tight">Cómo va tu Comunicación</h3>
-              <p className="text-xs text-gray-500 mt-0.5">
-                Calificación de tus últimas conversaciones
-              </p>
-            </div>
-          </div>
-          {data.scoreSparkline.length >= 2 && (
-            <span className="text-xs text-gray-500 whitespace-nowrap mt-0.5">
-              {data.scoreSparkline.length} más recientes
-            </span>
-          )}
+      <div className="mb-6">
+        <div className="flex items-center gap-3 mb-4">
+          <div className="h-px flex-1 bg-white/10" />
+          <span className="text-[10px] font-bold uppercase tracking-[3px] text-gray-500">
+            Tips de Comunicación
+          </span>
+          <div className="h-px flex-1 bg-white/10" />
         </div>
-
-        {data.scoreSparkline.length >= 2 ? (
-          <div style={{ width: '100%', height: 240 }}>
-            <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={data.scoreSparkline} margin={{ top: 30, right: 20, left: 10, bottom: 10 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#1f1f2e" vertical={false} />
-                <XAxis
-                  dataKey="v"
-                  tick={false}
-                  axisLine={{ stroke: '#1f1f2e' }}
-                />
-                <YAxis
-                  domain={[0, 100]}
-                  ticks={[0, 25, 50, 75, 100]}
-                  tick={{ fill: '#6b7280', fontSize: 11 }}
-                  axisLine={false}
-                  tickLine={false}
-                  width={32}
-                />
-                <Tooltip
-                  contentStyle={{ background: '#0F0F0F', border: '1px solid #ff0050', borderRadius: 8, fontSize: 12 }}
-                  labelStyle={{ color: '#ff0050' }}
-                  formatter={(value) => [String(value), 'Score'] as [string, string]}
-                  separator=": "
-                />
-                <defs>
-                  <linearGradient id="scoreEvolutionGrad" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor="#ff0050" stopOpacity={0.5} />
-                    <stop offset="100%" stopColor="#ff0050" stopOpacity={0} />
-                  </linearGradient>
-                </defs>
-                <Area
-                  type="monotone"
-                  dataKey="v"
-                  stroke="#ff0050"
-                  strokeWidth={3}
-                  fill="url(#scoreEvolutionGrad)"
-                  dot={{ fill: '#ff0050', stroke: '#fff', strokeWidth: 2, r: 5 }}
-                  activeDot={{ r: 7, fill: '#ff0050', stroke: '#fff', strokeWidth: 2 }}
-                  isAnimationActive
-                >
-                  <LabelList
-                    dataKey="v"
-                    position="top"
-                    fill="#fff"
-                    fontSize={12}
-                    fontWeight={600}
-                  />
-                </Area>
-              </AreaChart>
-            </ResponsiveContainer>
-          </div>
-        ) : (
-          <div className="text-center py-10 text-gray-500">
-            <TrendingUp size={40} className="mx-auto mb-3 opacity-20" />
-            <p className="text-sm font-medium">Aún no hay suficientes datos</p>
-            <p className="text-xs mt-1">Necesitas al menos 2 conversaciones analizadas</p>
-          </div>
-        )}
-      </Card>
-
-      {/* ================================================================== */}
-      {/* BOTTOM GRID: Activity + Ranking */}
-      {/* ================================================================== */}
-      <div className="flex gap-6">
-
-        {/* Activity Card */}
-        <Card className="p-5 flex-[2] min-w-0 bg-[#0F0F0F] border border-white/10">
-          <div className="flex justify-between items-center mb-4">
-            <h3 className="font-bold text-white flex items-center gap-2">
-              <Activity size={18} className="text-green-400" /> Actividad Reciente
-            </h3>
-            <button
-              className="text-xs text-blue-400 hover:text-white transition-colors"
-              onClick={() => router.push('/conversations')}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          {GENERIC_TIPS.map((tip) => (
+            <Card
+              key={tip.num}
+              className="p-4 bg-[#0F0F0F] border border-white/10 border-t-4 flex flex-col gap-2"
+              style={{ borderTopColor: `${tip.accent}50` }}
             >
-              Ver todo →
-            </button>
-          </div>
-          <div className="space-y-3 max-h-[350px] overflow-y-auto pr-1">
-            {data.recentActivity.length > 0 ? (
-              data.recentActivity.slice(0, 5).map((conv) => (
-                <div
-                  key={conv.id}
-                  className="p-3 rounded-xl bg-[#141418] hover:bg-[#1a1a22] transition-all cursor-pointer border border-transparent hover:border-white/10 group"
-                  onClick={() => router.push(`/conversations?id=${conv.id}`)}
-                >
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="flex items-start gap-3 flex-1 min-w-0">
-                      <div className="flex flex-col items-center gap-1">
-                        <span className="text-xl">{conv.emoji}</span>
-                        <span className="text-xs font-bold text-gray-400">{conv.score}</span>
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2 mb-1">
-                          <span className="text-white font-medium text-sm truncate">{conv.title}</span>
-                          {conv.topSkill && (
-                            <span className="text-[10px] px-1.5 py-0.5 bg-white/5 text-gray-500 rounded whitespace-nowrap">
-                              {conv.topSkill}
-                            </span>
-                          )}
-                        </div>
-                        <div className="text-xs text-gray-500 mb-1">{conv.date} • {conv.duration}</div>
-                        {conv.insight && (
-                          <p className="text-xs text-gray-400 leading-relaxed line-clamp-2 group-hover:text-gray-300 transition-colors">
-                            {conv.insight}
-                          </p>
-                        )}
-                      </div>
-                    </div>
-                    <ChevronRight size={16} className="text-gray-600 group-hover:text-white transition-colors flex-shrink-0 mt-1" />
-                  </div>
-                </div>
-              ))
-            ) : (
-              <div className="text-center py-10 text-gray-500">
-                <Activity size={40} className="mx-auto mb-3 opacity-20" />
-                <p className="text-sm font-medium">Aún no tienes actividad</p>
-                <p className="text-xs mt-1">¡Empieza una grabación para ver tus resultados!</p>
-              </div>
-            )}
-          </div>
-        </Card>
-
-        {/* Ranking Card */}
-        <Card className="p-5 flex-1 bg-[#0F0F0F] border border-white/10">
-          <h3 className="font-bold text-white mb-4 flex items-center gap-2">
-            <Crown size={18} className="text-yellow-500" /> Ranking
-          </h3>
-          <div className="space-y-2">
-            {data.ranking.map((entry, i) => (
               <div
-                key={i}
-                className={`flex items-center justify-between p-2.5 rounded-xl transition-all ${
-                  entry.isCurrentUser
-                    ? 'bg-white/[0.06] border border-white/10'
-                    : 'bg-[#141418] hover:bg-[#1a1a22]'
-                }`}
+                className="w-9 h-9 rounded-xl flex items-center justify-center text-base font-extrabold"
+                style={{ backgroundColor: `${tip.accent}10`, color: tip.accent }}
               >
-                <div className="flex items-center gap-3">
-                  <div className="w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold bg-[#1a1a2e] text-gray-500">
-                    {entry.position <= 3 ? (
-                      entry.position === 1 ? '🥇' : entry.position === 2 ? '🥈' : '🥉'
-                    ) : entry.position}
-                  </div>
-                  <span className={`font-medium text-sm ${entry.isCurrentUser ? 'text-white' : 'text-gray-300'}`}>
-                    {entry.name}
-                  </span>
-                </div>
-                <span className="text-xs text-gray-400 font-mono">
-                  {entry.xp >= 1000 ? `${(entry.xp / 1000).toFixed(1)}K` : entry.xp}
-                </span>
+                {tip.num}
               </div>
-            ))}
-          </div>
-        </Card>
+              <h4 className="text-sm font-bold text-white">{tip.title}</h4>
+              <p className="text-xs text-gray-400 leading-relaxed flex-1">{tip.desc}</p>
+              <p className="text-[10px] text-gray-600 uppercase tracking-wider">{tip.meta}</p>
+            </Card>
+          ))}
+        </div>
       </div>
-
-      {/* ================================================================== */}
-      {/* PROGRESS CHARTS */}
-      {/* ================================================================== */}
-      <ProgressChartsSection conversations={data.conversations} formData={data.formData} />
     </div>
   );
 }
