@@ -82,6 +82,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const isAuthenticated = !!session && !!user
 
+  // Sync the current user.id into the Rust AppState so SQLite queries can filter by user_id (privacy isolation between accounts).
+  // When user is null (logout), clear the Rust state so subsequent reads return empty.
+  useEffect(() => {
+    if (maityUser?.id) {
+      invoke('set_current_user', { userId: maityUser.id }).catch((err) => {
+        logger.error('[Auth] Failed to sync current_user to Rust AppState:', err)
+      })
+    } else {
+      invoke('clear_current_user').catch((err) => {
+        logger.error('[Auth] Failed to clear current_user in Rust AppState:', err)
+      })
+    }
+  }, [maityUser?.id])
+
   // Fetch or create the maity.users record for the authenticated user
   const fetchOrCreateMaityUser = useCallback(async (authUser: User) => {
     // Promise dedup: if a fetch is already in progress, wait for it instead of running another

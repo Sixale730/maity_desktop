@@ -10,12 +10,14 @@ impl TranscriptsRepository {
     /// Saves a new meeting and its associated transcript segments.
     /// This function uses a transaction to ensure that either both the meeting
     /// and all its transcripts are saved, or none of them are.
+    /// `user_id` is the Supabase user.id of the owner — required for multi-account privacy.
     pub async fn save_transcript(
         pool: &SqlitePool,
         meeting_title: &str,
         transcripts: &[TranscriptSegment],
         folder_path: Option<String>,
         meeting_id: Option<String>,
+        user_id: &str,
     ) -> Result<String, SqlxError> {
         let meeting_id = meeting_id.unwrap_or_else(|| format!("meeting-{}", Uuid::new_v4()));
 
@@ -24,15 +26,16 @@ impl TranscriptsRepository {
 
         let now = Utc::now();
 
-        // 1. Create the new meeting
+        // 1. Create the new meeting (tagged with user_id for privacy isolation)
         let result = sqlx::query(
-            "INSERT INTO meetings (id, title, created_at, updated_at, folder_path) VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO meetings (id, title, created_at, updated_at, folder_path, user_id) VALUES (?, ?, ?, ?, ?, ?)",
         )
         .bind(&meeting_id)
         .bind(meeting_title)
         .bind(now)
         .bind(now)
         .bind(&folder_path)
+        .bind(user_id)
         .execute(&mut *transaction)
         .await;
 

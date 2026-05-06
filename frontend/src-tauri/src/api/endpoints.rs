@@ -30,13 +30,24 @@ pub async fn api_get_meetings<R: Runtime>(
         "api_get_meetings called with auth_token(native) : {}",
         auth_token.is_some()
     );
+
+    // Privacy: only return meetings owned by the currently logged-in Supabase user.
+    // If not logged in, return empty (legacy meetings have user_id NULL and stay invisible).
+    let user_id = match state.current_user_id().await {
+        Some(id) => id,
+        None => {
+            log_info!("api_get_meetings: no current user, returning empty list");
+            return Ok(Vec::new());
+        }
+    };
+
     let pool = state.db_manager.pool();
     let meetings: Result<Vec<MeetingModel>, sqlx::Error> =
-        MeetingsRepository::get_meetings(pool).await;
+        MeetingsRepository::get_meetings(pool, &user_id).await;
 
     match meetings {
         Ok(meeting_models) => {
-            log_info!("Successfully got {} meetings", meeting_models.len());
+            log_info!("Successfully got {} meetings for user {}", meeting_models.len(), user_id);
 
             let result: Vec<Meeting> = meeting_models
                 .into_iter()
@@ -681,6 +692,13 @@ pub async fn api_save_transcript<R: Runtime>(
                    first_seg.duration);
     }
 
+    // Privacy: tag this meeting with the current Supabase user.id.
+    // If not logged in, refuse to save (otherwise meeting would be invisible legacy data).
+    let user_id = state.current_user_id().await.ok_or_else(|| {
+        log_error!("api_save_transcript: refused — no user logged in");
+        "Cannot save meeting: no user logged in".to_string()
+    })?;
+
     let pool = state.db_manager.pool();
 
     match TranscriptsRepository::save_transcript(
@@ -689,6 +707,7 @@ pub async fn api_save_transcript<R: Runtime>(
         &transcripts_to_save,
         folder_path,
         meeting_id,
+        &user_id,
     )
     .await
     {

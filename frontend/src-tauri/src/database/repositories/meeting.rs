@@ -8,10 +8,16 @@ use tracing::{error, info};
 pub struct MeetingsRepository;
 
 impl MeetingsRepository {
-    pub async fn get_meetings(pool: &SqlitePool) -> Result<Vec<MeetingModel>, sqlx::Error> {
+    /// Get meetings owned by `user_id`. Legacy meetings (user_id NULL) are excluded by design
+    /// — privacy isolation between Supabase accounts that share the same desktop install.
+    pub async fn get_meetings(
+        pool: &SqlitePool,
+        user_id: &str,
+    ) -> Result<Vec<MeetingModel>, sqlx::Error> {
         let meetings = sqlx::query_as::<_, MeetingModel>(
-            "SELECT * FROM meetings ORDER BY created_at DESC",
+            "SELECT * FROM meetings WHERE user_id = ? ORDER BY created_at DESC",
         )
+        .bind(user_id)
         .fetch_all(pool)
         .await?;
         Ok(meetings)

@@ -15,6 +15,11 @@ pub async fn sync_queue_enqueue<R: Runtime>(
     max_attempts: Option<i64>,
     depends_on: Option<i64>,
 ) -> Result<i64, String> {
+    let user_id = state.current_user_id().await.ok_or_else(|| {
+        let msg = "Cannot enqueue sync job: no user logged in";
+        error!("{}", msg);
+        msg.to_string()
+    })?;
     let pool = state.db_manager.pool();
     SyncQueueRepository::enqueue(
         pool,
@@ -23,6 +28,7 @@ pub async fn sync_queue_enqueue<R: Runtime>(
         &payload,
         max_attempts.unwrap_or(10),
         depends_on,
+        &user_id,
     )
     .await
     .map_err(|e| {
@@ -37,8 +43,13 @@ pub async fn sync_queue_get_ready_jobs<R: Runtime>(
     state: tauri::State<'_, AppState>,
     limit: Option<i64>,
 ) -> Result<Vec<SyncQueueJob>, String> {
+    // No user → no jobs (privacy isolation).
+    let user_id = match state.current_user_id().await {
+        Some(id) => id,
+        None => return Ok(Vec::new()),
+    };
     let pool = state.db_manager.pool();
-    SyncQueueRepository::get_ready_jobs(pool, limit.unwrap_or(10))
+    SyncQueueRepository::get_ready_jobs(pool, limit.unwrap_or(10), &user_id)
         .await
         .map_err(|e| {
             error!("Failed to get ready sync jobs: {}", e);
@@ -114,8 +125,13 @@ pub async fn sync_queue_get_all_statuses<R: Runtime>(
     _app: AppHandle<R>,
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<MeetingSyncStatus>, String> {
+    // No user → empty (privacy isolation).
+    let user_id = match state.current_user_id().await {
+        Some(id) => id,
+        None => return Ok(Vec::new()),
+    };
     let pool = state.db_manager.pool();
-    SyncQueueRepository::get_all_sync_statuses(pool)
+    SyncQueueRepository::get_all_sync_statuses(pool, &user_id)
         .await
         .map_err(|e| {
             error!("Failed to get all sync statuses: {}", e);

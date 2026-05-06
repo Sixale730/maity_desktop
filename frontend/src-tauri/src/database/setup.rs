@@ -44,7 +44,10 @@ pub async fn initialize_database_on_startup(app: &AppHandle) -> Result<(), Strin
     };
 
     info!("[DB Init] Calling app.manage(AppState)...");
-    app.manage(AppState { db_manager });
+    app.manage(AppState {
+        db_manager,
+        current_user_id: std::sync::Arc::new(tokio::sync::RwLock::new(None)),
+    });
     info!(
         "[DB Init] AppState managed successfully (first_launch={})",
         is_first_launch

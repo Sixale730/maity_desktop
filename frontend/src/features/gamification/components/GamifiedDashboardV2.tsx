@@ -1,6 +1,7 @@
 'use client';
 
 import { useMemo } from 'react';
+import { useRouter } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { useGamifiedDashboardDataV2 } from '../hooks/useGamifiedDashboardDataV2';
 import { useProgressChartsData } from '../hooks/useProgressChartsData';
@@ -14,7 +15,7 @@ import {
 import {
   Zap, Flame,
   Crown, Swords,
-  TrendingUp, Target,
+  TrendingUp, Target, Sparkles,
 } from 'lucide-react';
 
 // ============================================================================
@@ -104,6 +105,7 @@ const LetterAvatar = ({ name }: { name: string }) => {
 // ============================================================================
 
 export function GamifiedDashboardV2() {
+  const router = useRouter();
   const { maityUser } = useAuth();
   const data = useGamifiedDashboardDataV2();
   const { radarData, sessionHistory } = useProgressChartsData(data.conversations);
@@ -285,8 +287,25 @@ export function GamifiedDashboardV2() {
             </div>
           </Card>
 
-          {/* Cómo va tu Comunicación — debajo de Misión, columna izq */}
-          {communicationTrend.length > 0 && (
+          {/* Cómo va tu Comunicación — debajo de Misión, columna izq.
+              Si no hay sesiones, muestra empty state que invita a grabar. */}
+          {communicationTrend.length === 0 ? (
+            <Card className="p-8 bg-[#0F0F0F] border border-white/10 flex-1 flex flex-col items-center justify-center text-center min-h-[280px]">
+              <div className="w-16 h-16 rounded-2xl bg-pink-500/10 flex items-center justify-center mb-4">
+                <Sparkles size={28} className="text-pink-500" />
+              </div>
+              <h3 className="text-lg font-bold text-white mb-2">Empieza tu primera conversación</h3>
+              <p className="text-sm text-gray-400 max-w-sm mb-6">
+                Tu progreso de comunicación aparecerá aquí cuando analices tu primera grabación.
+              </p>
+              <button
+                onClick={() => router.push('/')}
+                className="bg-gradient-to-r from-[#ff0050] to-[#485df4] hover:opacity-90 text-white font-bold px-6 py-3 rounded-xl shadow-lg shadow-pink-500/30 hover:-translate-y-0.5 transition-all flex items-center gap-2"
+              >
+                <Sparkles size={18} /> Empezar a grabar
+              </button>
+            </Card>
+          ) : (
             <Card className="p-5 bg-[#0F0F0F] border border-white/10 flex-1 flex flex-col">
               <div className="flex items-start justify-between mb-4">
                 <div>
@@ -334,7 +353,7 @@ export function GamifiedDashboardV2() {
               </div>
             </Card>
           )}
-        </div>
+        </div>{/* /flex-1 izq columna principal */}
 
         {/* RIGHT: Radar + Ranking — w-[460px] da más respiro horizontal (ver CLAUDE.md §"Patron Visual: Dashboard de Gamificacion") */}
         <div className="w-[460px] shrink-0 flex flex-col gap-6">

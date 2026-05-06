@@ -37,6 +37,9 @@ pub struct MeetingModel {
     // on retries so duplicate INSERTs into maity.omi_conversations collapse via
     // its UNIQUE (idempotency_key) constraint instead of creating duplicate rows.
     pub cloud_idempotency_key: Option<String>,
+
+    // Supabase user.id of the owner. NULL = legacy row (pre privacy migration) — invisible.
+    pub user_id: Option<String>,
 }
 
 fn default_idle_status() -> String {
@@ -230,6 +233,8 @@ pub struct SyncQueueJob {
     pub created_at: String,
     pub updated_at: String,
     pub completed_at: Option<String>,
+    // Supabase user.id of the owner. NULL = legacy job (pre privacy migration) — deleted by migration.
+    pub user_id: Option<String>,
 }
 
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]

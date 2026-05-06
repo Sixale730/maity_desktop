@@ -1002,6 +1002,9 @@ pub fn run() {
             database::commands::check_homebrew_database,
             database::commands::import_and_initialize_database,
             database::commands::initialize_fresh_database,
+            // Multi-account privacy: track current Supabase user in AppState
+            database::commands::set_current_user,
+            database::commands::clear_current_user,
             // Database and Models path commands
             database::commands::log_recording_event,
             database::commands::get_recording_logs,

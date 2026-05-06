@@ -164,7 +164,10 @@ pub async fn import_and_initialize_database(
         })?;
 
     // Update app state with the new manager
-    app.manage(AppState { db_manager });
+    app.manage(AppState {
+        db_manager,
+        current_user_id: std::sync::Arc::new(tokio::sync::RwLock::new(None)),
+    });
 
     info!("Legacy database imported and initialized successfully");
 
@@ -188,7 +191,10 @@ pub async fn initialize_fresh_database(app: AppHandle) -> Result<(), String> {
         })?;
 
     // Update app state with the new manager
-    app.manage(AppState { db_manager: db_manager.clone() });
+    app.manage(AppState {
+        db_manager: db_manager.clone(),
+        current_user_id: std::sync::Arc::new(tokio::sync::RwLock::new(None)),
+    });
 
     // Set default model configuration for fresh installs
     let pool = db_manager.pool();
@@ -413,4 +419,27 @@ pub async fn api_get_or_create_meeting_idempotency_key(
             );
             e.to_string()
         })
+}
+
+/// Set the current Supabase user.id in AppState. Called by frontend on login.
+/// Subsequent SQLite reads/writes use this to filter (privacy isolation between accounts).
+#[tauri::command]
+pub async fn set_current_user(
+    state: tauri::State<'_, AppState>,
+    user_id: String,
+) -> Result<(), String> {
+    let mut guard = state.current_user_id.write().await;
+    *guard = Some(user_id.clone());
+    info!("[AppState] current_user_id set to {}", user_id);
+    Ok(())
+}
+
+/// Clear the current user from AppState. Called by frontend on logout.
+/// After this, SQLite queries return empty and writes that require a user fail.
+#[tauri::command]
+pub async fn clear_current_user(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    let mut guard = state.current_user_id.write().await;
+    *guard = None;
+    info!("[AppState] current_user_id cleared (logout)");
+    Ok(())
 }

@@ -26,11 +26,14 @@ export function ConversationsList({ onSelect, selectedId }: ConversationsListPro
   // (which now matches by idempotency_key, not heuristic timestamp).
   useConversationsListLive(maityUser?.id ?? null);
 
-  // Local data loads instantly from SQLite
+  // Local data loads instantly from SQLite.
+  // Privacy: queryKey includes maityUser?.id so the list refetches when the user changes
+  // (login/logout). Rust filters by current_user_id from AppState — see CLAUDE.md.
   const { data: localConversations } = useQuery({
-    queryKey: ['local-conversations'],
+    queryKey: ['local-conversations', maityUser?.id],
     queryFn: () => getLocalConversations(),
     staleTime: 30_000,
+    enabled: !!maityUser?.id,
   });
 
   // Cloud data loads in background
