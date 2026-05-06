@@ -16,6 +16,7 @@ import {
   Zap, Flame,
   Crown, Swords,
   TrendingUp, Target, Sparkles,
+  Award,
 } from 'lucide-react';
 
 // ============================================================================
@@ -288,8 +289,13 @@ export function GamifiedDashboardV2() {
           </Card>
 
           {/* Cómo va tu Comunicación — debajo de Misión, columna izq.
-              Si no hay sesiones, muestra empty state que invita a grabar. */}
-          {communicationTrend.length === 0 ? (
+              4 estados según cantidad de conversaciones analizadas:
+              A) sin grabaciones → invitar a grabar
+              B) grabadas pero análisis pendiente → "Analizando..."
+              C) 1 conversación analizada → mostrar score grande + invitar a grabar otra
+              D) 2+ conversaciones analizadas → AreaChart de tendencia */}
+          {data.conversations.length === 0 ? (
+            /* A: empty state grabar */
             <Card className="p-8 bg-[#0F0F0F] border border-white/10 flex-1 flex flex-col items-center justify-center text-center min-h-[280px]">
               <div className="w-16 h-16 rounded-2xl bg-pink-500/10 flex items-center justify-center mb-4">
                 <Sparkles size={28} className="text-pink-500" />
@@ -305,7 +311,51 @@ export function GamifiedDashboardV2() {
                 <Sparkles size={18} /> Empezar a grabar
               </button>
             </Card>
+          ) : communicationTrend.length === 0 ? (
+            /* B: hay grabaciones pero ninguna analizada todavía — mensaje estático (NO spinner: el estado no es "procesando" en este momento, es solo "análisis pendiente del lado cloud") */
+            <Card className="p-8 bg-[#0F0F0F] border border-white/10 flex-1 flex flex-col items-center justify-center text-center min-h-[280px]">
+              <div className="w-16 h-16 rounded-2xl bg-white/5 flex items-center justify-center mb-4">
+                <Award size={28} className="text-gray-500" />
+              </div>
+              <h3 className="text-lg font-bold text-white mb-2">Tu primera puntuación aparecerá aquí</h3>
+              <p className="text-sm text-gray-400 max-w-sm">
+                Cuando termine el análisis de tu conversación verás tu score, y con una segunda grabación se desbloquea tu gráfica de tendencia.
+              </p>
+            </Card>
+          ) : communicationTrend.length === 1 ? (
+            /* C: primera puntuación — score grande + milestone progress 1/2 (patrón Duolingo/Strava) */
+            <Card className="p-8 bg-[#0F0F0F] border border-white/10 flex-1 flex flex-col items-center justify-center text-center min-h-[280px]">
+              <div className="flex items-center gap-2 text-pink-500 font-bold tracking-widest uppercase text-xs mb-2">
+                <Award size={14} /> Tu primera puntuación
+              </div>
+              <div className="text-7xl font-black text-white leading-none mb-1">
+                {communicationTrend[0].score}
+              </div>
+              <div className="text-sm text-gray-500 mb-5">de 100</div>
+
+              {/* Milestone progress: convierte "no hay suficientes datos" en un objetivo desbloqueable */}
+              <div className="w-full max-w-xs mb-5">
+                <div className="flex justify-between text-xs mb-1.5">
+                  <span className="text-gray-400">Gráfica de tendencia</span>
+                  <span className="text-pink-400 font-bold">1 / 2</span>
+                </div>
+                <div className="h-2 bg-white/10 rounded-full overflow-hidden">
+                  <div className="h-full w-1/2 bg-gradient-to-r from-[#ff0050] to-[#485df4] rounded-full" />
+                </div>
+              </div>
+
+              <p className="text-sm text-gray-400 max-w-sm mb-6">
+                Graba 1 conversación más para desbloquear tu gráfica de tendencia.
+              </p>
+              <button
+                onClick={() => router.push('/')}
+                className="bg-gradient-to-r from-[#ff0050] to-[#485df4] hover:opacity-90 text-white font-bold px-6 py-3 rounded-xl shadow-lg shadow-pink-500/30 hover:-translate-y-0.5 transition-all flex items-center gap-2"
+              >
+                <Sparkles size={18} /> Grabar otra
+              </button>
+            </Card>
           ) : (
+            /* D: AreaChart con 2+ puntos */
             <Card className="p-5 bg-[#0F0F0F] border border-white/10 flex-1 flex flex-col">
               <div className="flex items-start justify-between mb-4">
                 <div>

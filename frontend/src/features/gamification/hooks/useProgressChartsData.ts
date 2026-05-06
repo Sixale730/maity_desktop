@@ -77,8 +77,10 @@ function formatShortDate(dateStr: string): string {
   return d.toLocaleDateString('es-MX', { day: 'numeric', month: 'short' });
 }
 
-// Desktop has mixed English/Spanish field names — map to canonical Spanish
-function getDimValue(fb: CommunicationFeedback, dim: string): number | undefined {
+// Desktop has mixed English/Spanish field names — map to canonical Spanish.
+// Accepts null/undefined (returns undefined → safeScore turns into 0).
+function getDimValue(fb: CommunicationFeedback | null | undefined, dim: string): number | undefined {
+  if (!fb) return undefined;
   switch (dim) {
     case 'claridad': return (fb as Record<string, unknown>).claridad as number ?? fb.clarity;
     case 'estructura': return (fb as Record<string, unknown>).estructura as number ?? fb.structure;
@@ -95,6 +97,49 @@ function getFillerRate(conv: OmiConversation): number {
   const durationMin = (conv.duration_seconds || 0) / 60;
   if (durationMin <= 0) return 0;
   return Math.round((muletillasTotal / durationMin) * 10) / 10;
+}
+
+/**
+ * Coalesce score from any of the supported analysis schemas. Returns 0-100 or null.
+ *
+ * Priority (matches `conversations.service.ts:792` `getRecentConversationScores`):
+ *   1. V4 `calidad_global.puntaje` (0-100) — el path canónico del nuevo análisis
+ *   2. V4 `resumen.puntuacion_global` (0-100) — schema alternativo
+ *   3. V4 `calidad_global` como number directo (raro pero defensivo)
+ *   4. Legacy `overall_score` (0-10) → ×10
+ *   5. null (sin score, o AnalysisSkipped por texto insuficiente)
+ */
+function getCommScore(conv: OmiConversation): number | null {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const v4 = conv.communication_feedback_v4 as any;
+
+  // AnalysisSkipped: { status: 'skipped', reason } — sin score
+  if (v4 && (v4.status === 'skipped' || v4.skipped === true)) {
+    return null;
+  }
+
+  // V4 path A: calidad_global.puntaje (0-100) — el más común
+  const cg = v4?.calidad_global;
+  if (cg && typeof cg === 'object' && typeof cg.puntaje === 'number') {
+    return cg.puntaje;
+  }
+
+  // V4 path B: resumen.puntuacion_global (0-100)
+  if (v4?.resumen && typeof v4.resumen.puntuacion_global === 'number') {
+    return v4.resumen.puntuacion_global;
+  }
+
+  // V4 path C: calidad_global como number suelto
+  if (typeof cg === 'number') {
+    return cg;
+  }
+
+  // Legacy: overall_score (0-10) → 0-100
+  if (conv.communication_feedback?.overall_score != null) {
+    return conv.communication_feedback.overall_score * 10;
+  }
+
+  return null;
 }
 
 type FeedbackConversation = OmiConversation & { communication_feedback: NonNullable<OmiConversation['communication_feedback']> };
@@ -186,12 +231,13 @@ function buildRadarInsight(radar: RadarDataPoint[]): string {
 
 function buildSessionHistory(conversations: OmiConversation[]): SessionHistoryRow[] {
   return conversations
-    .filter(c => c.communication_feedback?.overall_score != null)
+    .filter(c => getCommScore(c) != null)  // V4 or legacy — see getCommScore for priority
     .slice(0, 5)
     .map((conv, i) => {
-      const fb = conv.communication_feedback!;
+      const fb = conv.communication_feedback;
+      const score = getCommScore(conv)!;  // already 0-100, no scaling
       const durationMin = (conv.duration_seconds || 0) / 60;
-      const muletillas = fb.radiografia
+      const muletillas = fb?.radiografia
         ? (durationMin > 0 ? Math.round((fb.radiografia.muletillas_total! / durationMin) * 10) / 10 : 0)
         : 0;
       const date = new Date(conv.created_at);
@@ -200,7 +246,7 @@ function buildSessionHistory(conversations: OmiConversation[]): SessionHistoryRo
         num: i + 1,
         fecha: date.toLocaleDateString('es-MX', { day: 'numeric', month: 'short' }),
         tipo: conv.category || 'Conversación',
-        global: Math.round((fb.overall_score ?? 0) * 10),
+        global: Math.round(score),  // 0-100 directo
         claridad: safeScore(getDimValue(fb, 'claridad')),
         estructura: safeScore(getDimValue(fb, 'estructura')),
         empatia: safeScore(getDimValue(fb, 'empatia')),
@@ -216,6 +262,13 @@ function buildSessionHistory(conversations: OmiConversation[]): SessionHistoryRo
 
 export function useProgressChartsData(conversations: OmiConversation[]): ProgressChartsData {
   return useMemo(() => {
+    // sessionHistory cuenta cualquier conversación con score (V4 o legacy) — el dashboard de gamificación
+    // se basa en este (no en `withFeedback` que solo es legacy). Construirlo PRIMERO para que un usuario
+    // con solo análisis V4 (calidad_global.puntaje) lo vea, aunque trendData/radarData no se llenen.
+    const sessionHistory = buildSessionHistory(conversations);
+
+    // withFeedback es el subset con LEGACY communication_feedback (necesario para trendData/radarData/dimensions
+    // porque éstos leen `claridad`, `estructura`, etc. del legacy). Conversaciones solo-V4 quedan fuera.
     const withFeedback = conversations
       .filter((c): c is FeedbackConversation =>
         c.communication_feedback?.overall_score != null
@@ -229,9 +282,9 @@ export function useProgressChartsData(conversations: OmiConversation[]): Progres
         radarData: [],
         fillerWordsInsight: '',
         radarInsight: '',
-        sessionHistory: [],
+        sessionHistory,  // ← ya no se fuerza a vacío; refleja convs con score V4 o legacy
         loading: false,
-        hasData: false,
+        hasData: sessionHistory.length > 0,
       };
     }
 
@@ -243,7 +296,6 @@ export function useProgressChartsData(conversations: OmiConversation[]): Progres
     const radarData = buildRadarData(first, last);
     const fillerWordsInsight = buildFillerWordsInsight(withFeedback);
     const radarInsight = buildRadarInsight(radarData);
-    const sessionHistory = buildSessionHistory(conversations);
 
     return {
       trendData,
