@@ -2,9 +2,13 @@
 
 import React, { useState, useEffect } from 'react'
 import { useAuth } from '@/contexts/AuthContext'
-import { Loader2, X } from 'lucide-react'
+import { Loader2, X, Eye, EyeOff } from 'lucide-react'
 import { listen } from '@tauri-apps/api/event'
 import { logger } from '@/lib/logger'
+import { validatePassword } from '@/lib/password-validation'
+import { PasswordStrengthIndicator } from './PasswordStrengthIndicator'
+
+type AuthMode = 'signin' | 'signup' | 'reset'
 
 function GoogleIcon({ className }: { className?: string }) {
   return (
@@ -48,11 +52,41 @@ function MicrosoftIcon({ className }: { className?: string }) {
   )
 }
 
+const inputClass =
+  'w-full h-11 px-3 rounded-lg border border-[#e7e7e9] dark:border-gray-700 bg-white dark:bg-gray-800 text-sm text-[#3a3a3c] dark:text-gray-200 focus:outline-none focus:ring-2 focus:ring-violet-500'
+
+const primaryButtonClass =
+  'w-full h-12 bg-violet-600 hover:bg-violet-500 text-white text-sm font-medium rounded-lg disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 transition-colors'
+
+const linkClass =
+  'text-xs text-violet-600 hover:text-violet-700 dark:text-violet-400 cursor-pointer bg-transparent border-0 p-0'
+
+const successBannerClass =
+  'w-full bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-lg p-3 text-sm text-green-700 dark:text-green-300'
+
 export function LoginScreen() {
-  const { signInWithGoogle, signInWithApple, signInWithAzure, error, isLoading } = useAuth()
+  const {
+    signInWithGoogle,
+    signInWithApple,
+    signInWithAzure,
+    signInWithEmail,
+    signUpWithEmail,
+    sendPasswordReset,
+    error,
+    isLoading,
+  } = useAuth()
   const [isSigningIn, setIsSigningIn] = useState(false)
 
-  // Reset spinner when AuthContext reports an error
+  // Email/password form state
+  const [mode, setMode] = useState<AuthMode>('signin')
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [fullName, setFullName] = useState('')
+  const [showPassword, setShowPassword] = useState(false)
+  const [submitting, setSubmitting] = useState(false)
+  const [successMessage, setSuccessMessage] = useState<string | null>(null)
+
+  // Reset OAuth spinner when AuthContext reports an error
   useEffect(() => {
     if (error) {
       setIsSigningIn(false)
@@ -72,6 +106,64 @@ export function LoginScreen() {
       unlisten.then((fn) => fn())
     }
   }, [])
+
+  const switchMode = (newMode: AuthMode) => {
+    setMode(newMode)
+    setEmail('')
+    setPassword('')
+    setFullName('')
+    setShowPassword(false)
+    setSuccessMessage(null)
+  }
+
+  const handleEmailSignIn = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!email || !password) return
+    setSubmitting(true)
+    try {
+      await signInWithEmail(email, password)
+    } catch {
+      // Error already mapped to context error state
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  const handleSignUp = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!email || !password || !fullName) return
+    if (!validatePassword(password).isValid) return
+    setSubmitting(true)
+    try {
+      const result = await signUpWithEmail(email, password, fullName)
+      if (result.needsVerification) {
+        setSuccessMessage(`Te enviamos un correo a ${email}. Confirma tu cuenta para continuar.`)
+      }
+    } catch {
+      // Error already mapped to context error state
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  const handleReset = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!email) return
+    setSubmitting(true)
+    let isNetworkError = false
+    try {
+      await sendPasswordReset(email)
+    } catch (err) {
+      const msg = (err instanceof Error ? err.message : String(err ?? '')).toLowerCase()
+      isNetworkError = msg.includes('network') || msg.includes('failed to fetch')
+    } finally {
+      // Generic success on success or Supabase errors (anti-enumeration); suppress on network errors so the user sees the red banner only.
+      if (!isNetworkError) {
+        setSuccessMessage('Si el correo existe, te enviamos un enlace para recuperar tu contraseña.')
+      }
+      setSubmitting(false)
+    }
+  }
 
   const handleGoogleSignIn = async () => {
     setIsSigningIn(true)
@@ -104,16 +196,21 @@ export function LoginScreen() {
     setIsSigningIn(false)
   }
 
+  const passwordValid = mode !== 'signup' || validatePassword(password).isValid
+  const canSubmitSignIn = !!email && !!password && !submitting
+  const canSubmitSignUp = !!email && !!password && !!fullName && passwordValid && !submitting
+  const canSubmitReset = !!email && !submitting
+
   return (
-    <div className="fixed inset-0 bg-background flex items-center justify-center z-50 overflow-hidden">
-      <div className="w-full max-w-md flex flex-col items-center px-6 py-6 space-y-10">
+    <div className="fixed inset-0 bg-background flex items-center justify-center z-50 overflow-y-auto">
+      <div className="w-full max-w-md flex flex-col items-center px-6 py-8 space-y-8">
         {/* Logo / Brand */}
         <div className="flex flex-col items-center space-y-4">
           <div className="w-20 h-20 rounded-2xl bg-gradient-to-br from-[#ff0050]/10 to-[#485df4]/10 dark:from-[#ff0050]/20 dark:to-[#485df4]/20 flex items-center justify-center shadow-lg">
             <img src="icon_128x128.png" alt="Maity" className="w-14 h-14" />
           </div>
           <div className="text-center space-y-2">
-            <h1 className="text-4xl font-semibold text-[#000000] dark:text-white">
+            <h1 className="text-3xl font-semibold text-[#000000] dark:text-white">
               Bienvenido a Maity
             </h1>
             <p className="text-base text-[#4a4a4c] dark:text-gray-300 max-w-sm mx-auto">
@@ -122,73 +219,281 @@ export function LoginScreen() {
           </div>
         </div>
 
-        {/* Divider */}
-        <div className="w-16 h-px bg-[#b0b0b3] dark:bg-gray-600" />
-
-        {/* Sign-in Section */}
-        <div className="w-full max-w-xs space-y-3">
-          {isSigningIn ? (
-            <div className="flex flex-col items-center space-y-4">
-              <div className="w-full h-12 flex items-center justify-center gap-3 bg-white dark:bg-gray-800 border border-[#e7e7e9] dark:border-gray-700 rounded-lg">
-                <Loader2 className="w-5 h-5 text-[#4a4a4c] dark:text-gray-300 animate-spin" />
-                <span className="text-sm font-medium text-[#4a4a4c] dark:text-gray-300">
-                  Esperando autenticacion...
-                </span>
-              </div>
-              <p className="text-xs text-center text-[#6a6a6d] dark:text-gray-400">
-                Completa el inicio de sesion en tu navegador
-              </p>
-              <button
-                onClick={handleCancel}
-                className="flex items-center gap-1.5 text-xs text-[#6a6a6d] dark:text-gray-400 hover:text-[#3a3a3c] dark:hover:text-gray-200 transition-colors"
-              >
-                <X className="w-3.5 h-3.5" />
-                <span>Cancelar</span>
-              </button>
+        {/* OAuth Spinner Mode (full-screen-ish) */}
+        {isSigningIn ? (
+          <div className="w-full max-w-xs flex flex-col items-center space-y-4">
+            <div className="w-full h-12 flex items-center justify-center gap-3 bg-white dark:bg-gray-800 border border-[#e7e7e9] dark:border-gray-700 rounded-lg">
+              <Loader2 className="w-5 h-5 text-[#4a4a4c] dark:text-gray-300 animate-spin" />
+              <span className="text-sm font-medium text-[#4a4a4c] dark:text-gray-300">
+                Esperando autenticacion...
+              </span>
             </div>
-          ) : (
-            <>
-              {/* Google */}
-              <button
-                onClick={handleGoogleSignIn}
-                disabled={isLoading}
-                className="w-full h-12 flex items-center justify-center gap-3 bg-white dark:bg-gray-800 border border-[#e7e7e9] dark:border-gray-700 rounded-lg shadow-sm hover:shadow-md hover:bg-[#f5f5f6] dark:hover:bg-gray-700 transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                <GoogleIcon className="w-5 h-5" />
-                <span className="text-sm font-medium text-[#3a3a3c] dark:text-gray-200">
-                  Continuar con Google
-                </span>
-              </button>
+            <p className="text-xs text-center text-[#6a6a6d] dark:text-gray-400">
+              Completa el inicio de sesion en tu navegador
+            </p>
+            <button
+              onClick={handleCancel}
+              className="flex items-center gap-1.5 text-xs text-[#6a6a6d] dark:text-gray-400 hover:text-[#3a3a3c] dark:hover:text-gray-200 transition-colors"
+            >
+              <X className="w-3.5 h-3.5" />
+              <span>Cancelar</span>
+            </button>
+          </div>
+        ) : (
+          <div className="w-full max-w-xs space-y-5">
+            {successMessage ? (
+              <div className="space-y-4">
+                <div className={successBannerClass}>{successMessage}</div>
+                <button
+                  type="button"
+                  onClick={() => switchMode('signin')}
+                  className={primaryButtonClass}
+                >
+                  Volver
+                </button>
+              </div>
+            ) : (
+              <>
+                {/* Email/password forms */}
+                {mode === 'signin' && (
+                  <form onSubmit={handleEmailSignIn} className="space-y-3">
+                    <div>
+                      <label htmlFor="email" className="sr-only">
+                        Correo electrónico
+                      </label>
+                      <input
+                        id="email"
+                        type="email"
+                        autoComplete="email"
+                        placeholder="Correo electrónico"
+                        value={email}
+                        onChange={(e) => setEmail(e.target.value)}
+                        className={inputClass}
+                        disabled={submitting || isLoading}
+                      />
+                    </div>
+                    <div className="relative">
+                      <label htmlFor="password" className="sr-only">
+                        Contraseña
+                      </label>
+                      <input
+                        id="password"
+                        type={showPassword ? 'text' : 'password'}
+                        autoComplete="current-password"
+                        placeholder="Contraseña"
+                        value={password}
+                        onChange={(e) => setPassword(e.target.value)}
+                        className={`${inputClass} pr-10`}
+                        disabled={submitting || isLoading}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowPassword((v) => !v)}
+                        className="absolute right-2 top-1/2 -translate-y-1/2 p-1.5 text-[#6a6a6d] dark:text-gray-400 hover:text-[#3a3a3c] dark:hover:text-gray-200"
+                        tabIndex={-1}
+                        aria-label={showPassword ? 'Ocultar contraseña' : 'Mostrar contraseña'}
+                      >
+                        {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      </button>
+                    </div>
+                    <button
+                      type="submit"
+                      disabled={!canSubmitSignIn}
+                      className={primaryButtonClass}
+                    >
+                      {submitting && <Loader2 className="w-4 h-4 animate-spin" />}
+                      <span>Iniciar sesión</span>
+                    </button>
+                    <div className="flex items-center justify-between pt-1">
+                      <button
+                        type="button"
+                        onClick={() => switchMode('reset')}
+                        className={linkClass}
+                      >
+                        ¿Olvidaste tu contraseña?
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => switchMode('signup')}
+                        className={linkClass}
+                      >
+                        Crear cuenta
+                      </button>
+                    </div>
+                  </form>
+                )}
 
-              {/* Apple */}
-              <button
-                onClick={handleAppleSignIn}
-                disabled={isLoading}
-                className="w-full h-12 flex items-center justify-center gap-3 bg-black dark:bg-white border border-black dark:border-white rounded-lg shadow-sm hover:shadow-md hover:bg-gray-900 dark:hover:bg-gray-100 transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                <AppleIcon className="w-5 h-5 text-white dark:text-black" />
-                <span className="text-sm font-medium text-white dark:text-black">
-                  Continuar con Apple
-                </span>
-              </button>
+                {mode === 'signup' && (
+                  <form onSubmit={handleSignUp} className="space-y-3">
+                    <div>
+                      <label htmlFor="fullName" className="sr-only">
+                        Nombre completo
+                      </label>
+                      <input
+                        id="fullName"
+                        type="text"
+                        autoComplete="name"
+                        placeholder="Nombre completo"
+                        value={fullName}
+                        onChange={(e) => setFullName(e.target.value)}
+                        className={inputClass}
+                        disabled={submitting || isLoading}
+                      />
+                    </div>
+                    <div>
+                      <label htmlFor="email-signup" className="sr-only">
+                        Correo electrónico
+                      </label>
+                      <input
+                        id="email-signup"
+                        type="email"
+                        autoComplete="email"
+                        placeholder="Correo electrónico"
+                        value={email}
+                        onChange={(e) => setEmail(e.target.value)}
+                        className={inputClass}
+                        disabled={submitting || isLoading}
+                      />
+                    </div>
+                    <div className="relative">
+                      <label htmlFor="password-signup" className="sr-only">
+                        Contraseña
+                      </label>
+                      <input
+                        id="password-signup"
+                        type={showPassword ? 'text' : 'password'}
+                        autoComplete="new-password"
+                        placeholder="Contraseña"
+                        value={password}
+                        onChange={(e) => setPassword(e.target.value)}
+                        className={`${inputClass} pr-10`}
+                        disabled={submitting || isLoading}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowPassword((v) => !v)}
+                        className="absolute right-2 top-1/2 -translate-y-1/2 p-1.5 text-[#6a6a6d] dark:text-gray-400 hover:text-[#3a3a3c] dark:hover:text-gray-200"
+                        tabIndex={-1}
+                        aria-label={showPassword ? 'Ocultar contraseña' : 'Mostrar contraseña'}
+                      >
+                        {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      </button>
+                    </div>
+                    <PasswordStrengthIndicator password={password} />
+                    <button
+                      type="submit"
+                      disabled={!canSubmitSignUp}
+                      className={primaryButtonClass}
+                    >
+                      {submitting && <Loader2 className="w-4 h-4 animate-spin" />}
+                      <span>Crear cuenta</span>
+                    </button>
+                    <div className="flex items-center justify-center pt-1">
+                      <button
+                        type="button"
+                        onClick={() => switchMode('signin')}
+                        className={linkClass}
+                      >
+                        Ya tengo cuenta
+                      </button>
+                    </div>
+                  </form>
+                )}
 
-              {/* Microsoft */}
-              <button
-                onClick={handleAzureSignIn}
-                disabled={isLoading}
-                className="w-full h-12 flex items-center justify-center gap-3 bg-white dark:bg-gray-800 border border-[#e7e7e9] dark:border-gray-700 rounded-lg shadow-sm hover:shadow-md hover:bg-[#f5f5f6] dark:hover:bg-gray-700 transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                <MicrosoftIcon className="w-5 h-5" />
-                <span className="text-sm font-medium text-[#3a3a3c] dark:text-gray-200">
-                  Continuar con Microsoft
-                </span>
-              </button>
-            </>
-          )}
-        </div>
+                {mode === 'reset' && (
+                  <form onSubmit={handleReset} className="space-y-3">
+                    <div>
+                      <label htmlFor="email-reset" className="sr-only">
+                        Correo electrónico
+                      </label>
+                      <input
+                        id="email-reset"
+                        type="email"
+                        autoComplete="email"
+                        placeholder="Correo electrónico"
+                        value={email}
+                        onChange={(e) => setEmail(e.target.value)}
+                        className={inputClass}
+                        disabled={submitting || isLoading}
+                      />
+                    </div>
+                    <button
+                      type="submit"
+                      disabled={!canSubmitReset}
+                      className={primaryButtonClass}
+                    >
+                      {submitting && <Loader2 className="w-4 h-4 animate-spin" />}
+                      <span>Enviar correo de recuperación</span>
+                    </button>
+                    <div className="flex items-center justify-center pt-1">
+                      <button
+                        type="button"
+                        onClick={() => switchMode('signin')}
+                        className={linkClass}
+                      >
+                        Volver
+                      </button>
+                    </div>
+                  </form>
+                )}
+
+                {/* Divider */}
+                <div className="flex items-center gap-3 pt-1">
+                  <div className="flex-1 h-px bg-[#e7e7e9] dark:bg-gray-700" />
+                  <span className="text-xs text-[#6a6a6d] dark:text-gray-400">
+                    o continúa con
+                  </span>
+                  <div className="flex-1 h-px bg-[#e7e7e9] dark:bg-gray-700" />
+                </div>
+
+                {/* OAuth buttons */}
+                <div className="space-y-3">
+                  {/* Google */}
+                  <button
+                    type="button"
+                    onClick={handleGoogleSignIn}
+                    disabled={isLoading || submitting}
+                    className="w-full h-12 flex items-center justify-center gap-3 bg-white dark:bg-gray-800 border border-[#e7e7e9] dark:border-gray-700 rounded-lg shadow-sm hover:shadow-md hover:bg-[#f5f5f6] dark:hover:bg-gray-700 transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    <GoogleIcon className="w-5 h-5" />
+                    <span className="text-sm font-medium text-[#3a3a3c] dark:text-gray-200">
+                      Continuar con Google
+                    </span>
+                  </button>
+
+                  {/* Apple */}
+                  <button
+                    type="button"
+                    onClick={handleAppleSignIn}
+                    disabled={isLoading || submitting}
+                    className="w-full h-12 flex items-center justify-center gap-3 bg-black dark:bg-white border border-black dark:border-white rounded-lg shadow-sm hover:shadow-md hover:bg-gray-900 dark:hover:bg-gray-100 transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    <AppleIcon className="w-5 h-5 text-white dark:text-black" />
+                    <span className="text-sm font-medium text-white dark:text-black">
+                      Continuar con Apple
+                    </span>
+                  </button>
+
+                  {/* Microsoft */}
+                  <button
+                    type="button"
+                    onClick={handleAzureSignIn}
+                    disabled={isLoading || submitting}
+                    className="w-full h-12 flex items-center justify-center gap-3 bg-white dark:bg-gray-800 border border-[#e7e7e9] dark:border-gray-700 rounded-lg shadow-sm hover:shadow-md hover:bg-[#f5f5f6] dark:hover:bg-gray-700 transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    <MicrosoftIcon className="w-5 h-5" />
+                    <span className="text-sm font-medium text-[#3a3a3c] dark:text-gray-200">
+                      Continuar con Microsoft
+                    </span>
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        )}
 
         {/* Error Display */}
-        {error && (
+        {error && !successMessage && (
           <div className="w-full max-w-xs bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-3">
             <p className="text-sm text-red-700 dark:text-red-300 text-center">{error}</p>
           </div>

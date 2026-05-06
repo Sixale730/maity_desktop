@@ -8,6 +8,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { onOpenUrl } from '@tauri-apps/plugin-deep-link'
 import { logger } from '@/lib/logger'
+import { translateAuthError } from '@/lib/auth-errors'
 
 interface AuthContextType {
   session: Session | null
@@ -20,6 +21,9 @@ interface AuthContextType {
   signInWithGoogle: () => Promise<void>
   signInWithApple: () => Promise<void>
   signInWithAzure: () => Promise<void>
+  signInWithEmail: (email: string, password: string) => Promise<void>
+  signUpWithEmail: (email: string, password: string, fullName: string) => Promise<{ needsVerification: boolean }>
+  sendPasswordReset: (email: string) => Promise<void>
   signOut: () => Promise<void>
   retryFetchMaityUser: () => void
 }
@@ -562,6 +566,61 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, [waitForSignOut])
 
+  const signInWithEmail = useCallback(async (email: string, password: string) => {
+    setError(null)
+    await waitForSignOut()
+    try {
+      const { error: signInError } = await supabase.auth.signInWithPassword({ email, password })
+      if (signInError) {
+        logger.debug('[Auth] Email sign-in error:', signInError.message)
+        setError(translateAuthError(signInError))
+        throw signInError
+      }
+    } catch (err) {
+      setError((prev) => prev ?? translateAuthError(err))
+      throw err
+    }
+  }, [waitForSignOut])
+
+  const signUpWithEmail = useCallback(async (email: string, password: string, fullName: string) => {
+    setError(null)
+    await waitForSignOut()
+    try {
+      const { data, error: signUpError } = await supabase.auth.signUp({
+        email,
+        password,
+        options: {
+          emailRedirectTo: 'https://maity.com.mx/auth/confirm',
+          data: { full_name: fullName },
+        },
+      })
+      if (signUpError) {
+        setError(translateAuthError(signUpError))
+        throw signUpError
+      }
+      return { needsVerification: !data.session }
+    } catch (err) {
+      setError((prev) => prev ?? translateAuthError(err))
+      throw err
+    }
+  }, [waitForSignOut])
+
+  const sendPasswordReset = useCallback(async (email: string) => {
+    setError(null)
+    try {
+      const { error: resetError } = await supabase.auth.resetPasswordForEmail(email, {
+        redirectTo: 'https://maity.com.mx/auth/reset',
+      })
+      if (resetError) {
+        setError(translateAuthError(resetError))
+        throw resetError
+      }
+    } catch (err) {
+      setError((prev) => prev ?? translateAuthError(err))
+      throw err
+    }
+  }, [])
+
   const signOut = useCallback(async () => {
     logger.debug('[Auth] signOut called')
     isSigningOut.current = true
@@ -609,6 +668,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         signInWithGoogle,
         signInWithApple,
         signInWithAzure,
+        signInWithEmail,
+        signUpWithEmail,
+        sendPasswordReset,
         signOut,
         retryFetchMaityUser,
       }}
