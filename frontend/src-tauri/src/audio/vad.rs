@@ -58,13 +58,13 @@ impl ContinuousVadProcessor {
         let mut config = VadConfig::default();
         config.sample_rate = VAD_SAMPLE_RATE as usize;
 
-        // SENSITIVE TUNING: thresholds bajos + pads extendidos para capturar voz suave,
-        // susurros e inicios/finales de oracion. Replica config probada en el repo de
-        // referencia (mismos valores en silero_rs durante meses sin falsos positivos
-        // perceptibles). Si aparecen falsos positivos por ruido, gate adicional via RMS
-        // en el pipeline.
-        config.positive_speech_threshold = 0.35;  // antes 0.50 — captura voz suave/acentuada
-        config.negative_speech_threshold = 0.25;  // antes 0.35 — cierra mas tarde, segmentos mas largos
+        // BALANCED TUNING: positive en default Silero (0.50) para evitar entrar en speech
+        // por ruido sostenido (ventilador/AC/teclado), pero negative bajo (0.25) para no
+        // fragmentar habla real con micropausas. Patron asimetrico "entra cauto, sale
+        // relajado". El gate adicional de RMS en worker.rs::transcribe_chunk_with_provider
+        // descarta cualquier chunk de baja energia que igual pase el VAD.
+        config.positive_speech_threshold = 0.50;  // default Silero — antes 0.35 producia "Yeah/Okay/Uh" en ruido
+        config.negative_speech_threshold = 0.25;  // mantener bajo — segmentos largos en habla continua
 
         // CRITICAL FIX: Removed redemption_time capping to support long continuous speech
         // Previous: capped at 400ms, causing VAD to fragment 5-second speech into 40ms segments

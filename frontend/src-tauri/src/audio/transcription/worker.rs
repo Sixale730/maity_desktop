@@ -321,7 +321,10 @@ pub fn start_transcription_task<R: Runtime>(
                                     // + anti-stutter. Idempotente y barato.
                                     let transcript = if transcript.trim().is_empty() {
                                         transcript
-                                    } else if crate::audio::transcription::spanish_postprocess::is_hallucination(&transcript) {
+                                    } else if crate::audio::transcription::spanish_postprocess::is_hallucination(
+                                        &transcript,
+                                        crate::get_language_preference_internal().as_deref(),
+                                    ) {
                                         info!("🚫 Worker {} descarta hallucination: '{}'", worker_id, transcript);
                                         String::new()
                                     } else {
@@ -904,9 +907,25 @@ async fn transcribe_chunk_with_provider<R: Runtime>(
         });
     }
 
-    // Calculate energy for logging/monitoring only
+    // Calculate energy and gate noise-only chunks BEFORE hitting transcription provider.
+    // Cierra la promesa del comentario en vad.rs:64-65 ("gate adicional via RMS en el pipeline").
+    // Threshold derivado del analisis: chunks force-cut por ruido tienen energy < 1e-4
+    // (RMS ~0.01); voz real, incluso baja, supera ampliamente este umbral.
+    const NOISE_ENERGY_THRESHOLD: f32 = 1e-4;
     let energy: f32 =
         speech_samples.iter().map(|&x| x * x).sum::<f32>() / speech_samples.len() as f32;
+
+    if energy < NOISE_ENERGY_THRESHOLD {
+        info!(
+            "🚫 Chunk {} descartado por bajo nivel (energy={:.6} < {:.6}, samples={})",
+            chunk.chunk_id,
+            energy,
+            NOISE_ENERGY_THRESHOLD,
+            speech_samples.len()
+        );
+        return Ok((String::new(), None, false));
+    }
+
     info!(
         "Processing speech audio chunk {} with {} samples (energy: {:.6})",
         chunk.chunk_id,

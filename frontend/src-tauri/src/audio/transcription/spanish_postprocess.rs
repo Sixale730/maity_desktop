@@ -227,9 +227,29 @@ fn restore_question_marks(text: &str) -> String {
 
 // trim_leading_fillers REMOVED — zero-loss policy: all spoken words preserved.
 
-/// Detecta texto que es probablemente una hallucination de Parakeet.
+/// Strip ASCII punctuation (`.,!?¿¡-`) y trim whitespace. Helper privado para
+/// `is_hallucination`. No uso `normalize_whitespace` porque solo colapsa espacios.
+fn strip_punctuation(s: &str) -> String {
+    s.trim()
+        .chars()
+        .filter(|c| !matches!(*c, '.' | ',' | '!' | '?' | '¿' | '¡' | '-'))
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
+/// Detecta texto que es probablemente una hallucination del transcriber.
 /// Retorna true si el texto completo debe descartarse.
-pub fn is_hallucination(text: &str) -> bool {
+///
+/// Cobertura:
+/// 1. Patrones largos clasicos (Parakeet/Canary): "Subtítulos por amara.org", etc.
+/// 2. Filler tokens cortos en ingles ("Yeah.", "Okay.", "Uh,") cuando el idioma
+///    configurado es espanol — Deepgram Nova-3 tiende a alucinar estos tokens
+///    sobre ruido aunque se le pase `language=es-419`.
+///
+/// `language` debe ser el codigo BCP-47 configurado (ej. "es-419", "en-US").
+/// `None` se trata como espanol (default del producto).
+pub fn is_hallucination(text: &str, language: Option<&str>) -> bool {
     let t = text.to_lowercase();
     const HALLUCINATION_PATTERNS: &[&str] = &[
         "subtítulos por",
@@ -249,6 +269,26 @@ pub fn is_hallucination(text: &str) -> bool {
     for pat in HALLUCINATION_PATTERNS {
         if t.contains(pat) { return true; }
     }
+
+    // Filler tokens cortos en ingles que Deepgram inventa sobre ruido cuando
+    // el target es espanol. Solo aplica si el idioma configurado empieza con
+    // "es" (o es None = default es del producto). Limite de longitud post-strip
+    // a 12 chars evita descartar oraciones validas que comiencen con "ok".
+    let is_spanish_target = language.map_or(true, |l| l.to_lowercase().starts_with("es"));
+    if is_spanish_target {
+        let normalized = strip_punctuation(&t);
+        if normalized.len() <= 12 {
+            // strip_punctuation elimina '-', por eso "uh-huh" se compara como "uhhuh".
+            const ENGLISH_SHORT_FILLERS: &[&str] = &[
+                "yeah", "yes", "ok", "okay", "uh", "um", "hmm", "mhm", "mm",
+                "huh", "uhhuh", "right", "well", "so", "oh", "ah", "eh", "aha",
+            ];
+            if ENGLISH_SHORT_FILLERS.contains(&normalized.as_str()) {
+                return true;
+            }
+        }
+    }
+
     false
 }
 
@@ -422,12 +462,61 @@ mod tests {
 
     #[test]
     fn test_hallucination_detection() {
-        assert!(is_hallucination("Subtítulos por amara.org"));
-        assert!(is_hallucination("Gracias por ver este video, suscríbete"));
-        assert!(is_hallucination("No olvides suscribirte y dale like"));
-        assert!(is_hallucination("Música de fondo"));
-        assert!(!is_hallucination("Buenos días, ¿cómo estás?"));
-        assert!(!is_hallucination("El precio es de 500 dólares"));
+        assert!(is_hallucination("Subtítulos por amara.org", Some("es-419")));
+        assert!(is_hallucination("Gracias por ver este video, suscríbete", Some("es-419")));
+        assert!(is_hallucination("No olvides suscribirte y dale like", Some("es-419")));
+        assert!(is_hallucination("Música de fondo", Some("es-419")));
+        assert!(!is_hallucination("Buenos días, ¿cómo estás?", Some("es-419")));
+        assert!(!is_hallucination("El precio es de 500 dólares", Some("es-419")));
+    }
+
+    #[test]
+    fn english_short_fillers_descartados_con_lang_es() {
+        // Deepgram inventa estos tokens sobre ruido cuando target=es-419.
+        for f in &[
+            "Yeah.", "Okay.", "Uh,", "Well.", "Mm.", "Um", "Oh", "Hmm.",
+            "Yes.", "Right.", "So", "Ah,", "Eh", "yeah", "OKAY",
+        ] {
+            assert!(
+                is_hallucination(f, Some("es-419")),
+                "esperaba descartar como hallucination: '{}'",
+                f
+            );
+        }
+    }
+
+    #[test]
+    fn english_short_fillers_no_descartados_con_lang_en() {
+        // Si el usuario eligio ingles, "Yeah/Okay" son palabras validas.
+        assert!(!is_hallucination("Yeah.", Some("en-US")));
+        assert!(!is_hallucination("Okay.", Some("en")));
+        assert!(!is_hallucination("Well.", Some("en-GB")));
+    }
+
+    #[test]
+    fn english_short_fillers_descartados_con_lang_none() {
+        // None se trata como espanol (default del producto).
+        assert!(is_hallucination("Yeah.", None));
+        assert!(is_hallucination("Okay.", None));
+    }
+
+    #[test]
+    fn frases_validas_con_filler_no_descartadas() {
+        // Oraciones legitimas que comienzan con o contienen un filler:
+        // el limite de longitud (<=12 chars post-strip) las preserva.
+        assert!(!is_hallucination("Sí, está bien", Some("es-419")));
+        assert!(!is_hallucination("No es lo que dijo", Some("es-419")));
+        assert!(!is_hallucination("Okay, pero hay un problema", Some("es-419")));
+        assert!(!is_hallucination("Yeah, claro que sí", Some("es-419")));
+    }
+
+    #[test]
+    fn strip_punctuation_elimina_signos_ascii() {
+        assert_eq!(strip_punctuation("Yeah."), "Yeah");
+        assert_eq!(strip_punctuation("¿Okay?"), "Okay");
+        assert_eq!(strip_punctuation("Uh,"), "Uh");
+        assert_eq!(strip_punctuation("  Mm.  "), "Mm");
+        assert_eq!(strip_punctuation("uh-huh"), "uhhuh");
     }
 
     #[test]
