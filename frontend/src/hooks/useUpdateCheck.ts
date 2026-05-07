@@ -22,7 +22,7 @@ export function useUpdateCheck(options: UseUpdateCheckOptions = {}) {
   const checkForUpdates = async (force = false) => {
     // Skip if checked recently (unless forced)
     if (!force && updateService.wasCheckedRecently()) {
-      logger.info('[useUpdateCheck] Skip — wasCheckedRecently=true (force=false)');
+      logger.debug('[useUpdateCheck] Skip — wasCheckedRecently=true (force=false)');
       return;
     }
 
@@ -47,7 +47,7 @@ export function useUpdateCheck(options: UseUpdateCheckOptions = {}) {
     } catch (_error) {
       // El service ya hace logger.error con el detalle. Aqui solo dejamos
       // rastro local del path para que el grep en logs muestre el flujo.
-      logger.warn('[useUpdateCheck] Update check threw — see updateService log');
+      logger.error('[useUpdateCheck] Update check threw — see updateService log');
       // Silently fail on startup checks to avoid disrupting user experience
     } finally {
       setIsChecking(false);
@@ -56,10 +56,11 @@ export function useUpdateCheck(options: UseUpdateCheckOptions = {}) {
 
   useEffect(() => {
     if (checkOnMount) {
-      // Delay the check slightly to avoid blocking app startup
+      // Delay minimo para no spamear el server durante hot-reload del dev server.
+      // check() es async no-bloqueante, asi que no hay razon para esperar mas.
       const timer = setTimeout(() => {
         checkForUpdates(false);
-      }, 2000); // Check 2 seconds after mount
+      }, 500);
 
       return () => clearTimeout(timer);
     }

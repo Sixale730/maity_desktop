@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Pre-build checks. Runs BEFORE tauri:build / tauri:build:debug.
-// Currently: state-access lint (fast, ~1s).
+// Currently: state-access lint (fast, ~1s) + providers-tree lint (fast, <100ms).
 //
 // To skip (NOT recommended), use: pnpm run tauri:build:debug:skip-checks
 
@@ -10,6 +10,7 @@ const path = require('path');
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
 const LINT_SCRIPT = path.join(REPO_ROOT, 'scripts', 'lint-state-access.sh');
+const PROVIDERS_TREE_SCRIPT = path.join(__dirname, 'lint-providers-tree.js');
 // On Windows, bash (Git Bash/MINGW) treats backslashes as escapes, mangling
 // `C:\maity_desktop\...` into `C:maity_desktop...`. Forward slashes work on
 // every platform.
@@ -49,3 +50,20 @@ if (result.status !== 0) {
 }
 
 console.log('[pre-build] OK: state-access lint passed');
+
+console.log('[pre-build] Running providers-tree lint...');
+const treeResult = spawnSync(process.execPath, [PROVIDERS_TREE_SCRIPT], {
+    stdio: 'inherit',
+    shell: false,
+});
+
+if (treeResult.status !== 0) {
+    console.error('');
+    console.error('[pre-build] FAIL: providers-tree lint failed.');
+    console.error('  Restore the MARKER comment in src/app/layout.tsx, or update');
+    console.error('  PROVIDER_INVARIANTS in src/app/layout.test.ts if intentional.');
+    console.error('  Escape hatch: pnpm run tauri:build:debug:skip-checks');
+    process.exit(1);
+}
+
+console.log('[pre-build] OK: providers-tree lint passed');

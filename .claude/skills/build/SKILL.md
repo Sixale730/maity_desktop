@@ -215,5 +215,6 @@ Mostrar resumen completo:
 - La sesion de SimplySign dura ~2 horas por token. Si el build falla por timeout de SimplySign, reconectar desde la app del celular.
 - Para builds sin code signing (dev rapido): `SKIP_CODE_SIGNING=true pnpm run tauri:build`
 - El updater de la app busca `latest.json` en `https://github.com/Sixale730/maity_desktop/releases/latest/download/latest.json`, por eso es critico que el release tenga el flag `--latest` y que `latest.json` este como asset.
+- **Smoke test de auto-update (opcional pre-release)**: para detectar regresiones runtime que el test de estructura (`src/app/layout.test.ts`) no atrapa, antes de bumpear y publicar verifica que la version publicada **anterior** (instalada en una maquina/VM con sesion Supabase fresca) muestra el toast de actualizacion al abrir la app. El bug historico (commit `230b807`, 2026-02-02) sobrevivio 3 meses y 2 fixes fallidos porque nadie probaba en maquina con login lento. El test de estructura previene la regresion conocida; este smoke cubre fallos del plugin updater o del Sonner toast.
 - NO hacer git push. Solo commit local + release en GitHub.
 - **Certificado Certum**: Expira Feb 19, 2027. SHA1: `81DACE307F40CC0BB002FFB5B4785BFAB97DCF7F`. Si se renueva el certificado, actualizar el SHA1 en `sign-windows.ps1` o via env var `CERTUM_SHA1`.

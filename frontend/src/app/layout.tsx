@@ -510,19 +510,25 @@ export default function RootLayout({
         <ChunkErrorRecovery />
         <ErrorBoundary>
           <QueryClientProvider client={queryClient}>
-            <ThemeProvider>
-              <AnalyticsProvider>
-                <AuthProvider>
-                  <AuthGate>
-                    <UpdateCheckProvider>
+            {/* CRITICAL: <UpdateCheckProvider> debe vivir FUERA de <AuthProvider> y
+                <AuthGate>. El plugin updater no requiere sesion Supabase — solo HTTP a
+                GitHub. Si lo metes dentro de cualquier gate condicional, el auto-check
+                no dispara en maquinas con login lento. Regresion documentada: commit
+                230b807 (2026-02-02) → fix 9810541 fallido → fix definitivo este commit.
+                Validado por test: src/app/layout.test.ts (PROVIDER_INVARIANTS). */}
+            <UpdateCheckProvider>
+              <ThemeProvider>
+                <AnalyticsProvider>
+                  <AuthProvider>
+                    <AuthGate>
                       <CloudSyncInitializer />
                       <GlobalConversationNotifier />
                       <AppContent>{children}</AppContent>
-                    </UpdateCheckProvider>
-                  </AuthGate>
-                </AuthProvider>
-              </AnalyticsProvider>
-            </ThemeProvider>
+                    </AuthGate>
+                  </AuthProvider>
+                </AnalyticsProvider>
+              </ThemeProvider>
+            </UpdateCheckProvider>
           </QueryClientProvider>
         </ErrorBoundary>
         <Toaster position="bottom-right" richColors closeButton />
