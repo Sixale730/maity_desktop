@@ -135,9 +135,9 @@ jobs:
           echo "✓ macOS build will use Metal GPU acceleration (enabled by default)"
           echo "✓ CoreML acceleration available for Apple Silicon"
 
-      - name: Build llama-helper sidecar (both arch slices)
+      - name: Build llama-helper sidecar (both arch slices + universal merge)
         run: |
-          echo "Building llama-helper sidecar for universal binary (both arch slices)..."
+          echo "Building llama-helper sidecar for universal binary..."
           mkdir -p frontend/src-tauri/binaries
 
           # Apple Silicon slice
@@ -147,6 +147,13 @@ jobs:
           # Intel slice
           cargo build --release -p llama-helper --features metal --target x86_64-apple-darwin
           cp target/x86_64-apple-darwin/release/llama-helper frontend/src-tauri/binaries/llama-helper-x86_64-apple-darwin
+
+          # Universal merge — required by Tauri 2's bundling step for --target universal-apple-darwin
+          lipo -create \
+            frontend/src-tauri/binaries/llama-helper-aarch64-apple-darwin \
+            frontend/src-tauri/binaries/llama-helper-x86_64-apple-darwin \
+            -output frontend/src-tauri/binaries/llama-helper-universal-apple-darwin
+          lipo -info frontend/src-tauri/binaries/llama-helper-universal-apple-darwin
 
           echo "Sidecars in frontend/src-tauri/binaries/:"
           ls -la frontend/src-tauri/binaries/

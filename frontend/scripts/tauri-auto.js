@@ -16,8 +16,12 @@ if (!command || !['dev', 'build'].includes(command)) {
   process.exit(1);
 }
 const isDebug = extraArgs.includes('--debug');
-// Tauri-level flags to forward (everything except --debug, which we handle ourselves)
-const forwardedTauriArgs = extraArgs.filter((a) => a !== '--debug');
+// Tauri-level flags to forward. Drop --debug (handled separately) and any standalone
+// `--` separator that pnpm injects when the caller does `pnpm run tauri:build -- --foo`
+// — without dropping it, the separator leaks into the tauri command and pushes
+// subsequent flags (like --target) into cargo's arg space, breaking virtual targets
+// such as universal-apple-darwin.
+const forwardedTauriArgs = extraArgs.filter((a) => a !== '--debug' && a !== '--');
 const targetIdx = forwardedTauriArgs.indexOf('--target');
 const tauriTarget = targetIdx >= 0 ? forwardedTauriArgs[targetIdx + 1] : null;
 
@@ -62,7 +66,10 @@ if (forwardedTauriArgs.length > 0) {
   tauriCmd += ' ' + forwardedTauriArgs.join(' ');
 }
 if (feature && feature !== 'none') {
-  tauriCmd += ` -- --features ${feature}`;
+  // Pass --features directly to tauri (not via `--` separator) so it works
+  // with virtual targets like --target universal-apple-darwin where Tauri
+  // invokes cargo per-arch internally and the `--` forwarding breaks.
+  tauriCmd += ` --features ${feature}`;
   console.log(`🚀 Running: tauri ${command}${isDebug ? ' --debug' : ''}${forwardedTauriArgs.length ? ' ' + forwardedTauriArgs.join(' ') : ''} with features: ${feature}`);
 } else {
   console.log(`🚀 Running: tauri ${command}${isDebug ? ' --debug' : ''}${forwardedTauriArgs.length ? ' ' + forwardedTauriArgs.join(' ') : ''} (CPU-only mode)`);
@@ -80,13 +87,35 @@ try {
     const targetDir = tauriTarget
       ? path.resolve(__dirname, '..', '..', 'target', tauriTarget, isDebug ? 'debug' : 'release', 'bundle')
       : path.resolve(__dirname, '..', '..', 'target', isDebug ? 'debug' : 'release', 'bundle');
-    const hasBundles = fs.existsSync(targetDir) && fs.readdirSync(targetDir).length > 0;
 
-    if (hasBundles && !process.env.TAURI_SIGNING_PRIVATE_KEY) {
+    // Walk bundle dir for FINAL installer artifacts. Mere presence of intermediate
+    // files (.app, rw.*.dmg) is not enough — earlier bug masked real bundling failures
+    // (e.g. bundle_dmg.sh failure leaves a partial .app but no .dmg).
+    const FINAL_ARTIFACT_EXTS = ['.dmg', '.msi', '.deb', '.AppImage', '.rpm'];
+    const hasFinalArtifact = (() => {
+      if (!fs.existsSync(targetDir)) return false;
+      const stack = [targetDir];
+      while (stack.length) {
+        const dir = stack.pop();
+        for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+          const full = path.join(dir, entry.name);
+          if (entry.isDirectory()) stack.push(full);
+          else if (FINAL_ARTIFACT_EXTS.some((ext) => entry.name.endsWith(ext))) return true;
+        }
+      }
+      return false;
+    })();
+    // For NSIS Windows builds, the installer is .exe — check that separately to avoid
+    // matching unrelated .exe files
+    const nsisDir = path.join(targetDir, 'nsis');
+    const hasNsisInstaller = fs.existsSync(nsisDir) &&
+      fs.readdirSync(nsisDir).some((f) => f.endsWith('-setup.exe'));
+
+    if ((hasFinalArtifact || hasNsisInstaller) && !process.env.TAURI_SIGNING_PRIVATE_KEY) {
       console.log('');
       console.log('⚠️  Build completed but updater signing was skipped (TAURI_SIGNING_PRIVATE_KEY not set).');
       console.log('   This is expected for local development. CI/CD builds will sign properly.');
-      console.log('   Bundles created successfully in: target/release/bundle/');
+      console.log(`   Final installer artifact found in: ${targetDir}`);
       process.exit(0);
     }
   }

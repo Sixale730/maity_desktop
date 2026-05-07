@@ -540,7 +540,7 @@ jobs:
           mkdir -p frontend/src-tauri/binaries
 
           if [[ "${{ inputs.platform }}" == *"macos"* ]]; then
-            echo "macOS: building llama-helper for both arch slices (universal binary requirement)"
+            echo "macOS: building llama-helper for both arch slices + universal merge (universal binary requirement)"
 
             # Apple Silicon slice (Metal acceleration)
             cargo build --release -p llama-helper --features metal --target aarch64-apple-darwin
@@ -549,6 +549,15 @@ jobs:
             # Intel slice (Metal still works on Intel Macs with discrete/integrated GPU)
             cargo build --release -p llama-helper --features metal --target x86_64-apple-darwin
             cp target/x86_64-apple-darwin/release/llama-helper frontend/src-tauri/binaries/llama-helper-x86_64-apple-darwin
+
+            # Universal merge — Tauri 2 requires this for the final .app bundle when
+            # --target universal-apple-darwin (per-arch slices are used during compilation,
+            # but the bundling step copies binaries/llama-helper-universal-apple-darwin)
+            lipo -create \
+              frontend/src-tauri/binaries/llama-helper-aarch64-apple-darwin \
+              frontend/src-tauri/binaries/llama-helper-x86_64-apple-darwin \
+              -output frontend/src-tauri/binaries/llama-helper-universal-apple-darwin
+            lipo -info frontend/src-tauri/binaries/llama-helper-universal-apple-darwin
           else
             echo "Linux: building llama-helper CPU-only for native target"
             cargo build --release -p llama-helper

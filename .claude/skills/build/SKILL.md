@@ -53,6 +53,61 @@ Ejecutar `uname -s` para determinar la plataforma:
    - `APPLE_PASSWORD` (no vacio)
    - `APPLE_TEAM_ID` (no vacio)
 
+3. Verificar que ambos targets de Rust esten instalados (requerido para universal binary):
+   ```bash
+   rustup target list --installed | grep apple-darwin
+   ```
+   - Deben aparecer `aarch64-apple-darwin` Y `x86_64-apple-darwin`.
+   - Si falta alguno: `rustup target add aarch64-apple-darwin x86_64-apple-darwin`
+
+4. Verificar/compilar los TRES sidecars de `llama-helper` en `frontend/src-tauri/binaries/`:
+   ```bash
+   ls frontend/src-tauri/binaries/ | grep llama-helper
+   ```
+   - Deben existir LOS TRES:
+     - `llama-helper-aarch64-apple-darwin` (Apple Silicon — para compilar slice arm64)
+     - `llama-helper-x86_64-apple-darwin` (Intel — para compilar slice x86_64)
+     - `llama-helper-universal-apple-darwin` (universal — para el bundle .app final)
+   - Si falta alguno, compilar y mergear desde el workspace root (`<repo>`, NO `<repo>/frontend`):
+     ```bash
+     cd "<repo>"
+
+     # Compilar ambos slices arch-especificos
+     cargo build --release -p llama-helper --features metal --target aarch64-apple-darwin
+     cp target/aarch64-apple-darwin/release/llama-helper frontend/src-tauri/binaries/llama-helper-aarch64-apple-darwin
+
+     cargo build --release -p llama-helper --features metal --target x86_64-apple-darwin
+     cp target/x86_64-apple-darwin/release/llama-helper frontend/src-tauri/binaries/llama-helper-x86_64-apple-darwin
+
+     # Crear el sidecar universal con lipo (merge de los dos slices)
+     lipo -create \
+       frontend/src-tauri/binaries/llama-helper-aarch64-apple-darwin \
+       frontend/src-tauri/binaries/llama-helper-x86_64-apple-darwin \
+       -output frontend/src-tauri/binaries/llama-helper-universal-apple-darwin
+     ```
+   - Verificar:
+     - `file frontend/src-tauri/binaries/llama-helper-x86_64-apple-darwin` → `Mach-O 64-bit executable x86_64`
+     - `lipo -info frontend/src-tauri/binaries/llama-helper-universal-apple-darwin` → `Architectures in the fat file: ... are: x86_64 arm64`
+   - **Errores conocidos si falta alguno**:
+     - Falta slice arm64 o x86_64: `resource path 'binaries/llama-helper-<triple>' doesn't exist` durante `cargo build` por arch.
+     - Falta el universal: `failed to bundle project Failed to copy external binaries: resource path 'binaries/llama-helper-universal-apple-darwin' doesn't exist` durante el bundling final.
+
+### Paso 0c: Limpieza pre-build (CRITICO en macOS)
+
+**En macOS** — Si un build anterior fallo a mitad del bundling del `.dmg`, deja un volumen montado en `/Volumes/dmg.XXXXX` y un archivo temporal `rw.NNN.<name>.dmg` en `target/.../bundle/macos/`. **El siguiente build fallara** con `error running bundle_dmg.sh` porque `hdiutil` no puede crear un DMG nuevo si el anterior sigue montado.
+
+Ejecutar SIEMPRE antes de un build (idempotente, no afecta nada si no hay leftovers):
+
+```bash
+# Detach cualquier DMG temporal del proyecto (no toca otros DMGs montados)
+mount | grep -oE '/Volumes/dmg\.[A-Za-z0-9]+' | xargs -r -n1 hdiutil detach 2>/dev/null || true
+
+# Borrar archivos temporales rw.NNN.*.dmg en cualquier subdir de target/
+find "<repo>/target" -name 'rw.*.dmg' -type f -delete 2>/dev/null || true
+```
+
+**En Windows**: no hay equivalente. Saltar este paso.
+
 ### Paso 1: Leer version actual
 
 Leer `frontend/src-tauri/tauri.conf.json` y extraer el campo `"version"`.
@@ -266,3 +321,37 @@ Mostrar resumen completo:
 - El updater busca `latest.json` en `https://github.com/Sixale730/maity_desktop/releases/latest/download/latest.json`. Critico que el release tenga `--latest` y que `latest.json` sea asset.
 - **Certificado Certum (Windows)**: Expira Feb 19, 2027. SHA1: `81DACE307F40CC0BB002FFB5B4785BFAB97DCF7F`.
 - **Certificado Apple (macOS)**: Developer ID Application: Julio Alexis Gonzalez Villa (8YLD233TA2).
+
+## Troubleshooting (errores conocidos en builds universales macOS)
+
+Los siguientes errores aparecen al hacer build con `--target universal-apple-darwin`. Cada uno tiene una causa concreta documentada — NO improvisar fixes.
+
+### `error: error loading target specification: could not find specification for target "universal-apple-darwin"`
+
+**Causa**: el flag `--target universal-apple-darwin` esta llegando directo a `cargo`/`rustc` (que no conocen ese target — es virtual de Tauri). Usualmente porque el script invocador esta dejando pasar el `--` separador de pnpm.
+
+**Fix**: invocar exactamente `pnpm run tauri:build -- --target universal-apple-darwin`. El script `tauri-auto.js` ya filtra el `--` (commit del fix universal-binary). Si reaparece tras editar `tauri-auto.js`, verificar que el filtro `extraArgs.filter((a) => a !== '--debug' && a !== '--')` siga ahi.
+
+### `resource path 'binaries/llama-helper-x86_64-apple-darwin' doesn't exist`
+
+**Causa**: falta el sidecar slice Intel.
+
+**Fix**: ejecutar paso 0b sub-paso 4 (compilar y copiar el slice x86_64 a `frontend/src-tauri/binaries/`).
+
+### `failed to bundle project Failed to copy external binaries: resource path 'binaries/llama-helper-universal-apple-darwin' doesn't exist`
+
+**Causa**: faltan los slices arch-especificos O falta el merge universal con `lipo`. Tauri necesita los TRES (los dos slices para compilar maity-desktop por arch, y el universal para el bundle final).
+
+**Fix**: ejecutar paso 0b sub-paso 4 completo (incluyendo `lipo -create`).
+
+### `failed to bundle project error running bundle_dmg.sh`
+
+**Causa**: en 99% de los casos, un build anterior fallo a mitad del bundling y dejo un volumen DMG montado en `/Volumes/dmg.XXXXX` + un archivo temporal `rw.NNN.*.dmg`. `hdiutil` no puede crear un DMG nuevo mientras el anterior siga montado.
+
+**Fix**: ejecutar el paso 0c (limpieza pre-build) y reintentar. Si persiste, ver `tail -100 /tmp/maity-build-*.log` para el error real de `bundle_dmg.sh`.
+
+### `⚠️ Build completed but updater signing was skipped` con FINAL_EXIT_CODE=0 pero el .dmg NO esta
+
+**Estado**: arreglado. `tauri-auto.js` ahora exige la presencia de un instalador final (`.dmg`, `.msi`, `.deb`, `.AppImage`, `.rpm`, o NSIS `*-setup.exe`) antes de aceptar exit 0 sin la clave de updater. Si reaparece el sintoma:
+
+**Posible causa**: alguien revirio el filtro `hasFinalArtifact` en `tauri-auto.js`. Restaurar la logica que walks el bundle dir buscando extensiones de instalador real.
