@@ -1,11 +1,9 @@
-import { Loader2, AlertCircle, RefreshCw, Clock, WifiOff } from 'lucide-react';
+import { Loader2, AlertCircle, RefreshCw, Clock } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import type { AnalysisPhase } from '../utils/derivePhase';
-import type { RealtimeStatus } from '../hooks/useConversationLive';
 
 interface AnalysisStatusBannerProps {
   phase: AnalysisPhase;
-  realtimeStatus?: RealtimeStatus;
   onRetry?: () => void;
 }
 
@@ -13,7 +11,7 @@ interface AnalysisStatusBannerProps {
  * Visual status of the analysis. Renders nothing for terminal happy states (completed/skipped/idle);
  * the rest of the page already shows the analysis itself in those cases.
  */
-export function AnalysisStatusBanner({ phase, realtimeStatus, onRetry }: AnalysisStatusBannerProps) {
+export function AnalysisStatusBanner({ phase, onRetry }: AnalysisStatusBannerProps) {
   if (phase === 'idle' || phase === 'completed' || phase === 'skipped') return null;
 
   if (phase === 'polling') {
@@ -21,12 +19,6 @@ export function AnalysisStatusBanner({ phase, realtimeStatus, onRetry }: Analysi
       <div className="flex items-center gap-3 rounded-lg border border-primary/20 bg-primary/5 px-4 py-3 mb-4">
         <Loader2 className="h-4 w-4 animate-spin text-primary shrink-0" />
         <span className="text-sm text-foreground flex-1">Analizando conversación...</span>
-        {realtimeStatus === 'degraded' && (
-          <span className="flex items-center gap-1 text-xs text-muted-foreground" title="Conexión en tiempo real degradada — revisando cada 3s">
-            <WifiOff className="h-3 w-3" />
-            Sin tiempo real
-          </span>
-        )}
       </div>
     );
   }

@@ -18,15 +18,9 @@ describe('AnalysisStatusBanner', () => {
     expect(container.firstChild).toBeNull();
   });
 
-  it('renders polling spinner without realtime warning when realtime is live', () => {
-    render(<AnalysisStatusBanner phase="polling" realtimeStatus="live" />);
+  it('renders polling spinner', () => {
+    render(<AnalysisStatusBanner phase="polling" />);
     expect(screen.getByText(/Analizando conversación/i)).toBeInTheDocument();
-    expect(screen.queryByText(/Sin tiempo real/i)).not.toBeInTheDocument();
-  });
-
-  it('shows degraded indicator when realtime fell back to polling', () => {
-    render(<AnalysisStatusBanner phase="polling" realtimeStatus="degraded" />);
-    expect(screen.getByText(/Sin tiempo real/i)).toBeInTheDocument();
   });
 
   it('renders stalled card with retry button', () => {

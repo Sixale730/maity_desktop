@@ -91,7 +91,6 @@ export function ConversationDetail({ conversation: initialConversation, onClose,
   const live = useConversationLive(conversationId, isLocalOnly ? undefined : initialConversation, !isLocalOnly);
 
   const conversation = isLocalOnly ? localConversation : live.conversation;
-  const realtimeStatus = isLocalOnly ? undefined : live.realtimeStatus;
 
   const [copied, setCopied] = useState(false);
   const [showFeedbackModal, setShowFeedbackModal] = useState(false);
@@ -391,7 +390,6 @@ export function ConversationDetail({ conversation: initialConversation, onClose,
       {/* Analysis status banner */}
       <AnalysisStatusBanner
         phase={phase}
-        realtimeStatus={realtimeStatus}
         onRetry={canAnalyze ? handleRetryStalled : undefined}
       />
 

@@ -30,6 +30,7 @@ import { ParakeetAutoDownloadProvider } from '@/contexts/ParakeetAutoDownloadCon
 import { ModelDownloadGate } from '@/components/ModelDownloadGate'
 import { LoginScreen } from '@/components/Auth'
 import { CloudSyncInitializer } from '@/components/CloudSyncInitializer'
+import { GlobalConversationNotifier } from '@/components/GlobalConversationNotifier'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ThemeProvider } from '@/contexts/ThemeContext'
 import Script from 'next/script'
@@ -515,6 +516,7 @@ export default function RootLayout({
                   <AuthGate>
                     <UpdateCheckProvider>
                       <CloudSyncInitializer />
+                      <GlobalConversationNotifier />
                       <AppContent>{children}</AppContent>
                     </UpdateCheckProvider>
                   </AuthGate>
