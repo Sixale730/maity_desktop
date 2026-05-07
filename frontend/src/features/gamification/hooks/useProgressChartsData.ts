@@ -1,5 +1,6 @@
 import { useMemo } from 'react';
 import type { OmiConversation, CommunicationFeedback } from '@/features/conversations/services/conversations.service';
+import { getCommScore } from '@/features/conversations/utils/scoring';
 
 // ============================================================================
 // Types
@@ -97,49 +98,6 @@ function getFillerRate(conv: OmiConversation): number {
   const durationMin = (conv.duration_seconds || 0) / 60;
   if (durationMin <= 0) return 0;
   return Math.round((muletillasTotal / durationMin) * 10) / 10;
-}
-
-/**
- * Coalesce score from any of the supported analysis schemas. Returns 0-100 or null.
- *
- * Priority (matches `conversations.service.ts:792` `getRecentConversationScores`):
- *   1. V4 `calidad_global.puntaje` (0-100) — el path canónico del nuevo análisis
- *   2. V4 `resumen.puntuacion_global` (0-100) — schema alternativo
- *   3. V4 `calidad_global` como number directo (raro pero defensivo)
- *   4. Legacy `overall_score` (0-10) → ×10
- *   5. null (sin score, o AnalysisSkipped por texto insuficiente)
- */
-function getCommScore(conv: OmiConversation): number | null {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const v4 = conv.communication_feedback_v4 as any;
-
-  // AnalysisSkipped: { status: 'skipped', reason } — sin score
-  if (v4 && (v4.status === 'skipped' || v4.skipped === true)) {
-    return null;
-  }
-
-  // V4 path A: calidad_global.puntaje (0-100) — el más común
-  const cg = v4?.calidad_global;
-  if (cg && typeof cg === 'object' && typeof cg.puntaje === 'number') {
-    return cg.puntaje;
-  }
-
-  // V4 path B: resumen.puntuacion_global (0-100)
-  if (v4?.resumen && typeof v4.resumen.puntuacion_global === 'number') {
-    return v4.resumen.puntuacion_global;
-  }
-
-  // V4 path C: calidad_global como number suelto
-  if (typeof cg === 'number') {
-    return cg;
-  }
-
-  // Legacy: overall_score (0-10) → 0-100
-  if (conv.communication_feedback?.overall_score != null) {
-    return conv.communication_feedback.overall_score * 10;
-  }
-
-  return null;
 }
 
 type FeedbackConversation = OmiConversation & { communication_feedback: NonNullable<OmiConversation['communication_feedback']> };
