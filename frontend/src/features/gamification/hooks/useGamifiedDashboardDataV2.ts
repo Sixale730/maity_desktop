@@ -1,15 +1,15 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useMemo } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { useAuth } from '@/contexts/AuthContext';
 import { supabase } from '@/lib/supabase';
 import {
   getOmiConversations,
-  getOmiConversationDates,
   getFormResponses,
-  getRecentConversationScores,
   OmiConversation,
   CommunicationFeedback,
   FormResponse,
 } from '@/features/conversations/services/conversations.service';
+import { getCommScore } from '@/features/conversations/utils/scoring';
 
 export interface MountainNode {
   index: number;
@@ -102,22 +102,22 @@ const NODE_POSITIONS: [number, number][] = [
 ];
 
 const BADGE_DEFINITIONS: Omit<Badge, 'unlocked'>[] = [
-  { id: '1', name: 'Negociador Valiente', xp: 50, icon: '\uD83D\uDEE1\uFE0F', color: '#3b82f6' },
-  { id: '2', name: 'Precisión Verbal', xp: 90, icon: '\uD83C\uDFAF', color: '#ef4444' },
-  { id: '3', name: 'Empático', xp: 50, icon: '\u2764\uFE0F', color: '#10b981' },
-  { id: '4', name: 'Astucia Disruptiva', xp: 170, icon: '\uD83E\uDDE0', color: '#9333ea' },
-  { id: '5', name: 'Orador Maestro', xp: 500, icon: '\uD83C\uDFA4', color: '#f59e0b' },
-  { id: '6', name: 'Líder Nato', xp: 1000, icon: '\uD83D\uDC51', color: '#ec4899' },
+  { id: '1', name: 'Negociador Valiente', xp: 50, icon: '🛡️', color: '#3b82f6' },
+  { id: '2', name: 'Precisión Verbal', xp: 90, icon: '🎯', color: '#ef4444' },
+  { id: '3', name: 'Empático', xp: 50, icon: '❤️', color: '#10b981' },
+  { id: '4', name: 'Astucia Disruptiva', xp: 170, icon: '🧠', color: '#9333ea' },
+  { id: '5', name: 'Orador Maestro', xp: 500, icon: '🎤', color: '#f59e0b' },
+  { id: '6', name: 'Líder Nato', xp: 1000, icon: '👑', color: '#ec4899' },
 ];
 
 const MOCK_MISSION: Mission = {
   name: 'Montaña de Fuego',
   enemy: 'EL REGATEADOR',
   enemyDesc: 'Escéptico, Ocupado, Orientado a datos',
-  enemyIcon: '\uD83D\uDC79',
+  enemyIcon: '👹',
   items: [
-    { name: 'Pico de Piedra', icon: '\u26CF\uFE0F' },
-    { name: 'Casco de Lava', icon: '\u26D1\uFE0F' },
+    { name: 'Pico de Piedra', icon: '⛏️' },
+    { name: 'Casco de Lava', icon: '⛑️' },
   ],
   progress: 35,
 };
@@ -227,102 +227,89 @@ function formatRecentActivity(conversations: OmiConversation[]): RecentActivity[
       status: score >= 8 ? 'excellent' : score >= 6.5 ? 'good' : 'warning',
       insight,
       topSkill,
-      emoji: conv.emoji || '\uD83D\uDCAC',
+      emoji: conv.emoji || '💬',
     };
   });
 }
 
-function getFirstDayOfMonth(): string {
-  const now = new Date();
-  return new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
-}
+interface StreakRPCResult { streak_days: number; bonus_days: number }
 
 export function useGamifiedDashboardDataV2(): GamifiedDashboardDataV2 {
   const { maityUser } = useAuth();
-  const [conversations, setConversations] = useState<OmiConversation[]>([]);
-  const [conversationDates, setConversationDates] = useState<{ created_at: string }[]>([]);
-  const [formData, setFormData] = useState<FormResponse | null>(null);
-  const [recentScores, setRecentScores] = useState<Array<{ created_at: string; score: number }>>([]);
-  const [streakData, setStreakData] = useState<{ streak_days: number; bonus_days: number }>({ streak_days: 0, bonus_days: 0 });
-  const [xpFromRPC, setXpFromRPC] = useState<number>(0);
-  const [loading, setLoading] = useState(false);
+  const userId = maityUser?.id;
 
-  useEffect(() => {
-    let cancelled = false;
+  // Conversations: shared queryKey with the rest of the app. GlobalConversationNotifier
+  // (root layout) invalidates this on Supabase Realtime UPDATE, so the dashboard refetches
+  // automatically when an analysis lands without the user having to navigate away.
+  const conversationsQuery = useQuery({
+    queryKey: ['omi-conversations', userId],
+    queryFn: () => getOmiConversations(userId),
+    enabled: !!userId,
+    staleTime: 5 * 60 * 1000,
+  });
+  const conversations = useMemo(() => conversationsQuery.data ?? [], [conversationsQuery.data]);
 
-    async function load() {
-      if (!maityUser?.id) {
-        setLoading(false);
-        return;
+  // Form responses: separate table (form_responses), realtime not wired. Shared key with
+  // useFormResponsesRadar so both consumers hit the same cache entry.
+  const formQuery = useQuery({
+    queryKey: ['form-responses', userId],
+    queryFn: () => getFormResponses(userId!),
+    enabled: !!userId,
+    staleTime: 5 * 60 * 1000,
+  });
+  const formData = formQuery.data ?? null;
+
+  const streakQuery = useQuery<StreakRPCResult>({
+    queryKey: ['user-streak', userId],
+    queryFn: async () => {
+      const { data, error } = await supabase.rpc('calculate_user_streak', { p_user_id: userId });
+      if (error) {
+        console.warn('[Gamification] streak RPC error:', error.message);
+        return { streak_days: 0, bonus_days: 0 };
       }
+      return Array.isArray(data) && data.length > 0 ? (data[0] as StreakRPCResult) : { streak_days: 0, bonus_days: 0 };
+    },
+    enabled: !!userId,
+    staleTime: 60 * 1000,
+  });
+  const streakData = streakQuery.data ?? { streak_days: 0, bonus_days: 0 };
 
-      // Helper: race a promise against a timeout (returns null on timeout)
-      const withTimeout = <T,>(promise: Promise<T>, ms: number): Promise<T | null> =>
-        Promise.race([
-          promise,
-          new Promise<null>(resolve => setTimeout(() => resolve(null), ms)),
-        ]);
-
-      try {
-        // Primary data with 8s timeout — unblocks the dashboard quickly
-        const result = await withTimeout(
-          Promise.all([
-            getOmiConversations(maityUser.id),
-            getOmiConversationDates(maityUser.id, getFirstDayOfMonth()),
-            getFormResponses(maityUser.id),
-            getRecentConversationScores(maityUser.id, 6),
-          ]),
-          8000,
-        );
-
-        if (cancelled) return;
-
-        if (result) {
-          const [listData, datesData, formResponse, scoresData] = result;
-          setConversations(listData);
-          setConversationDates(datesData);
-          setFormData(formResponse);
-          setRecentScores(scoresData);
-          if (!formResponse) {
-            console.warn('[Gamification] formData is null — getFormResponses() returned no data');
-          }
-        } else {
-          console.warn('[Gamification] Primary data fetch timed out after 8s — showing defaults');
-        }
-      } catch (err) {
-        console.error('Error loading conversations for gamified dashboard v2:', err);
-      } finally {
-        // Unblock dashboard immediately — streak/XP load in background
-        if (!cancelled) setLoading(false);
+  const xpQuery = useQuery<number>({
+    queryKey: ['user-xp', userId],
+    queryFn: async () => {
+      const { data, error } = await supabase.rpc('get_my_xp_summary');
+      if (error) {
+        console.warn('[Gamification] XP RPC error:', error.message);
+        return 0;
       }
-
-      // Secondary data (streak + XP) — non-blocking, loaded after dashboard renders
-      try {
-        const [streakResult, xpResult] = await Promise.all([
-          withTimeout(Promise.resolve(supabase.rpc('calculate_user_streak', { p_user_id: maityUser.id })), 8000),
-          withTimeout(Promise.resolve(supabase.rpc('get_my_xp_summary')), 8000),
-        ]);
-
-        if (cancelled) return;
-
-        if (streakResult?.data && Array.isArray(streakResult.data) && streakResult.data.length > 0) {
-          setStreakData(streakResult.data[0]);
-        } else if (streakResult?.error) {
-          console.warn('[Gamification] streak RPC error:', streakResult.error.message);
-        }
-
-        if (xpResult?.data && typeof xpResult.data === 'object' && 'total_xp' in xpResult.data) {
-          setXpFromRPC((xpResult.data as { total_xp: number }).total_xp);
-        } else if (xpResult?.error) {
-          console.warn('[Gamification] XP RPC error:', xpResult.error.message);
-        }
-      } catch (err) {
-        console.warn('[Gamification] Streak/XP fetch failed (non-fatal):', err);
+      if (data && typeof data === 'object' && 'total_xp' in data) {
+        return (data as { total_xp: number }).total_xp;
       }
-    }
-    load();
-    return () => { cancelled = true; };
-  }, [maityUser?.id]);
+      return 0;
+    },
+    enabled: !!userId,
+    staleTime: 60 * 1000,
+  });
+  const totalXP = xpQuery.data ?? 0;
+
+  // Conversation dates for mountain nodes — derived from the canonical conversations cache
+  // so realtime invalidations propagate without an extra fetch.
+  const conversationDates = useMemo(() => {
+    const startOfMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1);
+    return conversations
+      .filter(c => new Date(c.created_at) >= startOfMonth)
+      .map(c => ({ created_at: c.created_at }));
+  }, [conversations]);
+
+  // Recent scores for the sparkline — derived from `conversations` to stay reactive.
+  // Mirrors the original getRecentConversationScores: V4 puntaje preferred over legacy×10,
+  // filter score > 0, max 6 most recent (conversations are pre-sorted DESC by created_at).
+  const recentScores = useMemo(() => {
+    return conversations
+      .map(c => ({ created_at: c.created_at, score: getCommScore(c) ?? 0 }))
+      .filter(r => r.score > 0)
+      .slice(0, 6);
+  }, [conversations]);
 
   const completedNodes = useMemo(
     () => calculateCompletedNodes(conversationDates),
@@ -371,22 +358,16 @@ export function useGamifiedDashboardDataV2(): GamifiedDashboardDataV2 {
     }));
   }, [formData, conversations]);
 
-  // Streak and bonus days from Supabase RPC (matches web app logic: weekends don't break streak)
   const streakDays = streakData.streak_days;
   const bonusDays = streakData.bonus_days;
 
-  // Sparkline data for global score evolution: last 6 conversations,
-  // chronological left→right. Service already returns score normalized to 0-100
-  // (V4 calidad_global.puntaje is 0-100; legacy overall_score is 0-10 ×10 in service).
+  // Sparkline data: chronological left→right (recentScores is DESC, so reverse).
   const scoreSparkline = useMemo(
-    () =>
-      [...recentScores]
-        .reverse()
-        .map((s) => ({ v: Math.round(s.score) })),
+    () => [...recentScores].reverse().map((s) => ({ v: Math.round(s.score) })),
     [recentScores],
   );
 
-  // Score from last 2 conversations
+  // Score from last 2 conversations (legacy field — kept for backwards compat with consumers)
   const score = useMemo(() => {
     const scored = conversations.filter(c => c.communication_feedback?.overall_score);
     if (scored.length >= 2) {
@@ -401,12 +382,8 @@ export function useGamifiedDashboardDataV2(): GamifiedDashboardDataV2 {
     return { yesterday: 0, today: 0 };
   }, [conversations]);
 
-  // XP from Supabase RPC (includes all sources: conversations, games, badges, etc.)
-  const totalXP = xpFromRPC;
-
   const { level, rank, nextLevelXP } = useMemo(() => calculateLevel(totalXP), [totalXP]);
 
-  // Ranking: show current user only (no leaderboard RPC on desktop)
   const ranking = useMemo((): RankingEntry[] => {
     return [{
       position: 1,
@@ -417,7 +394,6 @@ export function useGamifiedDashboardDataV2(): GamifiedDashboardDataV2 {
     }];
   }, [maityUser?.first_name, totalXP, streakDays]);
 
-  // Badges based on XP
   const badges = useMemo((): Badge[] => {
     return BADGE_DEFINITIONS.map(badge => ({
       ...badge,
@@ -425,10 +401,8 @@ export function useGamifiedDashboardDataV2(): GamifiedDashboardDataV2 {
     }));
   }, [totalXP]);
 
-  // Recent activity
   const recentActivity = useMemo(() => formatRecentActivity(conversations), [conversations]);
 
-  // Analytics from latest conversation
   const analytics = useMemo(() => {
     const latest = conversations.find(c => c.communication_feedback?.radiografia);
     const muletillasRate = latest?.communication_feedback?.radiografia?.muletillas_total ?? 0;
@@ -443,11 +417,12 @@ export function useGamifiedDashboardDataV2(): GamifiedDashboardDataV2 {
     };
   }, [conversations]);
 
-  // Mission progress based on completed nodes
   const mission = useMemo((): Mission => ({
     ...MOCK_MISSION,
     progress: Math.round((completedNodes / 15) * 100),
   }), [completedNodes]);
+
+  const loading = conversationsQuery.isLoading || formQuery.isLoading;
 
   return {
     userName: maityUser?.first_name || 'Usuario',

@@ -8,7 +8,7 @@ import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useAuth } from '@/contexts/AuthContext';
 import { getOmiConversations, getLocalConversations, mergeConversations, OmiConversation } from '../services/conversations.service';
-import { useConversationsListLive } from '../hooks/useConversationsListLive';
+import { useConversationsListAutoRefresh } from '../hooks/useConversationsListAutoRefresh';
 
 interface ConversationsListProps {
   onSelect: (conversation: OmiConversation) => void;
@@ -18,13 +18,11 @@ interface ConversationsListProps {
 export function ConversationsList({ onSelect, selectedId }: ConversationsListProps) {
   const { maityUser } = useAuth();
 
-  // Realtime push: invalidate the cloud list query whenever a row of this
-  // user's conversations is INSERTed or UPDATEd. Replaces the duplicate-row
-  // gap that happens between recording stop and cloud row appearance — the
-  // moment the row lands, this hook refetches and the local "Sincronizando…"
-  // entry is replaced by the cloud one through mergeConversations dedup
-  // (which now matches by idempotency_key, not heuristic timestamp).
-  useConversationsListLive(maityUser?.id ?? null);
+  // Visibility/online safety net — invalidate the list query when the page
+  // becomes visible again or the network reconnects. The Realtime push lives
+  // globally in GlobalConversationNotifier (root layout) and invalidates the
+  // same query on UPDATE events.
+  useConversationsListAutoRefresh(maityUser?.id ?? null);
 
   // Local data loads instantly from SQLite.
   // Privacy: queryKey includes maityUser?.id so the list refetches when the user changes

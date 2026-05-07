@@ -387,7 +387,7 @@ export function GamifiedDashboardV2() {
                       contentStyle={{ background: '#141418', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, fontSize: 12 }}
                       labelStyle={{ color: '#a0a0b0' }}
                       itemStyle={{ color: '#fff' }}
-                      formatter={(v: number | undefined) => [v ?? 0, 'Score']}
+                      formatter={(v) => [typeof v === 'number' ? v : 0, 'Score']}
                     />
                     <Area
                       type="monotone"
