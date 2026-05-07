@@ -22,14 +22,24 @@ vi.mock('@/lib/logger', () => ({
   },
 }));
 
+vi.mock('@/lib/fileLogger', () => ({
+  fileLogger: {
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+  },
+}));
+
 import { check } from '@tauri-apps/plugin-updater';
 import { getVersion } from '@tauri-apps/api/app';
 import { logger } from '@/lib/logger';
+import { fileLogger } from '@/lib/fileLogger';
 import { UpdateService } from './updateService';
 
 const checkMock = vi.mocked(check);
 const getVersionMock = vi.mocked(getVersion);
 const loggerMock = vi.mocked(logger);
+const fileLoggerMock = vi.mocked(fileLogger);
 
 describe('UpdateService — logging visible y resultados', () => {
   let service: UpdateService;
@@ -41,6 +51,9 @@ describe('UpdateService — logging visible y resultados', () => {
     loggerMock.info.mockClear();
     loggerMock.warn.mockClear();
     loggerMock.error.mockClear();
+    fileLoggerMock.info.mockClear();
+    fileLoggerMock.warn.mockClear();
+    fileLoggerMock.error.mockClear();
     getVersionMock.mockResolvedValue('0.2.35');
   });
 
@@ -86,6 +99,23 @@ describe('UpdateService — logging visible y resultados', () => {
     const errorCall = loggerMock.error.mock.calls[0];
     expect(errorCall[0]).toContain('Update check failed');
     expect(errorCall[1]).toBe(networkError);
+  });
+
+  it('escribe a fileLogger.error cuando check() falla (visible en logs exportados de prod)', async () => {
+    // En builds de release `logger.info/debug` son no-ops y `logger.error` solo
+    // llega a console.error. Sin fileLogger, una falla del auto-updater es
+    // invisible en logs exportados — exactamente el bug que ocultó por meses
+    // que el toast no aparecia. Este test fija el contrato: catch DEBE escribir
+    // al fileLogger para que la proxima falla sea diagnosticable.
+    const ipcError = new Error('IPC bridge not ready');
+    checkMock.mockRejectedValue(ipcError);
+
+    await expect(service.checkForUpdates(true)).rejects.toThrow('IPC bridge not ready');
+    expect(fileLoggerMock.error).toHaveBeenCalledWith(
+      'updater_service',
+      'check-failed',
+      expect.objectContaining({ message: 'IPC bridge not ready' }),
+    );
   });
 
   it('loguea info cuando se salta por wasCheckedRecently', async () => {

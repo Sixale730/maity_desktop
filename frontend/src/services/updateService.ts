@@ -7,6 +7,7 @@
 
 import { check, Update } from '@tauri-apps/plugin-updater';
 import { logger } from '@/lib/logger';
+import { fileLogger } from '@/lib/fileLogger';
 import { relaunch } from '@tauri-apps/plugin-process';
 import { getVersion } from '@tauri-apps/api/app';
 
@@ -86,8 +87,13 @@ export class UpdateService {
       };
     } catch (error) {
       // Antes este catch tragaba el error con console.error que nadie miraba.
-      // Ahora va al logger que llega al backend file logger y a DevTools.
+      // Ahora va al logger que llega a DevTools (dev) + fileLogger que escribe
+      // al archivo exportable (prod). Sin el fileLogger este error era invisible
+      // en builds de release porque logger.info/debug son no-ops en prod.
       logger.error('[updateService] Update check failed', error);
+      void fileLogger.error('updater_service', 'check-failed', {
+        message: error instanceof Error ? error.message : String(error),
+      });
       throw error;
     } finally {
       this.updateCheckInProgress = false;
