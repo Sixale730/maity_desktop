@@ -170,6 +170,13 @@ impl FeedbackState {
         }
     }
 
+    /// §7 Modo monólogo: sesión >= 30s sin un solo turno de interlocutor.
+    /// Los primeros 30s se asumen diálogo (otro saluda en 10-15s típicamente).
+    /// Se usa para suprimir tips LLM que asumen interlocutor (ej: "Dile al cliente...").
+    fn is_monologue_mode(&self) -> bool {
+        self.session_secs() >= 30 && self.interlocutor_turns == 0
+    }
+
     /// §1.1 Score de salud de la conversacion (0-100). Empieza en 70.
     /// Bajan: monologos largos, talk_ratio extremo (>80% o <15%), pocas preguntas en
     ///        sesiones largas, profanity detectado en ultimo turno (TurnContext).
@@ -291,6 +298,7 @@ impl FeedbackState {
             longest_user_monologue_sec: self.longest_mono_secs,
             health_score: self.health_score(),
             last_nudge_type: self.last_nudge_type.clone(),
+            is_monologue: self.is_monologue_mode(),
         }
     }
 
@@ -563,6 +571,16 @@ pub async fn start<R: Runtime + 'static>(app: AppHandle<R>) -> Result<(), String
                 st.last_price_signal_at = Some(Instant::now());
             }
 
+            // §7 Si la sesión es monólogo (sin interlocutor tras 30s de gracia), suprimir
+            // el path LLM-via-listener: los triggers de price/objection/empathy_gap se
+            // convierten en falsos positivos cuando el usuario *narra* una conversación
+            // pasada ("el cliente me dijo X"), y el LLM rellena el hueco INTERLOCUTOR
+            // inventando emociones del otro. Los tips heurísticos del loop §6 que sí
+            // aplican a presentaciones (haz pausa, ritmo) siguen disparándose.
+            if st.is_monologue_mode() {
+                return;
+            }
+
             // §5.1 Destrabar listener: aceptar critical+important siempre, soft solo si pasaron 35s
             // Antes solo critical pasaba el filtro, ahogando el 90% de señales útiles (price,
             // objection, hesitation, satisfaction, enthusiasm) que vienen como Important.
@@ -722,6 +740,17 @@ pub async fn start<R: Runtime + 'static>(app: AppHandle<R>) -> Result<(), String
                             );
                         }
                     } else {
+                        // §7 En monólogo, el LLM con COACH_SYSTEM_PROMPT alucinaría
+                        // tips dialógicos ("Dile al cliente..."). Solo dejamos los
+                        // tips heurísticos del nudge (que ya tienen tip_text) y los
+                        // del loop §6 (`evaluate_health_tips`).
+                        let is_mono = state_bg
+                            .lock()
+                            .map(|s| s.is_monologue_mode())
+                            .unwrap_or(false);
+                        if is_mono {
+                            continue;
+                        }
                         // Nudge sin tip predefinido → llamar a Ollama
                         call_ollama_and_emit(
                             &app_bg,
@@ -1160,6 +1189,12 @@ struct HeuristicTip {
 /// Evalua snapshot conversacional y devuelve un tip hardcoded si cae en zona critica.
 /// Orden de prioridad: monologo en curso > health <= 10 > health <= 25 > health <= 40
 /// > talk_ratio > 0.85. Solo emite uno por tick (el primero que matche).
+///
+/// §7 Si `snap.is_monologue` está activo, suprimimos los tips dialógicos
+/// (`heuristic_health_critical`, `heuristic_health_low`, `heuristic_dominance`)
+/// porque asumen un interlocutor al que preguntarle. Mantenemos los que sí
+/// aplican a presentaciones en solitario: `heuristic_monologue_long` y
+/// `heuristic_health_pacing`.
 fn evaluate_health_tips(snap: &ConversationSnapshot) -> Option<HeuristicTip> {
     // Monologo en curso > 90s — critico, dispara antes que health.
     if snap.longest_user_monologue_sec > 90 {
@@ -1170,8 +1205,8 @@ fn evaluate_health_tips(snap: &ConversationSnapshot) -> Option<HeuristicTip> {
             trigger: "heuristic_monologue_long",
         });
     }
-    // Health <= 10 — urgente.
-    if snap.health_score <= 10 {
+    // Health <= 10 — urgente. Solo en diálogo (asume interlocutor).
+    if snap.health_score <= 10 && !snap.is_monologue {
         return Some(HeuristicTip {
             tip: "Atención: la conversación necesita mejorar urgentemente. Pregúntale: '¿cómo te sientes con lo que hemos hablado hasta ahora?'",
             category: "service",
@@ -1179,8 +1214,8 @@ fn evaluate_health_tips(snap: &ConversationSnapshot) -> Option<HeuristicTip> {
             trigger: "heuristic_health_critical",
         });
     }
-    // Health <= 25 — perdiendo conexion.
-    if snap.health_score <= 25 {
+    // Health <= 25 — perdiendo conexion. Solo en diálogo.
+    if snap.health_score <= 25 && !snap.is_monologue {
         return Some(HeuristicTip {
             tip: "Estás perdiendo conexión. Haz una pausa y pregunta: '¿esto te está haciendo sentido?'",
             category: "rapport",
@@ -1188,7 +1223,7 @@ fn evaluate_health_tips(snap: &ConversationSnapshot) -> Option<HeuristicTip> {
             trigger: "heuristic_health_low",
         });
     }
-    // Health <= 40 — ritmo no fluye.
+    // Health <= 40 — ritmo no fluye. Aplica también a monólogo.
     if snap.health_score <= 40 {
         return Some(HeuristicTip {
             tip: "El ritmo no está fluyendo. Cambia de tema o haz una pregunta abierta.",
@@ -1197,8 +1232,9 @@ fn evaluate_health_tips(snap: &ConversationSnapshot) -> Option<HeuristicTip> {
             trigger: "heuristic_health_pacing",
         });
     }
-    // Dominancia > 0.85 con sesion > 90s.
-    if snap.user_talk_ratio > 0.85 && snap.session_duration_sec > 90 {
+    // Dominancia > 0.85 con sesion > 90s. En monólogo, talk_ratio siempre es 1.0,
+    // así que el tip "preguntale al otro" es absurdo — suprimir.
+    if snap.user_talk_ratio > 0.85 && snap.session_duration_sec > 90 && !snap.is_monologue {
         return Some(HeuristicTip {
             tip: "Estás dominando la conversación. Pregúntale: '¿qué piensas tú sobre esto?'",
             category: "listening",
@@ -1555,6 +1591,14 @@ mod tests {
             longest_user_monologue_sec: mono,
             health_score: health,
             last_nudge_type: None,
+            is_monologue: false,
+        }
+    }
+
+    fn make_snap_mono(health: u32, ratio: f32, mono: u32, session: u32) -> ConversationSnapshot {
+        ConversationSnapshot {
+            is_monologue: true,
+            ..make_snap(health, ratio, mono, session)
         }
     }
 
@@ -1599,5 +1643,74 @@ mod tests {
         assert_eq!(st.llm_latencies_ms.len(), 100);
         // Las ultimas 100 son 51..=150. Sort y p95 -> sorted[95] == 146.
         assert_eq!(st.llm_latency_p95_ms(), Some(146));
+    }
+
+    // §7 is_monologue_mode + heurísticos en modo monólogo ─────────────────────
+
+    #[test]
+    fn is_monologue_mode_falso_en_periodo_de_gracia() {
+        // Sesion < 30s (gracia): aunque interlocutor=0, todavía no asumimos monólogo.
+        let mut st = FeedbackState::new();
+        st.session_start = Instant::now() - Duration::from_secs(15);
+        st.interlocutor_turns = 0;
+        assert!(!st.is_monologue_mode(), "primeros 30s son gracia, no monólogo aún");
+    }
+
+    #[test]
+    fn is_monologue_mode_true_pasada_la_gracia_sin_interlocutor() {
+        let mut st = FeedbackState::new();
+        st.session_start = Instant::now() - Duration::from_secs(45);
+        st.interlocutor_turns = 0;
+        assert!(st.is_monologue_mode(), "30s+ sin un solo turno de interlocutor = monólogo");
+    }
+
+    #[test]
+    fn is_monologue_mode_falso_si_interlocutor_habla_aunque_sea_una_vez() {
+        let mut st = FeedbackState::new();
+        st.session_start = Instant::now() - Duration::from_secs(300);
+        st.interlocutor_turns = 1;
+        assert!(!st.is_monologue_mode(), "1 turno de interlocutor descarta monólogo");
+    }
+
+    #[test]
+    fn heuristic_health_critical_suprimido_en_monologo() {
+        // health <= 10 normalmente dispara "Pregúntale: '¿cómo te sientes?'" (asume interlocutor).
+        // En monólogo no aplica — se debe quedar None o pasar al pacing tip (que sí aplica).
+        let snap = make_snap_mono(8, 1.0, 0, 200);
+        let result = evaluate_health_tips(&snap);
+        // Debe pasar al heuristic_health_pacing (health <= 40, que sí aplica) o None.
+        // Lo importante: NO debe ser heuristic_health_critical.
+        if let Some(h) = result {
+            assert_ne!(h.trigger, "heuristic_health_critical", "no debe disparar tip dialógico en monólogo");
+            assert_ne!(h.trigger, "heuristic_health_low", "no debe disparar tip dialógico en monólogo");
+        }
+    }
+
+    #[test]
+    fn heuristic_dominance_suprimido_en_monologo() {
+        // En monólogo el ratio siempre es ~1.0; el tip "Pregúntale: '¿qué piensas?'" no aplica.
+        let snap = make_snap_mono(70, 1.0, 0, 120);
+        let result = evaluate_health_tips(&snap);
+        if let Some(h) = result {
+            assert_ne!(h.trigger, "heuristic_dominance", "no debe disparar dominance en monólogo");
+        }
+    }
+
+    #[test]
+    fn heuristic_monologo_largo_sigue_funcionando_en_monologo() {
+        // El tip "Llevas más de 1.5 min hablando. Haz una pausa." aplica perfectamente
+        // a presentaciones en solitario y debe seguir disparándose.
+        let snap = make_snap_mono(80, 1.0, 100, 200);
+        let h = evaluate_health_tips(&snap).expect("monologue_long aplica en monólogo");
+        assert_eq!(h.trigger, "heuristic_monologue_long");
+    }
+
+    #[test]
+    fn heuristic_pacing_sigue_funcionando_en_monologo() {
+        // health <= 40 dispara "el ritmo no fluye, cambia de tema o haz pregunta abierta".
+        // Aplica a monólogo (no asume interlocutor).
+        let snap = make_snap_mono(35, 1.0, 0, 200);
+        let h = evaluate_health_tips(&snap).expect("pacing aplica en monólogo");
+        assert_eq!(h.trigger, "heuristic_health_pacing");
     }
 }

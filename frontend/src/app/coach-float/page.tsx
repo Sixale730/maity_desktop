@@ -12,6 +12,7 @@ import { useMeetingMetrics } from '@/hooks/useMeetingMetrics';
 import { HealthGauge } from '@/components/coach/HealthGauge';
 import { TalkSplitBar } from '@/components/coach/TalkSplitBar';
 import { getPriorityColor, getCategoryMeta, PRIORITY_META } from '@/components/coach/tipMeta';
+import { supabase } from '@/lib/supabase';
 
 interface AudioLevels {
   micRms: number;
@@ -182,7 +183,10 @@ export default function CoachFloatPage() {
     if (!tip || !tipKey || feedback !== null) return;
     setFeedbackByTip(prev => ({ ...prev, [tipKey]: rating }));
     try {
-      await invoke('save_user_feedback', {
+      // 1. Persistencia local (autoritativa). El UUID retornado se reusa como
+      // p_id en la RPC para que la fila cloud comparta PK con la local — un
+      // retry idempotente colapsa via UNIQUE.
+      const feedbackId = await invoke<string>('save_user_feedback', {
         meetingId: meetingIdRef.current ?? undefined,
         feedbackType: 'coach_tip_feedback',
         rating,
@@ -196,6 +200,30 @@ export default function CoachFloatPage() {
           tip_timestamp_secs: tip.timestamp_secs,
         }),
       });
+
+      // 2. Sync a Supabase via RPC (fire-and-forget, mismo patrón que
+      // SessionFeedbackModal → insert_user_feedback). La RPC es SECURITY
+      // DEFINER y resuelve user_id/auth_id desde auth.uid() server-side;
+      // el cliente solo manda datos de negocio.
+      supabase
+        .rpc('insert_user_feedback', {
+          p_feedback_type: 'coach_tip_feedback',
+          p_message: tip.tip,
+          p_id: feedbackId,
+          p_metadata: {
+            platform: 'desktop',
+            rating,
+            meeting_id: meetingIdRef.current ?? null,
+            tip_category: tip.category,
+            tip_priority: tip.priority,
+            tip_type: tip.tip_type,
+            tip_timestamp_secs: tip.timestamp_secs,
+            tip_key: tipKey,
+          },
+        })
+        .then(({ error }) => {
+          if (error) console.warn('[CoachFloat] Supabase sync failed (non-fatal):', error);
+        });
     } catch (e) {
       console.error('[CoachFloat] feedback save failed:', e);
       // Revertir el optimistic update para que el usuario pueda reintentar

@@ -34,6 +34,11 @@ pub struct ConversationSnapshot {
     pub longest_user_monologue_sec: u32,
     pub health_score: u32,
     pub last_nudge_type: Option<String>,
+    /// §7 Sin interlocutor activo después del periodo de gracia. Permite a
+    /// evaluate_health_tips suprimir tips dialógicos (preguntar al cliente,
+    /// "¿cómo te sientes?") que no aplican cuando hablas solo.
+    #[serde(default)]
+    pub is_monologue: bool,
 }
 
 /// Evalúa métricas y decide si se debe generar un nudge.
@@ -143,6 +148,7 @@ pub fn coach_evaluate_nudge(
         longest_user_monologue_sec,
         health_score,
         last_nudge_type,
+        is_monologue: false,
     })
 }
 
@@ -160,6 +166,7 @@ mod tests {
             longest_user_monologue_sec: 90,
             health_score: 10,
             last_nudge_type: None,
+            is_monologue: false,
         };
         assert!(!evaluate_nudge(&snap).should_nudge);
     }
@@ -174,6 +181,7 @@ mod tests {
             longest_user_monologue_sec: 20,
             health_score: 25,
             last_nudge_type: None,
+            is_monologue: false,
         };
         let r = evaluate_nudge(&snap);
         assert!(r.should_nudge);
@@ -190,6 +198,7 @@ mod tests {
             longest_user_monologue_sec: 75,
             health_score: 60,
             last_nudge_type: None,
+            is_monologue: false,
         };
         let r = evaluate_nudge(&snap);
         assert!(r.should_nudge);
@@ -206,6 +215,7 @@ mod tests {
             longest_user_monologue_sec: 30,
             health_score: 55,
             last_nudge_type: Some("TalkRatioDominant".to_string()),
+            is_monologue: false,
         };
         assert!(!evaluate_nudge(&snap).should_nudge);
     }
@@ -220,6 +230,7 @@ mod tests {
             longest_user_monologue_sec: 25,
             health_score: 82,
             last_nudge_type: None,
+            is_monologue: false,
         };
         assert!(!evaluate_nudge(&snap).should_nudge);
     }
