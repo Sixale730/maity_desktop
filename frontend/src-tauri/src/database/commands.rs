@@ -443,3 +443,47 @@ pub async fn clear_current_user(state: tauri::State<'_, AppState>) -> Result<(),
     info!("[AppState] current_user_id cleared (logout)");
     Ok(())
 }
+
+/// Backup the local SQLite database and rename it out of the way.
+///
+/// Used by `DbInitErrorGate` when the DB failed to initialize and the user
+/// chooses "Restablecer base de datos". The current file is renamed to
+/// `meeting_minutes.sqlite.broken-{timestamp}` (preserving WAL/SHM as well
+/// for forensia) and the next app launch will create a fresh database.
+///
+/// Returns the absolute path of the backup so the UI can show it to the user.
+/// Does NOT restart the app — the caller asks the user to close and reopen.
+#[tauri::command]
+pub async fn reset_database<R: Runtime>(app: AppHandle<R>) -> Result<String, String> {
+    let app_data = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("No se pudo localizar la carpeta de datos: {}", e))?;
+
+    let db_path = app_data.join("meeting_minutes.sqlite");
+    if !db_path.exists() {
+        info!("[reset_database] No DB file at {:?}, nothing to do", db_path);
+        return Ok(String::new());
+    }
+
+    let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S").to_string();
+    let backup_path: PathBuf = app_data.join(format!("meeting_minutes.sqlite.broken-{}", timestamp));
+
+    std::fs::rename(&db_path, &backup_path)
+        .map_err(|e| format!("No se pudo respaldar la base de datos: {}", e))?;
+
+    // SQLite WAL + SHM live next to the main file. Move them too so the next
+    // launch starts truly clean — leaving them around can confuse a fresh db.
+    for suffix in &["-wal", "-shm"] {
+        let aux = app_data.join(format!("meeting_minutes.sqlite{}", suffix));
+        if aux.exists() {
+            let aux_backup = app_data.join(format!("meeting_minutes.sqlite{}.broken-{}", suffix, timestamp));
+            if let Err(e) = std::fs::rename(&aux, &aux_backup) {
+                error!("[reset_database] Failed to rename {:?}: {}", aux, e);
+            }
+        }
+    }
+
+    info!("[reset_database] DB backed up to {:?}", backup_path);
+    Ok(backup_path.to_string_lossy().to_string())
+}

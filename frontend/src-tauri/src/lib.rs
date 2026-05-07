@@ -446,6 +446,31 @@ pub fn run() {
                 Ok(_) => log::info!("Database initialization completed"),
                 Err(e) => {
                     log::error!("Failed to initialize database: {}. App will continue but some features may not work.", e);
+                    // Surface the failure to the frontend so DbInitErrorGate can show a
+                    // blocking recovery screen. Without this, the user only discovers
+                    // the broken state when they hit start-recording (engine.rs:240).
+                    // Delay the emit so the frontend listener has time to mount —
+                    // mirrors the same pattern used for "first-launch-detected".
+                    let app_handle_for_db_err = _app.handle().clone();
+                    let err_msg = e.clone();
+                    tauri::async_runtime::spawn(async move {
+                        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                        let sqlite_path = app_handle_for_db_err
+                            .path()
+                            .app_data_dir()
+                            .ok()
+                            .map(|p| p.join("meeting_minutes.sqlite").to_string_lossy().to_string())
+                            .unwrap_or_default();
+                        if let Err(emit_err) = app_handle_for_db_err.emit(
+                            "db-init-failed",
+                            serde_json::json!({
+                                "error": err_msg,
+                                "sqlitePath": sqlite_path,
+                            }),
+                        ) {
+                            log::error!("Failed to emit db-init-failed event: {}", emit_err);
+                        }
+                    });
                 }
             }
 
@@ -1005,6 +1030,7 @@ pub fn run() {
             // Multi-account privacy: track current Supabase user in AppState
             database::commands::set_current_user,
             database::commands::clear_current_user,
+            database::commands::reset_database,
             // Database and Models path commands
             database::commands::log_recording_event,
             database::commands::get_recording_logs,

@@ -31,6 +31,7 @@ import { ModelDownloadGate } from '@/components/ModelDownloadGate'
 import { LoginScreen } from '@/components/Auth'
 import { CloudSyncInitializer } from '@/components/CloudSyncInitializer'
 import { GlobalConversationNotifier } from '@/components/GlobalConversationNotifier'
+import { DbInitErrorGate } from '@/components/DbInitErrorGate'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ThemeProvider } from '@/contexts/ThemeContext'
 import Script from 'next/script'
@@ -543,6 +544,12 @@ export default function RootLayout({
         />
         <ChunkErrorRecovery />
         <ErrorBoundary>
+          {/* DbInitErrorGate vive AFUERA de QueryClientProvider y AuthProvider:
+              cuando el SQLite local falla en startup, queremos bloquear todo el
+              arbol antes de que cualquier query a Supabase o flujo de auth
+              arranque. Si el evento `db-init-failed` no llega, este componente
+              renderiza children sin overhead. */}
+          <DbInitErrorGate>
           <QueryClientProvider client={queryClient}>
             {/* CRITICAL: <UpdateCheckProvider> debe vivir FUERA de <AuthProvider> y
                 <AuthGate>. El plugin updater no requiere sesion Supabase — solo HTTP a
@@ -564,6 +571,7 @@ export default function RootLayout({
               </ThemeProvider>
             </UpdateCheckProvider>
           </QueryClientProvider>
+          </DbInitErrorGate>
         </ErrorBoundary>
         <Toaster position="bottom-right" richColors closeButton />
       </body>
