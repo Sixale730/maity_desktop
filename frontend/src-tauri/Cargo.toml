@@ -1,6 +1,6 @@
 [package]
 name = "maity-desktop"
-version = "0.2.40"
+version = "0.2.41"
 description = "A Tauri App for meeting minutes"
 authors = ["Sujith S"]
 license = "MIT"
