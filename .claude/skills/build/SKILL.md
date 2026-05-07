@@ -10,9 +10,9 @@ argument-hint: "[patch|minor|major]"
 
 Ejecuta un build firmado de Maity Desktop con bump automatico de version semver, crea commit, tag y publica release en GitHub con los artefactos.
 
-El build incluye **dos tipos de firma**:
-1. **Windows Code Signing (Certum)**: Firma el .exe e instaladores para que Windows muestre "Asertio" como publisher (no "Desconocido"). Requiere SimplySign Desktop conectado.
-2. **Tauri Updater Signing (rsign)**: Firma los archivos .sig y latest.json para el auto-updater de la app. Usa `TAURI_SIGNING_PRIVATE_KEY` del `.env`.
+El build se adapta automaticamente a la plataforma actual:
+- **macOS**: Firma con Developer ID + notarizacion Apple + .dmg
+- **Windows**: Code Signing Certum + Tauri Updater Signing + .exe
 
 ## Instrucciones
 
@@ -23,18 +23,35 @@ El build incluye **dos tipos de firma**:
 >
 > Si necesitas saltar los checks (raro), usa `pnpm run tauri:build:skip-checks`.
 
-### Paso 0: Verificar prerequisitos de firma
+### Paso 0: Detectar plataforma
 
-**ANTES de cualquier otra cosa**, verificar que el code signing este listo:
+Ejecutar `uname -s` para determinar la plataforma:
+- `Darwin` → **macOS** (seguir pasos macOS)
+- `MINGW*` / `MSYS*` / Windows → **Windows** (seguir pasos Windows)
 
+### Paso 0b: Verificar prerequisitos de firma
+
+**En Windows:**
 1. Verificar que SimplySign Desktop este conectado ejecutando:
    ```bash
    powershell -Command '& "C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64\signtool.exe" sign /debug /fd SHA256 /v 2>&1' | grep -i "Asertio"
    ```
-   - Si aparece `Issued to: Asertio` → SimplySign esta conectado, continuar.
-   - Si NO aparece → **DETENER** y avisar al usuario: "SimplySign Desktop no esta conectado. Abre SimplySign Desktop, genera un token desde la app del celular, y conectate."
+   - Si aparece `Issued to: Asertio` → continuar.
+   - Si NO → **DETENER** y avisar: "SimplySign Desktop no esta conectado."
 
-2. Informar al usuario: "SimplySign Desktop detectado. La sesion de firma dura ~2 horas."
+2. Verificar que `frontend/.env` tenga `TAURI_SIGNING_PRIVATE_KEY` con valor (no vacio).
+
+**En macOS:**
+1. Verificar identidad de firma:
+   ```bash
+   security find-identity -v -p codesigning | grep "Developer ID Application"
+   ```
+   - Debe mostrar `Developer ID Application: Julio Alexis Gonzalez Villa (8YLD233TA2)`.
+
+2. Verificar credenciales de notarizacion en `frontend/.env`:
+   - `APPLE_ID` (no vacio)
+   - `APPLE_PASSWORD` (no vacio)
+   - `APPLE_TEAM_ID` (no vacio)
 
 ### Paso 1: Leer version actual
 
@@ -61,58 +78,71 @@ Usar Edit tool para actualizar la version en:
 2. **`frontend/package.json`**: Cambiar `"version": "OLD"` → `"version": "NEW"`
 3. **`frontend/src-tauri/Cargo.toml`**: Cambiar `version = "OLD"` → `version = "NEW"`
 
-### Paso 5: Cargar Tauri updater signing keys
+### Paso 5: Cargar credenciales de firma
 
-1. Leer `frontend/.env` con Read tool
-2. Extraer `TAURI_SIGNING_PRIVATE_KEY` (valor base64 completo, NO es ruta a archivo)
-3. Extraer `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` (valor directo)
+Leer `frontend/.env` con Read tool y extraer las variables segun plataforma:
 
-**Nota**: Estas keys son para el updater de Tauri (firma de .sig/latest.json), NO para Windows code signing. El code signing de Windows lo maneja automaticamente `sign-windows.ps1` via SimplySign Desktop.
+**Windows:**
+- `TAURI_SIGNING_PRIVATE_KEY` (valor base64 completo)
+- `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
+
+**macOS:**
+- `APPLE_ID`
+- `APPLE_PASSWORD`
+- `APPLE_TEAM_ID`
 
 ### Paso 6: Ejecutar build firmado
 
-Ejecutar con Bash tool (timeout 600000ms = 10 minutos):
-
+**En macOS:**
 ```bash
-cd /c/maity_desktop/frontend && TAURI_SIGNING_PRIVATE_KEY="<valor_base64>" TAURI_SIGNING_PRIVATE_KEY_PASSWORD="<password>" pnpm run tauri:build
+cd "<repo>/frontend" && \
+  APPLE_ID="<valor>" \
+  APPLE_PASSWORD="<valor>" \
+  APPLE_TEAM_ID="<valor>" \
+  pnpm run tauri:build
 ```
 
-**IMPORTANTE**: En Windows/MINGW, usar la sintaxis de variables de entorno inline con el comando. La variable `TAURI_SIGNING_PRIVATE_KEY` debe contener el valor base64 completo tal como aparece en el `.env`.
+**En Windows:**
+```bash
+cd /c/maity_desktop/frontend && \
+  TAURI_SIGNING_PRIVATE_KEY="<valor_base64>" \
+  TAURI_SIGNING_PRIVATE_KEY_PASSWORD="<password>" \
+  pnpm run tauri:build
+```
 
-Durante el build, Tauri llamara automaticamente a `scripts/sign-windows.ps1` para firmar cada binario con el certificado Certum "Asertio" (SHA1: `81DACE307F40CC0BB002FFB5B4785BFAB97DCF7F`). El script usa:
-- `signtool.exe` version 10.0.26100.0 (requerida; la version 10.0.19041.0 tiene bugs con SimplySign)
-- Timestamp server: `http://time.certum.pl` (RFC 3161)
-- Algoritmo: SHA256
+**IMPORTANTE**: Timeout de 600000ms (10 minutos). El script `tauri-auto.js` auto-detecta GPU features.
 
 ### Paso 7: Verificar resultado del build
 
 **Si exit code != 0:**
 - Mostrar el error completo
-- Si el error es de signing (`SignTool Error`), sugerir: "Verifica que SimplySign Desktop siga conectado"
-- **NO hacer commit**
-- **NO crear release**
-- **NO reportar como completado**
-- Revertir los cambios de version en los 3 archivos si el usuario lo solicita
-- **DETENER AQUI** — no continuar a los pasos siguientes
+- **NO hacer commit, NO crear release, NO reportar como completado**
+- Revertir cambios de version si el usuario lo solicita
+- **DETENER AQUI**
 
-**Si exit code = 0:**
-- Verificar que NO aparezca el warning "signing was skipped" en la salida
-- Verificar que aparezcan lineas `Successfully signed` del script de Certum
-- Continuar al Paso 8
+**Si exit code = 0, verificar segun plataforma:**
 
-### Paso 8: Verificar firma del instalador
+**En macOS:**
+- Verificar que exista `target/release/bundle/dmg/Maity_X.Y.Z_aarch64.dmg`
+- Si aparecio `Warn skipping app notarization` → advertir al usuario que el .dmg no fue notarizado (credenciales incorrectas o faltantes en `.env`)
+- Si aparecio notarizacion exitosa → continuar normalmente
 
-Verificar que el instalador NSIS tenga la firma Certum correcta:
+**En Windows:**
+- Verificar que NO aparezca "signing was skipped"
+- Verificar que aparezcan lineas `Successfully signed` del script Certum
+- Continuar al paso 8
 
+### Paso 8: Verificaciones post-build por plataforma
+
+**En Windows — Verificar firma Certum:**
 ```bash
 powershell -Command '& "C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64\signtool.exe" verify /pa /v "C:\maity_desktop\target\release\bundle\nsis\Maity_X.Y.Z_x64-setup.exe" 2>&1' | grep -A2 "Issued to"
 ```
-
 Debe mostrar `Issued to: Asertio` / `Issued by: Certum Code Signing 2021 CA`.
 
-### Paso 8b: Regenerar updater signature post-firma Certum
+**En Windows — Regenerar updater signature post-firma Certum:**
 
-La firma Certum modifica el binario del instalador (embeds Authenticode signature), por lo que el `.sig` generado por Tauri durante el build ya no coincide con el exe firmado. **SIEMPRE** regenerar el `.sig` después de verificar la firma Certum:
+La firma Certum modifica el binario, por lo que el `.sig` ya no coincide. **SIEMPRE** regenerar:
 
 ```bash
 cd /c/maity_desktop/frontend && source <(grep -E '^TAURI_SIGNING' .env) && npx @tauri-apps/cli signer sign \
@@ -120,22 +150,22 @@ cd /c/maity_desktop/frontend && source <(grep -E '^TAURI_SIGNING' .env) && npx @
   "../target/release/bundle/nsis/Maity_X.Y.Z_x64-setup.exe"
 ```
 
-Después, actualizar `latest.json` con la nueva signature:
+Despues, actualizar `latest.json` con la nueva signature:
 1. Leer el nuevo contenido del `.sig` generado
 2. Editar `target/release/bundle/latest.json` reemplazando el campo `"signature"` con el nuevo valor
 
-**Sin este paso, el auto-updater rechazará la actualización** porque el `.sig` del build original fue generado del exe SIN firma Certum.
+**En macOS**: No se requieren pasos adicionales post-build.
 
 ### Paso 9: Commit
 
 Crear commit con los 3 archivos de version actualizados:
 
 ```bash
-cd /c/maity_desktop && git add frontend/src-tauri/tauri.conf.json frontend/package.json frontend/src-tauri/Cargo.toml
+cd "<repo>" && git add frontend/src-tauri/tauri.conf.json frontend/package.json frontend/src-tauri/Cargo.toml
 ```
 
 ```bash
-cd /c/maity_desktop && git commit -m "$(cat <<'EOF'
+cd "<repo>" && git commit -m "$(cat <<'EOF'
 chore: bump version to X.Y.Z
 
 Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
@@ -147,46 +177,58 @@ EOF
 
 1. Ejecutar `git log` desde el tag anterior hasta HEAD para obtener los commits incluidos
 2. Crear un body en formato markdown con seccion `## Cambios` listando los cambios como bullet points
-3. Cada bullet debe ser conciso y descriptivo, basado en los mensajes de commit
-4. Preguntar al usuario con AskUserQuestion si quiere editar/ajustar las notas o si estan bien
+3. Cada bullet debe ser conciso y descriptivo
+4. Preguntar al usuario con AskUserQuestion si quiere editar/ajustar las notas
 
-### Paso 11: Crear release en GitHub con artefactos
+### Paso 11: Crear o actualizar release en GitHub
 
-Los artefactos del build se encuentran en:
-- Instalador NSIS: `target/release/bundle/nsis/Maity_X.Y.Z_x64-setup.exe`
-- Firma NSIS: `target/release/bundle/nsis/Maity_X.Y.Z_x64-setup.exe.sig`
-- `latest.json`: `target/release/bundle/latest.json` (puede estar en `bundle/` o `bundle/nsis/`, buscar con Glob)
+**Verificar si el release ya existe:**
+```bash
+gh release view vX.Y.Z --repo Sixale730/maity_desktop 2>&1
+```
 
-**CRITICO — Verificar `latest.json` antes de subir**:
+**Si el release YA EXISTE** (ej: subir .dmg a release que ya tiene .exe):
+```bash
+gh release upload vX.Y.Z "<artefacto1>" "<artefacto2>" --repo Sixale730/maity_desktop
+```
+
+**Si el release NO EXISTE — crear nuevo:**
+
+**Artefactos macOS:**
+- `target/release/bundle/dmg/Maity_X.Y.Z_aarch64.dmg`
+
+**Artefactos Windows:**
+- `target/release/bundle/nsis/Maity_X.Y.Z_x64-setup.exe`
+- `target/release/bundle/nsis/Maity_X.Y.Z_x64-setup.exe.sig`
+- `target/release/bundle/latest.json`
+
+**CRITICO para Windows — Verificar `latest.json` antes de subir:**
 
 1. Leer el contenido de `latest.json` con Read tool
 2. Verificar que contenga:
-   - `"version": "X.Y.Z"` (la version NUEVA, no la anterior)
+   - `"version": "X.Y.Z"` (version NUEVA)
    - `"url"` apuntando a `https://github.com/Sixale730/maity_desktop/releases/download/vX.Y.Z/Maity_X.Y.Z_x64-setup.exe`
    - `"signature"` con el contenido del archivo `.sig`
-3. Si `latest.json` tiene la version anterior (Tauri a veces reutiliza el viejo), **regenerarlo manualmente** con Write tool usando este formato:
+3. Si tiene la version anterior, regenerarlo manualmente con Write tool:
 
 ```json
 {
   "version": "X.Y.Z",
-  "notes": "DESCRIPCION_BREVE_DE_CAMBIOS",
+  "notes": "DESCRIPCION_BREVE",
   "pub_date": "YYYY-MM-DDTHH:MM:SSZ",
   "platforms": {
     "windows-x86_64": {
-      "signature": "CONTENIDO_DEL_ARCHIVO_.sig",
+      "signature": "CONTENIDO_DEL_.sig",
       "url": "https://github.com/Sixale730/maity_desktop/releases/download/vX.Y.Z/Maity_X.Y.Z_x64-setup.exe"
     }
   }
 }
 ```
 
-Crear el release con `gh` (esto crea el tag automaticamente sin necesidad de push):
-
+Crear release:
 ```bash
-cd /c/maity_desktop && gh release create vX.Y.Z \
-  "target/release/bundle/nsis/Maity_X.Y.Z_x64-setup.exe" \
-  "target/release/bundle/nsis/Maity_X.Y.Z_x64-setup.exe.sig" \
-  "target/release/bundle/latest.json" \
+cd "<repo>" && gh release create vX.Y.Z \
+  <artefactos...> \
   --title "vX.Y.Z - TITULO" \
   --notes "BODY_MARKDOWN" \
   --latest
@@ -196,25 +238,26 @@ cd /c/maity_desktop && gh release create vX.Y.Z \
 
 Mostrar resumen completo:
 - Version: `vX.Y.Z`
+- Plataforma: macOS / Windows
 - Commit local: hash corto
 - Release URL: (link al release en GitHub)
 - Artefactos subidos: listar archivos
-- Code Signing: Certum "Asertio" (SHA1: 81DACE...)
-- Updater Signing: rsign (Tauri updater)
+- Firma: Developer ID + Notarizacion Apple (macOS) / Certum "Asertio" + rsign updater (Windows)
 - Estado: Build firmado + Commit local + Release publicado
 
 ### Notas
 
 - El build tarda varios minutos. Usar timeout de 600000ms (10 min).
-- El script `tauri-auto.js` auto-detecta GPU features.
-- **Dos firmas**: El build aplica AMBAS firmas automaticamente:
-  - Windows Code Signing (Certum via `sign-windows.ps1`) → para que Windows no diga "Desconocido"
-  - Tauri Updater Signing (rsign via `TAURI_SIGNING_PRIVATE_KEY`) → para el auto-updater
-- Si `TAURI_SIGNING_PRIVATE_KEY` no esta en el entorno, el build saldra con code 0 pero SIN firma de updater (solo warning). Este skill DEBE asegurar que la key este disponible.
-- Si SimplySign Desktop no esta conectado, el build fallara en el paso de code signing.
-- La sesion de SimplySign dura ~2 horas por token. Si el build falla por timeout de SimplySign, reconectar desde la app del celular.
-- Para builds sin code signing (dev rapido): `SKIP_CODE_SIGNING=true pnpm run tauri:build`
-- El updater de la app busca `latest.json` en `https://github.com/Sixale730/maity_desktop/releases/latest/download/latest.json`, por eso es critico que el release tenga el flag `--latest` y que `latest.json` este como asset.
+- El script `tauri-auto.js` auto-detecta GPU features por plataforma.
+- **macOS**: Firma con Developer ID Application (certificado local en Keychain) + notarizacion Apple (requiere APPLE_ID, APPLE_PASSWORD, APPLE_TEAM_ID en `.env`).
+- **Windows**: Dos firmas — Certum Code Signing (via `sign-windows.ps1` + SimplySign Desktop) + Tauri Updater Signing (rsign via `TAURI_SIGNING_PRIVATE_KEY`).
+- Si `TAURI_SIGNING_PRIVATE_KEY` no esta en el entorno, el build saldra con code 0 pero SIN firma de updater (solo warning). Este skill DEBE asegurar que la key este disponible cuando se requiera updater.
+- Si SimplySign Desktop no esta conectado (Windows), el build fallara en el paso de code signing.
+- La sesion de SimplySign dura ~2 horas por token. Si el build falla por timeout, reconectar desde la app del celular.
+- Para builds sin code signing (dev rapido en Windows): `SKIP_CODE_SIGNING=true pnpm run tauri:build`
 - **Smoke test de auto-update (opcional pre-release)**: para detectar regresiones runtime que el test de estructura (`src/app/layout.test.ts`) no atrapa, antes de bumpear y publicar verifica que la version publicada **anterior** (instalada en una maquina/VM con sesion Supabase fresca) muestra el toast de actualizacion al abrir la app. El bug historico (commit `230b807`, 2026-02-02) sobrevivio 3 meses y 2 fixes fallidos porque nadie probaba en maquina con login lento. El test de estructura previene la regresion conocida; este smoke cubre fallos del plugin updater o del Sonner toast.
 - NO hacer git push. Solo commit local + release en GitHub.
-- **Certificado Certum**: Expira Feb 19, 2027. SHA1: `81DACE307F40CC0BB002FFB5B4785BFAB97DCF7F`. Si se renueva el certificado, actualizar el SHA1 en `sign-windows.ps1` o via env var `CERTUM_SHA1`.
+- Si el release ya existe con artefactos de otra plataforma, usar `gh release upload` para agregar los de la plataforma actual.
+- El updater busca `latest.json` en `https://github.com/Sixale730/maity_desktop/releases/latest/download/latest.json`. Critico que el release tenga `--latest` y que `latest.json` sea asset.
+- **Certificado Certum (Windows)**: Expira Feb 19, 2027. SHA1: `81DACE307F40CC0BB002FFB5B4785BFAB97DCF7F`.
+- **Certificado Apple (macOS)**: Developer ID Application: Julio Alexis Gonzalez Villa (8YLD233TA2).
