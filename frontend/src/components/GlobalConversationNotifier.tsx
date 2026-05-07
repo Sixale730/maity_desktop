@@ -12,14 +12,47 @@ import type { OmiConversation } from '@/features/conversations/services/conversa
 const REALTIME_CONNECT_TIMEOUT_MS = 5_000;
 const TERMINAL_STATUSES = new Set(['completed', 'failed', 'skipped']);
 
+/** Fire system notification + in-app toast when a conversation transitions to 'completed'. */
+function notifyAnalysisComplete(
+  conv: { id: string; title?: string | null },
+  router: ReturnType<typeof useRouter>,
+) {
+  const description = conv.title || 'Tu conversación ya tiene resumen y análisis completos.';
+
+  // System-level notification (Windows toast / macOS Notification Center).
+  // Wrapper falls back to in-app toast if the plugin isn't available.
+  void import('@/lib/nativeNotification')
+    .then(({ sendNativeNotification }) =>
+      sendNativeNotification({ title: 'Análisis listo', body: description }),
+    )
+    .catch((e) => console.warn('[GlobalConversationNotifier] native notification failed:', e));
+
+  // In-app toast with action button — kept alongside the native one so the user
+  // gets a clickable "Ver" right inside the app even if the OS notification was
+  // dismissed quickly.
+  toast.success('Análisis listo', {
+    description,
+    duration: 6000,
+    action: {
+      label: 'Ver',
+      onClick: () => router.push(`/conversations?id=${conv.id}`),
+    },
+  });
+}
+
 /**
  * Single-session Realtime subscription to maity.omi_conversations for the
  * authenticated user. Mounted at the root layout so it persists across navigation.
  *
  * Responsibilities:
  *   1. Invalidate TanStack Query caches on any UPDATE (list + detail).
- *   2. Surface a toast notification when an analysis transitions to 'completed'.
+ *   2. Surface a system + in-app notification when an analysis transitions to 'completed'.
  *   3. Auto-reconnect with backoff + re-setAuth on each subscribe.
+ *   4. Defense in depth: also observe the TanStack Query cache so transitions
+ *      detected via polling/visibility refetch (not Realtime) STILL fire the
+ *      notification. This rescues the case where the WebSocket is silently
+ *      degraded (Tauri WebView suspending WS on focus loss, RLS denial without
+ *      surfaced error, etc.).
  *
  * This replaces the per-component Realtime subscriptions that previously lived
  * in useConversationLive and useConversationsListLive. Pattern: lifecycle of
@@ -33,7 +66,7 @@ export function GlobalConversationNotifier() {
   // Realtime payload.old can arrive empty under RLS, so we keep our own shadow
   // map of the previous status per conversation id to detect real transitions
   // (the backend writes updated_at every 30s during processing — without this
-  // we'd spam a toast on every heartbeat).
+  // we'd spam a notification on every heartbeat).
   const prevStatusRef = useRef<Map<string, string | null>>(new Map());
 
   useEffect(() => {
@@ -59,41 +92,50 @@ export function GlobalConversationNotifier() {
       if (cleanedUp || reconnectTimer) return;
       const delay = computeBackoffMs(attempt);
       attempt += 1;
-      logger.warn(`[GlobalConversationNotifier] Reconnect in ${delay}ms (attempt ${attempt})`);
+      console.warn(`[GlobalConversationNotifier] Reconnect in ${delay}ms (attempt ${attempt})`);
       reconnectTimer = setTimeout(() => {
         reconnectTimer = null;
         void subscribe();
       }, delay);
     };
 
-    const handleUpdate = (newRow: Partial<OmiConversation>) => {
+    /**
+     * Single source of truth for transition detection. Called from BOTH the
+     * Realtime UPDATE handler and the queryCache observer below. The shadow map
+     * dedupes — only the first observer to see the new status fires the toast.
+     */
+    const handleStatusUpdate = (row: {
+      id: string;
+      title?: string | null;
+      analysis_status?: string | null;
+    }) => {
+      if (!row.id) return;
+
+      const newStatus = row.analysis_status ?? null;
+      const prevStatus = prevStatusRef.current.get(row.id) ?? null;
+      if (prevStatus === newStatus) return; // no real change
+      prevStatusRef.current.set(row.id, newStatus);
+
+      const wasNonTerminal = !prevStatus || !TERMINAL_STATUSES.has(prevStatus);
+      if (wasNonTerminal && newStatus === 'completed') {
+        notifyAnalysisComplete({ id: row.id, title: row.title }, router);
+      }
+      // 'failed' and 'skipped' do NOT notify. The user sees the 'Reintentar'
+      // button in the detail view if they navigate there.
+    };
+
+    const handleRealtimeUpdate = (newRow: Partial<OmiConversation>) => {
       if (!newRow.id) return;
 
       // Invalidate so any active hook (list or detail) refetches.
       queryClient.invalidateQueries({ queryKey: ['omi-conversations', userId] });
       queryClient.invalidateQueries({ queryKey: ['omi-conversation', newRow.id] });
 
-      // Detect transition to terminal — only fire toast on real transition,
-      // not on every heartbeat (updated_at changes every 30s during processing).
-      const newStatus = newRow.analysis_status ?? null;
-      const prevStatus = prevStatusRef.current.get(newRow.id) ?? null;
-      prevStatusRef.current.set(newRow.id, newStatus);
-
-      const wasNonTerminal = !prevStatus || !TERMINAL_STATUSES.has(prevStatus);
-
-      if (wasNonTerminal && newStatus === 'completed') {
-        const conversationId = newRow.id;
-        toast.success('Análisis listo', {
-          description: newRow.title || 'Tu conversación ya tiene resumen y análisis completos.',
-          duration: 6000,
-          action: {
-            label: 'Ver',
-            onClick: () => router.push(`/conversations?id=${conversationId}`),
-          },
-        });
-      }
-      // Note: 'failed' and 'skipped' do NOT show toast. The user sees the
-      // 'Reintentar' button in the detail view if they navigate there.
+      handleStatusUpdate({
+        id: newRow.id,
+        title: newRow.title,
+        analysis_status: newRow.analysis_status,
+      });
     };
 
     const subscribe = async () => {
@@ -113,7 +155,7 @@ export function GlobalConversationNotifier() {
           supabase.realtime.setAuth(session.access_token);
         }
       } catch (e) {
-        logger.warn(`[GlobalConversationNotifier] setAuth failed: ${e instanceof Error ? e.message : String(e)}`);
+        console.warn(`[GlobalConversationNotifier] setAuth failed: ${e instanceof Error ? e.message : String(e)}`);
       }
       if (cleanedUp) return;
 
@@ -130,7 +172,7 @@ export function GlobalConversationNotifier() {
             filter: `user_id=eq.${userId}`,
           },
           (payload) => {
-            handleUpdate(payload.new as Partial<OmiConversation>);
+            handleRealtimeUpdate(payload.new as Partial<OmiConversation>);
           },
         )
         .subscribe((status, err) => {
@@ -138,11 +180,13 @@ export function GlobalConversationNotifier() {
           if (status === 'SUBSCRIBED') {
             if (connectTimer) { clearTimeout(connectTimer); connectTimer = null; }
             attempt = 0;
-            logger.debug(`[GlobalConversationNotifier] SUBSCRIBED for user ${userId}`);
+            // logger.warn so it's visible without a debug filter (semantic abuse
+            // for diagnosability — Realtime status is a health signal worth surfacing).
+            logger.warn(`[GlobalConversationNotifier] SUBSCRIBED for user ${userId}`);
           } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
             stale = true;
-            if (err) logger.warn(`[GlobalConversationNotifier] ${status}: ${err.message}`);
-            else logger.warn(`[GlobalConversationNotifier] ${status}`);
+            if (err) console.warn(`[GlobalConversationNotifier] ${status}: ${err.message}`);
+            else console.warn(`[GlobalConversationNotifier] ${status}`);
             scheduleReconnect();
           }
         });
@@ -152,15 +196,54 @@ export function GlobalConversationNotifier() {
       connectTimer = setTimeout(() => {
         if (cleanedUp || stale) return;
         stale = true;
-        logger.warn(`[GlobalConversationNotifier] Did not reach SUBSCRIBED in ${REALTIME_CONNECT_TIMEOUT_MS}ms`);
+        console.warn(`[GlobalConversationNotifier] Did not reach SUBSCRIBED in ${REALTIME_CONNECT_TIMEOUT_MS}ms`);
         scheduleReconnect();
       }, REALTIME_CONNECT_TIMEOUT_MS);
     };
 
     void subscribe();
 
+    // Defense in depth: observe the TanStack Query cache so we ALSO catch status
+    // transitions that arrive via polling, visibility refetch, or manual refetch
+    // — not only via the Realtime channel. If Realtime is silently degraded, the
+    // notification still fires the moment the cache reflects 'completed'.
+    const cacheUnsubscribe = queryClient.getQueryCache().subscribe((event) => {
+      if (cleanedUp) return;
+      if (event.type !== 'updated') return;
+      const key = event.query.queryKey;
+      if (!Array.isArray(key) || key.length < 2) return;
+
+      // List query: ['omi-conversations', userId] — iterate all rows.
+      if (key[0] === 'omi-conversations' && key[1] === userId) {
+        const data = event.query.state.data as OmiConversation[] | undefined;
+        if (!Array.isArray(data)) return;
+        for (const conv of data) {
+          if (!conv?.id) continue;
+          handleStatusUpdate({
+            id: conv.id,
+            title: conv.title,
+            analysis_status: conv.analysis_status,
+          });
+        }
+        return;
+      }
+
+      // Detail query: ['omi-conversation', id] — single row.
+      if (key[0] === 'omi-conversation' && typeof key[1] === 'string') {
+        const conv = event.query.state.data as OmiConversation | undefined;
+        if (!conv?.id) return;
+        if (conv.user_id !== userId) return; // only notify for the current user
+        handleStatusUpdate({
+          id: conv.id,
+          title: conv.title,
+          analysis_status: conv.analysis_status,
+        });
+      }
+    });
+
     return () => {
       cleanedUp = true;
+      cacheUnsubscribe();
       if (connectTimer) clearTimeout(connectTimer);
       if (reconnectTimer) clearTimeout(reconnectTimer);
       if (currentChannel) {
