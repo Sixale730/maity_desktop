@@ -104,8 +104,8 @@ jobs:
       - name: install Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:
-          # Only aarch64-apple-darwin for Apple Silicon (no Intel support)
-          targets: ${{ contains(inputs.platform, 'macos') && 'aarch64-apple-darwin' || '' }}
+          # macOS: install both arch toolchains so we can produce universal-apple-darwin
+          targets: ${{ contains(inputs.platform, 'macos') && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
 
       - name: Rust cache
         uses: swatinem/rust-cache@v2
@@ -434,7 +434,9 @@ jobs:
           pnpm install
 
       - name: rustup install target
-        if: ${{ inputs.target != '' && !contains(inputs.target, 'unknown-linux-gnu') && !contains(inputs.target, 'pc-windows-msvc') }}
+        # universal-apple-darwin is a Tauri virtual target (lipo merge of arch slices),
+        # not a real rustup target. Both arch slices are installed in the "install Rust stable" step above.
+        if: ${{ inputs.target != '' && !contains(inputs.target, 'unknown-linux-gnu') && !contains(inputs.target, 'pc-windows-msvc') && inputs.target != 'universal-apple-darwin' }}
         run: rustup target add ${{ inputs.target }}
 
       - name: Import Apple Developer Certificate
@@ -535,29 +537,30 @@ jobs:
         run: |
           echo "Building llama-helper sidecar..."
 
-          # Determine llama-helper features based on platform
-          LLAMA_FEATURES=""
-          if [[ "${{ inputs.platform }}" == *"macos"* ]]; then
-            LLAMA_FEATURES="--features metal"
-            echo "Using Metal GPU acceleration for macOS"
-          else
-            echo "Using CPU-only mode for Linux"
-          fi
-
-          # Build llama-helper from workspace root
-          cargo build --release -p llama-helper $LLAMA_FEATURES
-
-          # Determine target triple and binary extension
-          TARGET="${{ inputs.target }}"
-          if [[ -z "$TARGET" ]]; then
-            TARGET=$(rustc -vV | grep "host:" | awk '{print $2}')
-          fi
-
-          # Copy binary to binaries directory
           mkdir -p frontend/src-tauri/binaries
-          cp target/release/llama-helper frontend/src-tauri/binaries/llama-helper-${TARGET}
 
-          echo "Copied llama-helper to frontend/src-tauri/binaries/llama-helper-${TARGET}"
+          if [[ "${{ inputs.platform }}" == *"macos"* ]]; then
+            echo "macOS: building llama-helper for both arch slices (universal binary requirement)"
+
+            # Apple Silicon slice (Metal acceleration)
+            cargo build --release -p llama-helper --features metal --target aarch64-apple-darwin
+            cp target/aarch64-apple-darwin/release/llama-helper frontend/src-tauri/binaries/llama-helper-aarch64-apple-darwin
+
+            # Intel slice (Metal still works on Intel Macs with discrete/integrated GPU)
+            cargo build --release -p llama-helper --features metal --target x86_64-apple-darwin
+            cp target/x86_64-apple-darwin/release/llama-helper frontend/src-tauri/binaries/llama-helper-x86_64-apple-darwin
+          else
+            echo "Linux: building llama-helper CPU-only for native target"
+            cargo build --release -p llama-helper
+
+            TARGET="${{ inputs.target }}"
+            if [[ -z "$TARGET" ]]; then
+              TARGET=$(rustc -vV | grep "host:" | awk '{print $2}')
+            fi
+            cp target/release/llama-helper frontend/src-tauri/binaries/llama-helper-${TARGET}
+          fi
+
+          echo "Sidecars in frontend/src-tauri/binaries/:"
           ls -la frontend/src-tauri/binaries/
 
       - name: Build with Tauri

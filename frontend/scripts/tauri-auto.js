@@ -10,12 +10,16 @@ const os = require('os');
 
 // Get the command (dev or build) and optional flags
 const command = process.argv[2];
-const extraArgs = process.argv.slice(3); // e.g. --debug
+const extraArgs = process.argv.slice(3); // e.g. --debug, --target universal-apple-darwin
 if (!command || !['dev', 'build'].includes(command)) {
-  console.error('Usage: node tauri-auto.js [dev|build] [--debug]');
+  console.error('Usage: node tauri-auto.js [dev|build] [--debug] [--target <triple>]');
   process.exit(1);
 }
 const isDebug = extraArgs.includes('--debug');
+// Tauri-level flags to forward (everything except --debug, which we handle ourselves)
+const forwardedTauriArgs = extraArgs.filter((a) => a !== '--debug');
+const targetIdx = forwardedTauriArgs.indexOf('--target');
+const tauriTarget = targetIdx >= 0 ? forwardedTauriArgs[targetIdx + 1] : null;
 
 // Detect GPU feature
 let feature = '';
@@ -54,11 +58,14 @@ let tauriCmd = `tauri ${command}`;
 if (isDebug) {
   tauriCmd += ' --debug';
 }
+if (forwardedTauriArgs.length > 0) {
+  tauriCmd += ' ' + forwardedTauriArgs.join(' ');
+}
 if (feature && feature !== 'none') {
   tauriCmd += ` -- --features ${feature}`;
-  console.log(`🚀 Running: tauri ${command}${isDebug ? ' --debug' : ''} with features: ${feature}`);
+  console.log(`🚀 Running: tauri ${command}${isDebug ? ' --debug' : ''}${forwardedTauriArgs.length ? ' ' + forwardedTauriArgs.join(' ') : ''} with features: ${feature}`);
 } else {
-  console.log(`🚀 Running: tauri ${command}${isDebug ? ' --debug' : ''} (CPU-only mode)`);
+  console.log(`🚀 Running: tauri ${command}${isDebug ? ' --debug' : ''}${forwardedTauriArgs.length ? ' ' + forwardedTauriArgs.join(' ') : ''} (CPU-only mode)`);
 }
 console.log('');
 
@@ -69,7 +76,10 @@ try {
   // For build command: check if the failure is only due to missing updater signing key
   // The actual compilation and bundling may have succeeded
   if (command === 'build') {
-    const targetDir = path.resolve(__dirname, '..', '..', 'target', isDebug ? 'debug' : 'release', 'bundle');
+    // When --target is passed, bundles live in target/<triple>/<profile>/bundle
+    const targetDir = tauriTarget
+      ? path.resolve(__dirname, '..', '..', 'target', tauriTarget, isDebug ? 'debug' : 'release', 'bundle')
+      : path.resolve(__dirname, '..', '..', 'target', isDebug ? 'debug' : 'release', 'bundle');
     const hasBundles = fs.existsSync(targetDir) && fs.readdirSync(targetDir).length > 0;
 
     if (hasBundles && !process.env.TAURI_SIGNING_PRIVATE_KEY) {

@@ -99,8 +99,10 @@ cd "<repo>/frontend" && \
   APPLE_ID="<valor>" \
   APPLE_PASSWORD="<valor>" \
   APPLE_TEAM_ID="<valor>" \
-  pnpm run tauri:build
+  pnpm run tauri:build -- --target universal-apple-darwin
 ```
+
+> **`--target universal-apple-darwin`** produce un `.dmg` que instala en Intel y Apple Silicon (un solo artefacto). Requiere ambos toolchains: `rustup target add aarch64-apple-darwin x86_64-apple-darwin` (una vez por máquina). Tarda ~2x que un build single-arch.
 
 **En Windows:**
 ```bash
@@ -123,7 +125,8 @@ cd /c/maity_desktop/frontend && \
 **Si exit code = 0, verificar segun plataforma:**
 
 **En macOS:**
-- Verificar que exista `target/release/bundle/dmg/Maity_X.Y.Z_aarch64.dmg`
+- Verificar que exista `target/universal-apple-darwin/release/bundle/dmg/Maity_X.Y.Z_universal.dmg`
+- Verificar arquitecturas con `lipo -info target/universal-apple-darwin/release/bundle/macos/Maity.app/Contents/MacOS/Maity` → debe mostrar `x86_64 arm64`
 - Si aparecio `Warn skipping app notarization` → advertir al usuario que el .dmg no fue notarizado (credenciales incorrectas o faltantes en `.env`)
 - Si aparecio notarizacion exitosa → continuar normalmente
 
@@ -195,7 +198,9 @@ gh release upload vX.Y.Z "<artefacto1>" "<artefacto2>" --repo Sixale730/maity_de
 **Si el release NO EXISTE — crear nuevo:**
 
 **Artefactos macOS:**
-- `target/release/bundle/dmg/Maity_X.Y.Z_aarch64.dmg`
+- `target/universal-apple-darwin/release/bundle/dmg/Maity_X.Y.Z_universal.dmg`
+- `target/universal-apple-darwin/release/bundle/macos/Maity.app.tar.gz` (para updater)
+- `target/universal-apple-darwin/release/bundle/macos/Maity.app.tar.gz.sig` (firma updater)
 
 **Artefactos Windows:**
 - `target/release/bundle/nsis/Maity_X.Y.Z_x64-setup.exe`

@@ -6,16 +6,19 @@
 
 set -e
 
+# Resolve workspace root (this script lives at <root>/scripts/) so the smoke test
+# works regardless of the cwd from which `pnpm run tauri:build:debug` was invoked.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+WORKSPACE_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
 # Detect platform
 case "$(uname -s)" in
     Darwin*)
-        EXE="$HOME/Library/Application Support/com.maity.ai/maity-desktop"
-        # Actually the debug binary is in target/debug, not app support
-        EXE="$(pwd)/target/debug/maity-desktop"
+        EXE="$WORKSPACE_ROOT/target/debug/maity-desktop"
         LOG="$HOME/Library/Application Support/com.maity.ai/maity-desktop.log"
         ;;
     Linux*)
-        EXE="$(pwd)/target/debug/maity-desktop"
+        EXE="$WORKSPACE_ROOT/target/debug/maity-desktop"
         LOG="$HOME/.local/share/com.maity.ai/maity-desktop.log"
         ;;
     *)
