@@ -448,6 +448,11 @@ export interface OmiConversation {
   meeting_minutes_data: MeetingMinutesData | null;
   /** Explicit analysis status field — source of truth for polling */
   analysis_status?: 'pending' | 'processing' | 'completed' | 'failed' | 'skipped' | null;
+  /** Last DB write timestamp. Backend writes a heartbeat every 30s during async analysis,
+   *  so when status='processing' this acts as a liveness signal: stale updated_at = stuck. */
+  updated_at?: string | null;
+  /** Description of the most recent analysis failure (set by backend when status='failed'). */
+  analysis_error_message?: string | null;
   /** Stripe-style dedup key. UNIQUE on omi_conversations — present on cloud
    *  rows that were created via the idempotent save_conversation flow.
    *  Local rows expose the same value via cloud_idempotency_key (alias). */

@@ -4,9 +4,11 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { logger } from '@/lib/logger';
 import { supabase } from '@/lib/supabase';
-import { getOmiConversation } from '../services/conversations.service';
+import { getOmiConversation, reanalyzeConversation } from '../services/conversations.service';
 import type { OmiConversation } from '../services/conversations.service';
 import { derivePhase, isTerminalPhase, type AnalysisPhase } from '../utils/derivePhase';
+
+const FAILED_AUTO_RETRY_DELAY_MS = 60_000;
 
 const POLL_INTERVAL_MS = 3_000;
 const STALLED_POLL_INTERVAL_MS = 15_000;
@@ -102,11 +104,11 @@ export function useConversationLive(
       logger.warn(`[useConversationLive] Realtime reconnect scheduled in ${delay}ms (attempt ${attempt}) for ${conversationId}`);
       reconnectTimer = setTimeout(() => {
         reconnectTimer = null;
-        subscribe();
+        void subscribe();
       }, delay);
     };
 
-    const subscribe = () => {
+    const subscribe = async () => {
       if (cleanedUp) return;
 
       // Tear down prior channel and any pending timers before opening a new one.
@@ -117,6 +119,19 @@ export function useConversationLive(
       if (connectTimer) { clearTimeout(connectTimer); connectTimer = null; }
 
       setRealtimeStatus('connecting');
+
+      // Refresh Realtime auth with the freshest token before opening the channel.
+      // The AuthContext also re-applies setAuth on TOKEN_REFRESHED, but a reconnect
+      // triggered from inside this effect may race the refresh, so we re-apply here.
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (session?.access_token) {
+          supabase.realtime.setAuth(session.access_token);
+        }
+      } catch (e) {
+        logger.warn(`[useConversationLive] Failed to refresh Realtime auth before subscribe: ${e instanceof Error ? e.message : String(e)}`);
+      }
+      if (cleanedUp) return;
 
       // Per-attempt staleness flag: ignore late callbacks from a channel we
       // already abandoned (e.g. CLOSED arriving after the connect timer fired).
@@ -163,7 +178,7 @@ export function useConversationLive(
       }, REALTIME_CONNECT_TIMEOUT_MS);
     };
 
-    subscribe();
+    void subscribe();
 
     return () => {
       cleanedUp = true;
@@ -213,6 +228,37 @@ export function useConversationLive(
     if (!conversation) return 'idle';
     return derivePhase(conversation);
   }, [conversation]);
+
+  // Self-healing on access: when the row is detected as stalled (backend heartbeat
+  // stopped), dispatch one transparent retry per mount. The backend dedupes via
+  // analysis_dispatch_locks, so concurrent triggers from cloudSyncWorker are safe.
+  const stuckRescueFiredRef = useRef(false);
+  useEffect(() => {
+    if (!enabled || stuckRescueFiredRef.current) return;
+    if (phase !== 'stalled') return;
+    stuckRescueFiredRef.current = true;
+    logger.info(`[useConversationLive] Stalled detected for ${conversationId}, dispatching auto-retry`);
+    reanalyzeConversation(conversationId, '', 'es').catch((err) => {
+      logger.warn(`[useConversationLive] Stalled auto-retry failed: ${err instanceof Error ? err.message : String(err)}`);
+    });
+  }, [enabled, phase, conversationId]);
+
+  // Transparent failure retry: after one terminal failure, wait 60s and retry once
+  // before surfacing the error to the user. Covers transient provider blips that
+  // would otherwise force a manual click on "Reintentar".
+  const failedRetryFiredRef = useRef(false);
+  useEffect(() => {
+    if (!enabled || failedRetryFiredRef.current) return;
+    if (phase !== 'failed') return;
+    const timer = setTimeout(() => {
+      failedRetryFiredRef.current = true;
+      logger.info(`[useConversationLive] Auto-retry after failed for ${conversationId}`);
+      reanalyzeConversation(conversationId, '', 'es').catch((err) => {
+        logger.warn(`[useConversationLive] Failed auto-retry failed: ${err instanceof Error ? err.message : String(err)}`);
+      });
+    }, FAILED_AUTO_RETRY_DELAY_MS);
+    return () => clearTimeout(timer);
+  }, [enabled, phase, conversationId]);
 
   return {
     conversation,

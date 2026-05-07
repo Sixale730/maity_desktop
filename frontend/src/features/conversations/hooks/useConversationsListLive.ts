@@ -50,11 +50,11 @@ export function useConversationsListLive(userId: string | null | undefined): voi
       logger.warn(`[useConversationsListLive] Realtime reconnect scheduled in ${delay}ms (attempt ${attempt}) for user ${userId}`);
       reconnectTimer = setTimeout(() => {
         reconnectTimer = null;
-        subscribe();
+        void subscribe();
       }, delay);
     };
 
-    const subscribe = () => {
+    const subscribe = async () => {
       if (cleanedUp) return;
 
       if (currentChannel) {
@@ -62,6 +62,19 @@ export function useConversationsListLive(userId: string | null | undefined): voi
         currentChannel = null;
       }
       if (connectTimer) { clearTimeout(connectTimer); connectTimer = null; }
+
+      // Refresh Realtime auth before opening the channel — guards against the
+      // race where Supabase has refreshed the JWT but this subscribe was already
+      // queued from a prior reconnect with a stale token.
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (session?.access_token) {
+          supabase.realtime.setAuth(session.access_token);
+        }
+      } catch (e) {
+        logger.warn(`[useConversationsListLive] Failed to refresh Realtime auth before subscribe: ${e instanceof Error ? e.message : String(e)}`);
+      }
+      if (cleanedUp) return;
 
       // Per-attempt staleness flag — ignore late callbacks from a channel we
       // already abandoned (CLOSED arriving after the connect timer fired, etc.).
@@ -105,7 +118,7 @@ export function useConversationsListLive(userId: string | null | undefined): voi
       }, REALTIME_CONNECT_TIMEOUT_MS);
     };
 
-    subscribe();
+    void subscribe();
 
     return () => {
       cleanedUp = true;

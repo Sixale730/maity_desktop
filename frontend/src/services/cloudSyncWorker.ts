@@ -31,16 +31,27 @@ interface SyncQueueJob {
   completed_at: string | null;
 }
 
+/** Minimum time between stuck-watcher passes. The main loop runs every 5s but
+ *  scanning for stuck conversations more often than once per minute is wasteful. */
+const STUCK_CHECK_INTERVAL_MS = 60_000;
+/** A row in 'processing' whose updated_at is older than this is considered stuck.
+ *  Aligned with STALL_TIMEOUT_PROCESSING_MS in derivePhase.ts (3 min, 6 missed heartbeats). */
+const STUCK_THRESHOLD_MS = 3 * 60 * 1000;
+
 class CloudSyncWorkerImpl {
   private intervalId: ReturnType<typeof setInterval> | null = null;
   private processing = false;
   private started = false;
+  private currentUserId: string | null = null;
+  private lastStuckCheckMs = 0;
 
-  /** Start polling the sync queue */
-  start() {
+  /** Start polling the sync queue. Pass the authenticated user's id so the
+   *  stuck-watcher can scope its query to this user only. */
+  start(userId: string) {
     if (this.started) return;
     this.started = true;
-    logger.debug('[CloudSyncWorker] Started');
+    this.currentUserId = userId;
+    logger.debug(`[CloudSyncWorker] Started for user ${userId}`);
 
     // Reset stale jobs on start
     invoke('sync_queue_reset_stale', { staleSeconds: 300 }).catch((e) =>
@@ -61,6 +72,7 @@ class CloudSyncWorkerImpl {
   stop() {
     if (!this.started) return;
     this.started = false;
+    this.currentUserId = null;
     if (this.intervalId) {
       clearInterval(this.intervalId);
       this.intervalId = null;
@@ -119,6 +131,15 @@ class CloudSyncWorkerImpl {
     this.processing = true;
 
     try {
+      // Throttled stuck-watcher: scan for stalled cloud analyses about once a minute.
+      // Replaces the cron rescue in the v1 design — runs cheaply on top of the existing loop.
+      if (Date.now() - this.lastStuckCheckMs > STUCK_CHECK_INTERVAL_MS) {
+        this.lastStuckCheckMs = Date.now();
+        await this.checkStuckConversations().catch((e) =>
+          console.warn('[CloudSyncWorker] stuck-watcher error:', e)
+        );
+      }
+
       const jobs = await invoke<SyncQueueJob[]>('sync_queue_get_ready_jobs', { limit: 5 });
       if (jobs.length === 0) return;
 
@@ -132,6 +153,45 @@ class CloudSyncWorkerImpl {
       console.warn('[CloudSyncWorker] Failed to fetch ready jobs:', e);
     } finally {
       this.processing = false;
+    }
+  }
+
+  /** Scan the user's cloud conversations for rows that have been in 'processing'
+   *  longer than the heartbeat threshold and dispatch a transparent retry. The
+   *  backend dedupes via analysis_dispatch_locks, so this is safe to run alongside
+   *  the per-row self-healing in useConversationLive.
+   */
+  private async checkStuckConversations(): Promise<void> {
+    if (!this.currentUserId) return;
+
+    const thresholdIso = new Date(Date.now() - STUCK_THRESHOLD_MS).toISOString();
+    const { data: stuck, error } = await supabase
+      .schema('maity')
+      .from('omi_conversations')
+      .select('id, updated_at')
+      .eq('user_id', this.currentUserId)
+      .eq('analysis_status', 'processing')
+      .lt('updated_at', thresholdIso)
+      .limit(10);
+
+    if (error) {
+      console.warn('[CloudSyncWorker] stuck check query failed:', error.message);
+      return;
+    }
+    if (!stuck || stuck.length === 0) return;
+
+    logger.info(`[CloudSyncWorker] Found ${stuck.length} stuck conversation(s), dispatching retry`);
+    // Dynamic import avoids a circular dependency between this worker and the
+    // conversations service (the service indirectly references this module).
+    const { reanalyzeConversation } = await import(
+      '@/features/conversations/services/conversations.service'
+    );
+    for (const conv of stuck) {
+      try {
+        await reanalyzeConversation(conv.id, '', 'es');
+      } catch (e) {
+        console.warn(`[CloudSyncWorker] Stuck retry failed for ${conv.id}:`, e);
+      }
     }
   }
 

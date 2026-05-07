@@ -9,8 +9,15 @@ export type AnalysisPhase =
   | 'skipped'
   | 'stalled';
 
-/** Hard timeout: if `finished_at` is older than this and analysis is not terminal, surface 'stalled'. */
-export const STALL_TIMEOUT_MS = 10 * 60 * 1000;
+/**
+ * Stall thresholds:
+ *   PROCESSING: 3 min when backend heartbeat is active (every 30s). 6 missed heartbeats = dead.
+ *   LEGACY: 10 min for non-terminal rows without an explicit 'processing' status or heartbeat.
+ */
+export const STALL_TIMEOUT_PROCESSING_MS = 3 * 60 * 1000;
+export const STALL_TIMEOUT_LEGACY_MS = 10 * 60 * 1000;
+/** @deprecated Use STALL_TIMEOUT_LEGACY_MS or STALL_TIMEOUT_PROCESSING_MS. Kept for callers that still import. */
+export const STALL_TIMEOUT_MS = STALL_TIMEOUT_LEGACY_MS;
 
 /**
  * Derive the user-facing analysis phase from the conversation's authoritative state in DB.
@@ -22,9 +29,10 @@ export const STALL_TIMEOUT_MS = 10 * 60 * 1000;
  *   completed (data present)  > completed (status flag)
  *   skipped (data marker)     > skipped (status flag)
  *   failed (status flag)
- *   stalled (status non-terminal AND age > STALL_TIMEOUT_MS)
- *   polling (status non-terminal AND age <= STALL_TIMEOUT_MS, includes null status)
- *   idle (no finished_at, no status)
+ *   stalled (status='processing' AND updated_at older than PROCESSING threshold = backend heartbeat dead)
+ *   stalled (no status, fallback: finished_at older than LEGACY threshold)
+ *   polling (otherwise non-terminal)
+ *   idle (no anchor timestamp, no status)
  */
 export function derivePhase(conv: OmiConversation, nowMs: number = Date.now()): AnalysisPhase {
   const v4 = conv.communication_feedback_v4;
@@ -43,7 +51,19 @@ export function derivePhase(conv: OmiConversation, nowMs: number = Date.now()): 
   if (status === 'skipped') return 'skipped';
   if (status === 'failed') return 'failed';
 
-  // Non-terminal: pending, processing, or null. Distinguish polling from stalled by age.
+  // status='processing' with heartbeat: updated_at is the liveness signal.
+  // Backend writes updated_at every 30s while the LLM call is in flight.
+  if (status === 'processing' && conv.updated_at) {
+    const lastHeartbeatMs = Date.parse(conv.updated_at);
+    if (!Number.isNaN(lastHeartbeatMs)) {
+      const sinceLastHeartbeat = nowMs - lastHeartbeatMs;
+      if (sinceLastHeartbeat > STALL_TIMEOUT_PROCESSING_MS) return 'stalled';
+      return 'polling';
+    }
+  }
+
+  // Fallback (status=null, status='pending', or processing without updated_at):
+  // legacy age-based detection from finished_at/started_at/created_at.
   const finishedAtIso = conv.finished_at ?? conv.started_at ?? conv.created_at;
   if (!finishedAtIso) return 'idle';
 
@@ -51,7 +71,7 @@ export function derivePhase(conv: OmiConversation, nowMs: number = Date.now()): 
   if (Number.isNaN(finishedAtMs)) return 'polling';
 
   const ageMs = nowMs - finishedAtMs;
-  if (ageMs > STALL_TIMEOUT_MS) return 'stalled';
+  if (ageMs > STALL_TIMEOUT_LEGACY_MS) return 'stalled';
 
   return 'polling';
 }

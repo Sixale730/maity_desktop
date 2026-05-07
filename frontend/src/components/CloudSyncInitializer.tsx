@@ -12,12 +12,14 @@ import { logger } from '@/lib/logger';
  * Also nudges the worker when the browser comes back online.
  */
 export function CloudSyncInitializer() {
-  const { isAuthenticated } = useAuth();
+  const { isAuthenticated, user } = useAuth();
   const router = useRouter();
 
+  const userId = user?.id ?? null;
+
   useEffect(() => {
-    if (isAuthenticated) {
-      cloudSyncWorker.start();
+    if (isAuthenticated && userId) {
+      cloudSyncWorker.start(userId);
     } else {
       cloudSyncWorker.stop();
     }
@@ -25,7 +27,7 @@ export function CloudSyncInitializer() {
     return () => {
       cloudSyncWorker.stop();
     };
-  }, [isAuthenticated]);
+  }, [isAuthenticated, userId]);
 
   // Nudge worker when network comes back
   useEffect(() => {
