@@ -108,8 +108,13 @@ export function GlobalConversationNotifier() {
 
     /**
      * Single source of truth for transition detection. Called from BOTH the
-     * Realtime UPDATE handler and the queryCache observer below. The shadow map
-     * dedupes — only the first observer to see the new status fires the toast.
+     * Realtime UPDATE handler and the queryCache observer below.
+     *
+     * Critical: the FIRST observation of a conversation id is a BASELINE, not
+     * a transition. Without this guard, a cold start (where the shadow map is
+     * empty) fires a notification for every already-completed conversation as
+     * the cache hydrates from the initial fetch — exactly the spam the global
+     * notifier was supposed to prevent.
      */
     const handleStatusUpdate = (row: {
       id: string;
@@ -119,21 +124,20 @@ export function GlobalConversationNotifier() {
       if (!row.id) return;
 
       const newStatus = row.analysis_status ?? null;
+      const hasObserved = prevStatusRef.current.has(row.id);
       const prevStatus = prevStatusRef.current.get(row.id) ?? null;
       const wasNonTerminal = !prevStatus || !TERMINAL_STATUSES.has(prevStatus);
-      const willNotify = wasNonTerminal && newStatus === 'completed';
+      // Only notify on transitions observed in THIS session. First sighting
+      // could be a stale 'completed' from before the app was even open.
+      const willNotify = hasObserved && wasNonTerminal && newStatus === 'completed';
 
-      // Instrumentation: log every status update considered. Reveals whether the
-      // problem is "no event arrives", "shadow map already has this status", or
-      // "transition detected but notify path skipped".
-      logger.warn(
-        `[GlobalConversationNotifier] handleStatusUpdate id=${row.id} prev=${prevStatus} new=${newStatus} willNotify=${willNotify}`,
-      );
-
-      if (prevStatus === newStatus) return; // no real change
+      if (hasObserved && prevStatus === newStatus) return; // no real change
       prevStatusRef.current.set(row.id, newStatus);
 
       if (willNotify) {
+        logger.warn(
+          `[GlobalConversationNotifier] transition id=${row.id} prev=${prevStatus} new=${newStatus} → notify`,
+        );
         notifyAnalysisComplete({ id: row.id, title: row.title }, router);
       }
       // 'failed' and 'skipped' do NOT notify. The user sees the 'Reintentar'
@@ -238,9 +242,6 @@ export function GlobalConversationNotifier() {
       if (key[0] === 'omi-conversations' && key[1] === userId) {
         const data = event.query.state.data as OmiConversation[] | undefined;
         if (!Array.isArray(data)) return;
-        // Instrumentation: cache observer triggered for the list — high frequency,
-        // log only count to avoid noise.
-        logger.warn(`[GlobalConversationNotifier] Cache observer LIST userId=${userId} rows=${data.length}`);
         for (const conv of data) {
           if (!conv?.id) continue;
           handleStatusUpdate({
@@ -257,10 +258,6 @@ export function GlobalConversationNotifier() {
         const conv = event.query.state.data as OmiConversation | undefined;
         if (!conv?.id) return;
         if (conv.user_id !== userId) return; // only notify for the current user
-        // Instrumentation: cache observer triggered for a detail page.
-        logger.warn(
-          `[GlobalConversationNotifier] Cache observer DETAIL id=${conv.id} status=${conv.analysis_status}`,
-        );
         handleStatusUpdate({
           id: conv.id,
           title: conv.title,
