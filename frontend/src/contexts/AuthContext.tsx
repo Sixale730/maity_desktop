@@ -627,7 +627,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           email,
           password,
           options: {
-            emailRedirectTo: 'https://maity.com.mx/auth/confirm',
+            emailRedirectTo: 'https://www.maity.cloud/auth/confirm',
             data: { full_name: fullName },
           },
         }),
@@ -657,7 +657,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     try {
       const { error: resetError } = await withTimeout(
         supabase.auth.resetPasswordForEmail(email, {
-          redirectTo: 'https://maity.com.mx/auth/reset',
+          redirectTo: 'https://www.maity.cloud/auth/update-password',
         }),
         'resetPasswordForEmail',
       )
