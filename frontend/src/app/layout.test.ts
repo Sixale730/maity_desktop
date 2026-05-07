@@ -138,4 +138,52 @@ describe('layout.tsx provider tree invariants', () => {
         'Si lo borraste a proposito, considera tambien retirar el invariante de PROVIDER_INVARIANTS.',
     ).toBe(true);
   });
+
+  // Regresion historica: en commit 15c5c5a (Feb 22, 2026) el Toaster cambio
+  // de "bottom-center" -> "bottom-right" pero showUpdateNotification siguio
+  // pidiendo "bottom-center". Sonner v2 crea contenedores positioned separados
+  // por position; un mismatch puede dejar el toast del updater fuera del
+  // viewport o en un contenedor que nunca se monta.
+  //
+  // Este invariante valida: si showUpdateNotification ESPECIFICA un position
+  // override, ese override DEBE coincidir con el del Toaster en layout.tsx.
+  // Si no lo especifica (caso preferido — herencia del Toaster), el test pasa.
+  it('Toaster position en layout.tsx coincide con showUpdateNotification (si la especifica)', () => {
+    const NOTIFICATION_PATH = path.resolve(
+      __dirname,
+      '..',
+      'components',
+      'updates',
+      'UpdateNotification.tsx',
+    );
+    const notifSrc = readFileSync(NOTIFICATION_PATH, 'utf-8');
+
+    const toasterMatch = source.match(/<Toaster\s+position="([^"]+)"/);
+    expect(
+      toasterMatch,
+      '<Toaster position="..."> no encontrado en layout.tsx',
+    ).not.toBeNull();
+
+    // Buscar position en options pasadas a toast(), toast.info(), etc.
+    // Solo dentro de showUpdateNotification (no en otros toasts del archivo).
+    const showUpdateBody = notifSrc.match(
+      /export function showUpdateNotification[\s\S]*?^\}/m,
+    )?.[0];
+    expect(
+      showUpdateBody,
+      'showUpdateNotification no encontrado en UpdateNotification.tsx',
+    ).toBeDefined();
+
+    const toastPositionMatch = showUpdateBody!.match(/position:\s*'([^']+)'/);
+
+    if (toastPositionMatch) {
+      expect(
+        toasterMatch![1],
+        `Toaster=${toasterMatch![1]} ≠ toast=${toastPositionMatch[1]}. ` +
+          'Si showUpdateNotification especifica position, debe coincidir con el Toaster ' +
+          'o quitarse para que herede. Sonner v2 separa contenedores por position.',
+      ).toBe(toastPositionMatch[1]);
+    }
+    // Si no hay position override en el toast, el test pasa — herencia del Toaster.
+  });
 });
