@@ -17,6 +17,9 @@ function notifyAnalysisComplete(
   conv: { id: string; title?: string | null },
   router: ReturnType<typeof useRouter>,
 ) {
+  // Instrumentation: confirm this notify path executed (vs being filtered out earlier).
+  logger.warn(`[GlobalConversationNotifier] notify FIRED for ${conv.id} title="${conv.title ?? ''}"`);
+
   const description = conv.title || 'Tu conversación ya tiene resumen y análisis completos.';
 
   // System-level notification (Windows toast / macOS Notification Center).
@@ -113,11 +116,20 @@ export function GlobalConversationNotifier() {
 
       const newStatus = row.analysis_status ?? null;
       const prevStatus = prevStatusRef.current.get(row.id) ?? null;
+      const wasNonTerminal = !prevStatus || !TERMINAL_STATUSES.has(prevStatus);
+      const willNotify = wasNonTerminal && newStatus === 'completed';
+
+      // Instrumentation: log every status update considered. Reveals whether the
+      // problem is "no event arrives", "shadow map already has this status", or
+      // "transition detected but notify path skipped".
+      logger.warn(
+        `[GlobalConversationNotifier] handleStatusUpdate id=${row.id} prev=${prevStatus} new=${newStatus} willNotify=${willNotify}`,
+      );
+
       if (prevStatus === newStatus) return; // no real change
       prevStatusRef.current.set(row.id, newStatus);
 
-      const wasNonTerminal = !prevStatus || !TERMINAL_STATUSES.has(prevStatus);
-      if (wasNonTerminal && newStatus === 'completed') {
+      if (willNotify) {
         notifyAnalysisComplete({ id: row.id, title: row.title }, router);
       }
       // 'failed' and 'skipped' do NOT notify. The user sees the 'Reintentar'
@@ -172,7 +184,12 @@ export function GlobalConversationNotifier() {
             filter: `user_id=eq.${userId}`,
           },
           (payload) => {
-            handleRealtimeUpdate(payload.new as Partial<OmiConversation>);
+            const newRow = payload.new as Partial<OmiConversation>;
+            // Instrumentation: confirm Realtime is actually delivering UPDATE events.
+            logger.warn(
+              `[GlobalConversationNotifier] Realtime UPDATE id=${newRow?.id} status=${newRow?.analysis_status} title=${(newRow?.title ?? '').slice(0, 30)}`,
+            );
+            handleRealtimeUpdate(newRow);
           },
         )
         .subscribe((status, err) => {
@@ -217,6 +234,9 @@ export function GlobalConversationNotifier() {
       if (key[0] === 'omi-conversations' && key[1] === userId) {
         const data = event.query.state.data as OmiConversation[] | undefined;
         if (!Array.isArray(data)) return;
+        // Instrumentation: cache observer triggered for the list — high frequency,
+        // log only count to avoid noise.
+        logger.warn(`[GlobalConversationNotifier] Cache observer LIST userId=${userId} rows=${data.length}`);
         for (const conv of data) {
           if (!conv?.id) continue;
           handleStatusUpdate({
@@ -233,6 +253,10 @@ export function GlobalConversationNotifier() {
         const conv = event.query.state.data as OmiConversation | undefined;
         if (!conv?.id) return;
         if (conv.user_id !== userId) return; // only notify for the current user
+        // Instrumentation: cache observer triggered for a detail page.
+        logger.warn(
+          `[GlobalConversationNotifier] Cache observer DETAIL id=${conv.id} status=${conv.analysis_status}`,
+        );
         handleStatusUpdate({
           id: conv.id,
           title: conv.title,
