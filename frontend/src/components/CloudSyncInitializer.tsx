@@ -10,9 +10,12 @@ import { logger } from '@/lib/logger';
  * Also nudges the worker when the browser comes back online.
  */
 export function CloudSyncInitializer() {
-  const { isAuthenticated, user } = useAuth();
+  // IMPORTANT: maityUser.id is the FK on omi_conversations.user_id and 36 other
+  // tables in maity.* schema. Never use user.id (Supabase auth) for queries
+  // against maity tables. See feedback_user_vs_maityUser.md.
+  const { isAuthenticated, maityUser } = useAuth();
 
-  const userId = user?.id ?? null;
+  const userId = maityUser?.id ?? null;
 
   useEffect(() => {
     if (isAuthenticated && userId) {

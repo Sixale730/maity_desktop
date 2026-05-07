@@ -62,7 +62,11 @@ function notifyAnalysisComplete(
  * the subscription = lifecycle of the session, NOT of any component.
  */
 export function GlobalConversationNotifier() {
-  const { user } = useAuth();
+  // IMPORTANT: maityUser.id is the FK on omi_conversations.user_id, NOT user.id
+  // (Supabase auth user). The list/detail TanStack queries also use maityUser.id
+  // as the second key element. Using user.id here would silently break Realtime
+  // filter and queryCache observer matching.
+  const { maityUser } = useAuth();
   const queryClient = useQueryClient();
   const router = useRouter();
 
@@ -73,7 +77,7 @@ export function GlobalConversationNotifier() {
   const prevStatusRef = useRef<Map<string, string | null>>(new Map());
 
   useEffect(() => {
-    const userId = user?.id;
+    const userId = maityUser?.id;
     if (!userId) {
       prevStatusRef.current.clear();
       return;
@@ -276,7 +280,7 @@ export function GlobalConversationNotifier() {
       }
       prevStatusRef.current.clear();
     };
-  }, [user?.id, queryClient, router]);
+  }, [maityUser?.id, queryClient, router]);
 
   return null;
 }
