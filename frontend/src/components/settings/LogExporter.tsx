@@ -3,7 +3,7 @@
 import React, { useState, useCallback } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { Button } from '@/components/ui/button'
-import { FileArchive, FolderOpen, Trash2, Loader2, HardDrive } from 'lucide-react'
+import { FileArchive, FolderOpen, Trash2, Loader2, HardDrive, CheckCircle2, ExternalLink } from 'lucide-react'
 import { toast } from 'sonner'
 
 interface LogInfo {
@@ -26,6 +26,9 @@ export function LogExporter() {
   const [isClearing, setIsClearing] = useState(false)
   const [logInfo, setLogInfo] = useState<LogInfo | null>(null)
   const [, setIsLoadingInfo] = useState(false)
+  // Persistent confirmation of last successful export. Toasts get hidden behind
+  // the recording bar / lost on DPI scaling — inline state is the source of truth.
+  const [lastExportPath, setLastExportPath] = useState<string | null>(null)
 
   const loadLogInfo = useCallback(async () => {
     setIsLoadingInfo(true)
@@ -48,10 +51,10 @@ export function LogExporter() {
     setIsExporting(true)
     try {
       const outputPath = await invoke<string>('export_logs', { outputPath: null })
+      setLastExportPath(outputPath)
       toast.success('Logs exportados exitosamente', {
         description: `Guardados en: ${outputPath}`,
       })
-      // Refresh log info after export
       loadLogInfo()
     } catch (error: unknown) {
       console.error('Failed to export logs:', error)
@@ -60,6 +63,18 @@ export function LogExporter() {
       })
     } finally {
       setIsExporting(false)
+    }
+  }
+
+  const handleRevealExport = async () => {
+    if (!lastExportPath) return
+    try {
+      await invoke('reveal_in_folder', { path: lastExportPath })
+    } catch (error: unknown) {
+      console.error('Failed to reveal export in explorer:', error)
+      toast.error('No se pudo abrir el archivo', {
+        description: error instanceof Error ? error.message : String(error),
+      })
     }
   }
 
@@ -170,6 +185,29 @@ export function LogExporter() {
         <p className="text-xs text-muted-foreground truncate" title={logInfo.log_directory}>
           Ubicación: {logInfo.log_directory}
         </p>
+      )}
+
+      {lastExportPath && (
+        <div className="bg-green-500/10 border border-green-500/20 rounded-md p-2.5 flex items-start gap-2">
+          <CheckCircle2 className="h-4 w-4 text-green-500 shrink-0 mt-0.5" />
+          <div className="flex-1 min-w-0">
+            <p className="text-xs font-medium text-green-400">
+              Logs exportados
+            </p>
+            <p className="text-xs text-muted-foreground truncate" title={lastExportPath}>
+              {lastExportPath}
+            </p>
+          </div>
+          <Button
+            onClick={handleRevealExport}
+            variant="ghost"
+            size="sm"
+            className="h-7 px-2 text-xs shrink-0"
+          >
+            <ExternalLink className="h-3 w-3 mr-1" />
+            Mostrar
+          </Button>
+        </div>
       )}
     </div>
   )

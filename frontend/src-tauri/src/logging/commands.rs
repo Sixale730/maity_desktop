@@ -235,6 +235,49 @@ pub async fn open_log_directory() -> Result<(), String> {
     Ok(())
 }
 
+/// Open the system file explorer with a specific file selected.
+///
+/// Windows: `explorer /select,<path>` highlights the file in its containing folder.
+/// macOS: `open -R <path>` does the equivalent in Finder. Linux falls back to
+/// opening the parent directory — most file managers don't have a reveal verb.
+#[tauri::command]
+pub async fn reveal_in_folder(path: String) -> Result<(), String> {
+    let path_buf = PathBuf::from(&path);
+    if !path_buf.exists() {
+        return Err(format!("Path does not exist: {}", path));
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("explorer")
+            .arg(format!("/select,{}", path))
+            .spawn()
+            .map_err(|e| format!("Failed to reveal in explorer: {}", e))?;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg("-R")
+            .arg(&path)
+            .spawn()
+            .map_err(|e| format!("Failed to reveal in finder: {}", e))?;
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let parent = path_buf
+            .parent()
+            .ok_or_else(|| "No parent directory".to_string())?;
+        std::process::Command::new("xdg-open")
+            .arg(parent)
+            .spawn()
+            .map_err(|e| format!("Failed to open parent directory: {}", e))?;
+    }
+
+    Ok(())
+}
+
 /// Clear old log files (keeps only the most recent)
 #[tauri::command]
 pub async fn clear_old_logs(keep_count: Option<usize>) -> Result<usize, String> {
