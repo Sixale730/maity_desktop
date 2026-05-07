@@ -573,7 +573,7 @@ export default function RootLayout({
           </QueryClientProvider>
           </DbInitErrorGate>
         </ErrorBoundary>
-        <Toaster position="bottom-right" richColors closeButton />
+        <Toaster position="bottom-center" richColors closeButton />
       </body>
     </html>
   )
