@@ -212,7 +212,58 @@ Despues, actualizar `latest.json` con la nueva signature:
 1. Leer el nuevo contenido del `.sig` generado
 2. Editar `target/release/bundle/latest.json` reemplazando el campo `"signature"` con el nuevo valor
 
-**En macOS**: No se requieren pasos adicionales post-build.
+**En macOS — Verificar firma updater + completar `latest.json` con entradas darwin:**
+
+A diferencia de Windows (donde `tauri-auto.js` regenera la firma despues de la firma Certum), en macOS Apple Developer ID no modifica el binario despues del firmado del updater, pero el `tauri build` puede haber **fallado** la firma de updater silenciosamente si `TAURI_SIGNING_PRIVATE_KEY` no se cargo bien desde `.env` (la key es base64 que decodifica a formato minisign multi-linea, y `source` puede colapsar newlines).
+
+1. Verificar que se haya generado el `.sig`:
+   ```bash
+   ls target/universal-apple-darwin/release/bundle/macos/Maity.app.tar.gz.sig
+   ```
+   Si NO existe (o el log muestra `Missing comment in secret key`), regenerar manualmente. La forma que funciona en macOS:
+   ```bash
+   cd "<repo>/frontend"
+   set -a; source .env; set +a
+   npx @tauri-apps/cli signer sign \
+     -k "$TAURI_SIGNING_PRIVATE_KEY" \
+     -p "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" \
+     ../target/universal-apple-darwin/release/bundle/macos/Maity.app.tar.gz
+   ```
+   Crucial: `-k "$TAURI_SIGNING_PRIVATE_KEY"` (string base64 entre comillas), NO `-f` con archivo decodificado — `signer sign` espera el string base64 directo, no el contenido decodificado.
+
+2. **Actualizar `latest.json`** para incluir entradas darwin (si no existen). El `tauri build` solo escribe la entrada de la plataforma actual; en macOS hay que agregar AMBAS claves darwin manualmente porque el universal binary cubre Intel y Apple Silicon con el mismo archivo:
+   ```bash
+   # Bajar el latest.json actual del release (usualmente solo tiene windows-x86_64)
+   gh release download vX.Y.Z --repo Sixale730/maity_desktop --pattern latest.json -O /tmp/latest-current.json
+
+   # Agregar darwin-aarch64 + darwin-x86_64 con la firma macOS
+   python3 << 'PYEOF'
+   import json
+   with open('/tmp/latest-current.json') as f: m = json.load(f)
+   with open('target/universal-apple-darwin/release/bundle/macos/Maity.app.tar.gz.sig') as f: sig = f.read().strip()
+   url = 'https://github.com/Sixale730/maity_desktop/releases/download/vX.Y.Z/Maity.app.tar.gz'
+   m['platforms']['darwin-aarch64'] = {'signature': sig, 'url': url}
+   m['platforms']['darwin-x86_64']  = {'signature': sig, 'url': url}
+   with open('/tmp/latest.json', 'w') as f: json.dump(m, f, indent=2)
+   PYEOF
+   ```
+   Reemplazar `vX.Y.Z` por la version real.
+
+3. Subir el `.sig` y el `latest.json` actualizado al release con `--clobber`:
+   ```bash
+   gh release upload vX.Y.Z \
+     target/universal-apple-darwin/release/bundle/macos/Maity.app.tar.gz.sig \
+     /tmp/latest.json \
+     --repo Sixale730/maity_desktop --clobber
+   ```
+
+4. Verificar publicamente:
+   ```bash
+   curl -sL https://github.com/Sixale730/maity_desktop/releases/latest/download/latest.json | python3 -m json.tool
+   ```
+   Debe listar `windows-x86_64`, `darwin-aarch64`, `darwin-x86_64` (3 plataformas), todas con `signature` no vacio.
+
+> **Sin este paso, los usuarios macOS no veran el update.** El plugin `tauri-plugin-updater` retorna `null` silenciosamente cuando la plataforma actual no esta en `platforms` — sin error, sin toast. Sintoma: "no pasa nada" al pulsar Buscar Actualizaciones (caso real v0.2.44).
 
 ### Paso 9: Commit
 
@@ -355,3 +406,17 @@ Los siguientes errores aparecen al hacer build con `--target universal-apple-dar
 **Estado**: arreglado. `tauri-auto.js` ahora exige la presencia de un instalador final (`.dmg`, `.msi`, `.deb`, `.AppImage`, `.rpm`, o NSIS `*-setup.exe`) antes de aceptar exit 0 sin la clave de updater. Si reaparece el sintoma:
 
 **Posible causa**: alguien revirio el filtro `hasFinalArtifact` en `tauri-auto.js`. Restaurar la logica que walks el bundle dir buscando extensiones de instalador real.
+
+### `failed to decode secret key: incorrect updater private key password: Missing comment in secret key`
+
+**Causa**: el valor de `TAURI_SIGNING_PRIVATE_KEY` en `frontend/.env` es base64 que decodifica al formato minisign multi-linea (`untrusted comment: rsign encrypted secret key\n<key>`). Cuando se invoca `tauri build`, Tauri lo recibe correctamente. Pero si lo intentas pasar manualmente a `signer sign` con la flag `-f` (file path) apuntando al archivo **decodificado**, falla con este error porque `signer sign` espera el formato base64 directo, no el contenido minisign.
+
+**Fix**: usar `-k "$TAURI_SIGNING_PRIVATE_KEY"` (string base64 entre comillas), NO `-f /path/decoded.key`. El comando correcto esta en el Paso 8 macOS de esta skill.
+
+### Usuarios macOS pulsan "Buscar Actualizaciones" y no pasa nada (la silencio total)
+
+**Causa**: el `latest.json` del release no contiene entradas `darwin-aarch64` ni `darwin-x86_64`. El plugin `tauri-plugin-updater` retorna `null` silenciosamente cuando no encuentra la plataforma del cliente — no es un error, no genera toast. Sintoma reportado en v0.2.44 (Sixale730 hizo Release via CI con la macOS build fallando silenciosamente, solo windows-x86_64 quedo en el manifest).
+
+**Fix**: ejecutar Paso 8 macOS completo (firmar `Maity.app.tar.gz`, agregar entradas darwin a `latest.json`, subir con `--clobber`). El binario en el release esta bien, solo el manifest del updater estaba incompleto.
+
+**Verificar**: `curl -sL https://github.com/Sixale730/maity_desktop/releases/latest/download/latest.json | jq '.platforms | keys'` debe listar las 3 plataformas.
