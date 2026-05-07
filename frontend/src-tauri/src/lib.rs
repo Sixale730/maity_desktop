@@ -1052,6 +1052,7 @@ pub fn run() {
             logging::commands::export_logs,
             logging::commands::open_log_directory,
             logging::commands::reveal_in_folder,
+            logging::commands::log_frontend_event,
             logging::commands::clear_old_logs,
             // Coach commands
             coach::setup::install_coach_if_needed,

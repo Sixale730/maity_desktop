@@ -278,6 +278,37 @@ pub async fn reveal_in_folder(path: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Bridge: receive a log event from the frontend and pipe it into Rust
+/// `tracing::*!` so the message ends up in the daily file logger and is
+/// included in the export ZIP.
+///
+/// The frontend logger (`@/lib/logger`) writes only to `console.*` and is
+/// invisible after the session ends. This command lets `fileLogger` opt-in
+/// to durable, exportable logging for diagnosis-critical events (auth state
+/// transitions, dashboard query lifecycle, etc).
+///
+/// `level` accepts "error" | "warn" | "info" | anything-else-treated-as-debug.
+/// `target` is a short module name (e.g. "auth_gate") used for grep-friendly
+/// filtering. `context` is optional structured data serialized to JSON inline.
+#[tauri::command]
+pub fn log_frontend_event(
+    level: String,
+    target: String,
+    message: String,
+    context: Option<serde_json::Value>,
+) -> Result<(), String> {
+    let ctx = context
+        .map(|c| format!(" {}", c))
+        .unwrap_or_default();
+    match level.as_str() {
+        "error" => tracing::error!(target: "frontend", "[{}] {}{}", target, message, ctx),
+        "warn" => tracing::warn!(target: "frontend", "[{}] {}{}", target, message, ctx),
+        "info" => tracing::info!(target: "frontend", "[{}] {}{}", target, message, ctx),
+        _ => tracing::debug!(target: "frontend", "[{}] {}{}", target, message, ctx),
+    }
+    Ok(())
+}
+
 /// Clear old log files (keeps only the most recent)
 #[tauri::command]
 pub async fn clear_old_logs(keep_count: Option<usize>) -> Result<usize, String> {

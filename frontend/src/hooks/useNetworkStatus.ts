@@ -1,8 +1,9 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { logger } from '@/lib/logger'
+import { fileLogger } from '@/lib/fileLogger'
 
 export interface NetworkStatus {
   isOnline: boolean
@@ -37,13 +38,21 @@ export function useNetworkStatus(options: UseNetworkStatusOptions = {}): Network
     lastChecked: null,
   })
 
+  // Track previous reachability so we only log on transition, not every poll.
+  const prevReachableRef = useRef<boolean | null>(null)
+
   // Check backend connectivity
   const checkBackendConnectivity = useCallback(async () => {
     if (!checkBackend) return
 
+    const t0 = Date.now()
     try {
-      // Use a simple backend health check command
       await invoke<boolean>('health_check')
+      const durationMs = Date.now() - t0
+      if (prevReachableRef.current === false) {
+        void fileLogger.info('network', 'backend recovered', { durationMs })
+      }
+      prevReachableRef.current = true
       setStatus(prev => ({
         ...prev,
         isBackendReachable: true,
@@ -51,6 +60,14 @@ export function useNetworkStatus(options: UseNetworkStatusOptions = {}): Network
       }))
     } catch (error) {
       console.warn('[useNetworkStatus] Backend health check failed:', error)
+      const durationMs = Date.now() - t0
+      if (prevReachableRef.current !== false) {
+        void fileLogger.warn('network', 'backend unreachable', {
+          message: error instanceof Error ? error.message : String(error),
+          durationMs,
+        })
+      }
+      prevReachableRef.current = false
       setStatus(prev => ({
         ...prev,
         isBackendReachable: false,
@@ -63,6 +80,7 @@ export function useNetworkStatus(options: UseNetworkStatusOptions = {}): Network
   useEffect(() => {
     const handleOnline = () => {
       logger.debug('[useNetworkStatus] Browser reports online')
+      void fileLogger.info('network', 'browser online')
       setStatus(prev => ({ ...prev, isOnline: true }))
       // Check backend when coming back online
       checkBackendConnectivity()
@@ -75,6 +93,7 @@ export function useNetworkStatus(options: UseNetworkStatusOptions = {}): Network
         return
       }
       logger.debug('[useNetworkStatus] Browser reports offline')
+      void fileLogger.warn('network', 'browser offline')
       setStatus(prev => ({
         ...prev,
         isOnline: false,

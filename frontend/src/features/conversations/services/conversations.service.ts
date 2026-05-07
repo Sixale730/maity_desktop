@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import { supabase } from '@/lib/supabase';
+import { fileLogger } from '@/lib/fileLogger';
 
 // ─── V4 Analysis Types ──────────────────────────────────────────────
 
@@ -555,6 +556,9 @@ export interface OmiTranscriptSegment {
 export async function getOmiConversations(userId?: string): Promise<OmiConversation[]> {
   if (!userId) return [];
 
+  const t0 = Date.now();
+  void fileLogger.info('conversations_service', 'getOmiConversations start', { userIdSuffix: userId.slice(-8) });
+
   const { data, error } = await supabase
     .from('omi_conversations')
     .select('*')
@@ -564,10 +568,20 @@ export async function getOmiConversations(userId?: string): Promise<OmiConversat
 
   if (error) {
     console.error('Error fetching omi conversations:', error);
+    void fileLogger.error('conversations_service', 'getOmiConversations fail', {
+      code: error.code,
+      message: error.message,
+      durationMs: Date.now() - t0,
+    });
     throw error;
   }
 
-  return data || [];
+  const rows = data || [];
+  void fileLogger.info('conversations_service', 'getOmiConversations ok', {
+    rows: rows.length,
+    durationMs: Date.now() - t0,
+  });
+  return rows;
 }
 
 // ─── Local SQLite Types ────────────────────────────────────────────

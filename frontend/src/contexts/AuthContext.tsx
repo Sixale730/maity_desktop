@@ -8,6 +8,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { onOpenUrl } from '@tauri-apps/plugin-deep-link'
 import { logger } from '@/lib/logger'
+import { fileLogger } from '@/lib/fileLogger'
 import { translateAuthError } from '@/lib/auth-errors'
 
 interface AuthContextType {
@@ -107,6 +108,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     const doFetch = async () => {
       setMaityUserError(null)
+      const t0 = Date.now()
+      void fileLogger.info('auth_context', 'fetchOrCreateMaityUser start', {
+        authIdSuffix: authUser.id.slice(-8),
+      })
       try {
         // Try to fetch existing maity.users record
         const { data, error: fetchError } = await supabase
@@ -117,6 +122,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
         if (data) {
           setMaityUser(data as MaityUser)
+          void fileLogger.info('auth_context', 'fetchOrCreateMaityUser ok', {
+            path: 'fetch',
+            durationMs: Date.now() - t0,
+          })
           return
         }
 
@@ -160,31 +169,58 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
               if (existingUser) {
                 setMaityUser(existingUser as MaityUser)
+                void fileLogger.info('auth_context', 'fetchOrCreateMaityUser ok', {
+                  path: 'refetch-after-23505',
+                  durationMs: Date.now() - t0,
+                })
                 return
               }
               if (refetchError) {
                 console.error('[Auth] Failed to re-fetch after unique constraint:', refetchError)
                 setMaityUserError('No se pudo cargar tu cuenta. Verifica tu conexión e intenta de nuevo.')
+                void fileLogger.error('auth_context', 'fetchOrCreateMaityUser fail', {
+                  path: 'refetch-after-23505',
+                  code: refetchError.code,
+                  durationMs: Date.now() - t0,
+                })
                 return
               }
             }
 
             console.error('[Auth] Failed to create maity user:', createError)
             setMaityUserError('No se pudo crear tu cuenta. Verifica tu conexión e intenta de nuevo.')
+            void fileLogger.error('auth_context', 'fetchOrCreateMaityUser fail', {
+              path: 'create',
+              code: createError.code,
+              durationMs: Date.now() - t0,
+            })
             return
           }
 
           setMaityUser(newUser as MaityUser)
+          void fileLogger.info('auth_context', 'fetchOrCreateMaityUser ok', {
+            path: 'create',
+            durationMs: Date.now() - t0,
+          })
           return
         }
 
         if (fetchError) {
           console.error('[Auth] Failed to fetch maity user:', fetchError)
           setMaityUserError('No se pudo cargar tu cuenta. Verifica tu conexión e intenta de nuevo.')
+          void fileLogger.error('auth_context', 'fetchOrCreateMaityUser fail', {
+            path: 'fetch',
+            code: fetchError.code,
+            durationMs: Date.now() - t0,
+          })
         }
       } catch (err) {
         console.error('[Auth] Error in fetchOrCreateMaityUser:', err)
         setMaityUserError('Error inesperado al cargar tu cuenta. Verifica tu conexión e intenta de nuevo.')
+        void fileLogger.error('auth_context', 'fetchOrCreateMaityUser exception', {
+          message: err instanceof Error ? err.message : String(err),
+          durationMs: Date.now() - t0,
+        })
       }
     }
 

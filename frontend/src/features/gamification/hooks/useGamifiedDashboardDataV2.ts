@@ -2,6 +2,7 @@ import { useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useAuth } from '@/contexts/AuthContext';
 import { supabase } from '@/lib/supabase';
+import { fileLogger } from '@/lib/fileLogger';
 import {
   getOmiConversations,
   getFormResponses,
@@ -243,7 +244,24 @@ export function useGamifiedDashboardDataV2(): GamifiedDashboardDataV2 {
   // automatically when an analysis lands without the user having to navigate away.
   const conversationsQuery = useQuery({
     queryKey: ['omi-conversations', userId],
-    queryFn: () => getOmiConversations(userId),
+    queryFn: async () => {
+      const t0 = Date.now();
+      void fileLogger.info('dashboard_query', 'omi-conversations start', { userIdSuffix: userId?.slice(-8) });
+      try {
+        const result = await getOmiConversations(userId);
+        void fileLogger.info('dashboard_query', 'omi-conversations ok', {
+          rows: result.length,
+          durationMs: Date.now() - t0,
+        });
+        return result;
+      } catch (err) {
+        void fileLogger.error('dashboard_query', 'omi-conversations fail', {
+          message: err instanceof Error ? err.message : String(err),
+          durationMs: Date.now() - t0,
+        });
+        throw err;
+      }
+    },
     enabled: !!userId,
     staleTime: 5 * 60 * 1000,
   });
@@ -253,7 +271,24 @@ export function useGamifiedDashboardDataV2(): GamifiedDashboardDataV2 {
   // useFormResponsesRadar so both consumers hit the same cache entry.
   const formQuery = useQuery({
     queryKey: ['form-responses', userId],
-    queryFn: () => getFormResponses(userId!),
+    queryFn: async () => {
+      const t0 = Date.now();
+      void fileLogger.info('dashboard_query', 'form-responses start', { userIdSuffix: userId?.slice(-8) });
+      try {
+        const result = await getFormResponses(userId!);
+        void fileLogger.info('dashboard_query', 'form-responses ok', {
+          hasData: !!result,
+          durationMs: Date.now() - t0,
+        });
+        return result;
+      } catch (err) {
+        void fileLogger.error('dashboard_query', 'form-responses fail', {
+          message: err instanceof Error ? err.message : String(err),
+          durationMs: Date.now() - t0,
+        });
+        throw err;
+      }
+    },
     enabled: !!userId,
     staleTime: 5 * 60 * 1000,
   });
@@ -262,12 +297,23 @@ export function useGamifiedDashboardDataV2(): GamifiedDashboardDataV2 {
   const streakQuery = useQuery<StreakRPCResult>({
     queryKey: ['user-streak', userId],
     queryFn: async () => {
+      const t0 = Date.now();
+      void fileLogger.info('dashboard_query', 'user-streak start', { userIdSuffix: userId?.slice(-8) });
       const { data, error } = await supabase.rpc('calculate_user_streak', { p_user_id: userId });
       if (error) {
         console.warn('[Gamification] streak RPC error:', error.message);
+        void fileLogger.warn('dashboard_query', 'user-streak rpc-error', {
+          message: error.message,
+          durationMs: Date.now() - t0,
+        });
         return { streak_days: 0, bonus_days: 0 };
       }
-      return Array.isArray(data) && data.length > 0 ? (data[0] as StreakRPCResult) : { streak_days: 0, bonus_days: 0 };
+      const result = Array.isArray(data) && data.length > 0 ? (data[0] as StreakRPCResult) : { streak_days: 0, bonus_days: 0 };
+      void fileLogger.info('dashboard_query', 'user-streak ok', {
+        streak_days: result.streak_days,
+        durationMs: Date.now() - t0,
+      });
+      return result;
     },
     enabled: !!userId,
     staleTime: 60 * 1000,
@@ -277,14 +323,26 @@ export function useGamifiedDashboardDataV2(): GamifiedDashboardDataV2 {
   const xpQuery = useQuery<number>({
     queryKey: ['user-xp', userId],
     queryFn: async () => {
+      const t0 = Date.now();
+      void fileLogger.info('dashboard_query', 'user-xp start', { userIdSuffix: userId?.slice(-8) });
       const { data, error } = await supabase.rpc('get_my_xp_summary');
       if (error) {
         console.warn('[Gamification] XP RPC error:', error.message);
+        void fileLogger.warn('dashboard_query', 'user-xp rpc-error', {
+          message: error.message,
+          durationMs: Date.now() - t0,
+        });
         return 0;
       }
       if (data && typeof data === 'object' && 'total_xp' in data) {
-        return (data as { total_xp: number }).total_xp;
+        const total = (data as { total_xp: number }).total_xp;
+        void fileLogger.info('dashboard_query', 'user-xp ok', {
+          total_xp: total,
+          durationMs: Date.now() - t0,
+        });
+        return total;
       }
+      void fileLogger.info('dashboard_query', 'user-xp ok', { total_xp: 0, durationMs: Date.now() - t0 });
       return 0;
     },
     enabled: !!userId,

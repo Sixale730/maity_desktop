@@ -35,6 +35,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ThemeProvider } from '@/contexts/ThemeContext'
 import Script from 'next/script'
 import { logger } from '@/lib/logger'
+import { fileLogger } from '@/lib/fileLogger'
 import { platformLogger } from '@/lib/platformLogger'
 import { usePageViewTracker } from '@/hooks/usePageViewTracker'
 import { useMicrophoneFallbackToast } from '@/hooks/useMicrophoneFallbackToast'
@@ -101,10 +102,40 @@ function AuthGate({ children }: { children: React.ReactNode }) {
   const { isAuthenticated, isLoading, maityUser, maityUserError, retryFetchMaityUser, signOut } = useAuth()
   const [mounted, setMounted] = useState(false)
   const [timedOut, setTimedOut] = useState(false)
+  // Track AuthGate phase transitions for diagnosis. The dashboard-hang bug
+  // can leave us frozen in any of these states; without logs we can't tell
+  // which one. Mount timestamp lets us report wall-clock latency to each
+  // transition in the exported log.
+  const mountedAtRef = useRef<number>(Date.now())
+  const lastPhaseRef = useRef<string>('not-mounted')
 
   useEffect(() => {
     setMounted(true)
   }, [])
+
+  // Phase classification + transition logging
+  useEffect(() => {
+    let phase: string
+    if (!mounted) phase = 'not-mounted'
+    else if (isLoading) phase = 'loading'
+    else if (!isAuthenticated) phase = 'unauthenticated'
+    else if (!maityUser) {
+      if (maityUserError) phase = 'error-maityUser'
+      else if (timedOut) phase = 'timeout-maityUser'
+      else phase = 'waiting-maityUser'
+    } else phase = 'ready'
+
+    if (phase !== lastPhaseRef.current) {
+      const elapsedMs = Date.now() - mountedAtRef.current
+      void fileLogger.info('auth_gate', 'state-transition', {
+        prev: lastPhaseRef.current,
+        next: phase,
+        elapsedMs,
+        hasError: !!maityUserError,
+      })
+      lastPhaseRef.current = phase
+    }
+  }, [mounted, isLoading, isAuthenticated, maityUser, maityUserError, timedOut])
 
   // Auto-retry + timeout: if authenticated but maityUser hasn't loaded, retry at 3s and 7s, timeout at 12s
   useEffect(() => {
@@ -114,14 +145,17 @@ function AuthGate({ children }: { children: React.ReactNode }) {
     }
 
     const retry1 = setTimeout(() => {
-      logger.debug('[AuthGate] Auto-retry #1 for maityUser (3s)')
+      void fileLogger.info('auth_gate', 'auto-retry', { attempt: 1, afterMs: 3000 })
       retryFetchMaityUser()
     }, 3000)
     const retry2 = setTimeout(() => {
-      logger.debug('[AuthGate] Auto-retry #2 for maityUser (7s)')
+      void fileLogger.info('auth_gate', 'auto-retry', { attempt: 2, afterMs: 7000 })
       retryFetchMaityUser()
     }, 7000)
-    const timeout = setTimeout(() => setTimedOut(true), 12000)
+    const timeout = setTimeout(() => {
+      void fileLogger.warn('auth_gate', 'maityUser-timeout', { afterMs: 12000 })
+      setTimedOut(true)
+    }, 12000)
 
     return () => {
       clearTimeout(retry1)
