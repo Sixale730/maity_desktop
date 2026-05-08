@@ -13,6 +13,13 @@ const POLL_INTERVAL_MS = 3_000;
 const STALLED_POLL_INTERVAL_MS = 15_000;
 const WATCHDOG_TICK_MS = 5_000;
 const WATCHDOG_STUCK_THRESHOLD_MS = 90_000;
+// Cap de reloads por sesion del browser para prevenir reload-loop si la causa
+// raiz es backend (Vercel/Supabase down) en lugar de cliente envenenado.
+// Patron bounded retries: Erlang OTP max_restarts, systemd StartLimitBurst,
+// k8s CrashLoopBackOff, TanStack Query retry option (default 3).
+// sessionStorage muere al cerrar la pestaña — cada nueva sesion arranca con cap fresco.
+const WATCHDOG_RELOAD_COUNT_KEY = 'watchdog_reload_count';
+const WATCHDOG_MAX_RELOADS_PER_SESSION = 3;
 
 export interface UseConversationLiveResult {
   conversation: OmiConversation;
@@ -229,16 +236,27 @@ export function useConversationLive(
     const tick = setInterval(() => {
       const stuckMs = Date.now() - lastProgressRef.current;
       if (stuckMs > WATCHDOG_STUCK_THRESHOLD_MS) {
+        if (typeof window === 'undefined') return;
+        const reloadCount = Number(sessionStorage.getItem(WATCHDOG_RELOAD_COUNT_KEY) ?? '0');
+        if (reloadCount >= WATCHDOG_MAX_RELOADS_PER_SESSION) {
+          logPoll('watchdog_max_reloads_reached', {
+            conversationId,
+            reloadCount,
+            stuckMs,
+            phase,
+          });
+          return;
+        }
         logPoll('watchdog_triggered_reload', {
           conversationId,
           stuckMs,
           phase,
+          reloadCount,
           analysis_status: query.data?.analysis_status ?? null,
           updated_at: query.data?.updated_at ?? null,
         });
-        if (typeof window !== 'undefined') {
-          window.location.reload();
-        }
+        sessionStorage.setItem(WATCHDOG_RELOAD_COUNT_KEY, String(reloadCount + 1));
+        window.location.reload();
       }
     }, WATCHDOG_TICK_MS);
     return () => clearInterval(tick);
