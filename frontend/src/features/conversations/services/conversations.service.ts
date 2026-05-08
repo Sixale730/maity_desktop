@@ -558,7 +558,12 @@ export async function getOmiConversations(userId?: string): Promise<OmiConversat
   if (!userId) return [];
 
   const t0 = Date.now();
-  void fileLogger.info('conversations_service', 'getOmiConversations start', { userIdSuffix: userId.slice(-8) });
+  const userIdSuffix = userId.slice(-8);
+  void fileLogger.info('conversations_service', 'getOmiConversations start', { userIdSuffix });
+  // Dual-emit a [POLL] para correlacionar en DevTools con el resto del flow
+  // del polling. Critico para diagnosticar el bug "lista se cuelga post-stop":
+  // si vemos start sin ok ni error, el cliente Supabase quedo envenenado.
+  logPoll('getOmiConversations_start', { userIdSuffix });
 
   const { data, error } = await supabase
     .from('omi_conversations')
@@ -567,20 +572,31 @@ export async function getOmiConversations(userId?: string): Promise<OmiConversat
     .eq('deleted', false)
     .order('created_at', { ascending: false });
 
+  const elapsedMs = Date.now() - t0;
+
   if (error) {
+    const errShape = error as { code?: string; message?: string; details?: string; hint?: string };
     console.error('Error fetching omi conversations:', error);
+    logPoll('getOmiConversations_error', {
+      elapsedMs,
+      code: errShape.code ?? null,
+      message: errShape.message ?? null,
+      details: errShape.details ?? null,
+      hint: errShape.hint ?? null,
+    });
     void fileLogger.error('conversations_service', 'getOmiConversations fail', {
       code: error.code,
       message: error.message,
-      durationMs: Date.now() - t0,
+      durationMs: elapsedMs,
     });
     throw error;
   }
 
   const rows = data || [];
+  logPoll('getOmiConversations_ok', { rows: rows.length, elapsedMs });
   void fileLogger.info('conversations_service', 'getOmiConversations ok', {
     rows: rows.length,
-    durationMs: Date.now() - t0,
+    durationMs: elapsedMs,
   });
   return rows;
 }
