@@ -2,7 +2,6 @@ import React, { useState, useEffect } from "react";
 import { invoke } from '@tauri-apps/api/core';
 import { getVersion } from '@tauri-apps/api/app';
 import Image from 'next/image';
-import AnalyticsConsentSwitch from "@/components/analytics/AnalyticsConsentSwitch";
 import { UpdateDialog } from "@/components/updates/UpdateDialog";
 import { updateService, UpdateInfo } from '@/services/updateService';
 import { Button } from '@/components/ui/button';
@@ -146,8 +145,6 @@ export function About() {
 
             {/* Log Export Section */}
             <LogExporter />
-
-            <AnalyticsConsentSwitch />
 
             {/* Update Dialog */}
             <UpdateDialog
