@@ -3,6 +3,7 @@
 import { useState, useEffect, Suspense } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { Loader2 } from 'lucide-react';
+import { toast } from 'sonner';
 import { ConversationsList, ConversationDetail, OmiConversation, getOmiConversation, getLocalMeetingDetail } from '@/features/conversations';
 
 function ConversationsContent() {
@@ -14,6 +15,27 @@ function ConversationsContent() {
 
   const [selectedConversation, setSelectedConversation] = useState<OmiConversation | null>(null);
   const [isLoadingFromParam, setIsLoadingFromParam] = useState(!!idParam || !!localIdParam);
+
+  // Mostrar toast post-recording que persiste a traves del hard navigate de
+  // useRecordingStop. sessionStorage sobrevive a window.location.href en el
+  // mismo origin, asi que el toast aparece tras el reload sin perderse.
+  useEffect(() => {
+    const raw = sessionStorage.getItem('post_recording_toast');
+    if (!raw) return;
+    sessionStorage.removeItem('post_recording_toast');
+    try {
+      const { count, ts } = JSON.parse(raw) as { count: number; ts: number };
+      // Ignorar toasts viejos (>30s) — proteccion contra stale flags si el
+      // usuario navega por su cuenta a /conversations sin venir de stop.
+      if (Date.now() - ts > 30_000) return;
+      toast.success('Grabación guardada exitosamente!', {
+        description: `${count} segmentos de transcripción guardados.`,
+        duration: 5000,
+      });
+    } catch {
+      // payload corrupto, ignorar silenciosamente
+    }
+  }, []);
 
   // Load from Supabase ?id= param
   useEffect(() => {

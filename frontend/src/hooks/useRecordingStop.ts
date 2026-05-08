@@ -13,6 +13,7 @@ import { useConfig } from '@/contexts/ConfigContext';
 import { invoke } from '@tauri-apps/api/core';
 import { supabase } from '@/lib/supabase';
 import { logger } from '@/lib/logger';
+import { logPoll } from '@/lib/diagnostics';
 import type { Transcript } from '@/types';
 
 type SummaryStatus = 'idle' | 'processing' | 'summarizing' | 'regenerating' | 'completed' | 'error';
@@ -222,17 +223,22 @@ export function useRecordingStop(
           // inmediato.
           sessionStorage.setItem('feedback_pending_meeting_id', meetingId);
 
-          // Navigate to conversations with localId
-          logger.debug(`[RecordingStop] Navigating to /conversations?localId=${meetingId}`);
-          router.push(`/conversations?localId=${meetingId}&source=recording`);
-          Analytics.trackPageView('conversations');
+          // Persistir el toast para que la pagina destino lo muestre tras el
+          // hard reload (sessionStorage sobrevive a window.location.href).
+          sessionStorage.setItem('post_recording_toast', JSON.stringify({
+            count: freshTranscripts.length,
+            ts: Date.now(),
+          }));
 
-          toast.success('Grabacion guardada exitosamente!', {
-            description: `${freshTranscripts.length} segmentos de transcripcion guardados.`,
-            duration: 5000,
-          });
+          // CRITICO: enqueueCloudSync debe completar ANTES del hard navigate.
+          // Con router.push (soft) las lineas siguientes corren porque Next.js
+          // mantiene el JS context vivo. Con window.location.href (hard) el
+          // browser descarga el JS inmediatamente: si los invoke() a Rust no
+          // han terminado, los jobs nunca llegan al sync_queue y la conversacion
+          // queda solo local. await garantiza que las 3 jobs esten enqueued.
+          await enqueueCloudSync(freshTranscripts, meetingId, savedMeetingName);
 
-          // Native OS notification (visible even if app is in background)
+          // Native OS notification (fire-and-forget; el OS la maneja, sobrevive al unload)
           import('@/lib/nativeNotification').then(({ sendNativeNotification }) =>
             sendNativeNotification({
               title: 'Grabación guardada',
@@ -240,30 +246,28 @@ export function useRecordingStop(
             })
           ).catch(() => {});
 
-          // Set current meeting and refetch (non-blocking)
-          refetchMeetings().catch(() => {});
-          try {
-            const meetingData = await storageService.getMeeting(meetingId);
-            if (meetingData) {
-              setCurrentMeeting({
-                id: meetingId,
-                title: meetingData.title
-              });
-            }
-          } catch {
-            setCurrentMeeting({ id: meetingId, title: savedMeetingName || meetingTitle || 'New Meeting' });
-          }
-
-          // --- Enqueue cloud sync (fire-and-forget) ---
-          enqueueCloudSync(freshTranscripts, meetingId, savedMeetingName);
-
-          clearTranscripts();
-          setStatus(RecordingStatus.IDLE);
-
-          // Track meeting completion analytics (fire-and-forget)
+          // Analytics fire-and-forget (no bloquea; puede no completar si el unload corta)
           trackMeetingAnalytics(freshTranscripts, meetingId).catch(e =>
             console.error('Failed to track meeting analytics:', e)
           );
+          Analytics.trackPageView('conversations');
+
+          logPoll('post_stop_hard_navigate', {
+            meetingId,
+            transcriptCount: freshTranscripts.length,
+          });
+          logger.debug(`[RecordingStop] Hard navigate to /conversations?localId=${meetingId}`);
+
+          // Hard navigate — patron "supervised restart" (Slack/VS Code/Erlang OTP).
+          // Mata el JS context, resetea el cliente Supabase, TanStack Query, Realtime
+          // channels y cualquier estado envenenado tras grabacion larga + LLM coach +
+          // sidecar. Es el equivalente automatico al "cerrar+abrir" que el usuario
+          // hacia manual cuando el dashboard se colgaba post-stop.
+          //
+          // Las llamadas refetchMeetings(), setCurrentMeeting(), clearTranscripts() y
+          // setStatus(IDLE) NO se hacen aqui porque el reload las hace innecesarias:
+          // la pagina destino reconstruye estado al montar.
+          window.location.href = `/conversations?localId=${meetingId}&source=recording`;
 
         } catch (saveError) {
           console.error('Failed to save meeting to database:', saveError);
