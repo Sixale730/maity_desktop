@@ -1,6 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { supabase } from '@/lib/supabase';
 import { fileLogger } from '@/lib/fileLogger';
+import { logPoll } from '@/lib/diagnostics';
 
 // ─── V4 Analysis Types ──────────────────────────────────────────────
 
@@ -783,13 +784,27 @@ export function mergeConversations(
 }
 
 export async function getOmiConversation(conversationId: string): Promise<OmiConversation | null> {
+  const t0 = performance.now();
   const { data, error } = await supabase
     .from('omi_conversations')
     .select('*')
     .eq('id', conversationId)
     .single();
+  const elapsedMs = Math.round(performance.now() - t0);
 
   if (error) {
+    // PostgrestError shape: { code, message, details, hint }; the underlying
+    // HTTP status is not always exposed by supabase-js, but `code` covers
+    // RLS denial (401/403 -> "PGRST301" o similar) y network blips.
+    const errShape = error as { code?: string; message?: string; details?: string; hint?: string };
+    logPoll('getOmiConversation_error', {
+      conversationId,
+      elapsedMs,
+      code: errShape.code ?? null,
+      message: errShape.message ?? null,
+      details: errShape.details ?? null,
+      hint: errShape.hint ?? null,
+    });
     console.error('Error fetching omi conversation:', error);
     throw error;
   }
