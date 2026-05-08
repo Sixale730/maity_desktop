@@ -1,26 +1,25 @@
 /**
- * Instrumentacion del polling de analisis para repro local.
+ * Instrumentacion del polling de analisis para repro local y produccion.
  *
- * Todos los eventos relevantes del flujo de analisis emiten un log con
- * prefijo `[POLL]` filtrable en DevTools console y persistido por el logger
- * rotativo. Sirve para diagnosticar el bug intermitente "polling se queda
- * cargando, cerrar+abrir lo arregla".
+ * Todos los eventos relevantes emiten un log con prefijo `[POLL]` que va
+ * tanto a DevTools console (filtrable en vivo) como al archivo rotativo
+ * de Maity (`maity.YYYY-MM-DD.log`, recuperable via Settings -> Logging
+ * -> Export). Sirve para diagnosticar el bug intermitente "polling se
+ * queda cargando, cerrar+abrir lo arregla".
  *
  * Tambien expone helpers en `window.__pollDebug` para inspeccion manual
  * desde la consola cuando se reproduce el bug.
  */
-import { logger } from './logger';
+import { fileLogger } from './fileLogger';
 
 /**
- * Log estructurado de un evento del polling. Aparece como `[POLL]` en
- * DevTools console y se replica al logger rotativo (Settings -> Logging
- * -> Export para sacarlo en bulk).
+ * Log estructurado de un evento del polling. Dual-emit: aparece como
+ * `[POLL] event_name` en DevTools console y se persiste al archivo del
+ * file logger rotativo via `invoke('log_frontend_event')`.
  */
 export function logPoll(event: string, data: Record<string, unknown> = {}): void {
   const entry = { event, ts: new Date().toISOString(), ...data };
-  // eslint-disable-next-line no-console
-  console.log('[POLL]', entry);
-  logger.info(`[POLL] ${event}`, entry);
+  fileLogger.info('POLL', event, entry);
 }
 
 declare global {
