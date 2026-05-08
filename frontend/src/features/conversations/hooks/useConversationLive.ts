@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { logger } from '@/lib/logger';
+import { logPoll } from '@/lib/diagnostics';
 import { getOmiConversation, reanalyzeConversation } from '../services/conversations.service';
 import type { OmiConversation } from '../services/conversations.service';
 import { derivePhase, isTerminalPhase, type AnalysisPhase } from '../utils/derivePhase';
@@ -10,6 +11,8 @@ import { derivePhase, isTerminalPhase, type AnalysisPhase } from '../utils/deriv
 const FAILED_AUTO_RETRY_DELAY_MS = 60_000;
 const POLL_INTERVAL_MS = 3_000;
 const STALLED_POLL_INTERVAL_MS = 15_000;
+const WATCHDOG_TICK_MS = 5_000;
+const WATCHDOG_STUCK_THRESHOLD_MS = 90_000;
 
 export interface UseConversationLiveResult {
   conversation: OmiConversation;
@@ -46,9 +49,26 @@ export function useConversationLive(
   const query = useQuery({
     queryKey: conversationQueryKey(conversationId),
     queryFn: async () => {
-      const fresh = await getOmiConversation(conversationId);
-      if (!fresh) throw new Error(`Conversation not found: ${conversationId}`);
-      return fresh;
+      logPoll('queryFn_start', { conversationId });
+      try {
+        const fresh = await getOmiConversation(conversationId);
+        logPoll('queryFn_success', {
+          conversationId,
+          found: Boolean(fresh),
+          analysis_status: fresh?.analysis_status ?? null,
+          updated_at: fresh?.updated_at ?? null,
+          has_v4: Boolean(fresh?.communication_feedback_v4),
+          has_minuta: Boolean(fresh?.meeting_minutes_data),
+        });
+        if (!fresh) throw new Error(`Conversation not found: ${conversationId}`);
+        return fresh;
+      } catch (err) {
+        logPoll('queryFn_error', {
+          conversationId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        throw err;
+      }
     },
     initialData,
     enabled,
@@ -58,11 +78,26 @@ export function useConversationLive(
     refetchOnReconnect: true,
     refetchInterval: (q) => {
       const data = q.state.data as OmiConversation | undefined;
-      if (!data) return POLL_INTERVAL_MS;
-      const phase = derivePhase(data);
-      if (isTerminalPhase(phase)) return false;
-      if (phase === 'stalled') return STALLED_POLL_INTERVAL_MS;
-      return POLL_INTERVAL_MS;
+      const phase: AnalysisPhase = data ? derivePhase(data) : 'idle';
+      const next = !data
+        ? POLL_INTERVAL_MS
+        : isTerminalPhase(phase)
+          ? false
+          : phase === 'stalled'
+            ? STALLED_POLL_INTERVAL_MS
+            : POLL_INTERVAL_MS;
+      logPoll('refetchInterval_eval', {
+        conversationId,
+        phase,
+        analysis_status: data?.analysis_status ?? null,
+        updated_at: data?.updated_at ?? null,
+        next_interval_ms: next,
+        has_v4: Boolean(data?.communication_feedback_v4),
+        has_minuta: Boolean(data?.meeting_minutes_data),
+        fetch_status: q.state.fetchStatus,
+        error: q.state.error?.message ?? null,
+      });
+      return next;
     },
     retry: 2,
   });
@@ -115,9 +150,12 @@ export function useConversationLive(
     if (!enabled || stuckRescueFiredRef.current) return;
     if (phase !== 'stalled') return;
     stuckRescueFiredRef.current = true;
+    logPoll('stalled_auto_retry_dispatch', { conversationId });
     logger.info(`[useConversationLive] Stalled detected for ${conversationId}, dispatching auto-retry`);
     reanalyzeConversation(conversationId, '', 'es').catch((err) => {
-      logger.warn(`[useConversationLive] Stalled auto-retry failed: ${err instanceof Error ? err.message : String(err)}`);
+      const msg = err instanceof Error ? err.message : String(err);
+      logPoll('stalled_auto_retry_failed', { conversationId, error: msg });
+      logger.warn(`[useConversationLive] Stalled auto-retry failed: ${msg}`);
     });
   }, [enabled, phase, conversationId]);
 
@@ -130,9 +168,12 @@ export function useConversationLive(
     if (phase !== 'failed') return;
     const timer = setTimeout(() => {
       failedRetryFiredRef.current = true;
+      logPoll('failed_auto_retry_dispatch', { conversationId });
       logger.info(`[useConversationLive] Auto-retry after failed for ${conversationId}`);
       reanalyzeConversation(conversationId, '', 'es').catch((err) => {
-        logger.warn(`[useConversationLive] Failed auto-retry failed: ${err instanceof Error ? err.message : String(err)}`);
+        const msg = err instanceof Error ? err.message : String(err);
+        logPoll('failed_auto_retry_failed', { conversationId, error: msg });
+        logger.warn(`[useConversationLive] Failed auto-retry failed: ${msg}`);
       });
     }, FAILED_AUTO_RETRY_DELAY_MS);
     return () => clearTimeout(timer);
@@ -141,6 +182,67 @@ export function useConversationLive(
   // Realtime updates arrive via GlobalConversationNotifier (root layout):
   // it invalidates ['omi-conversation', id] on UPDATE; TanStack Query's
   // default refetchType: 'active' ensures this hook refetches when mounted.
+
+  // -------------------------------------------------------------------------
+  // Watchdog supervisado: si el polling no avanza en 90s, hard reload.
+  //
+  // Patron industrial estandar (Slack/Discord/Linear) para estados de polling
+  // stuck. Es la red de seguridad para el bug intermitente "polling se queda
+  // cargando, cerrar+abrir lo arregla". Mientras el bug se reproduce y los
+  // logs `[POLL]` confirman la causa raiz, este watchdog evita que el usuario
+  // quede colgado.
+  //
+  // Resetea el contador ante cualquier signal de progreso (cambio en
+  // analysis_status o updated_at). `window.location.reload()` preserva la URL
+  // actual (con ?id= o ?localId=), mata el contexto JS, reinicia TanStack
+  // Query, reconecta Realtime, refresca JWT — todo lo que cerrar+abrir hace.
+  // -------------------------------------------------------------------------
+  const lastProgressRef = useRef<number>(Date.now());
+  const lastSeenStatusRef = useRef<string | null | undefined>(undefined);
+  const lastSeenUpdatedAtRef = useRef<string | null | undefined>(undefined);
+
+  useEffect(() => {
+    const status = query.data?.analysis_status ?? null;
+    const updatedAt = query.data?.updated_at ?? null;
+    const changed =
+      lastSeenStatusRef.current !== status ||
+      lastSeenUpdatedAtRef.current !== updatedAt;
+    if (changed) {
+      lastSeenStatusRef.current = status;
+      lastSeenUpdatedAtRef.current = updatedAt;
+      lastProgressRef.current = Date.now();
+    }
+  }, [query.data?.analysis_status, query.data?.updated_at]);
+
+  // Resetear el watchdog al cambiar de conversacion.
+  useEffect(() => {
+    lastProgressRef.current = Date.now();
+    lastSeenStatusRef.current = undefined;
+    lastSeenUpdatedAtRef.current = undefined;
+  }, [conversationId]);
+
+  useEffect(() => {
+    if (!enabled) return;
+    if (isTerminalPhase(phase)) return;
+    if (phase === 'idle') return;
+
+    const tick = setInterval(() => {
+      const stuckMs = Date.now() - lastProgressRef.current;
+      if (stuckMs > WATCHDOG_STUCK_THRESHOLD_MS) {
+        logPoll('watchdog_triggered_reload', {
+          conversationId,
+          stuckMs,
+          phase,
+          analysis_status: query.data?.analysis_status ?? null,
+          updated_at: query.data?.updated_at ?? null,
+        });
+        if (typeof window !== 'undefined') {
+          window.location.reload();
+        }
+      }
+    }, WATCHDOG_TICK_MS);
+    return () => clearInterval(tick);
+  }, [enabled, phase, conversationId, query.data?.analysis_status, query.data?.updated_at]);
 
   return {
     conversation,

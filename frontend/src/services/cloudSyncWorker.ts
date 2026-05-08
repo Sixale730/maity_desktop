@@ -8,6 +8,7 @@
  */
 import { invoke } from '@tauri-apps/api/core';
 import { logger } from '@/lib/logger';
+import { logPoll } from '@/lib/diagnostics';
 import {
   saveConversationToSupabase,
   saveTranscriptSegments,
@@ -48,6 +49,7 @@ class CloudSyncWorkerImpl {
   /** Start polling the sync queue. Pass the authenticated user's id so the
    *  stuck-watcher can scope its query to this user only. */
   start(userId: string) {
+    logPoll('sync_worker_start_called', { userId, alreadyStarted: this.started });
     if (this.started) return;
     this.started = true;
     this.currentUserId = userId;
@@ -66,10 +68,12 @@ class CloudSyncWorkerImpl {
 
     // Poll every 5s
     this.intervalId = setInterval(() => this.processQueue(), 5000);
+    logPoll('sync_worker_started', { userId });
   }
 
   /** Stop polling */
   stop() {
+    logPoll('sync_worker_stop_called', { hadInterval: !!this.intervalId, started: this.started });
     if (!this.started) return;
     this.started = false;
     this.currentUserId = null;
@@ -180,6 +184,10 @@ class CloudSyncWorkerImpl {
     }
     if (!stuck || stuck.length === 0) return;
 
+    logPoll('stuck_watcher_found', {
+      count: stuck.length,
+      ids: stuck.map((c) => c.id),
+    });
     logger.info(`[CloudSyncWorker] Found ${stuck.length} stuck conversation(s), dispatching retry`);
     // Dynamic import avoids a circular dependency between this worker and the
     // conversations service (the service indirectly references this module).
@@ -189,7 +197,10 @@ class CloudSyncWorkerImpl {
     for (const conv of stuck) {
       try {
         await reanalyzeConversation(conv.id, '', 'es');
+        logPoll('stuck_watcher_reanalyze_dispatched', { id: conv.id });
       } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        logPoll('stuck_watcher_reanalyze_failed', { id: conv.id, error: msg });
         console.warn(`[CloudSyncWorker] Stuck retry failed for ${conv.id}:`, e);
       }
     }
@@ -214,6 +225,11 @@ class CloudSyncWorkerImpl {
         id: job.id,
         resultData: result ? JSON.stringify(result) : null,
       });
+      logPoll('sync_job_completed', {
+        jobId: job.id,
+        jobType: job.job_type,
+        meetingId: job.meeting_id,
+      });
       logger.debug(`[CloudSyncWorker] Job ${job.id} (${job.job_type}) completed`);
 
       // Emit sync status changed event for UI updates
@@ -225,6 +241,15 @@ class CloudSyncWorkerImpl {
       const nextAttempt = job.attempt_count + 1;
       const nextRetryAt = this.calculateNextRetry(nextAttempt);
 
+      logPoll('sync_job_failed', {
+        jobId: job.id,
+        jobType: job.job_type,
+        meetingId: job.meeting_id,
+        attempt: nextAttempt,
+        maxAttempts: job.max_attempts,
+        error: errorMsg,
+        willRetry: nextAttempt < job.max_attempts,
+      });
       console.warn(
         `[CloudSyncWorker] Job ${job.id} (${job.job_type}) failed (attempt ${nextAttempt}/${job.max_attempts}): ${errorMsg}`
       );

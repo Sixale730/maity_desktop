@@ -7,6 +7,7 @@ import { toast } from 'sonner';
 import { useAuth } from '@/contexts/AuthContext';
 import { supabase } from '@/lib/supabase';
 import { logger } from '@/lib/logger';
+import { logPoll } from '@/lib/diagnostics';
 import type { OmiConversation } from '@/features/conversations/services/conversations.service';
 
 const REALTIME_CONNECT_TIMEOUT_MS = 5_000;
@@ -99,6 +100,7 @@ export function GlobalConversationNotifier() {
       if (cleanedUp || reconnectTimer) return;
       const delay = computeBackoffMs(attempt);
       attempt += 1;
+      logPoll('realtime_reconnect_scheduled', { delayMs: delay, attempt });
       console.warn(`[GlobalConversationNotifier] Reconnect in ${delay}ms (attempt ${attempt})`);
       reconnectTimer = setTimeout(() => {
         reconnectTimer = null;
@@ -194,6 +196,11 @@ export function GlobalConversationNotifier() {
           (payload) => {
             const newRow = payload.new as Partial<OmiConversation>;
             // Instrumentation: confirm Realtime is actually delivering UPDATE events.
+            logPoll('realtime_update', {
+              id: newRow?.id ?? null,
+              analysis_status: newRow?.analysis_status ?? null,
+              updated_at: newRow?.updated_at ?? null,
+            });
             logger.warn(
               `[GlobalConversationNotifier] Realtime UPDATE id=${newRow?.id} status=${newRow?.analysis_status} title=${(newRow?.title ?? '').slice(0, 30)}`,
             );
@@ -202,6 +209,7 @@ export function GlobalConversationNotifier() {
         )
         .subscribe((status, err) => {
           if (cleanedUp || stale) return;
+          logPoll('realtime_subscribe_status', { status, error: err?.message ?? null, userId });
           if (status === 'SUBSCRIBED') {
             if (connectTimer) { clearTimeout(connectTimer); connectTimer = null; }
             attempt = 0;
@@ -221,6 +229,7 @@ export function GlobalConversationNotifier() {
       connectTimer = setTimeout(() => {
         if (cleanedUp || stale) return;
         stale = true;
+        logPoll('realtime_connect_timeout', { timeoutMs: REALTIME_CONNECT_TIMEOUT_MS, userId });
         console.warn(`[GlobalConversationNotifier] Did not reach SUBSCRIBED in ${REALTIME_CONNECT_TIMEOUT_MS}ms`);
         scheduleReconnect();
       }, REALTIME_CONNECT_TIMEOUT_MS);
