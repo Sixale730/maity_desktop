@@ -6,7 +6,6 @@ import { FolderOpen, LogOut, Palette } from "lucide-react"
 import { ThemeSelector } from "@/components/settings/ThemeSelector"
 import { invoke } from "@tauri-apps/api/core"
 import Analytics from "@/lib/analytics"
-import AnalyticsConsentSwitch from "@/components/analytics/AnalyticsConsentSwitch"
 import { useConfig, NotificationSettings } from "@/contexts/ConfigContext"
 import { useAuth } from "@/contexts/AuthContext"
 import { LogExporter } from "@/components/settings/LogExporter"
@@ -207,11 +206,6 @@ export function PreferenceSettings() {
             <strong>Nota:</strong> La base de datos y los modelos se almacenan juntos en el directorio de datos de tu aplicación para una gestión unificada.
           </p>
         </div>
-      </div>
-
-      {/* Analytics Section */}
-      <div className="bg-card rounded-lg border border-border p-6 shadow-sm">
-        <AnalyticsConsentSwitch />
       </div>
 
       {/* Account Section */}

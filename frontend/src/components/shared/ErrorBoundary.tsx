@@ -56,24 +56,6 @@ export class ErrorBoundary extends Component<Props, State> {
 
     // Call custom error handler if provided
     this.props.onError?.(error, errorInfo)
-
-    // Report to analytics if PostHog is available
-    try {
-      // @ts-expect-error PostHog may be available globally
-      if (typeof window !== 'undefined' && window.posthog) {
-        // @ts-expect-error PostHog may be available globally
-        window.posthog.capture('react_error_boundary', {
-          error_message: error.message,
-          error_name: error.name,
-          error_stack: error.stack?.substring(0, 1000), // Limit stack size
-          component_stack: errorInfo.componentStack?.substring(0, 1000),
-          url: window.location.href,
-          timestamp: new Date().toISOString()
-        })
-      }
-    } catch (e) {
-      console.error('[ErrorBoundary] Failed to report to analytics:', e)
-    }
   }
 
   handleReload = () => {

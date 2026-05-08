@@ -6,7 +6,6 @@ import { Source_Sans_3 } from 'next/font/google'
 import Sidebar from '@/components/Sidebar'
 import { SidebarProvider } from '@/components/Sidebar/SidebarProvider'
 import MainContent from '@/components/MainContent'
-import AnalyticsProvider from '@/components/analytics/AnalyticsProvider'
 import { Toaster, toast } from 'sonner'
 import { useState, useEffect, useRef } from 'react'
 import { listen, emit } from '@tauri-apps/api/event'
@@ -559,15 +558,13 @@ export default function RootLayout({
                 Validado por test: src/app/layout.test.ts (PROVIDER_INVARIANTS). */}
             <UpdateCheckProvider>
               <ThemeProvider>
-                <AnalyticsProvider>
-                  <AuthProvider>
-                    <AuthGate>
-                      <CloudSyncInitializer />
-                      <GlobalConversationNotifier />
-                      <AppContent>{children}</AppContent>
-                    </AuthGate>
-                  </AuthProvider>
-                </AnalyticsProvider>
+                <AuthProvider>
+                  <AuthGate>
+                    <CloudSyncInitializer />
+                    <GlobalConversationNotifier />
+                    <AppContent>{children}</AppContent>
+                  </AuthGate>
+                </AuthProvider>
               </ThemeProvider>
             </UpdateCheckProvider>
           </QueryClientProvider>
