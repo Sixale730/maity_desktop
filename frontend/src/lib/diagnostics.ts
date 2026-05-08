@@ -13,12 +13,22 @@
 import { fileLogger } from './fileLogger';
 
 /**
- * Log estructurado de un evento del polling. Dual-emit: aparece como
- * `[POLL] event_name` en DevTools console y se persiste al archivo del
- * file logger rotativo via `invoke('log_frontend_event')`.
+ * Log estructurado de un evento del polling. Dual-emit:
+ * - DevTools console: `console.log` directo (no pasa por logger.ts que esta
+ *   guarded por isDev — production builds silenciarian logger.info y los POLL
+ *   no aparecerian en consola incluso con DevTools abierto).
+ * - Archivo rotativo: via fileLogger.info → invoke('log_frontend_event') al
+ *   handler Rust que escribe a maity.YYYY-MM-DD.log.
+ *
+ * Es importante NO depender solo de fileLogger.info para consola: en debug
+ * builds y releases firmados, NODE_ENV=production y logger.info de lib/logger
+ * silencia console.info. El console.log directo aqui garantiza visibility en
+ * cualquier modo.
  */
 export function logPoll(event: string, data: Record<string, unknown> = {}): void {
   const entry = { event, ts: new Date().toISOString(), ...data };
+  // eslint-disable-next-line no-console
+  console.log('[POLL]', entry);
   fileLogger.info('POLL', event, entry);
 }
 
