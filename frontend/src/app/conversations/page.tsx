@@ -2,9 +2,11 @@
 
 import { useState, useEffect, Suspense } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
+import { invoke } from '@tauri-apps/api/core';
 import { Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { ConversationsList, ConversationDetail, OmiConversation, getOmiConversation, getLocalMeetingDetail } from '@/features/conversations';
+import { logPoll } from '@/lib/diagnostics';
 
 function ConversationsContent() {
   const searchParams = useSearchParams();
@@ -79,6 +81,88 @@ function ConversationsContent() {
       })
       .finally(() => setIsLoadingFromParam(false));
   }, [localIdParam]);
+
+  // Auto-swap local→cloud cuando finalize completa.
+  // Si la conv mostrada es local-only, useConversationLive esta apagado
+  // (ConversationDetail.tsx:91 con !isLocalOnly), asi que el polling al
+  // cloud nunca se entera de que el analisis llego. Resultado: usuario
+  // ve "Analizando con Maity..." indefinidamente.
+  //
+  // Hibrido: listener del evento `sync-status-changed` (camino rapido
+  // cuando el user esta en la pagina mientras finalize completa) +
+  // polling cada 3s del Tauri command sync_queue_get_finalize_result
+  // (fallback para cuando el user llega DESPUES de que el evento ya
+  // disparo).
+  //
+  // Cuando detecta finalize completed, fetch de la conv cloud y swap:
+  // setSelectedConversation con la version cloud → ConversationDetail
+  // re-rendea con isLocalOnly=false → useConversationLive se enciende →
+  // polling cloud arranca → analisis aparece.
+  useEffect(() => {
+    if (!selectedConversation) return;
+    if (selectedConversation.source !== 'local') return;
+    const meetingId = selectedConversation.id;
+    let cancelled = false;
+
+    const swapToCloud = async (cloudId: string) => {
+      if (cancelled) return;
+      logPoll('local_to_cloud_swap_start', { meetingId, cloudId });
+      try {
+        const cloudConv = await getOmiConversation(cloudId);
+        if (cancelled || !cloudConv) return;
+        logPoll('local_to_cloud_swap_ok', {
+          meetingId,
+          cloudId,
+          hasV4: !!cloudConv.communication_feedback_v4,
+          hasMinuta: !!cloudConv.meeting_minutes_data,
+        });
+        setSelectedConversation(cloudConv);
+        // Actualizar URL: ?localId=X → ?id=cloudId. router.replace evita
+        // ensuciar el historial del browser con la version intermedia.
+        router.replace(`/conversations?id=${cloudId}`);
+      } catch (err) {
+        logPoll('local_to_cloud_swap_error', {
+          meetingId,
+          cloudId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    };
+
+    const checkSyncQueue = async () => {
+      if (cancelled) return;
+      try {
+        const raw = await invoke<string | null>('sync_queue_get_finalize_result', { meetingId });
+        if (!raw || cancelled) return;
+        const parsed = JSON.parse(raw) as { ok?: boolean; conversation_id?: string };
+        if (parsed.ok && parsed.conversation_id) {
+          await swapToCloud(parsed.conversation_id);
+        }
+      } catch {
+        // sync_queue todavia no listo o parse error — silencioso, proximo tick.
+      }
+    };
+
+    // Camino rapido: listener del evento del worker.
+    const onSyncStatus = (e: Event) => {
+      const detail = (e as CustomEvent).detail as { meetingId?: string; jobType?: string; status?: string };
+      if (detail?.meetingId !== meetingId) return;
+      if (detail?.jobType !== 'finalize_conversation') return;
+      if (detail?.status !== 'completed') return;
+      void checkSyncQueue();
+    };
+    window.addEventListener('sync-status-changed', onSyncStatus);
+
+    // Camino fallback: polling cada 3s.
+    void checkSyncQueue(); // primer check inmediato
+    const interval = setInterval(checkSyncQueue, 3000);
+
+    return () => {
+      cancelled = true;
+      window.removeEventListener('sync-status-changed', onSyncStatus);
+      clearInterval(interval);
+    };
+  }, [selectedConversation?.id, selectedConversation?.source, router]);
 
   const handleClose = () => {
     setSelectedConversation(null);
