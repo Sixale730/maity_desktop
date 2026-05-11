@@ -214,6 +214,24 @@ pub async fn stop_recording<R: Runtime>(
     info!("🔍 Setting IS_RECORDING to false (early)");
     IS_RECORDING.store(false, Ordering::SeqCst);
 
+    // Capturar wall-clock duration ANTES de que el manager sea tomado/dropeado.
+    // Esto se incluira en el evento recording-stopped para que el frontend tenga
+    // la duracion real (Instant::elapsed) y no dependa de timestamps sample-based
+    // del VAD que pueden estar inflados 2x por sample rate mismatch.
+    let captured_duration_seconds: Option<f64> = RECORDING_MANAGER
+        .lock()
+        .ok()
+        .and_then(|guard| {
+            guard.as_ref().and_then(|m| {
+                m.get_active_recording_duration()
+                    .or_else(|| m.get_recording_duration())
+            })
+        });
+    info!(
+        "🕒 Captured wall-clock recording duration: {:?}s (before manager teardown)",
+        captured_duration_seconds
+    );
+
     // Emit shutdown progress to frontend
     let _ = app.emit(
         "recording-shutdown-progress",
@@ -411,7 +429,8 @@ pub async fn stop_recording<R: Runtime>(
         serde_json::json!({
             "message": "Recording stopped - frontend will save after all transcripts received",
             "folder_path": folder_path_str,
-            "meeting_name": meeting_name_str
+            "meeting_name": meeting_name_str,
+            "duration_seconds": captured_duration_seconds
         }),
     )
     .map_err(|e| e.to_string())?;

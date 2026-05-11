@@ -83,10 +83,11 @@ export function useRecordingStop(
           message: string;
           folder_path?: string;
           meeting_name?: string;
+          duration_seconds?: number | null;
         }>('recording-stopped', async (event) => {
           // Create promise that resolves when sessionStorage is set (prevents race condition)
           recordingStoppedDataRef.current = (async () => {
-            const { folder_path, meeting_name } = event.payload;
+            const { folder_path, meeting_name, duration_seconds } = event.payload;
 
             // Store folder_path and meeting_name for later use in handleRecordingStop
             if (folder_path) {
@@ -94,6 +95,11 @@ export function useRecordingStop(
             }
             if (meeting_name) {
               sessionStorage.setItem('last_recording_meeting_name', meeting_name);
+            }
+            // Wall-clock duration capturada por Rust ANTES del teardown del manager.
+            // Inmune al bug 2x de timestamps VAD/Deepgram cuando hay sample rate mismatch.
+            if (typeof duration_seconds === 'number' && duration_seconds > 0) {
+              sessionStorage.setItem('last_recording_duration_seconds', String(duration_seconds));
             }
           })();
 
@@ -132,10 +138,31 @@ export function useRecordingStop(
       transcript_count: transcriptsRef.current.length,
     }, 'success');
 
+    let wallClockDuration: number | null = null;
+
     try {
       // Wait for recording-stopped event data if it arrived
       if (recordingStoppedDataRef.current) {
         await recordingStoppedDataRef.current;
+      }
+
+      // Leer wall-clock duration de sessionStorage (poblada por el listener de
+      // 'recording-stopped'). Rust la captura en recording_lifecycle.rs ANTES
+      // de tomar/dropear el RECORDING_MANAGER, asi que refleja el Instant::elapsed
+      // real, inmune al bug 2x de timestamps VAD por sample rate mismatch.
+      const durationStr = sessionStorage.getItem('last_recording_duration_seconds');
+      if (durationStr) {
+        const parsed = Number(durationStr);
+        if (Number.isFinite(parsed) && parsed > 0) {
+          wallClockDuration = parsed;
+          logger.debug('[RecordingStop] Wall-clock duration from event:', wallClockDuration);
+        }
+      }
+      // Fallback: React state (puede estar nulificada por el listener, pero
+      // si el evento aun no llego es lo mejor que tenemos).
+      if (wallClockDuration === null && recordingState.activeDuration) {
+        wallClockDuration = recordingState.activeDuration;
+        logger.debug('[RecordingStop] Wall-clock duration from React state fallback:', wallClockDuration);
       }
 
       logger.debug('Post-stop processing (local-first)...', {
@@ -214,6 +241,7 @@ export function useRecordingStop(
           // Clean up session storage
           sessionStorage.removeItem('last_recording_folder_path');
           sessionStorage.removeItem('last_recording_meeting_name');
+          sessionStorage.removeItem('last_recording_duration_seconds');
           sessionStorage.removeItem('early_meeting_id');
           sessionStorage.removeItem('indexeddb_current_meeting_id');
 
@@ -236,7 +264,7 @@ export function useRecordingStop(
           // browser descarga el JS inmediatamente: si los invoke() a Rust no
           // han terminado, los jobs nunca llegan al sync_queue y la conversacion
           // queda solo local. await garantiza que las 3 jobs esten enqueued.
-          await enqueueCloudSync(freshTranscripts, meetingId, savedMeetingName);
+          await enqueueCloudSync(freshTranscripts, meetingId, savedMeetingName, wallClockDuration);
 
           // Native OS notification (fire-and-forget; el OS la maneja, sobrevive al unload)
           import('@/lib/nativeNotification').then(({ sendNativeNotification }) =>
@@ -247,7 +275,7 @@ export function useRecordingStop(
           ).catch(() => {});
 
           // Analytics fire-and-forget (no bloquea; puede no completar si el unload corta)
-          trackMeetingAnalytics(freshTranscripts, meetingId).catch(e =>
+          trackMeetingAnalytics(freshTranscripts, meetingId, wallClockDuration).catch(e =>
             console.error('Failed to track meeting analytics:', e)
           );
           Analytics.trackPageView('conversations');
@@ -335,7 +363,8 @@ export function useRecordingStop(
   const enqueueCloudSync = useCallback(async (
     freshTranscripts: Transcript[],
     meetingId: string,
-    savedMeetingName: string | null
+    savedMeetingName: string | null,
+    wallClockDurationSec: number | null,
   ) => {
     // Resolve effective user for cloud save (fallback if maityUser is null due to race)
     let effectiveMaityUser = maityUser;
@@ -370,16 +399,33 @@ export function useRecordingStop(
         return `${speaker}: ${t.text}`;
       }).join('\n');
 
-      // Use the max audio_end_time across all chunks, not the last array element —
-      // see bug post-mortem: out-of-order arrivals made `last` carry a tiny end time.
-      const durationSec = sortedTranscripts.length > 0
-        ? Math.round(
-            sortedTranscripts.reduce(
-              (max, t) => Math.max(max, t.audio_end_time ?? t.audio_start_time ?? 0),
-              0
-            )
+      // Preferir wall-clock de Rust (Instant::elapsed) sobre max(audio_end_time)
+      // porque los timestamps de transcripts pueden estar inflados si el dispositivo
+      // reporta mal su sample rate (ver bug 2x-drift en plan keen-snacking-hearth).
+      // Fallback a max(audio_end_time) solo si wall-clock no esta disponible.
+      const transcriptMaxEnd = sortedTranscripts.length > 0
+        ? sortedTranscripts.reduce(
+            (max, t) => Math.max(max, t.audio_end_time ?? t.audio_start_time ?? 0),
+            0
           )
         : 0;
+
+      const durationSec = wallClockDurationSec && wallClockDurationSec > 0
+        ? Math.round(wallClockDurationSec)
+        : Math.round(transcriptMaxEnd);
+
+      // Diagnostico: detectar drift entre wall-clock y timestamps de transcripts.
+      // Post-Level-2 esto deberia ser ~1.0; si dispara ~2.0, hay sample rate mismatch.
+      if (wallClockDurationSec && wallClockDurationSec > 0 && transcriptMaxEnd > 0) {
+        const driftRatio = transcriptMaxEnd / wallClockDurationSec;
+        if (driftRatio > 1.3 || driftRatio < 0.7) {
+          logger.warn('[RecordingStop] Timestamp drift detectado', {
+            wall_clock_sec: wallClockDurationSec,
+            transcript_max_end_sec: transcriptMaxEnd,
+            drift_ratio: driftRatio,
+          });
+        }
+      }
 
       const wordsCount = sortedTranscripts
         .map(t => t.text.split(/\s+/).length)
@@ -465,9 +511,16 @@ export function useRecordingStop(
   }, [maityUser, meetingTitle, transcriptModelConfig]);
 
   // Analytics tracking (fire-and-forget)
-  const trackMeetingAnalytics = useCallback(async (freshTranscripts: Transcript[], meetingId: string) => {
-    let durationSeconds = 0;
-    if (freshTranscripts.length > 0 && freshTranscripts[0].audio_start_time !== undefined) {
+  const trackMeetingAnalytics = useCallback(async (
+    freshTranscripts: Transcript[],
+    meetingId: string,
+    wallClockDurationSec: number | null,
+  ) => {
+    // Preferir wall-clock; fallback a audio_end_time del ultimo transcript.
+    let durationSeconds = wallClockDurationSec && wallClockDurationSec > 0
+      ? Math.round(wallClockDurationSec)
+      : 0;
+    if (!durationSeconds && freshTranscripts.length > 0 && freshTranscripts[0].audio_start_time !== undefined) {
       const lastTranscript = freshTranscripts[freshTranscripts.length - 1];
       durationSeconds = lastTranscript.audio_end_time || lastTranscript.audio_start_time || 0;
     }
