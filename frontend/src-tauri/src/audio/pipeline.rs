@@ -22,6 +22,29 @@ const ECHO_ENERGY_RATIO_THRESHOLD: f32 = 0.3;
 /// Absolute RMS threshold - segments below this are too weak to be direct speech
 const ECHO_ABSOLUTE_RMS_THRESHOLD: f32 = 0.02;
 
+/// Ancla el wall-clock start time de un segmento VAD usando el envelope wall-clock
+/// del input chunk. El segmento se emitio como resultado de `process_audio(&chunk.data)`,
+/// asi que su trailing edge esta antes o en el trailing edge del chunk en wall-clock.
+///
+/// Por que existe: los timestamps internos del VAD (`start_timestamp_ms`/`end_timestamp_ms`)
+/// se derivan de `processed_samples / 16_000`. En dispositivos que reportan sample rate
+/// incorrecto (algunos BT/USB en Windows), esto acumula a 2x velocidad real, produciendo
+/// timestamps inflados 2x. Anclar a wall-clock del capture callback elimina ese drift.
+///
+/// NOTA: cuando multiples segmentos se emiten del mismo input chunk, todos comparten
+/// el mismo end-anchor. Esto es aceptable porque el ordering downstream usa `sequence_id`
+/// (asignado monotonicamente en worker.rs), no el timestamp.
+#[inline]
+fn seg_wallclock_start(
+    chunk_timestamp: f64,
+    chunk_audio_duration: f64,
+    segment_samples_len: usize,
+) -> f64 {
+    let seg_dur = segment_samples_len as f64 / 16_000.0;
+    let chunk_end = chunk_timestamp + chunk_audio_duration;
+    (chunk_end - seg_dur).max(0.0)
+}
+
 /// Ring buffer for synchronized audio mixing
 /// Accumulates samples from mic and system streams until we have aligned windows
 struct AudioMixerRingBuffer {
@@ -885,6 +908,9 @@ impl AudioPipeline {
                     let chunk_timestamp = chunk.timestamp;
                     self.current_timestamp = chunk_timestamp;
                     let chunk_device_type = chunk.device_type.clone();
+                    // Audio duration de este input chunk (wall-clock) para anclar
+                    // los timestamps de segmentos VAD via seg_wallclock_start().
+                    let chunk_audio_duration = chunk.data.len() as f64 / chunk.sample_rate as f64;
 
                     // STEP 1: Per-channel VAD for transcription (BEFORE mixing)
                     match &chunk_device_type {
@@ -910,9 +936,13 @@ impl AudioPipeline {
                                             debug!("🎤 Mic VAD segment: {:.1}ms, {} samples (RMS={:.4})",
                                                   duration_ms, segment.samples.len(), segment_rms);
                                             let transcription_chunk = AudioChunk {
-                                                data: segment.samples,
                                                 sample_rate: 16000,
-                                                timestamp: segment.start_timestamp_ms / 1000.0,
+                                                timestamp: seg_wallclock_start(
+                                                    chunk_timestamp,
+                                                    chunk_audio_duration,
+                                                    segment.samples.len(),
+                                                ),
+                                                data: segment.samples,
                                                 chunk_id: self.chunk_id_counter,
                                                 device_type: DeviceType::Microphone,  // STRUCTURAL: always mic
                                             };
@@ -952,9 +982,13 @@ impl AudioPipeline {
                                                 .sqrt();
                                             if !self.is_likely_echo(DeviceType::System, segment_rms) {
                                                 let transcription_chunk = AudioChunk {
-                                                    data: segment.samples,
                                                     sample_rate: 16000,
-                                                    timestamp: segment.start_timestamp_ms / 1000.0,
+                                                    timestamp: seg_wallclock_start(
+                                                        chunk_timestamp,
+                                                        chunk_audio_duration,
+                                                        segment.samples.len(),
+                                                    ),
+                                                    data: segment.samples,
                                                     chunk_id: self.chunk_id_counter,
                                                     device_type: DeviceType::System,
                                                 };
@@ -992,9 +1026,13 @@ impl AudioPipeline {
                                             debug!("🔊 System VAD segment: {:.1}ms, {} samples (RMS={:.4})",
                                                   duration_ms, segment.samples.len(), segment_rms);
                                             let transcription_chunk = AudioChunk {
-                                                data: segment.samples,
                                                 sample_rate: 16000,
-                                                timestamp: segment.start_timestamp_ms / 1000.0,
+                                                timestamp: seg_wallclock_start(
+                                                    chunk_timestamp,
+                                                    chunk_audio_duration,
+                                                    segment.samples.len(),
+                                                ),
+                                                data: segment.samples,
                                                 chunk_id: self.chunk_id_counter,
                                                 device_type: DeviceType::System,  // STRUCTURAL: always system
                                             };
@@ -1101,6 +1139,13 @@ impl AudioPipeline {
     fn flush_remaining_audio(&mut self) -> Result<()> {
         info!("Flushing remaining audio from dual-channel pipeline (processed {} chunks)", self.processed_chunks);
 
+        // Wall-clock NOW como end-anchor para segmentos flusheados (no hay input
+        // chunk en scope aqui). Fallback a self.current_timestamp si el state
+        // ya fue limpiado.
+        let now_wallclock = self.state
+            .get_recording_duration()
+            .unwrap_or(self.current_timestamp);
+
         // Flush microphone VAD processor
         match self.mic_vad_processor.flush() {
             Ok(final_segments) => {
@@ -1109,10 +1154,11 @@ impl AudioPipeline {
                     if segment.samples.len() >= 400 {
                         info!("🎤 Sending final mic VAD segment: {:.1}ms, {} samples",
                               duration_ms, segment.samples.len());
+                        let seg_dur_sec = segment.samples.len() as f64 / 16_000.0;
                         let transcription_chunk = AudioChunk {
-                            data: segment.samples,
                             sample_rate: 16000,
-                            timestamp: segment.start_timestamp_ms / 1000.0,
+                            timestamp: (now_wallclock - seg_dur_sec).max(0.0),
+                            data: segment.samples,
                             chunk_id: self.chunk_id_counter,
                             device_type: DeviceType::Microphone,
                         };
@@ -1140,10 +1186,11 @@ impl AudioPipeline {
                     if segment.samples.len() >= 400 {
                         info!("🔊 Sending final system VAD segment: {:.1}ms, {} samples",
                               duration_ms, segment.samples.len());
+                        let seg_dur_sec = segment.samples.len() as f64 / 16_000.0;
                         let transcription_chunk = AudioChunk {
-                            data: segment.samples,
                             sample_rate: 16000,
-                            timestamp: segment.start_timestamp_ms / 1000.0,
+                            timestamp: (now_wallclock - seg_dur_sec).max(0.0),
+                            data: segment.samples,
                             chunk_id: self.chunk_id_counter,
                             device_type: DeviceType::System,
                         };
@@ -1454,5 +1501,40 @@ mod tests {
         assert_eq!(AudioMixerRingBuffer::new(16000).window_size_samples, 1600);
         assert_eq!(AudioMixerRingBuffer::new(44100).window_size_samples, 4410);
         assert_eq!(AudioMixerRingBuffer::new(48000).window_size_samples, 4800);
+    }
+
+    // ── seg_wallclock_start: helper que ancla timestamps de segmentos VAD ──
+
+    #[test]
+    fn seg_wallclock_start_basic() {
+        // Chunk en t=10s, duracion 100ms, segment de 1s (16_000 samples a 16kHz).
+        // El segment termino cerca del trailing edge del chunk (10.1s), asi que
+        // start = 10.1 - 1.0 = 9.1s.
+        let start = seg_wallclock_start(10.0, 0.1, 16_000);
+        assert!((start - 9.1).abs() < 1e-6, "expected ~9.1, got {}", start);
+    }
+
+    #[test]
+    fn seg_wallclock_start_clamps_to_zero() {
+        // Pathological: segment mas largo que chunk_ts + chunk_dur debe clampear a 0.
+        // chunk en t=0.05s, duracion 0.1s -> end=0.15s. Segment de 2s (32_000 samples)
+        // produciria start=-1.85s, debe clampear a 0.
+        let start = seg_wallclock_start(0.05, 0.1, 32_000);
+        assert_eq!(start, 0.0);
+    }
+
+    #[test]
+    fn seg_wallclock_start_zero_chunk_duration() {
+        // Chunk con duracion 0 (edge case): start = chunk_ts - seg_dur = 5.0 - 1.0 = 4.0
+        let start = seg_wallclock_start(5.0, 0.0, 16_000);
+        assert!((start - 4.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn seg_wallclock_start_short_segment() {
+        // Segment corto (200ms = 3200 samples), chunk en t=30s con 100ms.
+        // end_chunk = 30.1s, seg_dur = 0.2s -> start = 29.9s.
+        let start = seg_wallclock_start(30.0, 0.1, 3_200);
+        assert!((start - 29.9).abs() < 1e-6, "expected ~29.9, got {}", start);
     }
 }
