@@ -2,7 +2,7 @@
     "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
     "bundle": {
         "macOS": {
-            "minimumSystemVersion": "13.0",
+            "minimumSystemVersion": "12.3",
             "signingIdentity": "Developer ID Application: Julio Alexis Gonzalez Villa (8YLD233TA2)",
             "hardenedRuntime": true,
             "entitlements": "entitlements.plist"
