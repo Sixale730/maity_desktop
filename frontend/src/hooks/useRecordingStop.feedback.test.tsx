@@ -118,6 +118,14 @@ vi.mock('@tauri-apps/plugin-store', () => ({
 import { useRecordingStop } from './useRecordingStop';
 
 describe('useRecordingStop — feedback no bloqueante', () => {
+  // Capturador de window.location.href: el hook usa hard navigate
+  // (`window.location.href = ...`) en lugar de router.push() para curar
+  // dashboard hung post-stop (commits c188ec1 / f3c555a). JSDOM no permite
+  // setear location.href directamente, así que reemplazamos el objeto
+  // location entero con un setter capturable.
+  let locationHrefHistory: string[] = [];
+  let originalLocation: Location;
+
   beforeEach(() => {
     routerPushMock.mockReset();
     saveMeetingMock.mockReset();
@@ -127,10 +135,32 @@ describe('useRecordingStop — feedback no bloqueante', () => {
     sessionStorage.clear();
     saveMeetingMock.mockResolvedValue({ meeting_id: 'meeting-test-id' });
     markMeetingAsSavedMock.mockResolvedValue(undefined);
+
+    // Reemplazar window.location con proxy capturable
+    originalLocation = window.location;
+    locationHrefHistory = [];
+    let currentHref = 'http://localhost/';
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: {
+        ...originalLocation,
+        get href() { return currentHref; },
+        set href(value: string) {
+          currentHref = value;
+          locationHrefHistory.push(value);
+        },
+        assign: (url: string) => { locationHrefHistory.push(url); },
+        replace: (url: string) => { locationHrefHistory.push(url); },
+      },
+    });
   });
 
   afterEach(() => {
     sessionStorage.clear();
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: originalLocation,
+    });
   });
 
   it('escribe feedback_pending_meeting_id en sessionStorage antes de navegar', async () => {
@@ -142,9 +172,12 @@ describe('useRecordingStop — feedback no bloqueante', () => {
     });
 
     expect(sessionStorage.getItem('feedback_pending_meeting_id')).toBe('meeting-test-id');
-    expect(routerPushMock).toHaveBeenCalledWith(
-      expect.stringContaining('/conversations?localId=meeting-test-id')
-    );
+    // El hook hace hard navigate via window.location.href (no router.push)
+    // para forzar reload del JS context post-grabacion larga. Ver commits
+    // c188ec1 / f3c555a — patron "supervised restart" tipo Slack/VS Code.
+    expect(locationHrefHistory.some(
+      (href) => href.includes('/conversations?localId=meeting-test-id')
+    )).toBe(true);
   });
 
   it('NO bloquea la navegacion (no hay onBeforeNavigate ni await modal)', async () => {
@@ -162,6 +195,7 @@ describe('useRecordingStop — feedback no bloqueante', () => {
     // Sin bloqueo en modal, el flujo termina rapido (< 2s tipico para
     // saveMeeting + 500ms de flush). Generosamente: < 3000ms.
     expect(elapsed).toBeLessThan(3000);
-    expect(routerPushMock).toHaveBeenCalledTimes(1);
+    // Hard navigate: exactamente 1 asignacion a window.location.href.
+    expect(locationHrefHistory).toHaveLength(1);
   });
 });

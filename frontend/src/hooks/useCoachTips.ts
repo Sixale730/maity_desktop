@@ -56,9 +56,21 @@ export function useCoachTips(maxTips = 20): UseCoachTipsResult {
       setTips([]);
     });
 
+    // Limpiar también al detener para que el drawer no muestre tips stale
+    // cuando el usuario lo reabre en idle. Antes solo limpiábamos en start,
+    // así que el tip card quedaba con el último tip de la sesión anterior.
+    const unlistenStopComplete = listen('recording-stop-complete', () => {
+      setTips([]);
+    });
+    const unlistenStopped = listen('recording-stopped', () => {
+      setTips([]);
+    });
+
     return () => {
       unlistenTip.then((fn) => fn());
       unlistenReset.then((fn) => fn());
+      unlistenStopComplete.then((fn) => fn());
+      unlistenStopped.then((fn) => fn());
     };
   }, []);
 

@@ -35,9 +35,21 @@ export function useMeetingMetrics(): UseMeetingMetricsResult {
     const unlistenReset = listen('recording-start-complete', () => {
       setMetrics(null);
     });
+    // Reset también al detener: sin esto, el anchor `lastMetricRef` en
+    // coach-float/page.tsx sobrevive y el setInterval de 1s sigue tickeando
+    // (último secs + delta wall-clock), dejando el contador "TIEMPO DE PALABRA"
+    // aumentando indefinidamente post-stop.
+    const unlistenStopComplete = listen('recording-stop-complete', () => {
+      setMetrics(null);
+    });
+    const unlistenStopped = listen('recording-stopped', () => {
+      setMetrics(null);
+    });
     return () => {
       unlistenMetrics.then((fn) => fn());
       unlistenReset.then((fn) => fn());
+      unlistenStopComplete.then((fn) => fn());
+      unlistenStopped.then((fn) => fn());
     };
   }, []);
 

@@ -74,6 +74,15 @@ describe('CoachFloatPage — feedback por tip', () => {
     render(<CoachFloatPage />);
     await flush();
 
+    // Iter 11: el tip card vive dentro del drawer y el drawer arranca cerrado.
+    // Disparar recording-start-complete simula el flow real: backend arranca
+    // grabación → coach-float auto-abre el drawer → tip card visible.
+    const startHandler = handlers.get('recording-start-complete');
+    if (startHandler) {
+      await startHandler({ payload: undefined });
+      await flush();
+    }
+
     // Click "Util" en el tip mas reciente (tip 3)
     fireEvent.click(screen.getByText('Útil'));
     await flush();
@@ -97,6 +106,13 @@ describe('CoachFloatPage — feedback por tip', () => {
     render(<CoachFloatPage />);
     await flush();
 
+    // Abrir drawer simulando inicio de grabación (iter 11)
+    const startHandler = handlers.get('recording-start-complete');
+    if (startHandler) {
+      await startHandler({ payload: undefined });
+      await flush();
+    }
+
     // Votar el tip mas reciente (tip 2)
     fireEvent.click(screen.getByText('Útil'));
     await flush();
@@ -113,6 +129,13 @@ describe('CoachFloatPage — feedback por tip', () => {
 
     render(<CoachFloatPage />);
     await flush();
+
+    // Abrir drawer simulando inicio de grabación (iter 11)
+    const startHandler = handlers.get('recording-start-complete');
+    if (startHandler) {
+      await startHandler({ payload: undefined });
+      await flush();
+    }
 
     fireEvent.click(screen.getByText('Útil'));
     await flush();
@@ -131,6 +154,13 @@ describe('CoachFloatPage — feedback por tip', () => {
 
     render(<CoachFloatPage />);
     await flush();
+
+    // Abrir drawer simulando inicio de grabación (iter 11)
+    const startHandler = handlers.get('recording-start-complete');
+    if (startHandler) {
+      await startHandler({ payload: undefined });
+      await flush();
+    }
 
     fireEvent.click(screen.getByText('No útil'));
     await flush();

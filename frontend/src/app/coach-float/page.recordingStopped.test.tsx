@@ -45,7 +45,7 @@ import CoachFloatPage from './page';
 
 const flush = () => new Promise(resolve => setTimeout(resolve, 0));
 
-describe('CoachFloatPage — auto-close on recording-stopped', () => {
+describe('CoachFloatPage — auto-close drawer on recording-stopped', () => {
   beforeEach(() => {
     handlers.clear();
     listenMock.mockClear();
@@ -61,7 +61,7 @@ describe('CoachFloatPage — auto-close on recording-stopped', () => {
     cleanup();
   });
 
-  it('invokes close_floating_coach exactly once when recording-stopped fires', async () => {
+  it('invokes coach_float_set_size with drawer:false when recording-stopped fires', async () => {
     render(<CoachFloatPage />);
     await flush();
 
@@ -70,12 +70,17 @@ describe('CoachFloatPage — auto-close on recording-stopped', () => {
     await handler!({ payload: undefined });
     await flush();
 
-    const closeCalls = invokeMock.mock.calls.filter((call) => call[0] === 'close_floating_coach');
-    expect(closeCalls).toHaveLength(1);
+    // Iter 11+: ya no cerramos la ventana al stop — solo cerramos el drawer.
+    // La ventana flotante es ahora UI permanente (compact bar always on).
+    const setSizeCalls = invokeMock.mock.calls.filter((call) => call[0] === 'coach_float_set_size');
+    expect(setSizeCalls.length).toBeGreaterThanOrEqual(1);
+    // El último set_size debe ser drawer:false (cerrar drawer al detener)
+    const lastSetSize = setSizeCalls[setSizeCalls.length - 1];
+    expect(lastSetSize[1]).toEqual({ drawer: false });
     cleanup();
   });
 
-  it('does NOT invoke close_floating_coach when only recording-audio-levels fires', async () => {
+  it('does NOT close drawer when only recording-audio-levels fires', async () => {
     render(<CoachFloatPage />);
     await flush();
 
@@ -84,8 +89,8 @@ describe('CoachFloatPage — auto-close on recording-stopped', () => {
     await handler!({ payload: { micRms: 0.1, micPeak: 0.2, sysRms: 0.05, sysPeak: 0.1 } });
     await flush();
 
-    const closeCalls = invokeMock.mock.calls.filter((call) => call[0] === 'close_floating_coach');
-    expect(closeCalls).toHaveLength(0);
+    const setSizeCalls = invokeMock.mock.calls.filter((call) => call[0] === 'coach_float_set_size');
+    expect(setSizeCalls).toHaveLength(0);
     cleanup();
   });
 });
