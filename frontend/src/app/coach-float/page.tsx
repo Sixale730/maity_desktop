@@ -72,15 +72,12 @@ function CoachFloatIdleEmptyState({
 }) {
   return (
     <div className="flex-1 flex flex-col items-center justify-center px-6 py-4 text-center">
-      <div
-        className="w-12 h-12 rounded-full flex items-center justify-center mb-4"
-        style={{
-          background: 'linear-gradient(135deg, rgba(99,102,241,0.25) 0%, rgba(236,72,153,0.15) 100%)',
-          border: '1px solid rgba(99,102,241,0.3)',
-        }}
-      >
-        <Sparkles className="w-6 h-6 text-indigo-300" />
-      </div>
+      <img
+        src="/logo-collapsed.png"
+        alt="Maity"
+        className="w-14 h-14 rounded-xl mb-4 select-none shadow-lg shadow-black/40"
+        draggable={false}
+      />
       <h2 className="text-sm font-semibold text-white mb-1.5">
         Listo para tu próxima sesión
       </h2>
