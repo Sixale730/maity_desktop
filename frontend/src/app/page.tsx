@@ -54,6 +54,11 @@ export default function Home() {
   const { modals, messages, showModal, hideModal } = useModalState(transcriptModelConfig);
   const { handleRecordingStart } = useRecordingStart(isRecording, (_v) => { /* no-op: RecordingStateContext is source of truth */ }, showModal);
 
+  // Iter 6: removido el gate `widgetOpen` que ocultaba RecordingControls
+  // cuando el coach-float está abierto. Ahora la píldora siempre se ve en
+  // la home — coexiste con el flotante. El listener global de eventos del
+  // widget vive en <RecordingWidgetListener /> dentro de layout.tsx.
+
   // Get handleRecordingStop function and setIsStopping (state comes from global context)
   const { handleRecordingStop, setIsStopping } = useRecordingStop(
     setIsRecordingDisabled
@@ -92,12 +97,12 @@ export default function Home() {
     Analytics.trackPageView('home');
   }, []);
 
-  // Auto-open coach float when recording starts
-  useEffect(() => {
-    if (isRecording) {
-      invoke('open_floating_coach').catch(() => {});
-    }
-  }, [isRecording]);
+  // (iter 4) Auto-open de coach-float al grabar movido al setup de Rust:
+  // ahora el coach-float vive SIEMPRE (idle: compact con botón Iniciar;
+  // grabando: expanded con niveles + tips + Pausa/Detener). El propio
+  // coach-float/page.tsx detecta isRecording=true y se auto-expande vía
+  // `coach_float_set_size`. Sin este useEffect dejamos de tener el doble
+  // open que causaba la ventana redundante con el recording-widget.
 
   // Startup recovery check — runs once on mount only
   useEffect(() => {
@@ -259,7 +264,12 @@ export default function Home() {
       </div>
     </motion.div>
 
-    {/* Recording controls - OUTSIDE motion.div to escape stacking context */}
+    {/* Recording controls - OUTSIDE motion.div to escape stacking context.
+        Iter 6: el gate `widgetOpen !== true` se quitó. La píldora de la home
+        SIEMPRE se renderiza (cuando hay mic disponible / grabando) — coexiste
+        con el coach-float flotante. Antes ocultarla causaba que el usuario
+        perdiera acceso al selector de dispositivos y al warning de
+        auriculares cuando el flotante estaba abierto. */}
     {(hasMicrophone || isRecording) &&
       status !== RecordingStatus.PROCESSING_TRANSCRIPTS &&
       status !== RecordingStatus.SAVING && (

@@ -24,6 +24,8 @@ import { ErrorBoundary } from '@/components/shared/ErrorBoundary'
 import { ChunkErrorRecovery } from '@/components/shared/ChunkErrorRecovery'
 import { MeetingDetectionDialog } from '@/components/meeting-detection/MeetingDetectionDialog'
 import { OfflineIndicator } from '@/components/shared/OfflineIndicator'
+import { RecordingWidgetFAB } from '@/components/shared/RecordingWidgetFAB'
+import { RecordingWidgetListener } from '@/components/RecordingWidgetListener'
 import { AuthProvider, useAuth } from '@/contexts/AuthContext'
 import { ParakeetAutoDownloadProvider } from '@/contexts/ParakeetAutoDownloadContext'
 import { ModelDownloadGate } from '@/components/ModelDownloadGate'
@@ -421,6 +423,14 @@ function AppContent({ children }: { children: React.ReactNode }) {
                     {/* Meeting detection dialog - listens for meeting-detected events */}
                     <MeetingDetectionDialog />
 
+                    {/* Listener global del widget flotante: escucha el evento
+                        widget-request-start-recording (emitido por el comando
+                        Rust recording_widget_request_start) y dispara
+                        handleRecordingStart con todo el contexto canónico.
+                        Vive aquí — dentro de TODOS los providers — para estar
+                        montado desde el primer paint, sin importar la ruta. */}
+                    <RecordingWidgetListener />
+
                     {/* Show onboarding, model gate, or main app */}
                     {showOnboarding ? (
                       <OnboardingFlow onComplete={handleOnboardingComplete} />
@@ -436,6 +446,11 @@ function AppContent({ children }: { children: React.ReactNode }) {
                           <Sidebar />
                           <MainContent>{children}</MainContent>
                         </div>
+                        {/* FAB para reabrir el widget flotante si el usuario lo cerró.
+                            Sólo se renderiza cuando la ventana 'recording-widget' está
+                            cerrada — el propio componente lo decide y se mantiene en
+                            null en otro caso. */}
+                        <RecordingWidgetFAB />
                       </div>
                     )}
                   </RecordingPostProcessingProvider>
@@ -516,11 +531,16 @@ export default function RootLayout({
 }) {
   const pathname = usePathname()
 
-  // Coach float window: bypass all auth/sidebar/provider logic.
+  // Coach float + recording widget: ventanas Tauri secundarias always-on-top.
+  // Bypass total de auth/sidebar/providers — son mini-ventanas independientes.
   // Background transparente en html+body para que el blur de la ventana Tauri
   // (transparent: true) llegue al SO. El body global tiene `bg-background`
   // (negro solido en dark mode) que tapaba el glass effect — override aqui.
-  if (pathname === '/coach-float') {
+  if (
+    pathname === '/coach-float' ||
+    pathname === '/recording-widget' ||
+    pathname === '/device-picker'
+  ) {
     return (
       <html lang="es" className="dark" style={{ background: 'transparent' }}>
         <body

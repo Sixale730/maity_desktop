@@ -37,6 +37,7 @@ pub mod system_detector;
 pub mod system_audio_commands;
 pub mod device_monitor;  // NEW: Device disconnect/reconnect monitoring
 pub mod playback_monitor; // NEW: Playback device detection for BT warnings
+pub mod recording_widget; // NEW: Mini-ventana flotante always-on-top con controles de grabación
 
 // Transcription module (provider abstraction, engine management, worker pool)
 pub mod transcription;

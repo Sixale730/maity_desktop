@@ -512,6 +512,31 @@ pub fn run() {
                 log::error!("Failed to create system tray: {}", e);
             }
 
+            // Auto-abrir el coach-float como ÚNICA ventana flotante de la app.
+            // En idle arranca en modo compact (320×130, esquina inferior derecha)
+            // mostrando sólo el botón "Iniciar grabación". Al iniciar grabación,
+            // el page.tsx detecta isRecording y se expande automáticamente al
+            // layout completo (niveles + health + tips + footer Pausa/Detener).
+            // Esto reemplaza el recording-widget como ventana separada — ya no
+            // tenemos dos flotantes solapados.
+            let app_handle_for_coach = _app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                // Pequeña pausa para que la main window arranque primero.
+                tokio::time::sleep(tokio::time::Duration::from_millis(800)).await;
+                if coach::commands::should_auto_open_coach(&app_handle_for_coach) {
+                    if let Err(e) = coach::commands::open_floating_coach(
+                        app_handle_for_coach,
+                        Some(true), // start_compact = true (idle layout)
+                    )
+                    .await
+                    {
+                        log::warn!("Failed to auto-open coach float: {}", e);
+                    }
+                } else {
+                    log::info!("Coach float hidden by user preference, not auto-opening");
+                }
+            });
+
             // Interceptar el cierre de la ventana principal: en lugar de matar
             // el proceso, esconder la ventana en el tray y limpiar tareas de
             // idle (audio level monitor, coach-float). El usuario debe usar
@@ -1068,6 +1093,26 @@ pub fn run() {
             coach::commands::open_floating_coach,
             coach::commands::close_floating_coach,
             coach::commands::floating_toggle_compact,
+            // Coach-float como única ventana flotante (idle + grabando)
+            coach::commands::is_coach_float_open,
+            coach::commands::coach_float_get_visibility_pref,
+            coach::commands::coach_float_set_visibility_pref,
+            coach::commands::coach_float_request_start,
+            coach::commands::coach_float_request_start_with_devices,
+            coach::commands::open_device_picker,
+            coach::commands::close_device_picker,
+            coach::commands::device_picker_select,
+            coach::commands::coach_float_stop_recording,
+            coach::commands::coach_float_set_size,
+            // Recording widget (mini ventana always-on-top con controles de grabación)
+            audio::recording_widget::open_recording_widget,
+            audio::recording_widget::close_recording_widget,
+            audio::recording_widget::recording_widget_set_size,
+            audio::recording_widget::recording_widget_get_visibility_pref,
+            audio::recording_widget::recording_widget_set_visibility_pref,
+            audio::recording_widget::is_recording_widget_open,
+            audio::recording_widget::stop_recording_from_widget,
+            audio::recording_widget::recording_widget_request_start,
             coach::commands::coach_chat,
             coach::trigger::coach_analyze_trigger,
             coach::nudge_engine::coach_evaluate_nudge,

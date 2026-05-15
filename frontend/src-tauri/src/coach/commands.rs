@@ -13,7 +13,33 @@ use once_cell::sync::Lazy;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, LogicalPosition, Manager, Runtime};
+use tauri_plugin_store::StoreExt;
 use tracing::{info, warn};
+
+// Constantes del coach-float como única ventana flotante de la app.
+// Iter 11: ahora son DOS estados (barra sola | barra + drawer panel), no tres.
+// La barra superior es siempre constante (76 px); el drawer se despliega
+// debajo sumando ~260 px para health/tips/talk-split.
+const COACH_FLOAT_LABEL: &str = "coach-float";
+// Modo barra-sola (iter 12): 340×76 — antes 360 (iter 11). Reducimos el ancho
+// porque el botón Play/Stop pasó a ser icon-only (sin texto "GRABAR"/"DETENER")
+// y libera ~20-30 px horizontales. La altura 76 permite que los window controls
+// no se encimen con el flujo principal.
+const COACH_COMPACT_W: f64 = 340.0;
+const COACH_COMPACT_H: f64 = 76.0;
+// Modo drawer (iter 12): barra superior + panel desplegado abajo.
+// 340×420 = 76 (barra) + 344 (drawer panel). Antes era 336 total (260 panel)
+// pero el tip card quedaba con ~100 px → tips críticos se cortaban en 2 líneas.
+// Ahora el tip card recibe ~184 px = 4-5 líneas legibles.
+const COACH_DRAWER_H: f64 = 420.0;
+// Legacy expanded 320×540 (mantengo por si futuro botón "Vista completa" lo
+// reactiva). El frontend ya no lo usa: el toggle es ahora barra↔drawer.
+const COACH_EXPANDED_W: f64 = 320.0;
+const COACH_EXPANDED_H: f64 = 540.0;
+const COACH_VIS_EVENT: &str = "coach-float-visibility-changed";
+const COACH_REQUEST_START_EVENT: &str = "widget-request-start-recording";
+const COACH_PREFS_FILE: &str = "widget-preferences.json";
+const COACH_PREF_KEY_VISIBLE: &str = "coach_float_visible";
 
 static HTTP_CLIENT: Lazy<Client> = Lazy::new(Client::new);
 
@@ -198,60 +224,396 @@ pub async fn coach_evaluate_meeting<R: Runtime + 'static>(
 }
 
 /// Abre la ventana flotante always-on-top del coach.
+///
+/// `start_compact`: si `Some(true)` la ventana abre en modo compact (idle —
+/// 320×130, esquina inferior derecha, solo botón Iniciar grabación). Si es
+/// `None` o `Some(false)` abre en modo expanded (320×540, esquina superior
+/// derecha) — el comportamiento original que usa el botón "Coach" manual y
+/// el menú tray.
+///
+/// Al abrirse emite `coach-float-visibility-changed { visible: true }` para
+/// que el FAB de la main window se oculte y `useCoachFloatOpen` se sincronice.
 #[tauri::command]
-pub async fn open_floating_coach<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
-    if let Some(w) = app.get_webview_window("coach-float") {
+pub async fn open_floating_coach<R: Runtime>(
+    app: AppHandle<R>,
+    start_compact: Option<bool>,
+) -> Result<(), String> {
+    let compact = start_compact.unwrap_or(false);
+
+    if let Some(w) = app.get_webview_window(COACH_FLOAT_LABEL) {
         w.show().map_err(|e| e.to_string())?;
         w.set_focus().map_err(|e| e.to_string())?;
+        emit_coach_visibility(&app, true);
         return Ok(());
     }
+
+    // Tamaño inicial depende del modo. El page.tsx tiene su propio toggle
+    // entre compact/expanded — el Rust solo decide cómo arranca la ventana.
+    let (init_w, init_h) = if compact {
+        (COACH_COMPACT_W, COACH_COMPACT_H)
+    } else {
+        (COACH_EXPANDED_W, COACH_EXPANDED_H)
+    };
 
     // §3.1 Ventana translucida (transparent + skip_taskbar=false). El root
     // del flotante usa background rgba(15,16,24,0.92) + backdrop-filter blur
     // para el efecto glass — ver §3.2 en page.tsx. Riesgo conocido §3.4:
     // Win10 con DWM desactivado puede tener artefactos; aceptado en V1.
-    // Resize 320x430 -> 320x480 (decision §14.8) para acomodar gauge + split.
     let window = tauri::WebviewWindowBuilder::new(
         &app,
-        "coach-float",
+        COACH_FLOAT_LABEL,
         tauri::WebviewUrl::App("coach-float".into()),
     )
     .title("Maity Coach")
-    .inner_size(320.0, 480.0)
-    .min_inner_size(280.0, 240.0)
+    .inner_size(init_w, init_h)
+    // min_inner_size importante: si lo dejamos en (280, 110), Tauri respeta
+    // el mayor entre min_inner_size e inner_size — con COACH_COMPACT_H=64
+    // pediríamos 64 pero Tauri lo subiría a 110 (bug visible en iter 5).
+    // Bajamos a 56 para que el compact pueda renderizar a 64 lógicos.
+    .min_inner_size(280.0, 56.0)
     .always_on_top(true)
     .decorations(false)
     .resizable(true)
     .skip_taskbar(false)
     .transparent(true)
+    // Iter 11: shadow del SO desactivado. DWM (Windows) dibuja drop-shadow
+    // rectangular aun cuando el contenido es rounded — eso causaba las
+    // "esquinas cuadradas visibles" detrás del coach-float. Sin shadow nativo
+    // las esquinas redondeadas del CSS son las únicas visibles. El boxShadow
+    // CSS interior compensa la pérdida visual de peso. En macOS shadow es
+    // sutil pero también puede dejar artefactos; lo deshabilitamos uniforme.
+    .shadow(false)
+    // Iter 10: empezar OCULTA para evitar flash blanco del WebView2 antes
+    // de que el HTML pinte. Se muestra con .show() después de posicionar
+    // + delay corto para esperar el primer paint.
+    .visible(false)
     .build()
     .map_err(|e| format!("Error abriendo ventana flotante: {}", e))?;
 
-    // §3.5 Auto-posicionar top-right del monitor activo con margen 32px.
-    // Antes la ventana salia en posicion default del OS (centro o ultima usada),
-    // que tapaba contenido principal de la llamada. Top-right es donde el usuario
-    // espera un asistente persistente.
+    // Auto-posicionar. Compact = esquina inferior derecha (estilo widget de
+    // grabación, fuera del camino del contenido principal). Expanded = esquina
+    // superior derecha (decisión §3.5 original — donde el usuario espera un
+    // asistente persistente al grabar).
     if let Ok(Some(monitor)) = window.primary_monitor() {
         let scale = monitor.scale_factor();
         let size = monitor.size();
         let mon_w = size.width as f64 / scale;
         let mon_h = size.height as f64 / scale;
-        let target_x = (mon_w - 320.0 - 32.0).max(0.0);
-        let target_y = 80.0_f64.min((mon_h - 480.0 - 32.0).max(0.0));
+        let (target_x, target_y) = if compact {
+            let x = (mon_w - init_w - 80.0).max(0.0);
+            let y = (mon_h - init_h - 110.0).max(0.0);
+            (x, y)
+        } else {
+            let x = (mon_w - init_w - 32.0).max(0.0);
+            let y = 80.0_f64.min((mon_h - init_h - 32.0).max(0.0));
+            (x, y)
+        };
         if let Err(e) = window.set_position(LogicalPosition::new(target_x, target_y)) {
-            warn!("No se pudo posicionar la ventana flotante top-right: {}", e);
+            warn!("No se pudo posicionar la ventana flotante: {}", e);
         }
     }
 
-    info!("✅ Floating coach window opened");
+    // Iter 10: esperar a que el WebView2 cargue el HTML antes de mostrar.
+    // 180 ms es suficiente para el primer paint con el glass; menos genera
+    // flash blanco visible.
+    tokio::time::sleep(std::time::Duration::from_millis(180)).await;
+    let _ = window.show();
+
+    emit_coach_visibility(&app, true);
+    info!("✅ Floating coach window opened (compact={})", compact);
     Ok(())
 }
 
 /// Cierra la ventana flotante del coach.
 #[tauri::command]
 pub async fn close_floating_coach<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
-    if let Some(w) = app.get_webview_window("coach-float") {
+    if let Some(w) = app.get_webview_window(COACH_FLOAT_LABEL) {
         w.close().map_err(|e| e.to_string())?;
+        emit_coach_visibility(&app, false);
+    }
+    Ok(())
+}
+
+/// Devuelve si la ventana del coach-float está actualmente abierta. Usado por
+/// el FAB en la main window para decidir su visibilidad inicial.
+#[tauri::command]
+pub async fn is_coach_float_open<R: Runtime>(app: AppHandle<R>) -> bool {
+    app.get_webview_window(COACH_FLOAT_LABEL).is_some()
+}
+
+/// Lee la preferencia de visibilidad del coach-float. Default: true.
+#[tauri::command]
+pub async fn coach_float_get_visibility_pref<R: Runtime>(app: AppHandle<R>) -> bool {
+    load_coach_visibility_pref(&app).unwrap_or(true)
+}
+
+/// Persiste la preferencia y abre/cierra la ventana según corresponda.
+/// Si `start_compact` es Some(true), abre en modo compact (idle).
+#[tauri::command]
+pub async fn coach_float_set_visibility_pref<R: Runtime>(
+    app: AppHandle<R>,
+    visible: bool,
+    start_compact: Option<bool>,
+) -> Result<(), String> {
+    save_coach_visibility_pref(&app, visible)?;
+    if visible {
+        open_floating_coach(app, start_compact).await?;
+    } else {
+        close_floating_coach(app).await?;
+    }
+    Ok(())
+}
+
+/// Solicita al frontend principal que inicie la grabación reusando el flujo
+/// canónico de `useRecordingStart`. Hace focus a la main window (para que
+/// Chromium reactive el JS loop si estaba suspendido) y emite el evento
+/// `widget-request-start-recording` que escucha el `RecordingWidgetListener`
+/// global. El sleep de 150ms mitiga la race condition donde el evento se
+/// emite antes de que el listener React se re-suscriba.
+#[tauri::command]
+pub async fn coach_float_request_start<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
+    if let Some(main) = app.get_webview_window("main") {
+        let _ = main.unminimize();
+        let _ = main.show();
+        let _ = main.set_focus();
+    } else {
+        warn!("Coach request start: main window not found");
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    app.emit(COACH_REQUEST_START_EVENT, ())
+        .map_err(|e| format!("Failed to emit widget-request-start-recording: {}", e))?;
+    info!("📡 Coach-float solicitó iniciar grabación al main");
+    Ok(())
+}
+
+/// Variante de `coach_float_request_start` que propaga la selección de
+/// dispositivos hecha en el coach-float (iter 6). El listener global recibe
+/// el payload `{ micDevice, sysDevice }`, llama `setSelectedDevices()` en el
+/// ConfigContext y luego dispara `handleRecordingStart()` con los devices ya
+/// actualizados.
+///
+/// Si `mic_device` o `sys_device` son `None`, se mantiene el default actual
+/// del ConfigContext (no se sobreescribe).
+#[tauri::command]
+pub async fn coach_float_request_start_with_devices<R: Runtime>(
+    app: AppHandle<R>,
+    mic_device: Option<String>,
+    sys_device: Option<String>,
+) -> Result<(), String> {
+    if let Some(main) = app.get_webview_window("main") {
+        let _ = main.unminimize();
+        let _ = main.show();
+        let _ = main.set_focus();
+    } else {
+        warn!("Coach request start with devices: main window not found");
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    let payload = serde_json::json!({
+        "micDevice": mic_device,
+        "sysDevice": sys_device,
+    });
+    app.emit(COACH_REQUEST_START_EVENT, payload)
+        .map_err(|e| format!("Failed to emit widget-request-start-recording with devices: {}", e))?;
+    info!("📡 Coach-float solicitó iniciar grabación con devices custom");
+    Ok(())
+}
+
+/// Detiene la grabación generando el save_path internamente (mismo patrón
+/// que `tray.rs:206-244` y el `stop_recording_from_widget` viejo). Permite al
+/// coach-float detener sin que el frontend tenga que conocer `app_data_dir`.
+#[tauri::command]
+pub async fn coach_float_stop_recording<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("Failed to get app data dir: {}", e))?;
+    let timestamp = chrono::Local::now().format("%Y-%m-%dT%H-%M-%S").to_string();
+    let save_path = data_dir.join(format!("recording-{}.wav", timestamp));
+
+    let stop_result = crate::audio::recording_commands::stop_recording(
+        app.clone(),
+        crate::audio::recording_commands::RecordingArgs {
+            save_path: save_path.to_string_lossy().to_string(),
+        },
+    )
+    .await;
+
+    match stop_result {
+        Ok(_) => {
+            info!("✅ Recording stopped from coach-float");
+            if let Err(e) = app.emit("recording-stop-complete", true) {
+                warn!("Coach-float: failed to emit recording-stop-complete: {}", e);
+            }
+            Ok(())
+        }
+        Err(e) => Err(format!("Failed to stop recording from coach-float: {}", e)),
+    }
+}
+
+// ─── Helpers de persistencia / visibility ────────────────────────────────────
+
+fn load_coach_visibility_pref<R: Runtime>(app: &AppHandle<R>) -> Option<bool> {
+    let store = app.store(COACH_PREFS_FILE).ok()?;
+    let value = store.get(COACH_PREF_KEY_VISIBLE)?;
+    value.as_bool()
+}
+
+fn save_coach_visibility_pref<R: Runtime>(app: &AppHandle<R>, visible: bool) -> Result<(), String> {
+    let store = app
+        .store(COACH_PREFS_FILE)
+        .map_err(|e| format!("Failed to access widget preferences store: {}", e))?;
+    store.set(COACH_PREF_KEY_VISIBLE, serde_json::Value::Bool(visible));
+    store
+        .save()
+        .map_err(|e| format!("Failed to persist widget preferences: {}", e))?;
+    Ok(())
+}
+
+fn emit_coach_visibility<R: Runtime>(app: &AppHandle<R>, visible: bool) {
+    if let Err(e) = app.emit(COACH_VIS_EVENT, serde_json::json!({ "visible": visible })) {
+        warn!("Failed to emit {}: {}", COACH_VIS_EVENT, e);
+    }
+}
+
+// ─── Device Picker (mini-ventana flotante para seleccionar mic/sis) ──────────
+// Iter 9: el dropdown de devices en el coach-float quedaba cortado por
+// `overflow:hidden` del webview (ventana de 64 px de alto). Solución: una
+// mini-ventana Tauri secundaria que aparezca encima del icono mic/sis con la
+// lista, y se cierre al perder foco (click fuera).
+
+const DEVICE_PICKER_LABEL: &str = "device-picker";
+const DEVICE_PICKER_HEIGHT: f64 = 220.0; // alto fijo; scrollable adentro
+
+/// Abre la mini-ventana de selección de dispositivos posicionada encima del
+/// icono que la invoca. El frontend pasa las coordenadas globales del icono
+/// (calculadas con getBoundingClientRect + outerPosition).
+#[tauri::command]
+pub async fn open_device_picker<R: Runtime>(
+    app: AppHandle<R>,
+    device_type: String, // "mic" | "sys"
+    anchor_x: f64,       // posición global X del icono (top-left)
+    anchor_y: f64,       // posición global Y del icono (top-left)
+    width: f64,          // ancho deseado para el picker
+) -> Result<(), String> {
+    // Si ya existe, cerrar primero — fuerza refresh de devices al reabrir.
+    if let Some(existing) = app.get_webview_window(DEVICE_PICKER_LABEL) {
+        let _ = existing.close();
+    }
+
+    let url = format!("device-picker?type={}", device_type);
+    let window = tauri::WebviewWindowBuilder::new(
+        &app,
+        DEVICE_PICKER_LABEL,
+        tauri::WebviewUrl::App(url.into()),
+    )
+    .title("Device Picker")
+    .inner_size(width, DEVICE_PICKER_HEIGHT)
+    .min_inner_size(width, DEVICE_PICKER_HEIGHT)
+    .always_on_top(true)
+    .decorations(false)
+    .resizable(false)
+    .skip_taskbar(true)
+    .transparent(true)
+    // Iter 10: empezar OCULTA (visible(false)) y mostrar después del primer
+    // paint. Antes el flash blanco era muy visible porque el device-picker
+    // se abre on-demand al click del icono. focused(true) movido a después
+    // del show porque el builder lo ignora si visible(false).
+    .visible(false)
+    .build()
+    .map_err(|e| format!("Error abriendo device-picker: {}", e))?;
+
+    // Posicionar arriba del icono (anchor_y - alto del picker - 8 px margen).
+    let target_y = (anchor_y - DEVICE_PICKER_HEIGHT - 8.0).max(0.0);
+    if let Err(e) = window.set_position(LogicalPosition::new(anchor_x, target_y)) {
+        warn!("No se pudo posicionar device-picker: {}", e);
+    }
+
+    // on_window_event: cerrar al perder foco. Click fuera = blur = close.
+    // En Windows con DPI 125% esto a veces dispara dos veces — el segundo
+    // close es no-op porque la ventana ya no existe (get_webview_window None).
+    let app_handle_for_blur = app.clone();
+    window.on_window_event(move |event| {
+        if let tauri::WindowEvent::Focused(false) = event {
+            if let Some(w) = app_handle_for_blur.get_webview_window(DEVICE_PICKER_LABEL) {
+                let _ = w.close();
+            }
+        }
+    });
+
+    // Iter 10: esperar a que el WebView2 cargue el HTML antes de mostrar.
+    // 100ms basta porque la página es muy pequeña. Después set_focus para que
+    // el blur listener funcione (cerrar al click fuera).
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    let _ = window.show();
+    let _ = window.set_focus();
+
+    info!("✅ Device picker abierto para '{}'", device_type);
+    Ok(())
+}
+
+/// Cierra la mini-ventana de device-picker. Idempotente.
+#[tauri::command]
+pub async fn close_device_picker<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
+    if let Some(w) = app.get_webview_window(DEVICE_PICKER_LABEL) {
+        w.close().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// El device-picker invoca esto al click en un device. Emite el evento
+/// global `device-picker-selected` (que escucha el coach-float) y cierra
+/// la propia ventana.
+#[tauri::command]
+pub async fn device_picker_select<R: Runtime>(
+    app: AppHandle<R>,
+    device_name: String,
+    device_type: String, // "Microphone" | "SystemAudio"
+) -> Result<(), String> {
+    app.emit(
+        "device-picker-selected",
+        serde_json::json!({ "deviceName": device_name, "deviceType": device_type }),
+    )
+    .map_err(|e| format!("Failed to emit device-picker-selected: {}", e))?;
+
+    // Cerrar la propia ventana después de emitir.
+    if let Some(w) = app.get_webview_window(DEVICE_PICKER_LABEL) {
+        let _ = w.close();
+    }
+    info!("📡 Device picker: seleccionado '{}' ({})", device_name, device_type);
+    Ok(())
+}
+
+/// Helper interno que el `setup` de lib.rs llama al inicio para decidir si
+/// abrir el coach-float automáticamente según la preferencia guardada.
+pub fn should_auto_open_coach<R: Runtime>(app: &AppHandle<R>) -> bool {
+    load_coach_visibility_pref(app).unwrap_or(true)
+}
+
+/// Setea explícitamente el tamaño de la ventana coach-float (iter 11):
+/// - `drawer: false` → barra sola (360×76).
+/// - `drawer: true` → barra + drawer panel (360×336).
+///
+/// El frontend lo invoca cuando empieza grabación (auto-abrir drawer) y al
+/// detener (cerrar drawer). También se usa al toggle manual del Chevron.
+/// Es idempotente — no depende del tamaño actual.
+///
+/// Cambio breaking respecto a iter 10: el parámetro era `expanded: bool` y
+/// abría a 320×540 (dashboard completo distinto). Ahora el dashboard separado
+/// quedó out-of-scope V12. Si algún caller antiguo manda `expanded: true`,
+/// recibirá `drawer: true` por el rename del campo serde.
+#[tauri::command]
+pub async fn coach_float_set_size<R: Runtime>(
+    app: AppHandle<R>,
+    drawer: bool,
+) -> Result<(), String> {
+    if let Some(w) = app.get_webview_window(COACH_FLOAT_LABEL) {
+        let (width, height) = if drawer {
+            (COACH_COMPACT_W, COACH_DRAWER_H)
+        } else {
+            (COACH_COMPACT_W, COACH_COMPACT_H)
+        };
+        w.set_size(tauri::Size::Logical(tauri::LogicalSize { width, height }))
+            .map_err(|e| e.to_string())?;
     }
     Ok(())
 }

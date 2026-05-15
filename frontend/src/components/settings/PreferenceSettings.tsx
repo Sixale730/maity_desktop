@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useRef } from "react"
 import { Switch } from "@/components/ui/switch"
-import { FolderOpen, LogOut, Palette } from "lucide-react"
+import { FolderOpen, LogOut, Palette, Mic } from "lucide-react"
 import { ThemeSelector } from "@/components/settings/ThemeSelector"
 import { invoke } from "@tauri-apps/api/core"
 import Analytics from "@/lib/analytics"
@@ -27,6 +27,40 @@ export function PreferenceSettings() {
   const [isInitialLoad, setIsInitialLoad] = useState(true);
   const [previousNotificationsEnabled, setPreviousNotificationsEnabled] = useState<boolean | null>(null);
   const hasTrackedViewRef = useRef(false);
+
+  // Preferencia del widget flotante de grabación. Lectura inicial vía Tauri
+  // (default true). El cambio se propaga al backend, que abre/cierra la mini
+  // ventana always-on-top en consecuencia.
+  // Visibilidad del coach-float (la única ventana flotante de la app desde
+  // la iteración 4). Antes apuntaba al recording-widget — ahora reapuntado
+  // al coach-float. El nombre del state se mantiene `recordingWidgetVisible`
+  // por compatibilidad con el JSX abajo.
+  const [recordingWidgetVisible, setRecordingWidgetVisible] = useState<boolean | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    invoke<boolean>('coach_float_get_visibility_pref')
+      .then((v) => { if (!cancelled) setRecordingWidgetVisible(v); })
+      .catch((e) => {
+        logger.warn('Failed to load coach-float visibility pref:', e);
+        if (!cancelled) setRecordingWidgetVisible(true);
+      });
+    return () => { cancelled = true; };
+  }, []);
+  const handleToggleRecordingWidget = async (next: boolean) => {
+    setRecordingWidgetVisible(next);
+    try {
+      // Cuando se activa desde Settings arrancamos compact (idle) — el usuario
+      // está configurando, no grabando todavía.
+      await invoke('coach_float_set_visibility_pref', {
+        visible: next,
+        startCompact: true,
+      });
+    } catch (err) {
+      logger.warn('Failed to set coach-float visibility:', err);
+      // Revertir UI si falló el backend.
+      setRecordingWidgetVisible(!next);
+    }
+  };
 
   // Lazy load preferences on mount (only loads if not already cached)
   useEffect(() => {
@@ -174,6 +208,26 @@ export function PreferenceSettings() {
             <p className="text-sm text-muted-foreground">Habilitar o deshabilitar notificaciones de inicio y fin de reunión</p>
           </div>
           <Switch checked={notificationsEnabledValue} onCheckedChange={setNotificationsEnabled} />
+        </div>
+      </div>
+
+      {/* Coach flotante Section */}
+      <div className="bg-card rounded-lg border border-border p-6 shadow-sm">
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <div className="flex items-center gap-2 mb-2">
+              <Mic className="w-5 h-5 text-foreground" />
+              <h3 className="text-lg font-semibold text-foreground">Coach flotante</h3>
+            </div>
+            <p className="text-sm text-muted-foreground">
+              Muestra una ventana siempre encima de otras apps con controles de grabación y feedback en vivo. En idle aparece chiquita con el botón Iniciar; al grabar se expande con niveles, salud de la sesión y tips. Útil durante reuniones en Zoom/Teams/Meet para no olvidar grabar.
+            </p>
+          </div>
+          <Switch
+            checked={recordingWidgetVisible ?? true}
+            onCheckedChange={handleToggleRecordingWidget}
+            disabled={recordingWidgetVisible === null}
+          />
         </div>
       </div>
 

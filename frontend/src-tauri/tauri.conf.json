@@ -87,6 +87,25 @@
                         "core:window:default",
                         "core:window:allow-start-dragging"
                     ]
+                },
+                {
+                    "identifier": "recording-widget",
+                    "description": "Recording widget window: events, drag, basic window ops",
+                    "windows": ["recording-widget"],
+                    "permissions": [
+                        "core:event:default",
+                        "core:window:default",
+                        "core:window:allow-start-dragging"
+                    ]
+                },
+                {
+                    "identifier": "device-picker",
+                    "description": "Mini-ventana popup para seleccionar mic/sis desde el coach-float",
+                    "windows": ["device-picker"],
+                    "permissions": [
+                        "core:event:default",
+                        "core:window:default"
+                    ]
                 }
             ]
         }

@@ -47,6 +47,7 @@ fn handle_menu_event<R: Runtime>(app: &AppHandle<R>, item_id: &str) {
         "resume_recording" => resume_recording_handler(app),
         "stop_recording" => stop_recording_handler(app),
         "open_coach_float" => open_coach_float_handler(app),
+        "toggle_recording_widget" => toggle_recording_widget_handler(app),
         "open_window" => focus_main_window(app),
         "settings" => {
             focus_main_window(app);
@@ -247,8 +248,37 @@ fn stop_recording_handler<R: Runtime>(app: &AppHandle<R>) {
 fn open_coach_float_handler<R: Runtime>(app: &AppHandle<R>) {
     let app_clone = app.clone();
     tauri::async_runtime::spawn(async move {
-        if let Err(e) = crate::coach::commands::open_floating_coach(app_clone).await {
+        if let Err(e) = crate::coach::commands::open_floating_coach(app_clone, None).await {
             log::warn!("Tray: Failed to open coach float: {}", e);
+        }
+    });
+}
+
+/// Toggle del coach-float flotante (única ventana flotante de la app):
+/// lee preferencia, flippea, persiste y abre/cierra la ventana en
+/// consecuencia. Al abrir desde el tray, arranca en modo compact (idle)
+/// porque el usuario lo invoca cuando no está grabando.
+///
+/// NOTA: este handler aún se llama `toggle_recording_widget_handler` y
+/// se dispara con el item_id `toggle_recording_widget` por compatibilidad
+/// con menús/permisos previos — internamente ya apunta al coach-float.
+fn toggle_recording_widget_handler<R: Runtime>(app: &AppHandle<R>) {
+    let app_clone = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let currently_visible =
+            crate::coach::commands::coach_float_get_visibility_pref(app_clone.clone()).await;
+        let new_visible = !currently_visible;
+        if let Err(e) = crate::coach::commands::coach_float_set_visibility_pref(
+            app_clone.clone(),
+            new_visible,
+            Some(true), // start_compact = true (vista idle)
+        )
+        .await
+        {
+            log::warn!("Tray: Failed to toggle coach-float: {}", e);
+        } else {
+            log::info!("Tray: Coach-float toggled to visible={}", new_visible);
+            update_tray_menu_async(&app_clone).await;
         }
     });
 }
@@ -467,6 +497,13 @@ fn build_menu<R: Runtime>(
     builder
         .item(&PredefinedMenuItem::separator(app)?)
         .item(&MenuItemBuilder::with_id("open_window", "Open Main Window").build(app)?)
+        .item(
+            &MenuItemBuilder::with_id(
+                "toggle_recording_widget",
+                "🎙 Mostrar/Ocultar coach flotante",
+            )
+            .build(app)?,
+        )
         .item(&MenuItemBuilder::with_id("settings", "Settings").build(app)?)
         .item(&MenuItemBuilder::with_id("check_updates", "Check for Updates").build(app)?)
         .item(&PredefinedMenuItem::separator(app)?)
