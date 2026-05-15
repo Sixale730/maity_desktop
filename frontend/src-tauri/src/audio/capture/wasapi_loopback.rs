@@ -214,12 +214,20 @@ fn capture_loop(
         // Duración del buffer: 100ms en unidades de 100 nanosegundos
         let buffer_duration: i64 = 1_000_000; // 100ms
 
-        // Inicializar con flag LOOPBACK
-        // IMPORTANTE: Debe ser SHARED mode para loopback
-        // Si Initialize() falla, format_guard se dropea automáticamente y libera memoria
+        // Inicializar con flag LOOPBACK + EVENTCALLBACK.
+        // IMPORTANTE: Debe ser SHARED mode para loopback.
+        //
+        // Iter 11 fix: agregar AUDCLNT_STREAMFLAGS_EVENTCALLBACK porque más
+        // abajo se llama SetEventHandle(). Sin este flag, SetEventHandle
+        // retorna AUDCLNT_E_EVENTHANDLE_NOT_EXPECTED (0x88890011), el thread
+        // muere a los ~30ms y el sys audio queda silenciado. Esto explicaba
+        // por qué "YouTube se detecta por mic, no por bocina" — el loopback
+        // moría calladito durante grabación. Síntoma reportado iter 10.
+        //
+        // Si Initialize() falla, format_guard se dropea automáticamente y libera memoria.
         audio_client.Initialize(
             AUDCLNT_SHAREMODE_SHARED,
-            AUDCLNT_STREAMFLAGS_LOOPBACK,
+            AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
             buffer_duration,
             0,
             format_guard.as_ptr(),
