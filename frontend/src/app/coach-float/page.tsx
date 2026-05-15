@@ -56,6 +56,59 @@ function AudioBars5({ rms, color, active }: { rms: number; color: string; active
   );
 }
 
+// Idle empty state del drawer (iter 13): cuando el user abre el drawer sin
+// haber empezado a grabar (y sin tips de sesion previa), mostramos esta
+// pantalla en lugar de HealthGauge+Timer+TalkSplit con valores stale. El
+// gradient del icon ring replica el `linear-gradient(135deg, ${tipColor}1a ...)`
+// del tip card para reforzar la coherencia visual del overlay.
+function CoachFloatIdleEmptyState({
+  onStart,
+  busy,
+  errorMsg,
+}: {
+  onStart: () => void;
+  busy: boolean;
+  errorMsg: string | null;
+}) {
+  return (
+    <div className="flex-1 flex flex-col items-center justify-center px-6 py-4 text-center">
+      <div
+        className="w-12 h-12 rounded-full flex items-center justify-center mb-4"
+        style={{
+          background: 'linear-gradient(135deg, rgba(99,102,241,0.25) 0%, rgba(236,72,153,0.15) 100%)',
+          border: '1px solid rgba(99,102,241,0.3)',
+        }}
+      >
+        <Sparkles className="w-6 h-6 text-indigo-300" />
+      </div>
+      <h2 className="text-sm font-semibold text-white mb-1.5">
+        Listo para tu próxima sesión
+      </h2>
+      <p className="text-[11px] text-white/55 leading-snug mb-4 max-w-[240px]">
+        Inicia una grabación para recibir coaching y métricas en tiempo real
+      </p>
+      <button
+        onClick={onStart}
+        disabled={busy}
+        className="flex items-center gap-2 px-4 py-2 rounded-full bg-white hover:bg-indigo-500 text-black hover:text-white disabled:opacity-50 text-xs font-semibold transition-all shadow-lg shadow-white/10"
+        aria-label="Iniciar grabación"
+      >
+        {busy ? (
+          <div className="w-3 h-3 border-2 border-current border-t-transparent rounded-full animate-spin" />
+        ) : (
+          <Play className="w-3.5 h-3.5 fill-current" />
+        )}
+        Iniciar grabación
+      </button>
+      {errorMsg && (
+        <p className="mt-3 text-[10px] text-red-400 max-w-[260px]" title={errorMsg}>
+          {errorMsg}
+        </p>
+      )}
+    </div>
+  );
+}
+
 // healthColor() removido en iter 5 — el modo compact era el único que lo usaba
 // para colorear el número de health (75 → verde). El nuevo compact no muestra
 // health, así que la función quedó huérfana. Si el expanded layout llega a
@@ -422,6 +475,15 @@ export default function CoachFloatPage() {
     }
   };
 
+  // Wrapper para diferenciar (en telemetria) clicks en el CTA del idle drawer
+  // vs el Play icon de la barra superior. Asi podemos medir cual convierte mas.
+  const handleStartFromCta = () => {
+    Analytics.track('coach_float.idle_cta_clicked', {
+      source: 'idle_drawer_cta',
+    }).catch(() => {});
+    handleStart();
+  };
+
   // Iter 9: handler para selección de dispositivo desde la mini-ventana
   // device-picker (que emite el evento global `device-picker-selected`).
   // - Idle: solo guarda la elección. Se aplica al próximo start_recording.
@@ -732,6 +794,8 @@ export default function CoachFloatPage() {
             borderTop: '1px solid rgba(255,255,255,0.06)',
           }}
         >
+          {(recordingActive || totalTips > 0) ? (
+          <>
           {/* HealthGauge + Tiempo card */}
           <div className="px-3 py-2 shrink-0 flex items-center gap-3">
             <HealthGauge value={health} />
@@ -760,12 +824,9 @@ export default function CoachFloatPage() {
             />
           </div>
 
-          {/* Tip card + nav + feedback — visible cuando hay grabación activa O
-              cuando hay tips para revisar. En idle limpio (sin tips, sin grabación)
-              el card se oculta para no mostrar el "ESPERANDO/Escuchando..." stale
-              que era ruido visual. Los tips se limpian al stop via useCoachTips,
-              así que post-stop el card vuelve a estar oculto. */}
-          {(recordingActive || totalTips > 0) && (
+          {/* Tip card + nav + feedback. El gate condicional se movio al outer
+              ternary del drawer (idle empty state vs full content), asi que
+              cuando llegamos aqui ya sabemos que recordingActive || totalTips>0. */}
           <div className="flex-1 flex flex-col px-3 pb-2 gap-2 min-h-0 overflow-hidden">
             <div
               className="flex-1 rounded-lg border p-2.5 flex flex-col min-h-0 overflow-hidden"
@@ -873,6 +934,13 @@ export default function CoachFloatPage() {
               </div>
             )}
           </div>
+          </>
+          ) : (
+            <CoachFloatIdleEmptyState
+              onStart={handleStartFromCta}
+              busy={busy}
+              errorMsg={errorMsg}
+            />
           )}
         </div>
       )}
