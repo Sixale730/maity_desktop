@@ -61,12 +61,28 @@ use audio::{list_audio_devices, AudioDevice, trigger_audio_permission};
 use log::{error as log_error, info as log_info};
 use notifications::commands::NotificationManagerState;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::{AppHandle, Emitter, Manager, Runtime};
+use tauri_plugin_store::StoreExt;
 use tokio::sync::RwLock;
 
 // Global language preference storage (default to Spanish for Latin American market)
 static LANGUAGE_PREFERENCE: std::sync::LazyLock<StdMutex<String>> =
     std::sync::LazyLock::new(|| StdMutex::new("es".to_string()));
+
+// True cuando Maity arrancó por el autostart del OS (Windows registry / macOS LaunchAgent /
+// Linux .desktop). Determinado al inicio leyendo `--autostart` de los args del proceso o de
+// los argv que llegan por el callback de `tauri-plugin-single-instance`. Se consulta en el
+// listener `app-ready` para decidir si la main window aparece visible+enfocada (apertura
+// manual) o visible+minimizada-en-taskbar (apertura por boot, patrón Steam/Discord).
+static STARTED_AT_BOOT: AtomicBool = AtomicBool::new(false);
+
+// Flag one-shot que `stop_recording_from_widget` y `coach_float_stop_recording` setean a
+// true ANTES de detener cuando la main window estaba minimizada. El `on_window_event`
+// handler de la main window lo consume al primer `Focused(true)` (disparado por el hard
+// navigate de `useRecordingStop` a `/conversations`) y re-minimiza la ventana, preservando
+// el patrón Steam: el procesamiento ocurre en background sin imponer UI al usuario.
+pub static KEEP_MAIN_MINIMIZED_AFTER_STOP: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug, Deserialize)]
 struct RecordingArgs {
@@ -397,8 +413,55 @@ pub fn get_language_preference_internal() -> Option<String> {
     LANGUAGE_PREFERENCE.lock().ok().map(|lang| lang.clone())
 }
 
+/// Restaura la main window y le da foco. Invocado desde el frontend cuando el usuario hace
+/// click en la notificación nativa "Grabación lista" — el patrón "click la notif → ventana
+/// al frente" tipo Slack/Teams. Idempotente: si la ventana ya está visible/enfocada, no-op.
+#[tauri::command]
+async fn unminimize_and_focus_main<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
+    if let Some(main) = app.get_webview_window("main") {
+        let _ = main.unminimize();
+        let _ = main.show();
+        let _ = main.set_focus();
+    }
+    Ok(())
+}
+
+/// Fallback del Flujo G del plan: si el `WindowEvent::Focused(true)` no dispara con el hard
+/// navigate en Tauri 2 + Windows (a verificar en testing), el widget invoca este comando
+/// 600ms post-stop como red de seguridad. Lee el flag, si true minimiza y lo limpia. El
+/// `swap` garantiza que es one-shot — segundas invocaciones son no-op.
+#[tauri::command]
+async fn minimize_main_if_was_minimized<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
+    if KEEP_MAIN_MINIMIZED_AFTER_STOP.swap(false, Ordering::Relaxed) {
+        if let Some(main) = app.get_webview_window("main") {
+            let _ = main.minimize();
+        }
+    }
+    Ok(())
+}
+
+/// Permite al frontend distinguir entre `pnpm run tauri:dev` / `tauri:build:debug` y un
+/// build de release firmado/instalado. `useAutostartBootstrap` lo consulta para SALTAR el
+/// auto-registro del autostart en builds de desarrollo — registrar el path absoluto del
+/// exe de `target/debug/` en `HKCU\…\Run` provocaría que Windows intente lanzar un exe
+/// que ya no existe tras el siguiente `cargo clean` o cambio de target.
+#[tauri::command]
+fn is_production_build() -> bool {
+    !cfg!(debug_assertions)
+}
+
 pub fn run() {
     log::set_max_level(log::LevelFilter::Info);
+
+    // Detectar si el proceso fue lanzado por el autostart del OS. El plugin
+    // `tauri-plugin-autostart` pasa `--autostart` como argumento al registrar el binario en
+    // el Run key de Windows / LaunchAgent de macOS / .desktop de Linux. Cuando es true, el
+    // listener `app-ready` minimiza la main window en lugar de enfocarla (patrón Steam).
+    let started_at_boot = std::env::args().any(|arg| arg == "--autostart");
+    if started_at_boot {
+        STARTED_AT_BOOT.store(true, Ordering::Relaxed);
+        log::info!("STARTED_AT_BOOT=true (detectado --autostart en args)");
+    }
 
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
@@ -407,6 +470,10 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_deep_link::init())
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            Some(vec!["--autostart"]),
+        ))
         .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
             // On Windows/Linux, deep-link URLs arrive as CLI args on a new instance.
             // The single-instance plugin (with deep-link feature) forwards them here.
@@ -416,8 +483,17 @@ pub fn run() {
                 log::info!("Deep link received via single-instance: {}", url);
                 let _ = app.emit("deep-link-received", url.clone());
             }
-            // Bring main window to front when single-instance callback fires
+            // Si una segunda instancia se lanzó por autostart (poco común — el usuario
+            // probablemente la abrió manualmente mientras la primera ya corría), respetar
+            // el flag pero NO sobrescribir si la primera era manual. La primera gana.
+            let from_autostart = argv.iter().any(|arg| arg == "--autostart");
+            if from_autostart {
+                log::info!("Second instance from autostart, ignoring focus (main may be intentionally minimized)");
+                return;
+            }
+            // Bring main window to front when single-instance callback fires (manual launch)
             if let Some(window) = app.get_webview_window("main") {
+                let _ = window.unminimize();
                 let _ = window.set_focus();
                 let _ = window.show();
             }
@@ -474,16 +550,31 @@ pub fn run() {
             // Listen for "app-ready" event from frontend to show the window.
             // The window starts hidden (visible: false in tauri.conf.json) to avoid
             // showing a black screen or ChunkLoadError while Next.js compiles/loads.
+            //
+            // Bifurcación introducida con el autostart (US-2):
+            // - STARTED_AT_BOOT=true → show()+minimize(): la ventana aparece en taskbar
+            //   pero no se abre en pantalla (patrón Steam/Discord).
+            // - STARTED_AT_BOOT=false (apertura manual) → show()+set_focus(): comportamiento
+            //   histórico, ventana visible y enfocada.
             let app_handle_for_show = _app.handle().clone();
             _app.listen("app-ready", move |_event| {
-                log::info!("Frontend signaled app-ready, showing main window");
+                let at_boot = STARTED_AT_BOOT.load(Ordering::Relaxed);
+                log::info!("Frontend signaled app-ready, started_at_boot={}", at_boot);
                 if let Some(window) = app_handle_for_show.get_webview_window("main") {
                     let _ = window.show();
-                    let _ = window.set_focus();
+                    if at_boot {
+                        // Visible en taskbar de Windows pero no en pantalla. El usuario puede
+                        // clickear el ícono para restaurarla cuando quiera.
+                        let _ = window.minimize();
+                    } else {
+                        let _ = window.set_focus();
+                    }
                 }
             });
 
-            // Safety fallback: show window after 3s even if frontend hasn't signaled
+            // Safety fallback: show window after 3s even if frontend hasn't signaled.
+            // También respeta STARTED_AT_BOOT para no romper el patrón silencioso si por
+            // alguna razón el frontend nunca emite app-ready en arranque por boot.
             let app_handle_for_fallback = _app.handle().clone();
             std::thread::spawn(move || {
                 std::thread::sleep(std::time::Duration::from_secs(3));
@@ -491,10 +582,45 @@ pub fn run() {
                     if !window.is_visible().unwrap_or(true) {
                         log::warn!("Fallback: showing window after 3s timeout");
                         let _ = window.show();
-                        let _ = window.set_focus();
+                        if STARTED_AT_BOOT.load(Ordering::Relaxed) {
+                            let _ = window.minimize();
+                        } else {
+                            let _ = window.set_focus();
+                        }
                     }
                 }
             });
+
+            // WindowEvent handler para preservar el estado minimizado de la main window
+            // después del hard navigate de useRecordingStop (US-4 / Flujo E del plan).
+            //
+            // Cuando el usuario apreta Stop en el widget con main minimizada:
+            // 1. `stop_recording_from_widget` snapshot `was_minimized` y setea el flag.
+            // 2. `useRecordingStop` hace `window.location.href = '/conversations?...'` —
+            //    Chromium en Tauri/Windows trae la ventana al frente al navegar.
+            // 3. Este handler captura el `Focused(true)` resultante, consume el flag
+            //    one-shot vía `swap(false, ...)` y re-minimiza inmediatamente.
+            //
+            // El `swap` garantiza que solo se aplica una vez por stop — apariciones
+            // posteriores de Focused (usuario restaurando manualmente) no se afectan.
+            if let Some(main) = _app.get_webview_window("main") {
+                let main_for_event = main.clone();
+                main.on_window_event(move |event| {
+                    if let tauri::WindowEvent::Focused(true) = event {
+                        if KEEP_MAIN_MINIMIZED_AFTER_STOP.swap(false, Ordering::Relaxed) {
+                            log::info!("Re-minimizing main after post-stop hard navigate");
+                            let _ = main_for_event.minimize();
+                        }
+                    }
+                });
+            }
+
+            // NOTA: el auto-open del modal flotante vive en el spawn de `coach_float`
+            // más abajo (línea ~654). El `recording-widget` legacy (en `audio/recording_widget.rs`)
+            // existe como ventana auxiliar opcional pero NO se abre automáticamente — el
+            // commit 45a4cbd lo reemplazó con el coach-float como única ventana flotante de
+            // la app. El bug "el modal no aparece al boot" se resolvió quitando el spawn
+            // duplicado de aquí y forzando la pref del coach-float a visible en autostart.
 
             // Register deep-link scheme for OAuth callbacks
             #[cfg(desktop)]
@@ -512,6 +638,38 @@ pub fn run() {
                 log::error!("Failed to create system tray: {}", e);
             }
 
+            // Migración one-shot del pref del coach-float (v1). Sesiones previas
+            // pudieron dejar `coach_float_visible=false` por close-with-X o por bugs en
+            // builds anteriores (el flag persiste cross-launch). Esto bloqueaba que el
+            // modal apareciera al arrancar manualmente porque `should_auto_open_coach()`
+            // respetaba el false histórico.
+            //
+            // Esta migración corre UNA SOLA VEZ por instalación (custodiada por su
+            // propio flag `coach_pref_migration_v1_done`), corrige el estado sucio
+            // forzando `coach_float_visible=true`, y NO sobrescribe futuras decisiones
+            // del usuario — si después de la migración el usuario apaga el toggle en
+            // Settings, se respeta porque la migración ya no vuelve a correr.
+            match _app.store("widget-preferences.json") {
+                Ok(store) => {
+                    let migration_done = store
+                        .get("coach_pref_migration_v1_done")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+                    if !migration_done {
+                        store.set("coach_float_visible", serde_json::Value::Bool(true));
+                        store.set("coach_pref_migration_v1_done", serde_json::Value::Bool(true));
+                        if let Err(e) = store.save() {
+                            log::warn!("Failed to save coach pref migration v1: {}", e);
+                        } else {
+                            log::info!("Coach-float pref migration v1 applied (forced visible=true)");
+                        }
+                    } else {
+                        log::debug!("Coach-float pref migration v1 already applied, skipping");
+                    }
+                }
+                Err(e) => log::warn!("Failed to access widget-preferences.json for migration: {}", e),
+            }
+
             // Auto-abrir el coach-float como ÚNICA ventana flotante de la app.
             // En idle arranca en modo compact (320×130, esquina inferior derecha)
             // mostrando sólo el botón "Iniciar grabación". Al iniciar grabación,
@@ -523,7 +681,26 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 // Pequeña pausa para que la main window arranque primero.
                 tokio::time::sleep(tokio::time::Duration::from_millis(800)).await;
-                if coach::commands::should_auto_open_coach(&app_handle_for_coach) {
+
+                // Override autostart: si el OS lanzó Maity al boot, FORZAR el coach-float
+                // a abrir (y persistir pref=true) aunque el usuario lo haya cerrado con
+                // la X en la sesión previa. La flotante es el único entry point cuando la
+                // main está minimizada — sin ella el usuario quedaría sin forma de iniciar
+                // grabación tras un reinicio. La pref persistida en true significa que en
+                // siguientes aperturas manuales también aparece, hasta que el usuario lo
+                // desactive explícitamente desde Settings.
+                let at_boot = STARTED_AT_BOOT.load(Ordering::Relaxed);
+                let should_open = if at_boot {
+                    if let Err(e) = coach::commands::save_coach_visibility_pref(&app_handle_for_coach, true) {
+                        log::warn!("Failed to force coach pref=true at boot: {}", e);
+                    }
+                    log::info!("STARTED_AT_BOOT=true → forzando coach-float visible");
+                    true
+                } else {
+                    coach::commands::should_auto_open_coach(&app_handle_for_coach)
+                };
+
+                if should_open {
                     if let Err(e) = coach::commands::open_floating_coach(
                         app_handle_for_coach,
                         Some(true), // start_compact = true (idle layout)
@@ -1113,6 +1290,10 @@ pub fn run() {
             audio::recording_widget::is_recording_widget_open,
             audio::recording_widget::stop_recording_from_widget,
             audio::recording_widget::recording_widget_request_start,
+            // Visibility helpers para el flujo autostart+widget (US-4)
+            unminimize_and_focus_main,
+            minimize_main_if_was_minimized,
+            is_production_build,
             coach::commands::coach_chat,
             coach::trigger::coach_analyze_trigger,
             coach::nudge_engine::coach_evaluate_nudge,

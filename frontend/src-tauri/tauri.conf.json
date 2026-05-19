@@ -65,6 +65,7 @@
                         "updater:default",
                         "process:default",
                         "deep-link:default",
+                        "autostart:default",
                         {
                             "identifier": "fs:scope",
                             "allow": [

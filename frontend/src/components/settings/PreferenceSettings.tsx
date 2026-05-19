@@ -2,9 +2,10 @@
 
 import { useEffect, useState, useRef } from "react"
 import { Switch } from "@/components/ui/switch"
-import { FolderOpen, LogOut, Palette, Mic } from "lucide-react"
+import { FolderOpen, LogOut, Palette, Mic, Power } from "lucide-react"
 import { ThemeSelector } from "@/components/settings/ThemeSelector"
 import { invoke } from "@tauri-apps/api/core"
+import { enable as enableAutostart, disable as disableAutostart, isEnabled as isAutostartEnabled } from "@tauri-apps/plugin-autostart"
 import Analytics from "@/lib/analytics"
 import { useConfig, NotificationSettings } from "@/contexts/ConfigContext"
 import { useAuth } from "@/contexts/AuthContext"
@@ -59,6 +60,39 @@ export function PreferenceSettings() {
       logger.warn('Failed to set coach-float visibility:', err);
       // Revertir UI si falló el backend.
       setRecordingWidgetVisible(!next);
+    }
+  };
+
+  // Preferencia de autostart con el SO (US-1 / US-5 del plan autostart).
+  // Lectura inicial via plugin oficial; el estado refleja el OS real (registry Windows /
+  // LaunchAgent macOS / .desktop Linux). En builds debug el plugin retorna su estado pero
+  // no se debe escribir (riesgo de path inválido) — el toggle se muestra disabled.
+  const [autostartEnabled, setAutostartEnabled] = useState<boolean | null>(null);
+  const [isProductionBuild, setIsProductionBuild] = useState<boolean>(true);
+  useEffect(() => {
+    let cancelled = false;
+    Promise.all([
+      isAutostartEnabled().catch(() => false),
+      invoke<boolean>('is_production_build').catch(() => true),
+    ]).then(([enabled, isProd]) => {
+      if (cancelled) return;
+      setAutostartEnabled(enabled);
+      setIsProductionBuild(isProd);
+    });
+    return () => { cancelled = true; };
+  }, []);
+  const handleToggleAutostart = async (next: boolean) => {
+    setAutostartEnabled(next);
+    try {
+      if (next) {
+        await enableAutostart();
+      } else {
+        await disableAutostart();
+      }
+      await Analytics.track('autostart_toggled', { enabled: next.toString() });
+    } catch (err) {
+      logger.warn('Failed to toggle autostart:', err);
+      setAutostartEnabled(!next);
     }
   };
 
@@ -227,6 +261,33 @@ export function PreferenceSettings() {
             checked={recordingWidgetVisible ?? true}
             onCheckedChange={handleToggleRecordingWidget}
             disabled={recordingWidgetVisible === null}
+          />
+        </div>
+      </div>
+
+      {/* Autostart Section (US-5) */}
+      <div className="bg-card rounded-lg border border-border p-6 shadow-sm">
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <div className="flex items-center gap-2 mb-2">
+              <Power className="w-5 h-5 text-foreground" />
+              <h3 className="text-lg font-semibold text-foreground">Iniciar Maity con mi PC</h3>
+            </div>
+            <p className="text-sm text-muted-foreground">
+              Cuando enciendas tu computadora, Maity arrancará automáticamente en segundo plano
+              {' '}— la ventana principal queda minimizada en la barra de tareas y solo aparece
+              {' '}el widget flotante de grabación, listo para usar. Igual que Steam o Discord.
+              {!isProductionBuild && (
+                <span className="block mt-2 text-amber-500 text-xs">
+                  Deshabilitado en builds de desarrollo (el path del ejecutable cambiaría con cada compilación).
+                </span>
+              )}
+            </p>
+          </div>
+          <Switch
+            checked={autostartEnabled ?? false}
+            onCheckedChange={handleToggleAutostart}
+            disabled={autostartEnabled === null || !isProductionBuild}
           />
         </div>
       </div>

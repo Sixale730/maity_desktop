@@ -12,6 +12,7 @@ use crate::summary::llm_client::{generate_summary, LLMProvider};
 use once_cell::sync::Lazy;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::Ordering;
 use tauri::{AppHandle, Emitter, LogicalPosition, Manager, Runtime};
 use tauri_plugin_store::StoreExt;
 use tracing::{info, warn};
@@ -364,25 +365,16 @@ pub async fn coach_float_set_visibility_pref<R: Runtime>(
     Ok(())
 }
 
-/// Solicita al frontend principal que inicie la grabación reusando el flujo
-/// canónico de `useRecordingStart`. Hace focus a la main window (para que
-/// Chromium reactive el JS loop si estaba suspendido) y emite el evento
-/// `widget-request-start-recording` que escucha el `RecordingWidgetListener`
-/// global. El sleep de 150ms mitiga la race condition donde el evento se
-/// emite antes de que el listener React se re-suscriba.
+/// Solicita al frontend principal que inicie la grabación reusando el flujo canónico de
+/// `useRecordingStart`. Emite directamente el evento sin tocar la visibilidad de la main
+/// window — el `RecordingWidgetListener` sigue activo aunque la ventana esté minimizada
+/// gracias a las flags Chromium `--disable-renderer-backgrounding` configuradas en
+/// `tauri.conf.json` (coherente con `recording_widget_request_start`, US-3).
 #[tauri::command]
 pub async fn coach_float_request_start<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
-    if let Some(main) = app.get_webview_window("main") {
-        let _ = main.unminimize();
-        let _ = main.show();
-        let _ = main.set_focus();
-    } else {
-        warn!("Coach request start: main window not found");
-    }
-    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
     app.emit(COACH_REQUEST_START_EVENT, ())
         .map_err(|e| format!("Failed to emit widget-request-start-recording: {}", e))?;
-    info!("📡 Coach-float solicitó iniciar grabación al main");
+    info!("📡 Coach-float solicitó iniciar grabación al main (sin alterar visibilidad)");
     Ok(())
 }
 
@@ -400,29 +392,34 @@ pub async fn coach_float_request_start_with_devices<R: Runtime>(
     mic_device: Option<String>,
     sys_device: Option<String>,
 ) -> Result<(), String> {
-    if let Some(main) = app.get_webview_window("main") {
-        let _ = main.unminimize();
-        let _ = main.show();
-        let _ = main.set_focus();
-    } else {
-        warn!("Coach request start with devices: main window not found");
-    }
-    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
     let payload = serde_json::json!({
         "micDevice": mic_device,
         "sysDevice": sys_device,
     });
     app.emit(COACH_REQUEST_START_EVENT, payload)
         .map_err(|e| format!("Failed to emit widget-request-start-recording with devices: {}", e))?;
-    info!("📡 Coach-float solicitó iniciar grabación con devices custom");
+    info!("📡 Coach-float solicitó iniciar grabación con devices custom (sin alterar visibilidad)");
     Ok(())
 }
 
 /// Detiene la grabación generando el save_path internamente (mismo patrón
 /// que `tray.rs:206-244` y el `stop_recording_from_widget` viejo). Permite al
 /// coach-float detener sin que el frontend tenga que conocer `app_data_dir`.
+///
+/// SNAPSHOT del estado minimizado de la main window (US-4, coherente con
+/// `stop_recording_from_widget`): si el usuario estaba con main minimizada al apretar
+/// Stop en el coach-float, seteamos `KEEP_MAIN_MINIMIZED_AFTER_STOP=true` para que el
+/// handler de `on_window_event` re-minimice tras el hard navigate del `useRecordingStop`.
 #[tauri::command]
 pub async fn coach_float_stop_recording<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
+    if let Some(main) = app.get_webview_window("main") {
+        let was_minimized = main.is_minimized().unwrap_or(false);
+        crate::KEEP_MAIN_MINIMIZED_AFTER_STOP.store(was_minimized, Ordering::Relaxed);
+        if was_minimized {
+            info!("Coach stop: main estaba minimizada, flag set para re-minimize post-navigate");
+        }
+    }
+
     let data_dir = app
         .path()
         .app_data_dir()
@@ -458,7 +455,11 @@ fn load_coach_visibility_pref<R: Runtime>(app: &AppHandle<R>) -> Option<bool> {
     value.as_bool()
 }
 
-fn save_coach_visibility_pref<R: Runtime>(app: &AppHandle<R>, visible: bool) -> Result<(), String> {
+/// Persiste la preferencia de visibilidad del coach-float al store. `pub(crate)` para que
+/// el `setup()` en lib.rs pueda forzar la pref a `true` al arrancar por autostart — la
+/// flotante es el único entry point cuando la main window está minimizada, así que el
+/// boot-by-OS sobrescribe cualquier "X→hide" previo en sesión anterior.
+pub(crate) fn save_coach_visibility_pref<R: Runtime>(app: &AppHandle<R>, visible: bool) -> Result<(), String> {
     let store = app
         .store(COACH_PREFS_FILE)
         .map_err(|e| format!("Failed to access widget preferences store: {}", e))?;

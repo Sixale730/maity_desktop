@@ -266,11 +266,17 @@ export function useRecordingStop(
           // queda solo local. await garantiza que las 3 jobs esten enqueued.
           await enqueueCloudSync(freshTranscripts, meetingId, savedMeetingName, wallClockDuration);
 
-          // Native OS notification (fire-and-forget; el OS la maneja, sobrevive al unload)
+          // Native OS notification (fire-and-forget; el OS la maneja, sobrevive al unload).
+          // Si la main window estaba minimizada al hacer stop, el flag global
+          // KEEP_MAIN_MINIMIZED_AFTER_STOP la mantiene minimizada tras el hard navigate.
+          // La notif accionable permite al usuario decidir si quiere revisar la reunión
+          // ahora (click "Abrir Maity" → unminimize_and_focus_main) o más tarde (la
+          // ventana queda minimizada y el modal feedback espera).
           import('@/lib/nativeNotification').then(({ sendNativeNotification }) =>
             sendNativeNotification({
-              title: 'Grabación guardada',
-              body: `${freshTranscripts.length} segmentos de transcripción guardados.`,
+              title: 'Grabación lista',
+              body: `${freshTranscripts.length} segmentos guardados. Click para revisar tu reunión.`,
+              actionTypeId: 'open-main-window',
             })
           ).catch(() => {});
 

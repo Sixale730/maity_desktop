@@ -41,6 +41,8 @@ import { fileLogger } from '@/lib/fileLogger'
 import { platformLogger } from '@/lib/platformLogger'
 import { usePageViewTracker } from '@/hooks/usePageViewTracker'
 import { useMicrophoneFallbackToast } from '@/hooks/useMicrophoneFallbackToast'
+import { useAutostartBootstrap } from '@/hooks/useAutostartBootstrap'
+import { registerNotificationActionHandler } from '@/lib/nativeNotification'
 
 // Create a client outside the component to avoid re-creating it on every render
 const queryClient = new QueryClient({
@@ -277,6 +279,25 @@ function AppContent({ children }: { children: React.ReactNode }) {
   // device is actually capturing audio so silent transcription failures
   // stop being a mystery.
   useMicrophoneFallbackToast()
+
+  // Registra Maity en el autostart del OS al primer arranque post-instalación (US-1).
+  // El hook hace no-op en builds debug y en arranques subsiguientes. Mostrar el toast
+  // requiere que `<Toaster />` ya esté montado (lo está en RootLayout, fuera de AuthGate).
+  useAutostartBootstrap()
+
+  // Handler global para la notif accionable "Grabación lista" (US-4): cuando el usuario
+  // hace click en "Abrir Maity" desde la notif del OS, restauramos la main window con
+  // foco para que el modal de feedback (que está esperando por `feedback_pending_meeting_id`
+  // en sessionStorage) sea visible. Idempotente — se registra una vez por mount.
+  useEffect(() => {
+    void registerNotificationActionHandler('open-main-window', async () => {
+      try {
+        await invoke('unminimize_and_focus_main')
+      } catch (err) {
+        logger.warn('[Layout] unminimize_and_focus_main failed:', err)
+      }
+    })
+  }, [])
 
   // Telemetry: emit app.open once on mount + app.close on tab/window close.
   // Multiple safeguards because beforeunload is unreliable in Tauri native windows

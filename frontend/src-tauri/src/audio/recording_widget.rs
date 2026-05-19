@@ -12,6 +12,7 @@
 //! La preferencia de visibilidad se persiste en `widget-preferences.json`
 //! vía tauri_plugin_store, mismo patrón que `onboarding-status.json`.
 
+use std::sync::atomic::Ordering;
 use tauri::{AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Runtime, Size};
 use tauri_plugin_store::StoreExt;
 use tracing::{info, warn};
@@ -157,8 +158,24 @@ pub async fn is_recording_widget_open<R: Runtime>(app: AppHandle<R>) -> bool {
 /// Wrapper para stop_recording: genera el save_path internamente para que el
 /// frontend del widget no necesite conocer `app_data_dir`. Mismo patrón que el
 /// handler `stop_recording_handler` del tray (tray.rs:196-244).
+///
+/// SNAPSHOT del estado minimizado de la main window (US-4): si el usuario apretó Stop con
+/// la ventana minimizada (apertura por autostart o minimización manual durante grabación),
+/// seteamos `KEEP_MAIN_MINIMIZED_AFTER_STOP=true`. El `useRecordingStop` del frontend hace
+/// `window.location.href = '/conversations?...'` que en Chromium/Tauri trae la ventana al
+/// frente automáticamente — el `on_window_event` handler en lib.rs detecta el `Focused(true)`
+/// resultante y re-minimiza, preservando el patrón Steam.
 #[tauri::command]
 pub async fn stop_recording_from_widget<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
+    // Snapshot ANTES del stop: el flag debe estar listo para cuando dispare el hard navigate.
+    if let Some(main) = app.get_webview_window(MAIN_LABEL) {
+        let was_minimized = main.is_minimized().unwrap_or(false);
+        crate::KEEP_MAIN_MINIMIZED_AFTER_STOP.store(was_minimized, Ordering::Relaxed);
+        if was_minimized {
+            info!("Widget stop: main estaba minimizada, flag set para re-minimize post-navigate");
+        }
+    }
+
     let data_dir = app
         .path()
         .app_data_dir()
@@ -188,36 +205,25 @@ pub async fn stop_recording_from_widget<R: Runtime>(app: AppHandle<R>) -> Result
     }
 }
 
-/// Solicita al frontend principal que inicie la grabación reusando todo el
-/// flujo canónico de `useRecordingStart` (validación de Deepgram proxy,
-/// Parakeet ready, contextos React, analytics, etc.). Lo hace en 2 pasos:
+/// Solicita al frontend principal que inicie la grabación reusando el flujo canónico de
+/// `useRecordingStart` (validación de Deepgram proxy, Parakeet ready, contextos React,
+/// analytics, etc.). Emite directamente el evento sin tocar la visibilidad de la main
+/// window — el `RecordingWidgetListener` sigue activo aunque la ventana esté minimizada
+/// gracias a las flags Chromium `--disable-renderer-backgrounding` configuradas en
+/// `tauri.conf.json` (US-3 del plan autostart).
 ///
-/// 1. Asegura que la main window esté visible y enfocada (unminimize + show +
-///    set_focus) — crítico porque Chromium suspende JS en webviews ocultos,
-///    por lo que un emit sin foco no es procesado.
-/// 2. Emite `widget-request-start-recording` que la página principal escucha.
+/// El widget muestra `busy` mientras espera el evento `recording-start-complete` que
+/// cierra el loop. Si no llega en 5s, el widget muestra error inline.
 ///
-/// El widget muestra `busy` mientras espera el evento `recording-start-complete`
-/// que cierra el loop. Si no llega en 5s, el widget muestra error inline.
+/// HISTORIA: este comando solía hacer `unminimize+show+set_focus+sleep(150ms)` para
+/// despertar el webview suspendido por Chromium. Las flags Chromium eliminan la suspensión,
+/// así que el wake-up dance se removió — la main permanece minimizada mientras el usuario
+/// graba, preservando su foco visual sobre Zoom/Teams/Meet.
 #[tauri::command]
 pub async fn recording_widget_request_start<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
-    if let Some(main) = app.get_webview_window(MAIN_LABEL) {
-        let _ = main.unminimize();
-        let _ = main.show();
-        let _ = main.set_focus();
-    } else {
-        warn!("Widget request start: main window not found");
-    }
-    // Race condition mitigation: cuando la main window estaba minimizada,
-    // Chromium suspende el JS loop del webview. set_focus la despierta pero
-    // el listener React tarda ~100-150 ms en re-subscribirse. Si emitimos
-    // antes, el evento se pierde y el usuario tiene que apretar Grabar dos
-    // veces. 150 ms es suficiente para el wake-up y está debajo del umbral
-    // de respuesta percibida como inmediata (<200 ms).
-    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
     app.emit(REQUEST_START_EVENT, ())
         .map_err(|e| format!("Failed to emit widget-request-start-recording: {}", e))?;
-    info!("📡 Widget solicitó iniciar grabación al main");
+    info!("📡 Widget solicitó iniciar grabación al main (sin alterar visibilidad)");
     Ok(())
 }
 
