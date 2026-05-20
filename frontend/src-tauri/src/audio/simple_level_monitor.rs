@@ -211,135 +211,17 @@ pub async fn start_monitoring<R: Runtime>(
         })?;
 
     // SYS PREVIEW THREAD (iter 11) ──────────────────────────────────────────
-    // Captura el output device default usando CPAL — el mismo path que la
-    // pipeline real de grabación (`stream::AudioStream::create_cpal_stream`).
-    // En Windows, CPAL convierte automáticamente `build_input_stream` sobre
-    // un output device en WASAPI loopback shared mode (manejado por la lib).
-    //
-    // Iteración previa intentó usar `SystemAudioCapture::start_system_audio_capture`
-    // (que internamente llama a `WasapiLoopbackCapture::start_capture`) pero
-    // ese path está roto: el thread WASAPI muere a los ~30 ms con error
-    // 0x88890011 (AUDCLNT_E_EVENTHANDLE_NOT_EXPECTED) incluso con el flag
-    // EVENTCALLBACK añadido en el Initialize. Nadie lo había detectado porque
-    // la pipeline real de Windows NO usa ese path — `should_use_enhanced_system_audio`
-    // retorna false fuera de macOS y cae al CPAL fallback.
-    //
-    // Plataformas:
-    // - Windows: CPAL output device → WASAPI loopback automático ✓
-    // - Linux: CPAL puede o no exponer "monitor source" — si default_output_device
-    //   no soporta build_input_stream falla graceful (SYS_RMS queda en 0).
-    // - macOS: CPAL output device no soporta loopback nativo — falla graceful.
-    //   Para macOS sys preview habría que usar CoreAudio/SCK directo (V12).
-    std::thread::Builder::new()
-        .name("audio-level-monitor-sys".to_string())
-        .spawn(move || {
-            let host = cpal::default_host();
-            let output_device = match host.default_output_device() {
-                Some(d) => d,
-                None => {
-                    info!("Sys preview: no default output device, skipping");
-                    return;
-                }
-            };
-
-            let device_name_actual = output_device
-                .name()
-                .unwrap_or_else(|_| "Unknown Output".to_string());
-            debug!("Monitoring output device: {}", device_name_actual);
-
-            let config = match output_device.default_output_config() {
-                Ok(c) => c,
-                Err(e) => {
-                    info!(
-                        "Sys preview: failed to get output config for '{}': {} (graceful skip)",
-                        device_name_actual, e
-                    );
-                    return;
-                }
-            };
-
-            let channels = config.channels();
-            let sample_format = config.sample_format();
-            let stream_config = StreamConfig {
-                channels,
-                sample_rate: config.sample_rate(),
-                buffer_size: cpal::BufferSize::Default,
-            };
-
-            debug!(
-                "Sys monitor config: {}Hz, {} ch, {:?}",
-                config.sample_rate().0,
-                channels,
-                sample_format
-            );
-
-            // CPAL en Windows: build_input_stream sobre un output device →
-            // WASAPI loopback shared mode automático. Si la plataforma no lo
-            // soporta (macOS), build_input_stream retorna error y caemos al
-            // graceful skip.
-            let stream_result = match sample_format {
-                SampleFormat::F32 => {
-                    let ch = channels;
-                    output_device.build_input_stream(
-                        &stream_config,
-                        move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                            compute_and_store_sys_levels_from_interleaved(data, ch);
-                        },
-                        |err| debug!("Sys monitor stream error (non-fatal): {}", err),
-                        None,
-                    )
-                }
-                SampleFormat::I16 => {
-                    let ch = channels;
-                    output_device.build_input_stream(
-                        &stream_config,
-                        move |data: &[i16], _: &cpal::InputCallbackInfo| {
-                            let f32_data: Vec<f32> =
-                                data.iter().map(|&s| s as f32 / 32768.0).collect();
-                            compute_and_store_sys_levels_from_interleaved(&f32_data, ch);
-                        },
-                        |err| debug!("Sys monitor stream error (non-fatal): {}", err),
-                        None,
-                    )
-                }
-                _ => {
-                    info!(
-                        "Sys preview: unsupported sample format {:?} (graceful skip)",
-                        sample_format
-                    );
-                    return;
-                }
-            };
-
-            let stream = match stream_result {
-                Ok(s) => s,
-                Err(e) => {
-                    // macOS: CPAL output devices no soportan loopback → caemos aquí.
-                    // Linux sin PulseAudio monitor source: ídem.
-                    info!(
-                        "Sys preview: loopback not available for '{}': {} (graceful skip)",
-                        device_name_actual, e
-                    );
-                    return;
-                }
-            };
-
-            if let Err(e) = stream.play() {
-                info!("Sys preview: failed to start stream: {} (graceful skip)", e);
-                return;
-            }
-
-            info!("Sys audio preview stream started for '{}'", device_name_actual);
-
-            // Mantener el thread vivo mientras IS_MONITORING — el stream se
-            // dropea al salir y libera el WASAPI loopback automáticamente.
-            while IS_MONITORING.load(Ordering::SeqCst) {
-                std::thread::sleep(std::time::Duration::from_millis(50));
-            }
-
-            drop(stream);
-            info!("Sys audio preview stream stopped for '{}'", device_name_actual);
-        })?;
+    // Captura el output device default. Plataformas:
+    // - Windows: CPAL `build_input_stream` sobre output device → WASAPI loopback
+    //   shared mode automático ✓
+    // - Linux: CPAL puede o no exponer "monitor source" — graceful skip si no
+    //   soporta build_input_stream.
+    // - macOS (iter 12): CPAL no soporta loopback → usamos CoreAudio tap directo
+    //   vía `CoreAudioCapture` (mismo path que la grabación real). Esto requiere
+    //   el permiso "Audio Capture" (NSAudioCaptureUsageDescription, ya presente
+    //   en Info.plist). Si el permiso no está concedido, el tap retorna silencio
+    //   y SYS_RMS queda en 0 (graceful degrade).
+    spawn_sys_preview_thread()?;
 
     // Spawn tokio task to poll atomics and emit Tauri events
     let emit_device_name = device_names
@@ -391,6 +273,194 @@ pub async fn start_monitoring<R: Runtime>(
         }
 
         info!("Audio level emission task ended");
+    });
+
+    Ok(())
+}
+
+/// Spawn del thread que actualiza SYS_RMS/SYS_PEAK. Cross-platform wrapper.
+///
+/// - Windows/Linux: CPAL `build_input_stream` sobre el default output device.
+///   En Windows esto activa WASAPI loopback automáticamente. En Linux depende de
+///   si PulseAudio expone un "monitor source"; si no, graceful skip.
+/// - macOS: CoreAudio tap directo (CPAL no soporta loopback en macOS).
+#[cfg(not(target_os = "macos"))]
+fn spawn_sys_preview_thread() -> Result<()> {
+    std::thread::Builder::new()
+        .name("audio-level-monitor-sys".to_string())
+        .spawn(move || {
+            let host = cpal::default_host();
+            let output_device = match host.default_output_device() {
+                Some(d) => d,
+                None => {
+                    info!("Sys preview: no default output device, skipping");
+                    return;
+                }
+            };
+
+            let device_name_actual = output_device
+                .name()
+                .unwrap_or_else(|_| "Unknown Output".to_string());
+            debug!("Monitoring output device: {}", device_name_actual);
+
+            let config = match output_device.default_output_config() {
+                Ok(c) => c,
+                Err(e) => {
+                    info!(
+                        "Sys preview: failed to get output config for '{}': {} (graceful skip)",
+                        device_name_actual, e
+                    );
+                    return;
+                }
+            };
+
+            let channels = config.channels();
+            let sample_format = config.sample_format();
+            let stream_config = StreamConfig {
+                channels,
+                sample_rate: config.sample_rate(),
+                buffer_size: cpal::BufferSize::Default,
+            };
+
+            debug!(
+                "Sys monitor config: {}Hz, {} ch, {:?}",
+                config.sample_rate().0,
+                channels,
+                sample_format
+            );
+
+            let stream_result = match sample_format {
+                SampleFormat::F32 => {
+                    let ch = channels;
+                    output_device.build_input_stream(
+                        &stream_config,
+                        move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                            compute_and_store_sys_levels_from_interleaved(data, ch);
+                        },
+                        |err| debug!("Sys monitor stream error (non-fatal): {}", err),
+                        None,
+                    )
+                }
+                SampleFormat::I16 => {
+                    let ch = channels;
+                    output_device.build_input_stream(
+                        &stream_config,
+                        move |data: &[i16], _: &cpal::InputCallbackInfo| {
+                            let f32_data: Vec<f32> =
+                                data.iter().map(|&s| s as f32 / 32768.0).collect();
+                            compute_and_store_sys_levels_from_interleaved(&f32_data, ch);
+                        },
+                        |err| debug!("Sys monitor stream error (non-fatal): {}", err),
+                        None,
+                    )
+                }
+                _ => {
+                    info!(
+                        "Sys preview: unsupported sample format {:?} (graceful skip)",
+                        sample_format
+                    );
+                    return;
+                }
+            };
+
+            let stream = match stream_result {
+                Ok(s) => s,
+                Err(e) => {
+                    info!(
+                        "Sys preview: loopback not available for '{}': {} (graceful skip)",
+                        device_name_actual, e
+                    );
+                    return;
+                }
+            };
+
+            if let Err(e) = stream.play() {
+                info!("Sys preview: failed to start stream: {} (graceful skip)", e);
+                return;
+            }
+
+            info!("Sys audio preview stream started for '{}'", device_name_actual);
+
+            while IS_MONITORING.load(Ordering::SeqCst) {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+
+            drop(stream);
+            info!("Sys audio preview stream stopped for '{}'", device_name_actual);
+        })?;
+    Ok(())
+}
+
+/// macOS: usa `CoreAudioCapture` (process tap + aggregate device) — la misma
+/// infraestructura que la grabación real (`stream::AudioStream::create_core_audio_stream`).
+/// El stream entrega samples f32 mono async; los agrupamos en ventanas de ~1024
+/// samples para calcular RMS/peak y actualizar SYS_RMS/SYS_PEAK.
+///
+/// Permiso "Audio Capture": al ser primer arranque del tap puede gatillar el
+/// diálogo del sistema. Si el usuario rechaza, `CoreAudioCapture::new()` aún
+/// puede tener éxito pero el tap entrega silencio → SYS_RMS queda en 0
+/// (graceful degrade, sin error visible al usuario).
+#[cfg(target_os = "macos")]
+fn spawn_sys_preview_thread() -> Result<()> {
+    use crate::audio::capture::CoreAudioCapture;
+    use futures_util::StreamExt;
+
+    tokio::spawn(async move {
+        let capture = match CoreAudioCapture::new() {
+            Ok(c) => c,
+            Err(e) => {
+                info!(
+                    "Sys preview (macOS): CoreAudioCapture::new() failed: {} (graceful skip)",
+                    e
+                );
+                return;
+            }
+        };
+
+        let mut stream = match capture.stream() {
+            Ok(s) => s,
+            Err(e) => {
+                info!(
+                    "Sys preview (macOS): stream() failed: {} (graceful skip)",
+                    e
+                );
+                return;
+            }
+        };
+
+        info!(
+            "Sys audio preview started (macOS, CoreAudio tap @ {} Hz)",
+            stream.sample_rate()
+        );
+
+        // Ventana de ~1024 samples (~21ms @ 48kHz) — balance entre latencia de
+        // actualización del medidor (visualmente fluido) y costo de RMS por window.
+        const WINDOW_SIZE: usize = 1024;
+        let mut window: Vec<f32> = Vec::with_capacity(WINDOW_SIZE);
+
+        while IS_MONITORING.load(Ordering::SeqCst) {
+            match stream.next().await {
+                Some(sample) => {
+                    window.push(sample);
+                    if window.len() >= WINDOW_SIZE {
+                        // Mono — channels=1 porque el tap es global mono.
+                        compute_and_store_sys_levels_from_interleaved(&window, 1);
+                        window.clear();
+                    }
+                }
+                None => {
+                    info!("Sys preview (macOS): stream ended, exiting");
+                    break;
+                }
+            }
+        }
+
+        // Drenar última ventana parcial (mantiene última medición consistente).
+        if !window.is_empty() {
+            compute_and_store_sys_levels_from_interleaved(&window, 1);
+        }
+
+        info!("Sys audio preview stopped (macOS)");
     });
 
     Ok(())
