@@ -184,8 +184,9 @@ export async function setMemoryExtractionPaused(userId: string, paused: boolean)
  *   {
  *     thread_id: string
  *     messages: Array<{ role: 'user' | 'assistant'; content: string }>
- *     approved_memories: string[]
+ *     approved_memories: Array<{ id: string; content: string }>
  *     language: 'es-419'
+ *     client_idempotency_key: string  // uuid, for safe retries
  *   }
  *
  * Response:
@@ -236,18 +237,21 @@ async function generateAssistantReply(params: {
   threadId: string
   history: ChatMessage[]
   newUserContent: string
-  approvedMemories: string[]
+  approvedMemories: Array<{ id: string; content: string }>
+  idempotencyKey: string
 }): Promise<{ content: string; proposedMemories: string[]; threadTitle?: string }> {
-  const { threadId, history, newUserContent, approvedMemories } = params
+  const { threadId, history, newUserContent, approvedMemories, idempotencyKey } = params
 
   const messagesForLLM = [
     ...history.map((m) => ({ role: m.role, content: m.content })),
     { role: 'user' as const, content: newUserContent },
   ]
 
+  const approvedMemoryContents = approvedMemories.map((m) => m.content)
+
   const { data: { session } } = await supabase.auth.getSession()
   if (!session?.access_token) {
-    return placeholderReply(newUserContent, approvedMemories, 'auth')
+    return placeholderReply(newUserContent, approvedMemoryContents, 'auth')
   }
 
   try {
@@ -262,17 +266,18 @@ async function generateAssistantReply(params: {
         messages: messagesForLLM,
         approved_memories: approvedMemories,
         language: 'es-419',
+        client_idempotency_key: idempotencyKey,
       }),
     })
 
     if (response.status === 404) {
-      return placeholderReply(newUserContent, approvedMemories, 'pending')
+      return placeholderReply(newUserContent, approvedMemoryContents, 'pending')
     }
     if (response.status === 401 || response.status === 403) {
-      return placeholderReply(newUserContent, approvedMemories, 'auth')
+      return placeholderReply(newUserContent, approvedMemoryContents, 'auth')
     }
     if (!response.ok) {
-      return placeholderReply(newUserContent, approvedMemories, 'error')
+      return placeholderReply(newUserContent, approvedMemoryContents, 'error')
     }
 
     const data = (await response.json()) as {
@@ -282,7 +287,7 @@ async function generateAssistantReply(params: {
     }
 
     if (!data?.content) {
-      return placeholderReply(newUserContent, approvedMemories, 'error')
+      return placeholderReply(newUserContent, approvedMemoryContents, 'error')
     }
 
     return {
@@ -291,7 +296,7 @@ async function generateAssistantReply(params: {
       threadTitle: data.thread_title,
     }
   } catch {
-    return placeholderReply(newUserContent, approvedMemories, 'error')
+    return placeholderReply(newUserContent, approvedMemoryContents, 'error')
   }
 }
 
@@ -312,6 +317,11 @@ export async function sendMessage(params: {
 
   const userMessage = await insertMessage(thread.id, userId, 'user', content)
 
+  // Fresh idempotency key per send. If the user clicks Send twice quickly
+  // or a network retry happens, the web endpoint dedupes by
+  // (user_id, client_idempotency_key, role).
+  const idempotencyKey = crypto.randomUUID()
+
   const {
     content: assistantContent,
     proposedMemories,
@@ -320,7 +330,8 @@ export async function sendMessage(params: {
     threadId: thread.id,
     history: [...history, userMessage],
     newUserContent: content,
-    approvedMemories: approvedMemories.map((m) => m.content),
+    approvedMemories: approvedMemories.map((m) => ({ id: m.id, content: m.content })),
+    idempotencyKey,
   })
 
   const assistantMessage = await insertMessage(thread.id, userId, 'assistant', assistantContent)
