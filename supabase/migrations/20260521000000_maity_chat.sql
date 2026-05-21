@@ -105,3 +105,13 @@ create policy chat_settings_owner on maity.chat_settings
   for all
   using (user_id = maity.current_maity_user_id())
   with check (user_id = maity.current_maity_user_id());
+
+-- Grants for PostgREST/authenticated role.
+-- RLS only filters rows; without table-level privileges PostgREST returns
+-- "permission denied for table" before RLS can evaluate.
+grant usage on schema maity to authenticated;
+grant select, insert, update, delete on maity.chat_threads   to authenticated;
+grant select, insert, update, delete on maity.chat_messages  to authenticated;
+grant select, insert, update, delete on maity.chat_memories  to authenticated;
+grant select, insert, update, delete on maity.chat_settings  to authenticated;
+grant execute on function maity.current_maity_user_id() to authenticated;
