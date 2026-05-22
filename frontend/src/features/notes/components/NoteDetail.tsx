@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button';
 import { toast } from 'sonner';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { OmiConversation, toggleActionItemCompleted } from '@/features/conversations';
+import { isMeetingMinutesV2 } from '@/features/conversations/services/conversations.service';
 
 interface NoteDetailProps {
   conversation: OmiConversation;
@@ -26,7 +27,11 @@ function extractText(item: unknown): string {
 
 export function NoteDetail({ conversation, onClose }: NoteDetailProps) {
   const queryClient = useQueryClient();
-  const minutaData = conversation.meeting_minutes_data;
+  // NoteDetail solo conoce el shape v1 (temas, acciones_incompletas, etc.).
+  // Las minutas v2 se renderean en ConversationDetail; aqui las tratamos como
+  // "sin minuta" para que la vista caiga a feedback v1 / overview.
+  const minutaRaw = conversation.meeting_minutes_data;
+  const minutaData = minutaRaw && !isMeetingMinutesV2(minutaRaw) ? minutaRaw : null;
   const feedbackV1 = conversation.communication_feedback;
 
   const toggleMutation = useMutation({

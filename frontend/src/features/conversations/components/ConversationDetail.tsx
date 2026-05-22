@@ -18,6 +18,7 @@ import {
   toggleActionItemCompleted,
   isAnalysisSkipped,
   isFullAnalysis,
+  isMeetingMinutesV2,
 } from '../services/conversations.service';
 import { useConversationLive } from '../hooks/useConversationLive';
 import { derivePhase } from '../utils/derivePhase';
@@ -33,6 +34,7 @@ import { RecomendacionesSection as RecomendacionesSectionV1 } from './analysis/d
 import { CapaLabel } from './analysis/dashboard-v1/CapaLabel';
 import { cloudV4ToDashboardV1 } from './analysis/dashboard-v1/adapter';
 import { MinutaDashboardV1 } from './analysis/dashboard-v1/MinutaDashboardV1';
+import { MinutaDashboardV2 } from './minuta-v2';
 import './analysis/dashboard-v1/dashboard.css';
 import { normalizeMeetingMinutes } from '../utils/normalize-meeting-minutes';
 import { isMinutaInsufficient } from '../utils/minuta-helpers';
@@ -272,6 +274,15 @@ export function ConversationDetail({ conversation: initialConversation, onClose,
   const minutaData = conversation.meeting_minutes_data;
   const hasMinuta = !!minutaData;
 
+  // Tabs control + jump-to-transcript desde la minuta v2.
+  const [activeTab, setActiveTab] = useState<string>('analisis');
+  const [targetSegmentIndex, setTargetSegmentIndex] = useState<number | null>(null);
+
+  const handleJumpToSegment = useCallback((segmentIndex: number) => {
+    setActiveTab('transcripcion');
+    setTargetSegmentIndex(segmentIndex);
+  }, []);
+
   const detailViewTracked = useRef(false);
   const analysisViewTracked = useRef(false);
 
@@ -394,7 +405,7 @@ export function ConversationDetail({ conversation: initialConversation, onClose,
       />
 
       {/* 3 Tabs: Análisis + Minuta + Transcripción */}
-      <Tabs defaultValue="analisis">
+      <Tabs value={activeTab} onValueChange={setActiveTab}>
         <TabsList className="w-full">
           <TabsTrigger value="analisis" className="flex-1 gap-2">
             <Sparkles className="h-4 w-4" />
@@ -544,10 +555,37 @@ export function ConversationDetail({ conversation: initialConversation, onClose,
           {hasMinuta && minutaData ? (
             () => {
               const nm = normalizeMeetingMinutes(minutaData);
+              const userName = maityUser?.first_name ?? undefined;
 
-              // Si todos los campos clave estan vacios, mostrar placeholder
-              // generico en vez de un render parcial que crashea cuando algun
-              // subcomponente con guard incompleto encuentra un undefined.
+              // Red de seguridad: si algun subcomponente encuentra un edge
+              // case y crashea, el ErrorBoundary lo contiene en el tab y no
+              // rompe toda la pagina /conversations.
+              const minutaErrorFallback = (
+                <Card>
+                  <CardContent className="p-12 text-center">
+                    <FileText className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
+                    <h3 className="text-lg font-medium mb-2 text-foreground">
+                      No pudimos renderizar la minuta
+                    </h3>
+                    <p className="text-muted-foreground">
+                      Los datos parciales estan guardados en la conversacion. Si el problema
+                      persiste, exporta los logs desde Configuración para reportarlo.
+                    </p>
+                  </CardContent>
+                </Card>
+              );
+
+              // v2 (Fireflies-style): nuevo dashboard con TL;DR + keywords + chapters + jump-to-transcript.
+              if (isMeetingMinutesV2(nm)) {
+                return (
+                  <ErrorBoundary fallback={minutaErrorFallback}>
+                    <MinutaDashboardV2 minuta={nm} onJumpToSegment={handleJumpToSegment} />
+                  </ErrorBoundary>
+                );
+              }
+
+              // v1 legacy: si todos los campos clave estan vacios, mostrar
+              // placeholder generico en vez de un render parcial que crashea.
               if (isMinutaInsufficient(nm)) {
                 return (
                   <Card>
@@ -564,26 +602,6 @@ export function ConversationDetail({ conversation: initialConversation, onClose,
                   </Card>
                 );
               }
-
-              const userName = maityUser?.first_name ?? undefined;
-
-              // Red de seguridad: si algun subcomponente futuro encuentra un
-              // edge case y crashea, el ErrorBoundary lo contiene en el tab y
-              // no rompe toda la pagina /conversations.
-              const minutaErrorFallback = (
-                <Card>
-                  <CardContent className="p-12 text-center">
-                    <FileText className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
-                    <h3 className="text-lg font-medium mb-2 text-foreground">
-                      No pudimos renderizar la minuta
-                    </h3>
-                    <p className="text-muted-foreground">
-                      Los datos parciales estan guardados en la conversacion. Si el problema
-                      persiste, exporta los logs desde Configuración para reportarlo.
-                    </p>
-                  </CardContent>
-                </Card>
-              );
 
               return (
                 <ErrorBoundary fallback={minutaErrorFallback}>
@@ -624,6 +642,7 @@ export function ConversationDetail({ conversation: initialConversation, onClose,
                 fallbackText={conversation.transcript_text}
                 userName={maityUser?.first_name ?? undefined}
                 error={segmentsError ? String(segmentsError) : undefined}
+                highlightedSegmentIndex={targetSegmentIndex}
               />
             </CardContent>
           </Card>
