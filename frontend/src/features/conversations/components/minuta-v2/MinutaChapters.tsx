@@ -17,16 +17,36 @@ export function MinutaChapters({ chapters, onJumpToSegment }: MinutaChaptersProp
       <h2 className="text-xs uppercase tracking-wider text-gray-500 px-1">Capítulos</h2>
 
       <div className="space-y-2.5">
-        {chapters.map((chapter) => (
-          <Card key={chapter.id} className="bg-card border border-white/10 p-4">
-            <div className="flex items-baseline justify-between gap-3 mb-3">
-              <h3 className="text-base font-medium text-gray-100">{chapter.titulo}</h3>
+        {chapters.map((chapter) => {
+          const canJumpChapter = chapter.start_segment != null && !!onJumpToSegment;
+          const headingContent = (
+            <>
+              <h3 className="text-base font-medium text-gray-100 group-hover:text-cyan-300 transition-colors">
+                {chapter.titulo}
+              </h3>
               {chapter.start_time_sec != null && (
-                <span className="text-xs font-mono text-gray-500 shrink-0">
+                <span className="text-xs font-mono text-gray-500 group-hover:text-cyan-400/70 shrink-0 transition-colors">
                   {formatTimestamp(chapter.start_time_sec)}
                 </span>
               )}
-            </div>
+            </>
+          );
+
+          return (
+          <Card key={chapter.id} className="bg-card border border-white/10 p-4">
+            {canJumpChapter ? (
+              <button
+                type="button"
+                onClick={() => onJumpToSegment!(chapter.start_segment!)}
+                className="group w-full flex items-baseline justify-between gap-3 mb-3 -mx-1 px-1 py-0.5 rounded text-left hover:bg-white/5 transition-colors"
+              >
+                {headingContent}
+              </button>
+            ) : (
+              <div className="flex items-baseline justify-between gap-3 mb-3">
+                {headingContent}
+              </div>
+            )}
 
             <ul className="space-y-2">
               {(chapter.bullets ?? []).map((bullet, i) => {
@@ -61,7 +81,8 @@ export function MinutaChapters({ chapters, onJumpToSegment }: MinutaChaptersProp
               })}
             </ul>
           </Card>
-        ))}
+          );
+        })}
       </div>
     </section>
   );
