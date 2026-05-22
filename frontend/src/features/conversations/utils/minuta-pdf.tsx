@@ -231,6 +231,12 @@ export function MinutaPdfDocument({ minuta }: MinutaPdfDocumentProps) {
                   {d.condiciones && (
                     <Text>
                       <Text style={{ color: palette.ink }}>{labels.conditions}:</Text> {d.condiciones}
+                      {'   '}
+                    </Text>
+                  )}
+                  {d.fecha_resolucion && (
+                    <Text>
+                      <Text style={{ color: palette.ink }}>{labels.resolution_date}:</Text> {d.fecha_resolucion}
                     </Text>
                   )}
                 </Text>
@@ -287,12 +293,23 @@ export function MinutaPdfDocument({ minuta }: MinutaPdfDocumentProps) {
   );
 }
 
+function formatProximaReunionForPdf(
+  pr: NonNullable<MeetingMinutesDataV2['seguimiento']>['proxima_reunion'],
+): string | null {
+  if (!pr) return null;
+  const parts = [pr.fecha, pr.hora, pr.proposito].filter(Boolean);
+  return parts.length > 0 ? parts.join(' · ') : null;
+}
+
 function renderSeguimiento(
   s: NonNullable<MeetingMinutesDataV2['seguimiento']>,
   labels: (typeof LABELS)[keyof typeof LABELS],
 ) {
+  // Truthy-only check sobre proxima_reunion era falso-positivo: el objeto puede
+  // existir con fecha/hora/proposito en null. Validamos contenido renderizable.
+  const proximaText = formatProximaReunionForPdf(s.proxima_reunion);
   const hasContent =
-    s.proxima_reunion ||
+    proximaText !== null ||
     (s.agenda_preliminar?.length ?? 0) > 0 ||
     (s.preparacion_requerida?.length ?? 0) > 0 ||
     (s.distribucion?.length ?? 0) > 0;
@@ -302,12 +319,10 @@ function renderSeguimiento(
     <>
       <Text style={styles.sectionTitle}>{labels.followup}</Text>
       <View style={styles.card}>
-        {s.proxima_reunion && (
+        {proximaText && (
           <Text style={styles.cardMeta}>
             <Text style={{ color: palette.ink, fontFamily: 'Helvetica-Bold' }}>{labels.next_meeting}:</Text>{' '}
-            {[s.proxima_reunion.fecha, s.proxima_reunion.hora, s.proxima_reunion.proposito]
-              .filter(Boolean)
-              .join(' · ')}
+            {proximaText}
           </Text>
         )}
         {s.agenda_preliminar?.length > 0 && (
@@ -344,6 +359,7 @@ const LABELS = {
     minutes_abbr: 'min',
     decided_by: 'Decidió',
     conditions: 'Condiciones',
+    resolution_date: 'Fecha de resolución',
     owner: 'Responsable',
     due_date: 'Fecha límite',
     priority: 'Prioridad',
@@ -373,6 +389,7 @@ const LABELS = {
     minutes_abbr: 'min',
     decided_by: 'Decided by',
     conditions: 'Conditions',
+    resolution_date: 'Resolution date',
     owner: 'Owner',
     due_date: 'Due date',
     priority: 'Priority',

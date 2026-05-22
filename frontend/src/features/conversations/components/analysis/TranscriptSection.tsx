@@ -10,8 +10,9 @@ interface TranscriptSectionProps {
   userName?: string;
   error?: string;
   /** Cuando cambia, hace scrollIntoView al segmento correspondiente y aplica
-   *  un pulso cian de 2s. Sirve para el jump-to-transcript desde la minuta v2. */
-  highlightedSegmentIndex?: number | null;
+   *  un pulso cian de 2s. Sirve para el jump-to-transcript desde la minuta v2.
+   *  El nonce permite re-disparar el efecto al clickear el mismo segment_ref. */
+  highlightedSegment?: { index: number; nonce: number } | null;
 }
 
 const GENERIC_LABELS = new Set([
@@ -36,22 +37,35 @@ export function TranscriptSection({
   fallbackText,
   userName,
   error,
-  highlightedSegmentIndex,
+  highlightedSegment,
 }: TranscriptSectionProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [pulseIndex, setPulseIndex] = useState<number | null>(null);
+  // Recordar el ultimo nonce cumplido evita re-scrollear cuando solo cambio
+  // la lista de segmentos (ej. paginacion lazy carga un chunk nuevo).
+  const lastFulfilledNonceRef = useRef<number | null>(null);
 
   useEffect(() => {
-    if (highlightedSegmentIndex == null || !containerRef.current) return;
+    if (!highlightedSegment || !containerRef.current) return;
+    if (lastFulfilledNonceRef.current === highlightedSegment.nonce) return;
+
     const target = containerRef.current.querySelector<HTMLElement>(
-      `[data-segment-index="${highlightedSegmentIndex}"]`
+      `[data-segment-index="${highlightedSegment.index}"]`
     );
-    if (!target) return;
+    if (!target) {
+      // El segmento aun no esta en el DOM (probable lazy-load pendiente).
+      // Cuando llegue un nuevo chunk, el effect re-corre via dep `segments`.
+      console.warn(
+        `[TranscriptSection] segmento ${highlightedSegment.index} no encontrado en el DOM (posible carga pendiente)`
+      );
+      return;
+    }
     target.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    setPulseIndex(highlightedSegmentIndex);
+    setPulseIndex(highlightedSegment.index);
+    lastFulfilledNonceRef.current = highlightedSegment.nonce;
     const timer = window.setTimeout(() => setPulseIndex(null), 2000);
     return () => window.clearTimeout(timer);
-  }, [highlightedSegmentIndex, segments]);
+  }, [highlightedSegment, segments]);
 
   // On error, skip loading and try fallback text
   if (error && fallbackText) {

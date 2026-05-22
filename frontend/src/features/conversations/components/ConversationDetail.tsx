@@ -274,13 +274,15 @@ export function ConversationDetail({ conversation: initialConversation, onClose,
   const minutaData = conversation.meeting_minutes_data;
   const hasMinuta = !!minutaData;
 
-  // Tabs control + jump-to-transcript desde la minuta v2.
+  // Tabs control + jump-to-transcript desde la minuta v2. El nonce garantiza
+  // que clicks repetidos en el mismo segment_ref re-disparen scroll+pulso
+  // (un `setTargetSegment(prev=prev)` con el mismo index seria no-op en React).
   const [activeTab, setActiveTab] = useState<string>('analisis');
-  const [targetSegmentIndex, setTargetSegmentIndex] = useState<number | null>(null);
+  const [targetSegment, setTargetSegment] = useState<{ index: number; nonce: number } | null>(null);
 
   const handleJumpToSegment = useCallback((segmentIndex: number) => {
     setActiveTab('transcripcion');
-    setTargetSegmentIndex(segmentIndex);
+    setTargetSegment((prev) => ({ index: segmentIndex, nonce: (prev?.nonce ?? 0) + 1 }));
   }, []);
 
   const detailViewTracked = useRef(false);
@@ -642,7 +644,7 @@ export function ConversationDetail({ conversation: initialConversation, onClose,
                 fallbackText={conversation.transcript_text}
                 userName={maityUser?.first_name ?? undefined}
                 error={segmentsError ? String(segmentsError) : undefined}
-                highlightedSegmentIndex={targetSegmentIndex}
+                highlightedSegment={targetSegment}
               />
             </CardContent>
           </Card>
