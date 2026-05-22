@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from 'react';
 import { User, Bot } from 'lucide-react';
 import { Skeleton } from '@/components/ui/skeleton';
 import { OmiTranscriptSegment } from '../../services/conversations.service';
@@ -8,6 +9,9 @@ interface TranscriptSectionProps {
   fallbackText?: string | null;
   userName?: string;
   error?: string;
+  /** Cuando cambia, hace scrollIntoView al segmento correspondiente y aplica
+   *  un pulso cian de 2s. Sirve para el jump-to-transcript desde la minuta v2. */
+  highlightedSegmentIndex?: number | null;
 }
 
 const GENERIC_LABELS = new Set([
@@ -26,7 +30,29 @@ function resolveSpeakerLabel(segment: OmiTranscriptSegment, userName?: string): 
   return segment.is_user ? (userName || 'Tú') : 'Interlocutor';
 }
 
-export function TranscriptSection({ segments, loading, fallbackText, userName, error }: TranscriptSectionProps) {
+export function TranscriptSection({
+  segments,
+  loading,
+  fallbackText,
+  userName,
+  error,
+  highlightedSegmentIndex,
+}: TranscriptSectionProps) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [pulseIndex, setPulseIndex] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (highlightedSegmentIndex == null || !containerRef.current) return;
+    const target = containerRef.current.querySelector<HTMLElement>(
+      `[data-segment-index="${highlightedSegmentIndex}"]`
+    );
+    if (!target) return;
+    target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    setPulseIndex(highlightedSegmentIndex);
+    const timer = window.setTimeout(() => setPulseIndex(null), 2000);
+    return () => window.clearTimeout(timer);
+  }, [highlightedSegmentIndex, segments]);
+
   // On error, skip loading and try fallback text
   if (error && fallbackText) {
     return (
@@ -57,13 +83,17 @@ export function TranscriptSection({ segments, loading, fallbackText, userName, e
 
   if (segments && segments.length > 0) {
     return (
-      <div className="space-y-3 p-4">
+      <div ref={containerRef} className="space-y-3 p-4">
         {segments.map((segment) => {
           const isUser = segment.is_user;
+          const isPulsing = pulseIndex === segment.segment_index;
           return (
             <div
               key={segment.id}
-              className={`flex gap-3 ${isUser ? '' : 'flex-row-reverse'}`}
+              data-segment-index={segment.segment_index}
+              className={`flex gap-3 ${isUser ? '' : 'flex-row-reverse'} rounded-md transition-colors duration-700 ${
+                isPulsing ? 'bg-cyan-500/10 ring-1 ring-cyan-500/30 -mx-2 px-2 py-1' : ''
+              }`}
             >
               {/* Avatar */}
               <div
