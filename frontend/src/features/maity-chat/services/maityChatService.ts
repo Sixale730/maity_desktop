@@ -173,53 +173,138 @@ export async function setMemoryExtractionPaused(userId: string, paused: boolean)
 }
 
 /**
- * LLM call — STUB.
+ * LLM call — hits the Vercel route in the web repo (Sixale730/maity).
  *
- * TODO(maity-chat): Conectar al Supabase Edge Function `deepseek-chat`
- * cuando esté disponible. El contrato esperado (espejo de
- * `supabase/functions/deepseek-evaluate/index.ts`):
+ * Endpoint:  POST https://www.maity.cloud/api/maity-chat
+ * Auth:      Bearer <Supabase access_token>
+ * Pattern:   mirrors `api/game-chat.ts` and `api/evaluate.ts` (Zod-validated,
+ *            authenticateUser, calls DeepSeek/OpenAI server-side).
  *
- *   const { data, error } = await supabase.functions.invoke('deepseek-chat', {
- *     body: {
- *       thread_id,
- *       messages: [...history, { role: 'user', content }],
- *       approved_memories,
- *       language: 'es-419',
- *     },
- *   })
+ * Request body:
+ *   {
+ *     thread_id: string
+ *     messages: Array<{ role: 'user' | 'assistant'; content: string }>
+ *     approved_memories: Array<{ id: string; content: string }>
+ *     language: 'es-419'
+ *     client_idempotency_key: string  // uuid, for safe retries
+ *   }
  *
- *   // data: { content, proposed_memories?: string[], thread_title?: string }
+ * Response:
+ *   {
+ *     content: string
+ *     proposed_memories?: string[]
+ *     thread_title?: string
+ *   }
  *
- * Mientras tanto, devolvemos un placeholder claramente marcado para que el
- * resto de la UI (threads, persistencia, memorias) sea testeable end-to-end.
+ * Falls back to a clearly-marked placeholder if the route is not yet
+ * deployed (404) or the user is offline, so the UI (threads, memories,
+ * persistence) remains testable end-to-end during rollout.
  */
-async function generateAssistantReply(params: {
-  history: ChatMessage[]
-  newUserContent: string
-  approvedMemories: string[]
-}): Promise<{ content: string; proposedMemories: string[] }> {
-  const { newUserContent, approvedMemories } = params
+const MAITY_CHAT_ENDPOINT = 'https://www.maity.cloud/api/maity-chat'
 
+function placeholderReply(
+  newUserContent: string,
+  approvedMemories: string[],
+  reason: 'pending' | 'auth' | 'error',
+): { content: string; proposedMemories: string[] } {
   const memoriesNote = approvedMemories.length > 0
     ? `\n\n_(Se enviarían ${approvedMemories.length} memoria(s) aprobada(s) como contexto.)_`
     : ''
 
+  const header =
+    reason === 'pending' ? '**Endpoint de IA pendiente de conectar.**'
+    : reason === 'auth'  ? '**Sesión expirada.**'
+    : '**No se pudo contactar al servicio de IA.**'
+
+  const body =
+    reason === 'pending' ? 'En cuanto se despliegue la ruta `/api/maity-chat` en el repo web, responderé con la personalidad de Maity, enfocada en habilidades blandas y productividad.'
+    : reason === 'auth'  ? 'Vuelve a iniciar sesión para continuar la conversación.'
+    : 'Verifica tu conexión a internet o intenta de nuevo en unos momentos.'
+
   const placeholder = [
-    '**Endpoint de IA pendiente de conectar.**',
+    header,
     '',
     `Recibí tu mensaje: _"${newUserContent.slice(0, 200)}${newUserContent.length > 200 ? '…' : ''}"_`,
     '',
-    'En cuanto se habilite el Edge Function `deepseek-chat`, responderé con la personalidad de Maity, enfocada en habilidades blandas y productividad.',
+    body,
     memoriesNote,
   ].join('\n')
 
   return { content: placeholder, proposedMemories: [] }
 }
 
+async function generateAssistantReply(params: {
+  threadId: string
+  history: ChatMessage[]
+  newUserContent: string
+  approvedMemories: Array<{ id: string; content: string }>
+  idempotencyKey: string
+}): Promise<{ content: string; proposedMemories: string[]; threadTitle?: string }> {
+  const { threadId, history, newUserContent, approvedMemories, idempotencyKey } = params
+
+  const messagesForLLM = [
+    ...history.map((m) => ({ role: m.role, content: m.content })),
+    { role: 'user' as const, content: newUserContent },
+  ]
+
+  const approvedMemoryContents = approvedMemories.map((m) => m.content)
+
+  const { data: { session } } = await supabase.auth.getSession()
+  if (!session?.access_token) {
+    return placeholderReply(newUserContent, approvedMemoryContents, 'auth')
+  }
+
+  try {
+    const response = await fetch(MAITY_CHAT_ENDPOINT, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${session.access_token}`,
+      },
+      body: JSON.stringify({
+        thread_id: threadId,
+        messages: messagesForLLM,
+        approved_memories: approvedMemories,
+        language: 'es-419',
+        client_idempotency_key: idempotencyKey,
+      }),
+    })
+
+    if (response.status === 404) {
+      return placeholderReply(newUserContent, approvedMemoryContents, 'pending')
+    }
+    if (response.status === 401 || response.status === 403) {
+      return placeholderReply(newUserContent, approvedMemoryContents, 'auth')
+    }
+    if (!response.ok) {
+      return placeholderReply(newUserContent, approvedMemoryContents, 'error')
+    }
+
+    const data = (await response.json()) as {
+      content?: string
+      proposed_memories?: string[]
+      thread_title?: string
+    }
+
+    if (!data?.content) {
+      return placeholderReply(newUserContent, approvedMemoryContents, 'error')
+    }
+
+    return {
+      content: data.content,
+      proposedMemories: data.proposed_memories ?? [],
+      threadTitle: data.thread_title,
+    }
+  } catch {
+    return placeholderReply(newUserContent, approvedMemoryContents, 'error')
+  }
+}
+
 /**
- * Send a message: persists the user turn, calls the LLM (stubbed today),
- * persists the assistant turn, and surfaces proposed memories. Returns
- * everything the UI needs in one round-trip.
+ * Send a message: persists the user turn, calls the LLM Edge Function
+ * (with graceful fallback if not yet deployed), persists the assistant
+ * turn, and surfaces proposed memories. Returns everything the UI needs
+ * in one round-trip.
  */
 export async function sendMessage(params: {
   thread: ChatThread
@@ -232,19 +317,35 @@ export async function sendMessage(params: {
 
   const userMessage = await insertMessage(thread.id, userId, 'user', content)
 
-  const { content: assistantContent, proposedMemories } = await generateAssistantReply({
+  // Fresh idempotency key per send. If the user clicks Send twice quickly
+  // or a network retry happens, the web endpoint dedupes by
+  // (user_id, client_idempotency_key, role).
+  const idempotencyKey = crypto.randomUUID()
+
+  const {
+    content: assistantContent,
+    proposedMemories,
+    threadTitle: serverTitle,
+  } = await generateAssistantReply({
+    threadId: thread.id,
     history: [...history, userMessage],
     newUserContent: content,
-    approvedMemories: approvedMemories.map((m) => m.content),
+    approvedMemories: approvedMemories.map((m) => ({ id: m.id, content: m.content })),
+    idempotencyKey,
   })
 
   const assistantMessage = await insertMessage(thread.id, userId, 'assistant', assistantContent)
 
   let threadTitle: string | undefined
   const isFirstExchange = history.length === 0
-  if (isFirstExchange && (thread.title === 'Nuevo chat' || !thread.title.trim())) {
-    const candidate = content.trim().split(/\s+/).slice(0, 8).join(' ')
-    threadTitle = candidate.length > 60 ? candidate.slice(0, 60).trim() + '…' : candidate
+  const needsTitle = thread.title === 'Nuevo chat' || !thread.title.trim()
+  if (isFirstExchange && needsTitle) {
+    if (serverTitle && serverTitle.trim()) {
+      threadTitle = serverTitle.trim().slice(0, 60)
+    } else {
+      const candidate = content.trim().split(/\s+/).slice(0, 8).join(' ')
+      threadTitle = candidate.length > 60 ? candidate.slice(0, 60).trim() + '…' : candidate
+    }
     if (threadTitle) await renameThread(thread.id, threadTitle)
   }
 
