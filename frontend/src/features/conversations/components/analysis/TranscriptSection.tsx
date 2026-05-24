@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from 'react';
 import { User, Bot } from 'lucide-react';
 import { Skeleton } from '@/components/ui/skeleton';
 import { OmiTranscriptSegment } from '../../services/conversations.service';
@@ -8,6 +9,10 @@ interface TranscriptSectionProps {
   fallbackText?: string | null;
   userName?: string;
   error?: string;
+  /** Cuando cambia, hace scrollIntoView al segmento correspondiente y aplica
+   *  un pulso cian de 2s. Sirve para el jump-to-transcript desde la minuta v2.
+   *  El nonce permite re-disparar el efecto al clickear el mismo segment_ref. */
+  highlightedSegment?: { index: number; nonce: number } | null;
 }
 
 const GENERIC_LABELS = new Set([
@@ -26,7 +31,42 @@ function resolveSpeakerLabel(segment: OmiTranscriptSegment, userName?: string): 
   return segment.is_user ? (userName || 'Tú') : 'Interlocutor';
 }
 
-export function TranscriptSection({ segments, loading, fallbackText, userName, error }: TranscriptSectionProps) {
+export function TranscriptSection({
+  segments,
+  loading,
+  fallbackText,
+  userName,
+  error,
+  highlightedSegment,
+}: TranscriptSectionProps) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [pulseIndex, setPulseIndex] = useState<number | null>(null);
+  // Recordar el ultimo nonce cumplido evita re-scrollear cuando solo cambio
+  // la lista de segmentos (ej. paginacion lazy carga un chunk nuevo).
+  const lastFulfilledNonceRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (!highlightedSegment || !containerRef.current) return;
+    if (lastFulfilledNonceRef.current === highlightedSegment.nonce) return;
+
+    const target = containerRef.current.querySelector<HTMLElement>(
+      `[data-segment-index="${highlightedSegment.index}"]`
+    );
+    if (!target) {
+      // El segmento aun no esta en el DOM (probable lazy-load pendiente).
+      // Cuando llegue un nuevo chunk, el effect re-corre via dep `segments`.
+      console.warn(
+        `[TranscriptSection] segmento ${highlightedSegment.index} no encontrado en el DOM (posible carga pendiente)`
+      );
+      return;
+    }
+    target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    setPulseIndex(highlightedSegment.index);
+    lastFulfilledNonceRef.current = highlightedSegment.nonce;
+    const timer = window.setTimeout(() => setPulseIndex(null), 2000);
+    return () => window.clearTimeout(timer);
+  }, [highlightedSegment, segments]);
+
   // On error, skip loading and try fallback text
   if (error && fallbackText) {
     return (
@@ -57,13 +97,17 @@ export function TranscriptSection({ segments, loading, fallbackText, userName, e
 
   if (segments && segments.length > 0) {
     return (
-      <div className="space-y-3 p-4">
+      <div ref={containerRef} className="space-y-3 p-4">
         {segments.map((segment) => {
           const isUser = segment.is_user;
+          const isPulsing = pulseIndex === segment.segment_index;
           return (
             <div
               key={segment.id}
-              className={`flex gap-3 ${isUser ? '' : 'flex-row-reverse'}`}
+              data-segment-index={segment.segment_index}
+              className={`flex gap-3 ${isUser ? '' : 'flex-row-reverse'} rounded-md transition-colors duration-700 ${
+                isPulsing ? 'bg-cyan-500/10 ring-1 ring-cyan-500/30 -mx-2 px-2 py-1' : ''
+              }`}
             >
               {/* Avatar */}
               <div

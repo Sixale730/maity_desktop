@@ -8,16 +8,19 @@
  *            if `decisiones[0]?.estado` exists → old format.
  */
 
-import type {
-  MeetingMinutesData,
-  MinutaDecision,
-  MinutaAccionIncompleta,
-  MinutaComponenteEfectividad,
-  MinutaComponenteEfectividadV7,
-  MinutaSeguimientoData,
-  MinutaSeguimientoReunion,
-  MinutaPreparacionItem,
-  MinutaQuienLoDijo,
+import {
+  isMeetingMinutesV2,
+  type AnyMeetingMinutesData,
+  type MeetingMinutesData,
+  type MeetingMinutesDataV2,
+  type MinutaDecision,
+  type MinutaAccionIncompleta,
+  type MinutaComponenteEfectividad,
+  type MinutaComponenteEfectividadV7,
+  type MinutaSeguimientoData,
+  type MinutaSeguimientoReunion,
+  type MinutaPreparacionItem,
+  type MinutaQuienLoDijo,
 } from '../services/conversations.service';
 
 // ============================================================================
@@ -44,9 +47,21 @@ export const COMPONENT_WEIGHTS: Record<string, number> = {
 // MAIN NORMALIZER
 // ============================================================================
 
-export function normalizeMeetingMinutes(raw: MeetingMinutesData): MeetingMinutesData {
+// Overloads preserve the input "kind" — v1 in → v1 out, v2 in → v2 out, union in → union out.
+// This keeps callers (and existing v1 tests) from needing extra narrowing.
+export function normalizeMeetingMinutes(raw: MeetingMinutesData): MeetingMinutesData;
+export function normalizeMeetingMinutes(raw: MeetingMinutesDataV2): MeetingMinutesDataV2;
+export function normalizeMeetingMinutes(raw: AnyMeetingMinutesData): AnyMeetingMinutesData;
+export function normalizeMeetingMinutes(raw: AnyMeetingMinutesData): AnyMeetingMinutesData {
   if (!raw) return raw;
 
+  // v2 already lands in canonical shape — UI handles fallbacks at render time.
+  if (isMeetingMinutesV2(raw)) return raw;
+
+  return normalizeMeetingMinutesV1(raw);
+}
+
+function normalizeMeetingMinutesV1(raw: MeetingMinutesData): MeetingMinutesData {
   return {
     ...raw,
     decisiones: normalizeDecisiones(raw.decisiones),
@@ -61,6 +76,9 @@ export function normalizeMeetingMinutes(raw: MeetingMinutesData): MeetingMinutes
     } : raw.efectividad,
   };
 }
+
+export { isMeetingMinutesV2 };
+export type { MeetingMinutesDataV2, AnyMeetingMinutesData };
 
 // ============================================================================
 // DECISIONES: old `estado` → `clasificacion`

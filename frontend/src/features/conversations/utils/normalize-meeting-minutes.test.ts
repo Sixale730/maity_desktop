@@ -10,9 +10,11 @@ import {
   getAccionDescripcion,
   getCompromisoDescripcion,
 } from './normalize-meeting-minutes';
-import type {
-  MeetingMinutesData,
-  MinutaDecision,
+import {
+  isMeetingMinutesV2,
+  type MeetingMinutesData,
+  type MeetingMinutesDataV2,
+  type MinutaDecision,
 } from '../services/conversations.service';
 
 const minimalMinutes = (overrides: Partial<MeetingMinutesData> = {}): MeetingMinutesData =>
@@ -391,5 +393,61 @@ describe('getAccionDescripcion / getCompromisoDescripcion', () => {
     expect(getCompromisoDescripcion({ compromiso: 'C', descripcion: 'D' })).toBe('C');
     expect(getCompromisoDescripcion({ descripcion: 'D' })).toBe('D');
     expect(getCompromisoDescripcion({})).toBe('');
+  });
+});
+
+// ─── v2 ─────────────────────────────────────────────────────────────
+
+const minimalV2: MeetingMinutesDataV2 = {
+  $schema: 'Minuta_v2',
+  minuta_version: '2.0',
+  generado: '2026-05-21T10:00:00Z',
+  meta: {
+    titulo: 'Test v2',
+    tipo_reunion: 'Avances',
+    categoria_interlocutor: 'Equipo interno',
+    fecha: '2026-05-21',
+    duracion_minutos: 30,
+    participantes: [{ nombre: 'Ana', rol: 'PM' }],
+    idioma: 'es',
+  },
+  tldr: 'Resumen ejecutivo en 30 segundos.',
+  keywords: ['budget'],
+  chapters: [],
+  decisiones: [],
+  acciones: [],
+  seguimiento: null,
+};
+
+describe('isMeetingMinutesV2', () => {
+  it('detecta payloads v2 via $schema', () => {
+    expect(isMeetingMinutesV2(minimalV2)).toBe(true);
+  });
+
+  it('rechaza payloads v1', () => {
+    const v1: MeetingMinutesData = {
+      meta: {} as MeetingMinutesData['meta'],
+      temas: [],
+      decisiones: [],
+      acciones: { lista: [], seguimiento: {} as MeetingMinutesData['acciones']['seguimiento'] },
+      acciones_incompletas: [],
+      efectividad: {} as MeetingMinutesData['efectividad'],
+      graficas: {} as MeetingMinutesData['graficas'],
+    };
+    expect(isMeetingMinutesV2(v1)).toBe(false);
+  });
+
+  it('rechaza null/undefined/objeto vacio', () => {
+    expect(isMeetingMinutesV2(null)).toBe(false);
+    expect(isMeetingMinutesV2(undefined)).toBe(false);
+    expect(isMeetingMinutesV2({})).toBe(false);
+    expect(isMeetingMinutesV2({ $schema: 'otro' })).toBe(false);
+  });
+});
+
+describe('normalizeMeetingMinutes con v2', () => {
+  it('deja pasar v2 sin modificar (identity)', () => {
+    const out = normalizeMeetingMinutes(minimalV2);
+    expect(out).toBe(minimalV2);
   });
 });

@@ -424,6 +424,92 @@ export interface MeetingMinutesData {
   graficas: MinutaGraficas;
 }
 
+// ─── Meeting Minutes v2 (Fireflies-style) ──────────────────────────
+
+export interface MinutaV2Meta {
+  titulo: string;
+  tipo_reunion: string;
+  categoria_interlocutor: string;
+  fecha: string;
+  duracion_minutos: number | null;
+  participantes: { nombre: string; rol: string }[];
+  idioma: 'es' | 'en';
+}
+
+export interface MinutaV2ChapterBullet {
+  texto: string;
+  segment_ref: number | null;
+}
+
+export interface MinutaV2Chapter {
+  id: number;
+  titulo: string;
+  start_segment: number | null;
+  start_time_sec: number | null;
+  bullets: MinutaV2ChapterBullet[];
+}
+
+export interface MinutaV2Decision {
+  id: number;
+  titulo: string;
+  descripcion: string;
+  decidio: string;
+  estado: 'confirmada' | 'tentativa' | 'diferida';
+  condiciones: string | null;
+  fecha_resolucion: string | null;
+  cita: string;
+  segment_ref: number | null;
+}
+
+export interface MinutaV2Accion {
+  id: number;
+  accion: string;
+  responsable: string | null;
+  fecha_limite: string | null;
+  prioridad: 'alta' | 'media' | 'baja' | null;
+  completa: boolean;
+  falta: Array<'dueño' | 'fecha'> | null;
+  cita: string | null;
+  segment_ref: number | null;
+}
+
+export interface MinutaV2ProximaReunion {
+  fecha: string | null;
+  hora: string | null;
+  proposito: string | null;
+}
+
+export interface MinutaV2Seguimiento {
+  proxima_reunion: MinutaV2ProximaReunion | null;
+  agenda_preliminar: string[];
+  preparacion_requerida: MinutaPreparacionItem[];
+  distribucion: string[];
+}
+
+export interface MeetingMinutesDataV2 {
+  $schema: 'Minuta_v2';
+  minuta_version: string;
+  generado: string;
+  meta: MinutaV2Meta;
+  tldr: string;
+  keywords: string[];
+  chapters: MinutaV2Chapter[];
+  decisiones: MinutaV2Decision[];
+  acciones: MinutaV2Accion[];
+  seguimiento: MinutaV2Seguimiento | null;
+  efectividad?: MinutaEfectividad | null;
+}
+
+export type AnyMeetingMinutesData = MeetingMinutesData | MeetingMinutesDataV2;
+
+export function isMeetingMinutesV2(data: unknown): data is MeetingMinutesDataV2 {
+  return (
+    typeof data === 'object' &&
+    data !== null &&
+    (data as { $schema?: unknown }).$schema === 'Minuta_v2'
+  );
+}
+
 // ─── Conversation Types ─────────────────────────────────────────────
 
 export interface OmiConversation {
@@ -447,7 +533,7 @@ export interface OmiConversation {
   duration_seconds: number | null;
   communication_feedback: CommunicationFeedback | null;
   communication_feedback_v4: CommunicationFeedbackV4 | AnalysisSkipped | null;
-  meeting_minutes_data: MeetingMinutesData | null;
+  meeting_minutes_data: AnyMeetingMinutesData | null;
   /** Explicit analysis status field — source of truth for polling */
   analysis_status?: 'pending' | 'processing' | 'completed' | 'failed' | 'skipped' | null;
   /** Last DB write timestamp. Backend writes a heartbeat every 30s during async analysis,
