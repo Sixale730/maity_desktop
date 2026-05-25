@@ -12,7 +12,8 @@ use crate::summary::llm_client::{generate_summary, LLMProvider};
 use once_cell::sync::Lazy;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, LogicalPosition, Manager, Runtime};
 use tauri_plugin_store::StoreExt;
 use tracing::{info, warn};
@@ -496,10 +497,25 @@ pub async fn open_device_picker<R: Runtime>(
     anchor_y: f64,       // posición global Y del icono (top-left)
     width: f64,          // ancho deseado para el picker
 ) -> Result<(), String> {
+    info!(
+        "🪟 Abriendo device-picker para '{}' anchor=({:.1},{:.1}) width={:.0}",
+        device_type, anchor_x, anchor_y, width
+    );
+
     // Si ya existe, cerrar primero — fuerza refresh de devices al reabrir.
     if let Some(existing) = app.get_webview_window(DEVICE_PICKER_LABEL) {
+        info!("device-picker: ya existía, cerrando antes de recrear");
         let _ = existing.close();
     }
+
+    // Iter 11: oneshot para señalar "página cargada" desde el callback
+    // on_page_load del builder. Reemplaza el sleep arbitrario de iter 10 que
+    // no garantizaba que el HTML estuviera pintado antes de show() — origen
+    // del "flash blanco" cuando WebView2 tardaba más de 100 ms en cargar.
+    let (load_tx, load_rx) = tokio::sync::oneshot::channel::<()>();
+    let load_tx_holder: Arc<Mutex<Option<tokio::sync::oneshot::Sender<()>>>> =
+        Arc::new(Mutex::new(Some(load_tx)));
+    let load_tx_clone = load_tx_holder.clone();
 
     let url = format!("device-picker?type={}", device_type);
     let window = tauri::WebviewWindowBuilder::new(
@@ -515,40 +531,77 @@ pub async fn open_device_picker<R: Runtime>(
     .resizable(false)
     .skip_taskbar(true)
     .transparent(true)
-    // Iter 10: empezar OCULTA (visible(false)) y mostrar después del primer
-    // paint. Antes el flash blanco era muy visible porque el device-picker
-    // se abre on-demand al click del icono. focused(true) movido a después
-    // del show porque el builder lo ignora si visible(false).
+    // Empezar OCULTA; mostramos después de que on_page_load reporte Finished.
     .visible(false)
+    .on_page_load(move |_w, payload| {
+        if matches!(payload.event(), tauri::webview::PageLoadEvent::Finished) {
+            if let Ok(mut guard) = load_tx_clone.lock() {
+                if let Some(sender) = guard.take() {
+                    let _ = sender.send(());
+                }
+            }
+        }
+    })
     .build()
-    .map_err(|e| format!("Error abriendo device-picker: {}", e))?;
+    .map_err(|e| {
+        warn!("Error abriendo device-picker: {}", e);
+        format!("Error abriendo device-picker: {}", e)
+    })?;
+    info!("device-picker: ventana construida (oculta)");
 
     // Posicionar arriba del icono (anchor_y - alto del picker - 8 px margen).
     let target_y = (anchor_y - DEVICE_PICKER_HEIGHT - 8.0).max(0.0);
     if let Err(e) = window.set_position(LogicalPosition::new(anchor_x, target_y)) {
         warn!("No se pudo posicionar device-picker: {}", e);
+    } else {
+        info!(
+            "device-picker: posicionada en ({:.1},{:.1})",
+            anchor_x, target_y
+        );
     }
 
-    // on_window_event: cerrar al perder foco. Click fuera = blur = close.
-    // En Windows con DPI 125% esto a veces dispara dos veces — el segundo
-    // close es no-op porque la ventana ya no existe (get_webview_window None).
+    // Iter 12 — Fix 1: flag explícito `ready_to_close` en vez de timestamp.
+    // El timestamp tenía race condition: el `store(now)` post-show podía
+    // ejecutarse DESPUÉS de que llegara un Focused(false) espurio, que entonces
+    // veía `elapsed` calculado contra el timestamp viejo (>500ms) y cerraba
+    // la ventana. Con un bool serializado (sleep antes del store), no hay
+    // ventana de carrera: el listener IGNORA todo blur mientras flag=false.
+    let ready_to_close = Arc::new(AtomicBool::new(false));
+    let ready_clone = ready_to_close.clone();
     let app_handle_for_blur = app.clone();
     window.on_window_event(move |event| {
         if let tauri::WindowEvent::Focused(false) = event {
+            if !ready_clone.load(Ordering::Relaxed) {
+                info!("device-picker: Focused(false) ignorado (pre-ready)");
+                return;
+            }
+            info!("device-picker: Focused(false) → cerrando (post-ready)");
             if let Some(w) = app_handle_for_blur.get_webview_window(DEVICE_PICKER_LABEL) {
                 let _ = w.close();
             }
         }
     });
 
-    // Iter 10: esperar a que el WebView2 cargue el HTML antes de mostrar.
-    // 100ms basta porque la página es muy pequeña. Después set_focus para que
-    // el blur listener funcione (cerrar al click fuera).
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    // Iter 11 — Fix 2: esperar a que la página termine de cargar (señal del
+    // callback on_page_load → oneshot). Timeout de 2 s como fallback: mejor
+    // mostrar la ventana aunque el evento no llegue, que dejarla invisible.
+    match tokio::time::timeout(std::time::Duration::from_secs(2), load_rx).await {
+        Ok(Ok(())) => info!("device-picker: page-load Finished → mostrando"),
+        Ok(Err(_)) => warn!("device-picker: oneshot cancelado, mostrando igual"),
+        Err(_) => warn!("device-picker: timeout 2s esperando page-load, mostrando igual"),
+    }
+
     let _ = window.show();
     let _ = window.set_focus();
+    info!("device-picker: show() + set_focus() invocados");
 
-    info!("✅ Device picker abierto para '{}'", device_type);
+    // Drenar Focused(false) espurios del handshake inicial Windows. 300 ms
+    // cubre el worst case observado en DPI 125/150%. Durante esta pausa el
+    // listener arriba ignora todos los blur eventos (ready_to_close=false).
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    ready_to_close.store(true, Ordering::Relaxed);
+
+    info!("✅ Device picker ready (blur listener activo) para '{}'", device_type);
     Ok(())
 }
 

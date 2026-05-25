@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { Mic, Volume2 } from 'lucide-react';
 
 interface AudioDevice {
   name: string;
@@ -9,11 +10,13 @@ interface AudioDevice {
 }
 
 const GLASS_STYLE: React.CSSProperties = {
-  background: 'rgba(15, 16, 24, 0.95)',
+  background: 'rgba(15, 16, 24, 0.92)',
   backdropFilter: 'blur(22px) saturate(180%)',
   WebkitBackdropFilter: 'blur(22px) saturate(180%)',
-  border: '1px solid rgba(255,255,255,0.14)',
-  boxShadow: '0 12px 40px rgba(0,0,0,0.6)',
+  // Match coach-float compact bar: spread negativo (-4px) mantiene la sombra
+  // dentro de las esquinas redondeadas en lugar de proyectarla como halo
+  // rectangular fuera del clip del WebView2.
+  boxShadow: '0 8px 24px -4px rgba(0,0,0,0.65)',
 };
 
 /**
@@ -73,10 +76,10 @@ export default function DevicePickerPage() {
 
   return (
     <div
-      className="h-screen w-screen flex flex-col rounded-xl overflow-hidden text-white"
+      className="h-screen w-screen flex flex-col rounded-lg overflow-hidden text-white"
       style={GLASS_STYLE}
     >
-      <div className="px-3 py-2 text-[10px] uppercase tracking-wider text-white/50 border-b border-white/10 font-semibold">
+      <div className="px-3 py-2.5 text-[11px] uppercase tracking-wider text-white/65 border-b border-white/[0.06] font-semibold">
         {title}
       </div>
       <div className="flex-1 overflow-y-auto py-1">
@@ -90,10 +93,15 @@ export default function DevicePickerPage() {
           <button
             key={d.name}
             onClick={() => handleSelect(d.name)}
-            className="block w-full text-left px-3 py-1.5 text-[11px] text-white/85 hover:bg-white/10 transition-colors truncate"
+            className="group flex items-center gap-2.5 w-full text-left px-3 py-2.5 text-[12px] text-white/90 hover:bg-white/[0.08] active:bg-white/[0.14] transition-colors duration-150 border-b border-white/[0.04] last:border-b-0"
             title={d.name}
           >
-            {d.name}
+            {pickerType === 'mic' ? (
+              <Mic className="w-3.5 h-3.5 text-white/40 group-hover:text-white/70 transition-colors shrink-0" />
+            ) : (
+              <Volume2 className="w-3.5 h-3.5 text-white/40 group-hover:text-white/70 transition-colors shrink-0" />
+            )}
+            <span className="truncate flex-1">{d.name}</span>
           </button>
         ))}
       </div>
