@@ -12,12 +12,23 @@ import { MinutaSeguimientoSection } from './MinutaSeguimiento';
 interface MinutaDashboardV2Props {
   minuta: MeetingMinutesDataV2;
   onJumpToSegment?: (segmentIndex: number) => void;
+  onRegenerate?: () => void;
+  isRegenerating?: boolean;
 }
 
-export function MinutaDashboardV2({ minuta, onJumpToSegment }: MinutaDashboardV2Props) {
+export function MinutaDashboardV2({
+  minuta,
+  onJumpToSegment,
+  onRegenerate,
+  isRegenerating,
+}: MinutaDashboardV2Props) {
   return (
     <div className="space-y-6">
-      <MinutaToolbar minuta={minuta} />
+      <MinutaToolbar
+        minuta={minuta}
+        onRegenerate={onRegenerate}
+        isRegenerating={isRegenerating}
+      />
 
       <MinutaHeader meta={minuta.meta} />
 

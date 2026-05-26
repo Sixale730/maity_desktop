@@ -15,6 +15,7 @@ import {
   getOmiTranscriptSegments,
   getLocalMeetingDetail,
   reanalyzeConversation,
+  regenerateMinutes,
   toggleActionItemCompleted,
   isAnalysisSkipped,
   isFullAnalysis,
@@ -202,6 +203,28 @@ export function ConversationDetail({ conversation: initialConversation, onClose,
         queryClient.invalidateQueries({ queryKey: ['omi-conversation', conversationId] });
       }
       toast.error('Error al analizar', { description: error.message });
+    },
+  });
+
+  const regenerateMinutesMutation = useMutation({
+    mutationFn: () => regenerateMinutes(conversation.id),
+    onSuccess: (newMinuta) => {
+      if (isLocalOnly) {
+        setLocalConversation((prev) => ({ ...prev, meeting_minutes_data: newMinuta }));
+      } else {
+        queryClient.setQueryData<OmiConversation>(['omi-conversation', conversationId], (old) =>
+          old ? { ...old, meeting_minutes_data: newMinuta } : old,
+        );
+        queryClient.invalidateQueries({ queryKey: ['omi-conversation', conversationId] });
+      }
+      queryClient.invalidateQueries({ queryKey: ['omi-conversations'] });
+      toast.success('Minuta regenerada');
+    },
+    onError: (error: Error) => {
+      // Errors from the Tauri command come prefixed (auth:, rate_limit:, etc.)
+      // — strip the prefix for the toast description.
+      const msg = error.message.replace(/^[a-z_]+:/i, '');
+      toast.error('No se pudo regenerar la minuta', { description: msg });
     },
   });
 
@@ -581,7 +604,12 @@ export function ConversationDetail({ conversation: initialConversation, onClose,
               if (isMeetingMinutesV2(nm)) {
                 return (
                   <ErrorBoundary fallback={minutaErrorFallback}>
-                    <MinutaDashboardV2 minuta={nm} onJumpToSegment={handleJumpToSegment} />
+                    <MinutaDashboardV2
+                      minuta={nm}
+                      onJumpToSegment={handleJumpToSegment}
+                      onRegenerate={() => regenerateMinutesMutation.mutate()}
+                      isRegenerating={regenerateMinutesMutation.isPending}
+                    />
                   </ErrorBoundary>
                 );
               }
@@ -607,8 +635,35 @@ export function ConversationDetail({ conversation: initialConversation, onClose,
 
               return (
                 <ErrorBoundary fallback={minutaErrorFallback}>
-                  <div className="dashboard-v1-scope">
-                    <MinutaDashboardV1 minuta={nm} userName={userName} />
+                  <div className="space-y-4">
+                    <Card className="bg-cyan-500/5 border-cyan-500/20">
+                      <CardContent className="p-4 flex items-start gap-3">
+                        <Sparkles className="h-5 w-5 text-cyan-400 mt-0.5 shrink-0" />
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm text-muted-foreground">
+                            Esta minuta está en el formato anterior. Regenérala para verla con el
+                            nuevo diseño (TL;DR, capítulos y decisiones/acciones enlazadas al
+                            transcript).
+                          </p>
+                        </div>
+                        <Button
+                          size="sm"
+                          onClick={() => regenerateMinutesMutation.mutate()}
+                          disabled={regenerateMinutesMutation.isPending}
+                          className="bg-cyan-600 hover:bg-cyan-700 text-white gap-2 shrink-0"
+                        >
+                          {regenerateMinutesMutation.isPending ? (
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                          ) : (
+                            <RefreshCw className="h-4 w-4" />
+                          )}
+                          Actualizar al nuevo formato
+                        </Button>
+                      </CardContent>
+                    </Card>
+                    <div className="dashboard-v1-scope">
+                      <MinutaDashboardV1 minuta={nm} userName={userName} />
+                    </div>
                   </div>
                 </ErrorBoundary>
               );

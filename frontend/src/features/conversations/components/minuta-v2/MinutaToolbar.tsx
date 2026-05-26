@@ -1,16 +1,19 @@
 'use client';
 
 import { useState } from 'react';
-import { Download, Loader2 } from 'lucide-react';
+import { Download, Loader2, RefreshCw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { toast } from 'sonner';
 import type { MeetingMinutesDataV2 } from '@/features/conversations/services/conversations.service';
 
 interface MinutaToolbarProps {
   minuta: MeetingMinutesDataV2;
+  /** Optional regenerate handler. When omitted, the regenerate button is hidden. */
+  onRegenerate?: () => void;
+  isRegenerating?: boolean;
 }
 
-export function MinutaToolbar({ minuta }: MinutaToolbarProps) {
+export function MinutaToolbar({ minuta, onRegenerate, isRegenerating }: MinutaToolbarProps) {
   const [downloading, setDownloading] = useState(false);
 
   const handleDownload = async () => {
@@ -53,6 +56,18 @@ export function MinutaToolbar({ minuta }: MinutaToolbarProps) {
         )}
         Descargar PDF
       </Button>
+      {onRegenerate && (
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={onRegenerate}
+          disabled={isRegenerating}
+          className="text-cyan-400 hover:text-cyan-300 hover:bg-cyan-500/10"
+        >
+          <RefreshCw className={`h-4 w-4 mr-2 ${isRegenerating ? 'animate-spin' : ''}`} />
+          Regenerar minuta
+        </Button>
+      )}
     </div>
   );
 }

@@ -1312,6 +1312,8 @@ pub fn run() {
             audio::transcription::deepgram_commands::clear_deepgram_proxy_config,
             // Conversations finalize (cloud evaluation)
             api::finalize::finalize_conversation_cloud,
+            // Conversations regenerate meeting minutes (cloud)
+            api::regenerate_minutes::regenerate_minutes_cloud,
             // OAuth localhost server
             auth_server::start_oauth_server,
             auth_server::get_pending_auth_code,
