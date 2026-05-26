@@ -1,19 +1,19 @@
-'use client'
-
-import { useEffect, useMemo, useState } from 'react'
-import { Bot, Brain, PanelRightClose, PanelRightOpen } from 'lucide-react'
-import { useAuth } from '@/contexts/AuthContext'
-import { ChatThreadList } from './ChatThreadList'
-import { ChatThreadView } from './ChatThreadView'
-import { ComposerInput } from './ComposerInput'
-import { MemoriesPanel } from './MemoriesPanel'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { AppShell, CombinedSidebar } from '@/shared/components/shell-v5';
+import { MaityLogo } from '@/shared/components/MaityLogo';
+import { useUser } from '@/contexts/UserContext';
+import { useLanguage } from '@/contexts/LanguageContext';
+import { ActiveEntryItem } from './ActiveEntryItem';
+import { ChatConversation } from './ChatConversation';
+import { ChatEmpty } from './ChatEmpty';
+import { ChatTopBar } from './ChatTopBar';
+import { Composer } from './Composer';
+import { MemoriesOverlay } from './MemoriesOverlay';
 import {
   useCreateThread,
-  useDeleteThread,
-  useRenameThread,
   useThreads,
-} from '../hooks/useThreads'
-import { useMessages, useSendMessage } from '../hooks/useMessages'
+} from '../hooks/useThreads';
+import { useMessages, useSendMessage } from '../hooks/useMessages';
 import {
   useAddManualMemory,
   useApproveMemory,
@@ -22,176 +22,250 @@ import {
   useRejectMemory,
   useSetMemoryExtractionPaused,
   useUpdateMemoryContent,
-} from '../hooks/useMemories'
+} from '../hooks/useMemories';
+import { useThreadLens } from '../hooks/useThreadLens';
+import type { EntryType, Lens } from '../types';
 
+/**
+ * Top-level /chat screen on Shell v5 (desktop minimal variant).
+ *
+ * Two main visual states:
+ *   - empty: no active thread, OR active thread has zero messages → hero +
+ *     4 starter cards + open-loop banner
+ *   - active: active thread with messages → ChatConversation rendering each
+ *     turn with ChatTurn primitives
+ *
+ * Sidebar minimal: brand + Nueva sesión + lista de conversaciones + footer.
+ * Sin ActivityRail, sin ZoneSwitcher, sin calendario, sin urgency legend.
+ *
+ * Keyboard:
+ *   - ⌘N → new session
+ */
 export function MaityChatLayout() {
-  const { maityUser } = useAuth()
-  const userId = maityUser?.id
+  const { userProfile } = useUser();
+  const { t } = useLanguage();
+  const userId = userProfile?.id;
 
-  const [activeThreadId, setActiveThreadId] = useState<string | null>(null)
-  const [input, setInput] = useState('')
-  const [memoriesOpen, setMemoriesOpen] = useState(false)
+  const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
+  const [input, setInput] = useState('');
+  const [memoriesOpen, setMemoriesOpen] = useState(false);
+  const composerRef = useRef<HTMLTextAreaElement | null>(null);
 
-  const threadsQuery = useThreads(userId)
-  const createThread = useCreateThread(userId)
-  const renameThread = useRenameThread(userId)
-  const deleteThread = useDeleteThread(userId)
+  const threadsQuery = useThreads(userId);
+  const messagesQuery = useMessages(activeThreadId ?? undefined);
+  const sendMessage = useSendMessage(userId);
+  const createThread = useCreateThread(userId);
+  const updateLens = useThreadLens(userId);
 
-  const messagesQuery = useMessages(activeThreadId ?? undefined)
-  const sendMessage = useSendMessage(userId)
+  const memoriesQuery = useMemories(userId);
+  const settingsQuery = useChatSettings(userId);
+  const approveMemory = useApproveMemory(userId);
+  const rejectMemory = useRejectMemory(userId);
+  const updateMemory = useUpdateMemoryContent(userId);
+  const addMemory = useAddManualMemory(userId);
+  const setPaused = useSetMemoryExtractionPaused(userId);
 
-  const memoriesQuery = useMemories(userId)
-  const settingsQuery = useChatSettings(userId)
-  const approveMemory = useApproveMemory(userId)
-  const rejectMemory = useRejectMemory(userId)
-  const updateMemory = useUpdateMemoryContent(userId)
-  const addMemory = useAddManualMemory(userId)
-  const setPaused = useSetMemoryExtractionPaused(userId)
-
-  const threads = useMemo(() => threadsQuery.data ?? [], [threadsQuery.data])
-  const messages = useMemo(() => messagesQuery.data ?? [], [messagesQuery.data])
-  const memories = useMemo(() => memoriesQuery.data ?? [], [memoriesQuery.data])
+  const threads = useMemo(() => threadsQuery.data ?? [], [threadsQuery.data]);
+  const messages = useMemo(() => messagesQuery.data ?? [], [messagesQuery.data]);
+  const memories = useMemo(() => memoriesQuery.data ?? [], [memoriesQuery.data]);
   const approvedMemories = useMemo(
     () => memories.filter((m) => m.status === 'approved'),
     [memories],
-  )
+  );
   const activeThread = useMemo(
-    () => threads.find((t) => t.id === activeThreadId) ?? null,
+    () => threads.find((th) => th.id === activeThreadId) ?? null,
     [threads, activeThreadId],
-  )
+  );
 
-  useEffect(() => {
-    if (!activeThreadId && threads.length > 0) {
-      setActiveThreadId(threads[0].id)
-    }
-  }, [threads, activeThreadId])
+  const isEmpty = !activeThread || messages.length === 0;
 
-  const handleNew = async () => {
-    const thread = await createThread.mutateAsync()
-    setActiveThreadId(thread.id)
-  }
+  const openThreads = useMemo(() => threads.filter((th) => th.open === true), [threads]);
 
-  const handleSelect = (threadId: string) => {
-    setActiveThreadId(threadId)
-  }
+  const handleNewSession = useCallback(async () => {
+    const thread = await createThread.mutateAsync();
+    setActiveThreadId(thread.id);
+    composerRef.current?.focus();
+  }, [createThread]);
 
-  const handleDelete = async (threadId: string) => {
-    await deleteThread.mutateAsync(threadId)
-    if (activeThreadId === threadId) {
-      setActiveThreadId(null)
-    }
-  }
+  const handleContinueOpen = useCallback((threadId: string) => {
+    setActiveThreadId(threadId);
+  }, []);
 
-  const handleSend = async (text?: string) => {
-    const content = (text ?? input).trim()
-    if (!content || sendMessage.isPending) return
+  const handleSelectThread = useCallback((threadId: string) => {
+    setActiveThreadId(threadId);
+  }, []);
 
-    let thread = activeThread
+  const handleSend = useCallback(async (text?: string) => {
+    const content = (text ?? input).trim();
+    if (!content || sendMessage.isPending || !userId) return;
+
+    let thread = activeThread;
     if (!thread) {
-      thread = await createThread.mutateAsync()
-      setActiveThreadId(thread.id)
+      thread = await createThread.mutateAsync();
+      setActiveThreadId(thread.id);
     }
 
-    setInput('')
+    setInput('');
     await sendMessage.mutateAsync({
       thread,
       content,
       history: messages,
       approvedMemories,
-    })
-  }
+    });
+  }, [activeThread, approvedMemories, createThread, input, messages, sendMessage, userId]);
+
+  const handlePickStarter = useCallback(
+    async (seedText: string, entryType: EntryType, chip?: string) => {
+      type StarterEntryType = 'thinking' | 'decision' | 'rehearsal' | 'reflection';
+      const messageOpen: Record<StarterEntryType, string> = {
+        thinking: t('chat.starter_thinking_message_open'),
+        decision: t('chat.starter_decision_message_open'),
+        rehearsal: t('chat.starter_rehearsal_message_open'),
+        reflection: t('chat.starter_reflection_message_open'),
+      };
+      const fallback = messageOpen[entryType as StarterEntryType] ?? '';
+      const text = chip ? `${seedText}${chip}.` : fallback;
+      if (text) await handleSend(text);
+    },
+    [handleSend, t],
+  );
+
+  const handleLensChange = useCallback((lens: Lens) => {
+    if (!activeThreadId) return;
+    updateLens.mutate({ threadId: activeThreadId, lens });
+  }, [activeThreadId, updateLens]);
+
+  // ⌘N shortcut — new session.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'n') {
+        const target = e.target as HTMLElement | null;
+        if (target && (target.tagName === 'TEXTAREA' || target.tagName === 'INPUT')) return;
+        e.preventDefault();
+        void handleNewSession();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [handleNewSession]);
+
+  // Defensive refetch — si `userId` aparece tarde (race condition al boot
+  // entre AuthContext y React Query), forzamos refetch de threads. Si la
+  // primera invocación de `useThreads(undefined)` cacheó `[]`, sin esto el
+  // sidebar quedaría vacío hasta que pase `staleTime` (30s).
+  useEffect(() => {
+    if (userId) {
+      void threadsQuery.refetch();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userId]);
 
   if (!userId) {
     return (
-      <div className="h-full flex items-center justify-center bg-muted">
+      <div className="h-screen w-full flex items-center justify-center bg-background">
         <div className="max-w-sm text-center p-6">
-          <div className="mx-auto w-12 h-12 rounded-xl bg-[#485df4]/10 flex items-center justify-center mb-3">
-            <Bot className="w-6 h-6 text-[#485df4]" />
+          <div className="mx-auto w-12 h-12 rounded-xl bg-maity-blue/10 flex items-center justify-center mb-3">
+            <MaityLogo variant="symbol" size="md" className="!min-w-0" />
           </div>
-          <h2 className="text-lg font-semibold text-foreground mb-1">Chat IA</h2>
-          <p className="text-sm text-muted-foreground">
-            Inicia sesión para conversar con Maity y guardar tus memorias.
-          </p>
+          <h2 className="text-lg font-semibold text-foreground mb-1">{t('chat.title')}</h2>
+          <p className="text-sm text-foreground/60">{t('chat.login_required')}</p>
         </div>
       </div>
-    )
+    );
   }
 
   return (
-    <div className="h-full flex bg-muted">
-      <ChatThreadList
-        threads={threads}
-        activeThreadId={activeThreadId}
-        isLoading={threadsQuery.isLoading}
-        isCreating={createThread.isPending}
-        onSelect={handleSelect}
-        onNew={handleNew}
-        onRename={(id, title) => renameThread.mutate({ threadId: id, title })}
-        onDelete={handleDelete}
-      />
-
-      <div className="flex-1 min-w-0 flex flex-col">
-        <div className="px-6 pt-5 pb-3 flex-shrink-0 flex items-center justify-between border-b border-border bg-background/60">
-          <div className="flex items-center gap-3 min-w-0">
-            <div className="flex items-center justify-center w-10 h-10 rounded-xl bg-[#485df4]/10 flex-shrink-0">
-              <Bot className="h-5 w-5 text-[#485df4]" />
+    <AppShell
+      topBar={
+        <ChatTopBar
+          thread={activeThread}
+          messageCount={messages.length}
+          memoriesCount={approvedMemories.length}
+          onOpenMemories={() => setMemoriesOpen(true)}
+        />
+      }
+      sidebar={
+        <CombinedSidebar
+          onNewSession={handleNewSession}
+          isCreating={createThread.isPending}
+          todayEntriesSlot={
+            <div
+              className="border border-border"
+              style={{
+                margin: '8px 12px 12px',
+                padding: 12,
+                borderRadius: 10,
+                background: 'hsl(var(--card))',
+              }}
+            >
+              <div
+                className="text-foreground/40 uppercase font-semibold mb-2"
+                style={{ fontSize: 10, letterSpacing: '0.5px' }}
+              >
+                {t('chat.my_conversations')}
+              </div>
+              {threads.length === 0 ? (
+                <div
+                  className="text-foreground/40 py-2"
+                  style={{ fontSize: 11 }}
+                >
+                  {t('chat.no_conversations')}
+                </div>
+              ) : (
+                threads.map((th) => (
+                  <ActiveEntryItem
+                    key={th.id}
+                    thread={th}
+                    active={th.id === activeThreadId}
+                    onClick={() => handleSelectThread(th.id)}
+                  />
+                ))
+              )}
             </div>
-            <div className="min-w-0">
-              <h1 className="text-base font-semibold text-foreground truncate">
-                {activeThread?.title ?? 'Chat IA'}
-              </h1>
-              <p className="text-xs text-muted-foreground">
-                Tu coach de habilidades blandas y productividad
-              </p>
-            </div>
-          </div>
-          <button
-            onClick={() => setMemoriesOpen((v) => !v)}
-            className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-full border border-border bg-background hover:bg-secondary transition-colors text-foreground"
-          >
-            {memoriesOpen ? (
-              <PanelRightClose className="w-3.5 h-3.5" />
-            ) : (
-              <PanelRightOpen className="w-3.5 h-3.5" />
-            )}
-            <Brain className="w-3.5 h-3.5 text-[#485df4]" />
-            Memorias {approvedMemories.length > 0 ? `· ${approvedMemories.length}` : ''}
-          </button>
-        </div>
-
-        <ChatThreadView
+          }
+        />
+      }
+    >
+      {isEmpty ? (
+        <ChatEmpty
+          onPickStarter={handlePickStarter}
+          openThreads={openThreads}
+          onContinueOpen={handleContinueOpen}
+        />
+      ) : (
+        <ChatConversation
           messages={messages}
           isLoading={messagesQuery.isLoading}
           isSending={sendMessage.isPending}
+          userFirstName={userProfile?.first_name}
           onSuggestionClick={(text) => handleSend(text)}
-        />
-
-        <div className="px-6 pb-6 pt-2 flex-shrink-0 max-w-3xl w-full mx-auto">
-          <ComposerInput
-            value={input}
-            onChange={setInput}
-            onSend={() => handleSend()}
-            disabled={sendMessage.isPending}
-            isSending={sendMessage.isPending}
-          />
-          <p className="text-xs text-muted-foreground mt-1.5 text-center">
-            Maity recuerda tus memorias aprobadas y usa contexto de tus chats.
-          </p>
-        </div>
-      </div>
-
-      {memoriesOpen && (
-        <MemoriesPanel
-          memories={memories}
-          settings={settingsQuery.data}
-          isLoading={memoriesQuery.isLoading}
-          onApprove={(id) => approveMemory.mutate(id)}
-          onReject={(id) => rejectMemory.mutate(id)}
-          onUpdate={(id, content) => updateMemory.mutate({ memoryId: id, content })}
-          onAddManual={(content) => addMemory.mutate(content)}
-          onTogglePaused={(paused) => setPaused.mutate(paused)}
+          onCtaClick={(preFill) => handleSend(preFill)}
         />
       )}
-    </div>
-  )
+
+      <Composer
+        ref={composerRef}
+        value={input}
+        onChange={setInput}
+        onSend={() => handleSend()}
+        disabled={sendMessage.isPending}
+        isSending={sendMessage.isPending}
+        lens={activeThread?.lens ?? 'open'}
+        onLensChange={handleLensChange}
+      />
+
+      <MemoriesOverlay
+        open={memoriesOpen}
+        onOpenChange={setMemoriesOpen}
+        memories={memories}
+        settings={settingsQuery.data}
+        isLoading={memoriesQuery.isLoading}
+        onApprove={(id) => approveMemory.mutate(id)}
+        onReject={(id) => rejectMemory.mutate(id)}
+        onUpdate={(id, content) => updateMemory.mutate({ memoryId: id, content })}
+        onAddManual={(content) => addMemory.mutate(content)}
+        onTogglePaused={(paused) => setPaused.mutate(paused)}
+      />
+    </AppShell>
+  );
 }

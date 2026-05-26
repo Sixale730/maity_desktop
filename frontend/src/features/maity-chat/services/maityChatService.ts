@@ -1,4 +1,5 @@
 import { supabase } from '@/lib/supabase'
+import { logger } from '@/lib/logger'
 import type {
   ChatThread,
   ChatMessage,
@@ -7,6 +8,7 @@ import type {
   SendMessageResult,
   MemoryStatus,
   ChatRole,
+  Lens,
 } from '../types'
 
 /**
@@ -14,19 +16,27 @@ import type {
  */
 
 export async function listThreads(userId: string): Promise<ChatThread[]> {
+  logger.info('[chat] listThreads', { userId })
   const { data, error } = await supabase
+    .schema('maity')
     .from('chat_threads')
     .select('*')
     .eq('user_id', userId)
     .is('archived_at', null)
     .order('updated_at', { ascending: false })
+    .limit(50)
 
-  if (error) throw error
+  if (error) {
+    logger.warn('[chat] listThreads error', error)
+    throw error
+  }
+  logger.info('[chat] listThreads result', { count: data?.length ?? 0, userId })
   return (data ?? []) as ChatThread[]
 }
 
 export async function createThread(userId: string, title?: string): Promise<ChatThread> {
   const { data, error } = await supabase
+    .schema('maity')
     .from('chat_threads')
     .insert({ user_id: userId, title: title ?? 'Nuevo chat' })
     .select('*')
@@ -41,6 +51,7 @@ export async function renameThread(threadId: string, title: string): Promise<voi
   if (!trimmed) throw new Error('El título no puede estar vacío')
 
   const { error } = await supabase
+    .schema('maity')
     .from('chat_threads')
     .update({ title: trimmed, updated_at: new Date().toISOString() })
     .eq('id', threadId)
@@ -49,7 +60,21 @@ export async function renameThread(threadId: string, title: string): Promise<voi
 }
 
 export async function deleteThread(threadId: string): Promise<void> {
-  const { error } = await supabase.from('chat_threads').delete().eq('id', threadId)
+  const { error } = await supabase.schema('maity').from('chat_threads').delete().eq('id', threadId)
+  if (error) throw error
+}
+
+/**
+ * Persiste el lente activo del thread en la columna `chat_threads.lens`.
+ * El endpoint LLM en Vercel lee este campo en el siguiente sendMessage y
+ * prepende LENS_INSTRUCTIONS al system prompt.
+ */
+export async function updateThreadLens(threadId: string, lens: Lens): Promise<void> {
+  const { error } = await supabase
+    .schema('maity')
+    .from('chat_threads')
+    .update({ lens })
+    .eq('id', threadId)
   if (error) throw error
 }
 
@@ -59,6 +84,7 @@ export async function deleteThread(threadId: string): Promise<void> {
 
 export async function listMessages(threadId: string): Promise<ChatMessage[]> {
   const { data, error } = await supabase
+    .schema('maity')
     .from('chat_messages')
     .select('*')
     .eq('thread_id', threadId)
@@ -75,6 +101,7 @@ async function insertMessage(
   content: string,
 ): Promise<ChatMessage> {
   const { data, error } = await supabase
+    .schema('maity')
     .from('chat_messages')
     .insert({ thread_id: threadId, user_id: userId, role, content })
     .select('*')
@@ -90,6 +117,7 @@ async function insertMessage(
 
 export async function listMemories(userId: string): Promise<ChatMemory[]> {
   const { data, error } = await supabase
+    .schema('maity')
     .from('chat_memories')
     .select('*')
     .eq('user_id', userId)
@@ -102,6 +130,7 @@ export async function listMemories(userId: string): Promise<ChatMemory[]> {
 
 export async function approveMemory(memoryId: string): Promise<void> {
   const { error } = await supabase
+    .schema('maity')
     .from('chat_memories')
     .update({ status: 'approved' satisfies MemoryStatus })
     .eq('id', memoryId)
@@ -110,6 +139,7 @@ export async function approveMemory(memoryId: string): Promise<void> {
 
 export async function rejectMemory(memoryId: string): Promise<void> {
   const { error } = await supabase
+    .schema('maity')
     .from('chat_memories')
     .update({ status: 'rejected' satisfies MemoryStatus })
     .eq('id', memoryId)
@@ -121,6 +151,7 @@ export async function updateMemoryContent(memoryId: string, content: string): Pr
   if (!trimmed) throw new Error('La memoria no puede estar vacía')
 
   const { error } = await supabase
+    .schema('maity')
     .from('chat_memories')
     .update({ content: trimmed })
     .eq('id', memoryId)
@@ -132,6 +163,7 @@ export async function addManualMemory(userId: string, content: string): Promise<
   if (!trimmed) throw new Error('La memoria no puede estar vacía')
 
   const { data, error } = await supabase
+    .schema('maity')
     .from('chat_memories')
     .insert({
       user_id: userId,
@@ -151,6 +183,7 @@ export async function addManualMemory(userId: string, content: string): Promise<
 
 export async function getSettings(userId: string): Promise<ChatSettings | null> {
   const { data, error } = await supabase
+    .schema('maity')
     .from('chat_settings')
     .select('*')
     .eq('user_id', userId)
@@ -161,7 +194,7 @@ export async function getSettings(userId: string): Promise<ChatSettings | null> 
 }
 
 export async function setMemoryExtractionPaused(userId: string, paused: boolean): Promise<void> {
-  const { error } = await supabase.from('chat_settings').upsert(
+  const { error } = await supabase.schema('maity').from('chat_settings').upsert(
     {
       user_id: userId,
       memory_extraction_paused: paused,
@@ -177,8 +210,6 @@ export async function setMemoryExtractionPaused(userId: string, paused: boolean)
  *
  * Endpoint:  POST https://www.maity.cloud/api/maity-chat
  * Auth:      Bearer <Supabase access_token>
- * Pattern:   mirrors `api/game-chat.ts` and `api/evaluate.ts` (Zod-validated,
- *            authenticateUser, calls DeepSeek/OpenAI server-side).
  *
  * Request body:
  *   {
@@ -187,25 +218,26 @@ export async function setMemoryExtractionPaused(userId: string, paused: boolean)
  *     approved_memories: Array<{ id: string; content: string }>
  *     language: 'es-419'
  *     client_idempotency_key: string  // uuid, for safe retries
+ *     lens?: 'open'|'ask'|'mirror'|'push'|'sum'
  *   }
  *
  * Response:
- *   {
- *     content: string
- *     proposed_memories?: string[]
- *     thread_title?: string
- *   }
+ *   { content: string, proposed_memories?: string[], thread_title?: string }
  *
  * Falls back to a clearly-marked placeholder if the route is not yet
- * deployed (404) or the user is offline, so the UI (threads, memories,
- * persistence) remains testable end-to-end during rollout.
+ * deployed (404), rate limited (429), or the user is offline.
+ *
+ * IMPORTANTE: el origin `https://www.maity.cloud` debe estar en `connect-src`
+ * del CSP en `frontend/src-tauri/tauri.conf.json` o Tauri bloquea el fetch.
  */
 const MAITY_CHAT_ENDPOINT = 'https://www.maity.cloud/api/maity-chat'
+
+type PlaceholderReason = 'pending' | 'auth' | 'error' | 'rate_limit'
 
 function placeholderReply(
   newUserContent: string,
   approvedMemories: string[],
-  reason: 'pending' | 'auth' | 'error',
+  reason: PlaceholderReason,
 ): { content: string; proposedMemories: string[] } {
   const memoriesNote = approvedMemories.length > 0
     ? `\n\n_(Se enviarían ${approvedMemories.length} memoria(s) aprobada(s) como contexto.)_`
@@ -214,11 +246,13 @@ function placeholderReply(
   const header =
     reason === 'pending' ? '**Endpoint de IA pendiente de conectar.**'
     : reason === 'auth'  ? '**Sesión expirada.**'
+    : reason === 'rate_limit' ? '**Límite de mensajes alcanzado.**'
     : '**No se pudo contactar al servicio de IA.**'
 
   const body =
     reason === 'pending' ? 'En cuanto se despliegue la ruta `/api/maity-chat` en el repo web, responderé con la personalidad de Maity, enfocada en habilidades blandas y productividad.'
     : reason === 'auth'  ? 'Vuelve a iniciar sesión para continuar la conversación.'
+    : reason === 'rate_limit' ? 'Has alcanzado el límite de mensajes. Espera unos minutos.'
     : 'Verifica tu conexión a internet o intenta de nuevo en unos momentos.'
 
   const placeholder = [
@@ -234,13 +268,13 @@ function placeholderReply(
 }
 
 async function generateAssistantReply(params: {
-  threadId: string
+  thread: ChatThread
   history: ChatMessage[]
   newUserContent: string
   approvedMemories: Array<{ id: string; content: string }>
   idempotencyKey: string
 }): Promise<{ content: string; proposedMemories: string[]; threadTitle?: string }> {
-  const { threadId, history, newUserContent, approvedMemories, idempotencyKey } = params
+  const { thread, history, newUserContent, approvedMemories, idempotencyKey } = params
 
   const messagesForLLM = [
     ...history.map((m) => ({ role: m.role, content: m.content })),
@@ -251,6 +285,7 @@ async function generateAssistantReply(params: {
 
   const { data: { session } } = await supabase.auth.getSession()
   if (!session?.access_token) {
+    logger.warn('[chat] No Supabase session — falling back to auth placeholder')
     return placeholderReply(newUserContent, approvedMemoryContents, 'auth')
   }
 
@@ -262,21 +297,33 @@ async function generateAssistantReply(params: {
         Authorization: `Bearer ${session.access_token}`,
       },
       body: JSON.stringify({
-        thread_id: threadId,
+        thread_id: thread.id,
         messages: messagesForLLM,
         approved_memories: approvedMemories,
         language: 'es-419',
         client_idempotency_key: idempotencyKey,
+        lens: thread.lens ?? 'open',
       }),
     })
 
     if (response.status === 404) {
+      logger.warn('[chat] api/maity-chat 404 — endpoint not deployed')
       return placeholderReply(newUserContent, approvedMemoryContents, 'pending')
     }
     if (response.status === 401 || response.status === 403) {
+      logger.warn('[chat] api/maity-chat auth rejected', { status: response.status })
       return placeholderReply(newUserContent, approvedMemoryContents, 'auth')
     }
+    if (response.status === 429) {
+      logger.warn('[chat] api/maity-chat rate limited')
+      return placeholderReply(newUserContent, approvedMemoryContents, 'rate_limit')
+    }
     if (!response.ok) {
+      const bodyText = await response.text().catch(() => '(no body)')
+      logger.warn('[chat] api/maity-chat non-OK response', {
+        status: response.status,
+        body: bodyText.slice(0, 500),
+      })
       return placeholderReply(newUserContent, approvedMemoryContents, 'error')
     }
 
@@ -287,6 +334,7 @@ async function generateAssistantReply(params: {
     }
 
     if (!data?.content) {
+      logger.warn('[chat] api/maity-chat returned 200 with empty content')
       return placeholderReply(newUserContent, approvedMemoryContents, 'error')
     }
 
@@ -295,7 +343,8 @@ async function generateAssistantReply(params: {
       proposedMemories: data.proposed_memories ?? [],
       threadTitle: data.thread_title,
     }
-  } catch {
+  } catch (err) {
+    logger.warn('[chat] api/maity-chat fetch threw', err)
     return placeholderReply(newUserContent, approvedMemoryContents, 'error')
   }
 }
@@ -327,7 +376,7 @@ export async function sendMessage(params: {
     proposedMemories,
     threadTitle: serverTitle,
   } = await generateAssistantReply({
-    threadId: thread.id,
+    thread,
     history: [...history, userMessage],
     newUserContent: content,
     approvedMemories: approvedMemories.map((m) => ({ id: m.id, content: m.content })),
@@ -356,9 +405,9 @@ export async function sendMessage(params: {
       status: 'proposed' satisfies MemoryStatus,
       source_message_id: assistantMessage.id,
     }))
-    const { error } = await supabase.from('chat_memories').insert(rows)
+    const { error } = await supabase.schema('maity').from('chat_memories').insert(rows)
     if (error) {
-      console.warn('Failed to persist proposed memories:', error)
+      logger.warn('[chat] Failed to persist proposed memories', error)
     }
   }
 

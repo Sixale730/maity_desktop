@@ -537,13 +537,13 @@ const Sidebar: React.FC = () => {
               <button
                 onClick={() => router.push('/chat')}
                 className={`p-2 rounded-lg transition-colors duration-150 ${isChatPage ? 'bg-secondary' : 'hover:bg-secondary'}`}
-                aria-label="Chat IA"
+                aria-label="Chat con Maity"
               >
                 <Bot className="w-5 h-5 text-[#485df4]" />
               </button>
             </TooltipTrigger>
             <TooltipContent side="right">
-              <p>Chat IA</p>
+              <p>Chat con Maity</p>
             </TooltipContent>
           </Tooltip>
 
@@ -804,7 +804,7 @@ const Sidebar: React.FC = () => {
                   className={`p-3 text-lg font-semibold items-center hover:bg-secondary h-10 flex mx-3 mt-2 rounded-lg cursor-pointer text-foreground ${pathname === '/chat' ? 'bg-secondary' : ''}`}
                 >
                   <Bot className="w-4 h-4 mr-2 text-[#485df4]" />
-                  <span>Chat IA</span>
+                  <span>Chat con Maity</span>
                 </div>
               </>
             )}
