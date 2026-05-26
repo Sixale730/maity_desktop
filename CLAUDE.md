@@ -444,13 +444,13 @@ El componente `GamifiedDashboardV2.tsx` y el Card de "Mision Actual" tienen regl
 
 1. **CERO breakpoints `md:`/`lg:` dentro del Card de la mision ni en el header del dashboard.** El DPI scaling de Windows (125%, 150%) hace que el viewport reportado al webview de Tauri caiga entre breakpoints de Tailwind, asi clases `md:flex-row` no se aplican y el layout colapsa a la version mobile (todo apilado vertical). Usar siempre flexbox de ancho fijo (`flex-1`, `w-1/2`, `w-[460px]`).
 
-2. **Imagen como `<img>` con `object-cover object-[center_30%]`** — NO `bg-cover bg-bottom` (causo zoom/recorte feo en commit `5400b67`) ni `object-center` (puede mostrar solo cielo si la imagen es vertical). El `[center_30%]` ancla las cumbres en el area visible.
+2. **Imagen como `<img>` con `object-cover object-center opacity-60 group-hover:opacity-70 transition-all`** — el `opacity-60` es CRITICO: atenua la imagen para que el cartel der con `bg-[#0F0F0F]` no contraste de manera abrupta. Sin el `opacity-60` la transicion se ve cortada (verificado mayo 2026, regresion del commit `829dd83` que quito el opacity al rediseñar al patron hibrido). El commit `2b90533` original ya tenia el `opacity-60` y funcionaba bien. Para `object-position`: `object-center` (50% 50%) ancla las cumbres de la imagen actual (`mission-mountain.jpg`, horizontal 1.5:1, cumbres en tercio medio). NO usar `object-[center_30%]` — empuja la vista hacia el cielo (probado mayo 2026). NO usar `bg-cover bg-bottom` (causo zoom/recorte feo en commit `5400b67`). Si la imagen cambia a una con composicion distinta, re-evaluar position y revisar si `opacity-60` sigue siendo necesario.
 
 3. **Estructura HÍBRIDA: imagen full-width del Card + cartel der con `bg-[#0F0F0F]` propio.** Despues de iterar 4 veces (mayo 2026), el patron que funciona en desktop NO es ni full-width-puro (cartel se ve translucido sobre la imagen — iter 3) ni side-by-side-encerrado-puro (linea marcada vertical donde termina `w-1/2 overflow-hidden` — iter 4). Es un hibrido:
     ```tsx
     <Card className="relative overflow-hidden bg-[#0F0F0F]">
       {/* Imagen full-width del Card, NO encerrada */}
-      <img className="absolute inset-0 w-full h-full object-cover object-[center_30%]" />
+      <img className="absolute inset-0 w-full h-full object-cover object-center" />
       <div className="absolute inset-0 bg-gradient-to-r from-black/40 via-transparent to-[#0F0F0F]" />
 
       <div className="relative flex min-h-[320px]">

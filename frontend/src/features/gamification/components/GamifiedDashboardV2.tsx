@@ -236,7 +236,7 @@ export function GamifiedDashboardV2() {
             <img
               src="/images/mission-mountain.jpg"
               alt=""
-              className="absolute inset-0 w-full h-full object-cover object-[center_30%] group-hover:scale-105 transition-transform duration-700"
+              className="absolute inset-0 w-full h-full object-cover object-center opacity-60 group-hover:opacity-70 group-hover:scale-105 transition-all duration-700"
             />
             {/* GRADIENT WEB simétrico: oscuro-claro-card */}
             <div className="absolute inset-0 bg-gradient-to-r from-black/40 via-transparent to-[#0F0F0F]" />
