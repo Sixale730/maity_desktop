@@ -1143,6 +1143,46 @@ export async function saveTranscriptSegments(
   }
 }
 
+/**
+ * Server-side regeneration of meeting minutes for a conversation.
+ *
+ * Calls the cloud `POST /api/conversations { action: 'generate-minutes' }`
+ * via a Tauri command (so the request goes from the Rust process and CORS
+ * doesn't apply). The endpoint is owner-or-admin gated and rate-limited
+ * per non-admin user (default 10 distinct conversations regenerated / 24h).
+ *
+ * On success the cloud has already persisted the new payload into Supabase,
+ * so the caller can either refetch the conversation or use the returned
+ * `meeting_minutes_data` directly.
+ */
+export async function regenerateMinutes(
+  conversationId: string
+): Promise<AnyMeetingMinutesData> {
+  const { invoke } = await import('@tauri-apps/api/core');
+
+  const { data: { session } } = await supabase.auth.getSession();
+  if (!session?.access_token) {
+    throw new Error('No hay sesión activa. Por favor inicia sesión de nuevo.');
+  }
+
+  const result = await invoke<{
+    ok: boolean;
+    conversation_id?: string;
+    meeting_minutes_data?: AnyMeetingMinutesData;
+    processing_time_ms?: number;
+    error?: string;
+  }>('regenerate_minutes_cloud', {
+    conversationId,
+    accessToken: session.access_token,
+  });
+
+  if (!result.ok || !result.meeting_minutes_data) {
+    throw new Error(result.error || 'No se pudo regenerar la minuta');
+  }
+
+  return result.meeting_minutes_data;
+}
+
 export async function reanalyzeConversation(
   conversationId: string,
   _transcriptText: string, // No longer used — finalize reads segments from Supabase
