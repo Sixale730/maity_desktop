@@ -133,6 +133,9 @@
     --chart-3: 157 83% 51%;            /* Verde MAITY */
     --chart-4: 341 100% 65%;           /* Rosa claro */
     --chart-5: 233 88% 72%;            /* Azul claro */
+    /* Tokens semánticos chat v5 */
+    --maity-blue: 232 89% 62%;         /* #485df4 - Azul Maity (voz de Maity, branding chat) */
+    --maity-warning: 33 89% 64%;       /* #f6b352 - Ámbar urgencia week / open loops / highlights */
   }
 
   /* === PALETA MAITY - MODO OSCURO === */
@@ -162,6 +165,13 @@
     --chart-3: 157 83% 56%;            /* Verde MAITY claro */
     --chart-4: 341 100% 70%;           /* Rosa más claro */
     --chart-5: 233 88% 77%;            /* Azul más claro */
+    /* Tokens semánticos chat v5 */
+    --maity-blue: 232 89% 62%;
+    --maity-warning: 33 89% 64%;
+    /* v5 chat zone tokens */
+    --card-hi: 0 0% 10%;
+    --rail-bg: 0 0% 1%;
+    --border-strong: 0 0% 18%;
   }
 
   /* === PALETA GRIS NEUTRO (default) === */
@@ -182,6 +192,12 @@
     --primary: 341 100% 50%;
     --accent: 341 100% 50%;
     --ring: 341 100% 50%;
+    /* v5 chat zone tokens */
+    --maity-blue: 232 89% 62%;
+    --maity-warning: 33 89% 64%;
+    --card-hi: 0 0% 12%;
+    --rail-bg: 0 0% 5%;
+    --border-strong: 0 0% 22%;
   }
 
   /* === PALETA GRIS FRÍO (tinte azul sutil) === */
@@ -202,6 +218,12 @@
     --primary: 341 100% 50%;
     --accent: 341 100% 50%;
     --ring: 341 100% 50%;
+    /* v5 chat zone tokens */
+    --maity-blue: 232 89% 62%;
+    --maity-warning: 33 89% 64%;
+    --card-hi: 240 4% 12%;
+    --rail-bg: 240 5% 5%;
+    --border-strong: 240 3% 22%;
   }
 
   /* === PALETA GRIS CÁLIDO (tinte marrón) === */
@@ -222,6 +244,12 @@
     --primary: 341 100% 50%;
     --accent: 341 100% 50%;
     --ring: 341 100% 50%;
+    /* v5 chat zone tokens */
+    --maity-blue: 232 89% 62%;
+    --maity-warning: 33 89% 64%;
+    --card-hi: 30 8% 11%;
+    --rail-bg: 30 10% 5%;
+    --border-strong: 30 8% 20%;
   }
 }
 

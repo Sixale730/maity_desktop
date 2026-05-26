@@ -2,7 +2,8 @@
 
 import './globals.css'
 import { usePathname } from 'next/navigation'
-import { Source_Sans_3 } from 'next/font/google'
+import { Source_Sans_3, Inter } from 'next/font/google'
+import { GeistSans } from 'geist/font/sans'
 import Sidebar from '@/components/Sidebar'
 import { SidebarProvider } from '@/components/Sidebar/SidebarProvider'
 import MainContent from '@/components/MainContent'
@@ -58,6 +59,12 @@ const sourceSans3 = Source_Sans_3({
   subsets: ['latin'],
   weight: ['400', '500', '600', '700'],
   variable: '--font-source-sans-3',
+})
+
+const inter = Inter({
+  subsets: ['latin'],
+  weight: ['400', '500', '600', '700'],
+  variable: '--font-inter',
 })
 
 // export { metadata } from './metadata'
@@ -565,7 +572,7 @@ export default function RootLayout({
     return (
       <html lang="es" className="dark" style={{ background: 'transparent' }}>
         <body
-          className={`${sourceSans3.variable} font-sans antialiased`}
+          className={`${sourceSans3.variable} ${inter.variable} ${GeistSans.variable} font-sans antialiased`}
           style={{ background: 'transparent' }}
         >
           {children}
@@ -576,7 +583,7 @@ export default function RootLayout({
 
   return (
     <html lang="es" className="dark">
-      <body className={`${sourceSans3.variable} font-sans antialiased`}>
+      <body className={`${sourceSans3.variable} ${inter.variable} ${GeistSans.variable} font-sans antialiased`}>
         <Script
           id="chunk-error-recovery"
           strategy="beforeInteractive"
