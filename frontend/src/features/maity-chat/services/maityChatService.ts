@@ -310,9 +310,10 @@ async function callEndpoint(params: {
   approvedMemories: ChatMemory[]
   idempotencyKey: string
   lens: Lens
+  attachments?: Array<{ filename: string; text: string }>
   onDelta?: (delta: string) => void
 }): Promise<AssistantReply> {
-  const { threadId, history, approvedMemories, idempotencyKey, lens, onDelta } = params
+  const { threadId, history, approvedMemories, idempotencyKey, lens, attachments, onDelta } = params
 
   const { data: { session } } = await supabase.auth.getSession()
   const token = session?.access_token
@@ -332,6 +333,7 @@ async function callEndpoint(params: {
       language: 'es-419',
       client_idempotency_key: idempotencyKey,
       lens,
+      ...(attachments && attachments.length > 0 ? { attachments } : {}),
     }),
   })
 
@@ -464,9 +466,11 @@ export async function sendMessage(params: {
   content: string
   history: ChatMessage[]
   approvedMemories: ChatMemory[]
+  /** Texto extraído de archivos adjuntos, inyectado como contexto server-side. */
+  attachments?: Array<{ filename: string; text: string }>
   onDelta?: (delta: string) => void
 }): Promise<SendMessageResult> {
-  const { thread, content, history, approvedMemories, onDelta } = params
+  const { thread, content, history, approvedMemories, attachments, onDelta } = params
 
   const idempotencyKey = newIdempotencyKey()
 
@@ -481,6 +485,7 @@ export async function sendMessage(params: {
     approvedMemories,
     idempotencyKey,
     lens: thread.lens ?? 'open',
+    attachments,
     onDelta,
   })
 

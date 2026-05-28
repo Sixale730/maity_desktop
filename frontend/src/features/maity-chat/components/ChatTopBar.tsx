@@ -1,6 +1,7 @@
-import { Brain, MoreHorizontal } from 'lucide-react';
+import { Brain } from 'lucide-react';
 import { TopBar, URGENCY_COLOR } from '@/shared/components/shell-v5';
 import { useLanguage } from '@/contexts/LanguageContext';
+import { BugReportDialog } from './BugReportDialog';
 import type { ChatThread } from '../types';
 
 interface ChatTopBarProps {
@@ -98,13 +99,7 @@ export function ChatTopBar({
               <span className="text-foreground/60">· {memoriesCount}</span>
             )}
           </button>
-          <button
-            type="button"
-            className="inline-flex items-center justify-center w-9 h-9 rounded-lg bg-card border border-border text-foreground hover:bg-card-hi transition-colors"
-            aria-label={t('chat.more')}
-          >
-            <MoreHorizontal size={14} strokeWidth={1.8} />
-          </button>
+          <BugReportDialog threadId={thread?.id ?? null} />
         </div>
       }
     />

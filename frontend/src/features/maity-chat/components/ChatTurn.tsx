@@ -6,13 +6,14 @@ import {
   FileDown,
   FileText,
   Loader2,
+  Presentation,
   Sparkles,
   StickyNote,
 } from 'lucide-react';
 import ReactMarkdown, { Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { toast } from 'sonner';
-import { PDFService } from '@maity/shared';
+import { PDFService, PptxService } from '@maity/shared';
 import { Dot } from '@/shared/components/shell-v5';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { parseMessageMarkers } from '../utils/parseMessageMarkers';
@@ -70,9 +71,13 @@ export function ChatTurn({
   const { t } = useLanguage();
   const router = useRouter();
   const [exporting, setExporting] = useState(false);
+  const [downloadingPptx, setDownloadingPptx] = useState(false);
   const isMaity = message.role === 'assistant';
   const parsed = parseMessageMarkers(message.content);
   const { docTitle, ctaLabel, body } = parsed;
+  // El spec de presentación lo produce el tool create_presentation y se
+  // persiste en el mensaje (`artifact`), no se parsea del texto.
+  const deckSpec = message.artifact?.type === 'deck' ? message.artifact.spec : undefined;
   // Los pills vienen de las filas que las tools crearon (hidratadas en el
   // mensaje por el service). Fallback al marker-parsing para mensajes que
   // preceden a tool-use (su content aún carga [[TASK:]]/[[NOTE:]]).
@@ -97,6 +102,20 @@ export function ChatTurn({
       toast.error(t('chat.export_failed'));
     } finally {
       setExporting(false);
+    }
+  };
+
+  /** Construye + descarga el .pptx. pptxgenjs se lazy-loadea dentro de
+   *  PptxService, así que la lib pesada solo se carga cuando el usuario hace clic. */
+  const handleDownloadPptx = async () => {
+    if (!deckSpec) return;
+    setDownloadingPptx(true);
+    try {
+      await PptxService.generateDeck(deckSpec);
+    } catch {
+      toast.error(t('chat.export_failed'));
+    } finally {
+      setDownloadingPptx(false);
     }
   };
 
@@ -134,7 +153,43 @@ export function ChatTurn({
           </span>
         </div>
 
-        {docTitle ? (
+        {deckSpec ? (
+          <div
+            className="rounded-xl bg-card border-2 overflow-hidden"
+            style={{ borderColor: 'rgba(255,0,80,0.30)' }}
+          >
+            <div
+              className="flex items-center gap-2 px-4 py-2.5"
+              style={{ background: 'rgba(255,0,80,0.05)' }}
+            >
+              <Presentation
+                className="w-4 h-4 flex-shrink-0"
+                style={{ color: '#FF0050' }}
+                strokeWidth={1.8}
+              />
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-semibold text-foreground truncate">{deckSpec.title}</p>
+                <p className="text-foreground/50" style={{ fontSize: 11 }}>
+                  {deckSpec.slides.length} {t('chat.deck_slides')}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={handleDownloadPptx}
+                disabled={downloadingPptx}
+                className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-full hover:opacity-90 disabled:opacity-50 text-white transition-opacity flex-shrink-0"
+                style={{ background: '#FF0050' }}
+              >
+                {downloadingPptx ? (
+                  <Loader2 className="w-3 h-3 animate-spin" />
+                ) : (
+                  <FileDown className="w-3 h-3" />
+                )}
+                {downloadingPptx ? t('chat.exporting') : t('chat.download_pptx')}
+              </button>
+            </div>
+          </div>
+        ) : docTitle ? (
           <div
             className="rounded-xl bg-card border-2 overflow-hidden"
             style={{ borderColor: 'rgba(72,93,244,0.30)' }}
@@ -183,13 +238,22 @@ export function ChatTurn({
               'prose prose-sm dark:prose-invert max-w-none',
               isMaity ? 'font-geist' : 'font-inter',
               '[&_p]:my-1.5 [&_ul]:my-1.5 [&_ol]:my-1.5 [&_h1]:mt-2 [&_h2]:mt-2',
-              streaming ? 'after:content-["▋"] after:ml-0.5 after:animate-pulse' : '',
             ].join(' ')}
             style={{ fontSize: 15, lineHeight: 1.7, color: 'hsl(var(--foreground))' }}
           >
             <ReactMarkdown remarkPlugins={[remarkGfm]} components={markComponents}>
               {body}
             </ReactMarkdown>
+            {streaming && (
+              <div
+                className="flex items-center gap-1.5 mt-1.5 text-foreground/50"
+                role="status"
+                aria-label={t('chat.streaming')}
+              >
+                <Loader2 className="w-3.5 h-3.5 animate-spin" strokeWidth={2} />
+                <span style={{ fontSize: 11.5 }}>{t('chat.streaming')}</span>
+              </div>
+            )}
           </div>
         )}
 

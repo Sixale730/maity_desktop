@@ -22,6 +22,8 @@ interface SendVars {
   content: string
   history: ChatMessage[]
   approvedMemories: ChatMemory[]
+  /** Texto extraído de archivos adjuntos, inyectado como contexto del turno. */
+  attachments?: Array<{ filename: string; text: string }>
 }
 
 interface SendContext {
