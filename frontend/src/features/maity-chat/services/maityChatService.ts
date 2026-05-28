@@ -90,7 +90,62 @@ export async function listMessages(threadId: string): Promise<ChatMessage[]> {
     .order('created_at', { ascending: true })
 
   if (error) throw error
-  return (data ?? []) as ChatMessage[]
+  return attachToolRows((data ?? []) as ChatMessage[])
+}
+
+/**
+ * Hidrata los pills inline de tareas/notas de los mensajes del assistant a
+ * partir de las filas que las tool-calls crearon en chat_tasks / chat_notes
+ * (ligadas por message_id). Reemplaza el viejo path de marker-parsing: las
+ * filas creadas por tools no tienen marker en `content`, así que el dato del
+ * pill debe venir de las tablas. RLS limita ambas queries al usuario actual.
+ * Best-effort: ante un error, los mensajes vuelven sin hidratar (ChatTurn cae
+ * al marker-parsing para mensajes viejos).
+ */
+async function attachToolRows(messages: ChatMessage[]): Promise<ChatMessage[]> {
+  const assistantIds = messages
+    .filter((m) => m.role === 'assistant')
+    .map((m) => m.id)
+  if (assistantIds.length === 0) return messages
+
+  const [tasksRes, notesRes] = await Promise.all([
+    supabase
+      .schema('maity')
+      .from('chat_tasks')
+      .select('message_id, content, due_date')
+      .in('message_id', assistantIds),
+    supabase
+      .schema('maity')
+      .from('chat_notes')
+      .select('message_id, content')
+      .in('message_id', assistantIds),
+  ])
+
+  if (tasksRes.error || notesRes.error) return messages
+
+  const tasksByMsg = new Map<string, Array<{ description: string; due?: string }>>()
+  for (const row of tasksRes.data ?? []) {
+    const mid = row.message_id as string
+    if (!mid) continue
+    const list = tasksByMsg.get(mid) ?? []
+    list.push({ description: row.content as string, due: (row.due_date as string) ?? undefined })
+    tasksByMsg.set(mid, list)
+  }
+
+  const notesByMsg = new Map<string, Array<{ content: string }>>()
+  for (const row of notesRes.data ?? []) {
+    const mid = row.message_id as string
+    if (!mid) continue
+    const list = notesByMsg.get(mid) ?? []
+    list.push({ content: row.content as string })
+    notesByMsg.set(mid, list)
+  }
+
+  return messages.map((m) =>
+    m.role === 'assistant' && (tasksByMsg.has(m.id) || notesByMsg.has(m.id))
+      ? { ...m, tasks: tasksByMsg.get(m.id), notes: notesByMsg.get(m.id) }
+      : m,
+  )
 }
 
 /**
@@ -284,6 +339,14 @@ async function callEndpoint(params: {
     logger.warn('[chat] api/maity-chat auth rejected', { status: res.status })
     throw new Error('Tu sesión expiró. Vuelve a iniciar sesión.')
   }
+  if (res.status === 402) {
+    // Quota del plan excedida (assertQuota 'maity_chat', Free 50/día). Distinto
+    // del 429 (rate limit): aquí el usuario llegó al tope diario de su plan.
+    logger.warn('[chat] api/maity-chat quota exceeded (plan limit)')
+    throw new Error(
+      'Alcanzaste tu límite de mensajes del plan Free de hoy. Vuelve mañana o mejora tu plan para seguir conversando.',
+    )
+  }
   if (res.status === 429) {
     logger.warn('[chat] api/maity-chat rate limited')
     throw new Error('Demasiados mensajes seguidos. Espera un momento antes de intentar de nuevo.')
@@ -378,7 +441,9 @@ async function fetchLatestPair(
   if (!userMessage || !assistantMessage) {
     throw new Error('No se pudo recuperar el mensaje guardado.')
   }
-  return { userMessage, assistantMessage }
+  // Hidrata los pills de tareas/notas creados por tools en el turno assistant.
+  const [hydratedAssistant] = await attachToolRows([assistantMessage])
+  return { userMessage, assistantMessage: hydratedAssistant ?? assistantMessage }
 }
 
 /**
