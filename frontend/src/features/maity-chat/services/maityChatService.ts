@@ -7,7 +7,6 @@ import type {
   ChatSettings,
   SendMessageResult,
   MemoryStatus,
-  ChatRole,
   Lens,
 } from '../types'
 
@@ -92,23 +91,6 @@ export async function listMessages(threadId: string): Promise<ChatMessage[]> {
 
   if (error) throw error
   return (data ?? []) as ChatMessage[]
-}
-
-async function insertMessage(
-  threadId: string,
-  userId: string,
-  role: ChatRole,
-  content: string,
-): Promise<ChatMessage> {
-  const { data, error } = await supabase
-    .schema('maity')
-    .from('chat_messages')
-    .insert({ thread_id: threadId, user_id: userId, role, content })
-    .select('*')
-    .single()
-
-  if (error) throw error
-  return data as ChatMessage
 }
 
 /**
@@ -208,7 +190,7 @@ export async function setMemoryExtractionPaused(userId: string, paused: boolean)
 /**
  * LLM call — hits the Vercel route in the web repo (Sixale730/maity).
  *
- * Endpoint:  POST https://www.maity.cloud/api/maity-chat
+ * Endpoint:  POST https://www.maity.cloud/api/maity-chat   (SSE desde 2026-05-26)
  * Auth:      Bearer <Supabase access_token>
  *
  * Request body:
@@ -221,139 +203,195 @@ export async function setMemoryExtractionPaused(userId: string, paused: boolean)
  *     lens?: 'open'|'ask'|'mirror'|'push'|'sum'
  *   }
  *
- * Response:
- *   { content: string, proposed_memories?: string[], thread_title?: string }
+ * Response (text/event-stream):
+ *   event: chunk → { delta: string }                          (token a token)
+ *   event: done  → { assistant_id, content, proposed_memories?, thread_title? }
+ *   event: error → { message }
  *
- * Falls back to a clearly-marked placeholder if the route is not yet
- * deployed (404), rate limited (429), or the user is offline.
+ * El endpoint persiste TODO server-side (los 2 mensajes idempotentes por
+ * (user_id, client_idempotency_key, role), las memorias propuestas, y el
+ * título del thread). El cliente NO inserta nada: solo consume el stream y
+ * re-lee las filas canónicas por idempotency key (`fetchLatestPair`).
  *
  * IMPORTANTE: el origin `https://www.maity.cloud` debe estar en `connect-src`
  * del CSP en `frontend/src-tauri/tauri.conf.json` o Tauri bloquea el fetch.
  */
 const MAITY_CHAT_ENDPOINT = 'https://www.maity.cloud/api/maity-chat'
 
-type PlaceholderReason = 'pending' | 'auth' | 'error' | 'rate_limit'
-
-function placeholderReply(
-  newUserContent: string,
-  approvedMemories: string[],
-  reason: PlaceholderReason,
-): { content: string; proposedMemories: string[] } {
-  const memoriesNote = approvedMemories.length > 0
-    ? `\n\n_(Se enviarían ${approvedMemories.length} memoria(s) aprobada(s) como contexto.)_`
-    : ''
-
-  const header =
-    reason === 'pending' ? '**Endpoint de IA pendiente de conectar.**'
-    : reason === 'auth'  ? '**Sesión expirada.**'
-    : reason === 'rate_limit' ? '**Límite de mensajes alcanzado.**'
-    : '**No se pudo contactar al servicio de IA.**'
-
-  const body =
-    reason === 'pending' ? 'En cuanto se despliegue la ruta `/api/maity-chat` en el repo web, responderé con la personalidad de Maity, enfocada en habilidades blandas y productividad.'
-    : reason === 'auth'  ? 'Vuelve a iniciar sesión para continuar la conversación.'
-    : reason === 'rate_limit' ? 'Has alcanzado el límite de mensajes. Espera unos minutos.'
-    : 'Verifica tu conexión a internet o intenta de nuevo en unos momentos.'
-
-  const placeholder = [
-    header,
-    '',
-    `Recibí tu mensaje: _"${newUserContent.slice(0, 200)}${newUserContent.length > 200 ? '…' : ''}"_`,
-    '',
-    body,
-    memoriesNote,
-  ].join('\n')
-
-  return { content: placeholder, proposedMemories: [] }
+/**
+ * Genera un idempotency key fresco para un intento de envío.
+ * Exportado para que los tests puedan fijar un valor.
+ */
+export function newIdempotencyKey(): string {
+  return crypto.randomUUID()
 }
 
-async function generateAssistantReply(params: {
-  thread: ChatThread
-  history: ChatMessage[]
-  newUserContent: string
-  approvedMemories: Array<{ id: string; content: string }>
+interface DoneEvent {
+  assistant_id: string
+  content: string
+  proposed_memories?: string[]
+  thread_title?: string
+}
+
+interface AssistantReply {
+  content: string
+  proposedMemories: string[]
+  threadTitle?: string
   idempotencyKey: string
-}): Promise<{ content: string; proposedMemories: string[]; threadTitle?: string }> {
-  const { thread, history, newUserContent, approvedMemories, idempotencyKey } = params
+}
 
-  const messagesForLLM = [
-    ...history.map((m) => ({ role: m.role, content: m.content })),
-    { role: 'user' as const, content: newUserContent },
-  ]
-
-  const approvedMemoryContents = approvedMemories.map((m) => m.content)
+/**
+ * Consume el stream SSE del endpoint: despacha cada `event: chunk` a
+ * `onDelta` y resuelve con el payload consolidado cuando llega `event: done`.
+ *
+ * El parseo es deliberadamente simple: separa el stream de bytes por la
+ * línea en blanco que delimita eventos, luego divide cada evento en sus
+ * líneas `event:` y `data:`. El endpoint siempre manda JSON de una sola
+ * línea en `data:`, así que no hace falta reensamblar data multilínea.
+ */
+async function callEndpoint(params: {
+  threadId: string
+  history: Array<{ role: 'user' | 'assistant'; content: string }>
+  approvedMemories: ChatMemory[]
+  idempotencyKey: string
+  lens: Lens
+  onDelta?: (delta: string) => void
+}): Promise<AssistantReply> {
+  const { threadId, history, approvedMemories, idempotencyKey, lens, onDelta } = params
 
   const { data: { session } } = await supabase.auth.getSession()
-  if (!session?.access_token) {
-    logger.warn('[chat] No Supabase session — falling back to auth placeholder')
-    return placeholderReply(newUserContent, approvedMemoryContents, 'auth')
+  const token = session?.access_token
+  if (!token) throw new Error('Sesión no disponible. Vuelve a iniciar sesión.')
+
+  const res = await fetch(MAITY_CHAT_ENDPOINT, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+      Accept: 'text/event-stream',
+    },
+    body: JSON.stringify({
+      thread_id: threadId,
+      messages: history,
+      approved_memories: approvedMemories.map((m) => ({ id: m.id, content: m.content })),
+      language: 'es-419',
+      client_idempotency_key: idempotencyKey,
+      lens,
+    }),
+  })
+
+  if (res.status === 401 || res.status === 403) {
+    logger.warn('[chat] api/maity-chat auth rejected', { status: res.status })
+    throw new Error('Tu sesión expiró. Vuelve a iniciar sesión.')
+  }
+  if (res.status === 429) {
+    logger.warn('[chat] api/maity-chat rate limited')
+    throw new Error('Demasiados mensajes seguidos. Espera un momento antes de intentar de nuevo.')
+  }
+  if (!res.ok || !res.body) {
+    logger.warn('[chat] api/maity-chat non-OK response', { status: res.status })
+    throw new Error('No se pudo contactar al asistente. Intenta de nuevo.')
   }
 
-  try {
-    const response = await fetch(MAITY_CHAT_ENDPOINT, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${session.access_token}`,
-      },
-      body: JSON.stringify({
-        thread_id: thread.id,
-        messages: messagesForLLM,
-        approved_memories: approvedMemories,
-        language: 'es-419',
-        client_idempotency_key: idempotencyKey,
-        lens: thread.lens ?? 'open',
-      }),
-    })
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let done: DoneEvent | null = null
+  let serverError: string | null = null
 
-    if (response.status === 404) {
-      logger.warn('[chat] api/maity-chat 404 — endpoint not deployed')
-      return placeholderReply(newUserContent, approvedMemoryContents, 'pending')
-    }
-    if (response.status === 401 || response.status === 403) {
-      logger.warn('[chat] api/maity-chat auth rejected', { status: response.status })
-      return placeholderReply(newUserContent, approvedMemoryContents, 'auth')
-    }
-    if (response.status === 429) {
-      logger.warn('[chat] api/maity-chat rate limited')
-      return placeholderReply(newUserContent, approvedMemoryContents, 'rate_limit')
-    }
-    if (!response.ok) {
-      const bodyText = await response.text().catch(() => '(no body)')
-      logger.warn('[chat] api/maity-chat non-OK response', {
-        status: response.status,
-        body: bodyText.slice(0, 500),
-      })
-      return placeholderReply(newUserContent, approvedMemoryContents, 'error')
-    }
+  // Drenamos el stream hasta que cierre la conexión. Los eventos
+  // `done`/`error` setean las variables locales; no rompemos el loop
+  // antes de tiempo para siempre agotar el reader (evita leaks).
+  for (;;) {
+    const { value, done: streamDone } = await reader.read()
+    if (streamDone) break
+    buffer += decoder.decode(value, { stream: true })
 
-    const data = (await response.json()) as {
-      content?: string
-      proposed_memories?: string[]
-      thread_title?: string
-    }
+    // Separa los eventos completos (terminados por una línea en blanco).
+    let sep: number
+    while ((sep = buffer.indexOf('\n\n')) !== -1) {
+      const rawEvent = buffer.slice(0, sep)
+      buffer = buffer.slice(sep + 2)
+      if (!rawEvent.trim()) continue
 
-    if (!data?.content) {
-      logger.warn('[chat] api/maity-chat returned 200 with empty content')
-      return placeholderReply(newUserContent, approvedMemoryContents, 'error')
-    }
+      let eventName = 'message'
+      let dataLine = ''
+      for (const line of rawEvent.split('\n')) {
+        if (line.startsWith('event:')) eventName = line.slice(6).trim()
+        else if (line.startsWith('data:')) dataLine = line.slice(5).trim()
+      }
+      if (!dataLine) continue
 
-    return {
-      content: data.content,
-      proposedMemories: data.proposed_memories ?? [],
-      threadTitle: data.thread_title,
+      try {
+        const data = JSON.parse(dataLine) as Record<string, unknown>
+        if (eventName === 'chunk' && typeof data.delta === 'string') {
+          onDelta?.(data.delta)
+        } else if (eventName === 'done') {
+          done = data as unknown as DoneEvent
+        } else if (eventName === 'error') {
+          serverError = (data.message as string) || 'stream_error'
+        }
+      } catch {
+        // Ignora líneas de evento malformadas — las siguientes pueden parsear bien.
+      }
     }
-  } catch (err) {
-    logger.warn('[chat] api/maity-chat fetch threw', err)
-    return placeholderReply(newUserContent, approvedMemoryContents, 'error')
+  }
+
+  if (serverError) {
+    logger.warn('[chat] api/maity-chat stream error', { serverError })
+    throw new Error('No se pudo completar la respuesta. Intenta de nuevo.')
+  }
+  if (!done || !done.content) {
+    throw new Error('Respuesta vacía del asistente.')
+  }
+  return {
+    content: done.content,
+    proposedMemories: done.proposed_memories ?? [],
+    threadTitle: done.thread_title,
+    idempotencyKey,
   }
 }
 
 /**
- * Send a message: persists the user turn, calls the LLM Edge Function
- * (with graceful fallback if not yet deployed), persists the assistant
- * turn, and surfaces proposed memories. Returns everything the UI needs
- * in one round-trip.
+ * Re-lee las filas que el endpoint persistió server-side (el endpoint hace
+ * el INSERT idempotente en `chat_messages`, devolviendo el contenido pero no
+ * las filas). Tras una llamada exitosa, re-listamos los mensajes de este
+ * thread con el mismo `client_idempotency_key` para obtener las filas canónicas.
+ */
+async function fetchLatestPair(
+  threadId: string,
+  idempotencyKey: string,
+): Promise<{ userMessage: ChatMessage; assistantMessage: ChatMessage }> {
+  const { data, error } = await supabase
+    .schema('maity')
+    .from('chat_messages')
+    .select('*')
+    .eq('thread_id', threadId)
+    .eq('client_idempotency_key', idempotencyKey)
+    .order('created_at', { ascending: true })
+
+  if (error) throw error
+  const rows = (data ?? []) as ChatMessage[]
+
+  const userMessage = rows.find((r) => r.role === 'user')
+  const assistantMessage = rows.find((r) => r.role === 'assistant')
+  if (!userMessage || !assistantMessage) {
+    throw new Error('No se pudo recuperar el mensaje guardado.')
+  }
+  return { userMessage, assistantMessage }
+}
+
+/**
+ * Envía un mensaje del chat. La persistencia es 100% server-side: el endpoint
+ * inserta ambas filas idempotentemente (keyed por `client_idempotency_key`),
+ * persiste las memorias propuestas y el título del thread. En el cliente solo
+ * entregamos la petición al endpoint (consumiendo el stream SSE) y re-leemos
+ * las filas resultantes. Los reintentos reusan el mismo idempotency key → sin
+ * duplicados.
+ *
+ * `onDelta` (opcional) se invoca por cada token a medida que se genera la
+ * respuesta. El texto completo también vuelve en el resultado, así que un
+ * caller que no quiera UI incremental puede ignorarlo.
  */
 export async function sendMessage(params: {
   thread: ChatThread
@@ -361,55 +399,32 @@ export async function sendMessage(params: {
   content: string
   history: ChatMessage[]
   approvedMemories: ChatMemory[]
+  onDelta?: (delta: string) => void
 }): Promise<SendMessageResult> {
-  const { thread, userId, content, history, approvedMemories } = params
+  const { thread, content, history, approvedMemories, onDelta } = params
 
-  const userMessage = await insertMessage(thread.id, userId, 'user', content)
+  const idempotencyKey = newIdempotencyKey()
 
-  // Fresh idempotency key per send. If the user clicks Send twice quickly
-  // or a network retry happens, the web endpoint dedupes by
-  // (user_id, client_idempotency_key, role).
-  const idempotencyKey = crypto.randomUUID()
+  const historyForEndpoint = [
+    ...history.map((m) => ({ role: m.role, content: m.content })),
+    { role: 'user' as const, content },
+  ]
 
-  const {
-    content: assistantContent,
-    proposedMemories,
-    threadTitle: serverTitle,
-  } = await generateAssistantReply({
-    thread,
-    history: [...history, userMessage],
-    newUserContent: content,
-    approvedMemories: approvedMemories.map((m) => ({ id: m.id, content: m.content })),
+  const reply = await callEndpoint({
+    threadId: thread.id,
+    history: historyForEndpoint,
+    approvedMemories,
     idempotencyKey,
+    lens: thread.lens ?? 'open',
+    onDelta,
   })
 
-  const assistantMessage = await insertMessage(thread.id, userId, 'assistant', assistantContent)
+  const { userMessage, assistantMessage } = await fetchLatestPair(thread.id, idempotencyKey)
 
-  let threadTitle: string | undefined
-  const isFirstExchange = history.length === 0
-  const needsTitle = thread.title === 'Nuevo chat' || !thread.title.trim()
-  if (isFirstExchange && needsTitle) {
-    if (serverTitle && serverTitle.trim()) {
-      threadTitle = serverTitle.trim().slice(0, 60)
-    } else {
-      const candidate = content.trim().split(/\s+/).slice(0, 8).join(' ')
-      threadTitle = candidate.length > 60 ? candidate.slice(0, 60).trim() + '…' : candidate
-    }
-    if (threadTitle) await renameThread(thread.id, threadTitle)
+  return {
+    userMessage,
+    assistantMessage,
+    proposedMemories: reply.proposedMemories,
+    threadTitle: reply.threadTitle,
   }
-
-  if (proposedMemories.length > 0) {
-    const rows = proposedMemories.map((memContent) => ({
-      user_id: userId,
-      content: memContent,
-      status: 'proposed' satisfies MemoryStatus,
-      source_message_id: assistantMessage.id,
-    }))
-    const { error } = await supabase.schema('maity').from('chat_memories').insert(rows)
-    if (error) {
-      logger.warn('[chat] Failed to persist proposed memories', error)
-    }
-  }
-
-  return { userMessage, assistantMessage, proposedMemories, threadTitle }
 }
