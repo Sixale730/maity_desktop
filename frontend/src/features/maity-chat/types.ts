@@ -1,3 +1,5 @@
+import type { DeckSpec } from '@maity/shared';
+
 export type ChatRole = 'user' | 'assistant';
 export type MemoryStatus = 'proposed' | 'approved' | 'rejected';
 
@@ -39,6 +41,10 @@ export interface ChatMessage {
   tasks?: Array<{ description: string; due?: string }>;
   /** Notes created by tools on this turn, hydrated from chat_notes. */
   notes?: Array<{ content: string }>;
+  /** Structured artifact produced by a tool (no en `content`). Actualmente un
+   *  spec de presentación de `create_presentation` → renderiza la tarjeta .pptx.
+   *  Persistido en la columna `chat_messages.artifact` (jsonb). */
+  artifact?: { type: 'deck'; spec: DeckSpec } | null;
 }
 
 export interface ChatMemory {

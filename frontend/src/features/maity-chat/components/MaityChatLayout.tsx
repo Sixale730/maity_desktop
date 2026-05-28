@@ -7,7 +7,7 @@ import { ActiveEntryItem } from './ActiveEntryItem';
 import { ChatConversation } from './ChatConversation';
 import { ChatEmpty } from './ChatEmpty';
 import { ChatTopBar } from './ChatTopBar';
-import { Composer } from './Composer';
+import { Composer, type ComposerAttachment } from './Composer';
 import { MemoriesOverlay } from './MemoriesOverlay';
 import {
   useCreateThread,
@@ -48,6 +48,7 @@ export function MaityChatLayout() {
 
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
   const [input, setInput] = useState('');
+  const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   const [memoriesOpen, setMemoriesOpen] = useState(false);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
 
@@ -93,6 +94,7 @@ export function MaityChatLayout() {
 
   const handleSelectThread = useCallback((threadId: string) => {
     setActiveThreadId(threadId);
+    setAttachments([]); // los adjuntos son por-turno; no migran entre threads
   }, []);
 
   const handleSend = useCallback(async (text?: string) => {
@@ -105,14 +107,17 @@ export function MaityChatLayout() {
       setActiveThreadId(thread.id);
     }
 
+    const turnAttachments = attachments;
     setInput('');
+    setAttachments([]);
     await sendMessage.mutateAsync({
       thread,
       content,
       history: messages,
       approvedMemories,
+      attachments: turnAttachments.length > 0 ? turnAttachments : undefined,
     });
-  }, [activeThread, approvedMemories, createThread, input, messages, sendMessage, userId]);
+  }, [activeThread, approvedMemories, attachments, createThread, input, messages, sendMessage, userId]);
 
   const handlePickStarter = useCallback(
     async (seedText: string, entryType: EntryType, chip?: string) => {
@@ -252,6 +257,8 @@ export function MaityChatLayout() {
         isSending={sendMessage.isPending}
         lens={activeThread?.lens ?? 'open'}
         onLensChange={handleLensChange}
+        attachments={attachments}
+        onAttachmentsChange={setAttachments}
       />
 
       <MemoriesOverlay

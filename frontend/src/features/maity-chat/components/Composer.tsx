@@ -1,16 +1,38 @@
-import { forwardRef, KeyboardEvent, useEffect, useImperativeHandle, useRef, useState } from 'react';
+import {
+  ChangeEvent,
+  forwardRef,
+  KeyboardEvent,
+  useEffect,
+  useImperativeHandle,
+  useRef,
+  useState,
+} from 'react';
 import {
   ChevronDown,
   Eye,
+  FileText,
   Loader2,
   Mic,
   Paperclip,
   SendHorizontal,
+  X,
 } from 'lucide-react';
+import { toast } from 'sonner';
 import { useLanguage } from '@/contexts/LanguageContext';
+import { extractDocument, DocumentExtractError } from '../utils/extractDocument';
 import { LensPicker } from './LensPicker';
 import { LENSES } from './lensSpec';
 import type { Lens } from '../types';
+
+export interface ComposerAttachment {
+  filename: string;
+  text: string;
+}
+
+/** Máximo de adjuntos por turno (igual que el web). */
+const MAX_ATTACHMENTS = 3;
+
+const ATTACH_ACCEPT = '.pdf,.docx,.xlsx,.xls,.csv,.txt,.md';
 
 interface ComposerProps {
   value: string;
@@ -20,6 +42,9 @@ interface ComposerProps {
   isSending?: boolean;
   lens: Lens;
   onLensChange: (lens: Lens) => void;
+  /** Adjuntos del turno (estado dueño = MaityChatLayout). */
+  attachments?: ComposerAttachment[];
+  onAttachmentsChange?: (next: ComposerAttachment[]) => void;
 }
 
 /**
@@ -32,12 +57,52 @@ interface ComposerProps {
  *  - ⌘L / Ctrl+L     → toggle the lens picker
  */
 export const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function Composer(
-  { value, onChange, onSend, disabled, isSending, lens, onLensChange },
+  {
+    value,
+    onChange,
+    onSend,
+    disabled,
+    isSending,
+    lens,
+    onLensChange,
+    attachments = [],
+    onAttachmentsChange,
+  },
   externalRef,
 ) {
   const { t } = useLanguage();
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [extracting, setExtracting] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleFilePick = async (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    // Reset el input para que re-seleccionar el mismo archivo vuelva a disparar.
+    e.target.value = '';
+    if (!file || !onAttachmentsChange) return;
+
+    if (attachments.length >= MAX_ATTACHMENTS) {
+      toast.error(t('chat.attachment_max'));
+      return;
+    }
+
+    setExtracting(true);
+    try {
+      const { filename, text } = await extractDocument(file);
+      onAttachmentsChange([...attachments, { filename, text }]);
+    } catch (err) {
+      const code = err instanceof DocumentExtractError ? err.code : 'failed';
+      toast.error(t(`chat.attachment_error.${code}`));
+    } finally {
+      setExtracting(false);
+    }
+  };
+
+  const removeAttachment = (i: number) => {
+    if (!onAttachmentsChange) return;
+    onAttachmentsChange(attachments.filter((_, idx) => idx !== i));
+  };
   // Expose the textarea node to the parent so it can call `.focus()` after
   // pre-filling the input from a starter card click. We don't expose a
   // narrow imperative API because parents only need standard DOM focus.
@@ -86,6 +151,31 @@ export const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function 
             borderTop: isOpenLens ? '1px solid hsl(var(--border))' : `2px solid ${accent}`,
           }}
         >
+          {/* Chips de adjuntos (texto extraído, no se persiste) */}
+          {attachments.length > 0 && (
+            <div className="flex flex-wrap gap-1.5 mb-2.5">
+              {attachments.map((att, i) => (
+                <span
+                  key={`${att.filename}-${i}`}
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-card-hi border border-border text-foreground/80"
+                  style={{ fontSize: 11.5 }}
+                  title={att.filename}
+                >
+                  <FileText size={12} strokeWidth={1.8} className="text-maity-blue flex-shrink-0" />
+                  <span className="max-w-[14rem] truncate">{att.filename}</span>
+                  <button
+                    type="button"
+                    onClick={() => removeAttachment(i)}
+                    className="text-foreground/40 hover:text-foreground transition-colors"
+                    aria-label={t('chat.attachment_remove')}
+                  >
+                    <X size={12} strokeWidth={2} />
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
+
           <textarea
             ref={textareaRef}
             value={value}
@@ -124,12 +214,25 @@ export const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function 
             >
               <Mic size={14} strokeWidth={1.8} />
             </button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept={ATTACH_ACCEPT}
+              hidden
+              onChange={handleFilePick}
+            />
             <button
               type="button"
-              className="w-7 h-7 rounded-md grid place-items-center text-foreground/60 hover:text-foreground hover:bg-card-hi transition-colors"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={extracting || attachments.length >= MAX_ATTACHMENTS}
+              className="w-7 h-7 rounded-md grid place-items-center text-foreground/60 hover:text-foreground hover:bg-card-hi transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
               title={t('chat.attach')}
             >
-              <Paperclip size={14} strokeWidth={1.8} />
+              {extracting ? (
+                <Loader2 size={14} className="animate-spin" />
+              ) : (
+                <Paperclip size={14} strokeWidth={1.8} />
+              )}
             </button>
 
             <div className="flex-1" />

@@ -152,7 +152,14 @@ const STRINGS: Record<string, string> = {
   // === Composer (faltantes detectadas) ===
   'chat.send': 'Enviar',
   'chat.voice': 'Voz',
-  'chat.attach': 'Adjuntar',
+  'chat.attach': 'Adjuntar documento',
+
+  // === Adjuntos (extracción de documentos) ===
+  'chat.attachment_remove': 'Quitar adjunto',
+  'chat.attachment_max': 'Máximo 3 documentos por mensaje.',
+  'chat.attachment_error.unsupported': 'Formato no soportado. Usa PDF, Word, Excel o texto.',
+  'chat.attachment_error.empty': 'No se encontró texto en el documento (¿es un PDF escaneado?).',
+  'chat.attachment_error.failed': 'No se pudo leer el documento. Intenta con otro archivo.',
 
   // === TopBar / Conversación ===
   'chat.more': 'Más opciones',
@@ -168,9 +175,35 @@ const STRINGS: Record<string, string> = {
   'chat.export_failed': 'No se pudo exportar',
   'chat.exporting': 'Exportando…',
 
+  // === Presentaciones .pptx (artifact deck) ===
+  'chat.download_pptx': 'Descargar .pptx',
+  'chat.deck_slides': 'slides',
+
   // === Pills de tareas/notas (hidratadas desde BD) ===
   'chat.pill_task_saved': 'Tarea guardada',
   'chat.pill_note_saved': 'Nota guardada',
+
+  // === Streaming ===
+  'chat.streaming': 'Escribiendo…',
+
+  // === Reportar bug/idea (BugReportDialog) ===
+  'chat.report.button': 'Reportar un problema',
+  'chat.report.title': 'Reportar un problema o idea',
+  'chat.report.description':
+    'Cuéntanos qué falló o qué te gustaría. Tu reporte llega directo al equipo.',
+  'chat.report.category': 'Tipo',
+  'chat.report.category.bug': 'Algo falló (bug)',
+  'chat.report.category.idea': 'Idea o sugerencia',
+  'chat.report.category.confusing': 'Algo confuso',
+  'chat.report.category.other': 'Otro',
+  'chat.report.detail': 'Descripción',
+  'chat.report.placeholder': 'Describe qué pasó, qué esperabas, o tu idea…',
+  'chat.report.include_context': 'Incluir el contexto de esta conversación',
+  'chat.report.submit': 'Enviar reporte',
+  'chat.report.sending': 'Enviando…',
+  'chat.report.success': '¡Gracias! Tu reporte fue enviado.',
+  'chat.report.error': 'No se pudo enviar el reporte. Intenta de nuevo.',
+  'chat.report.empty': 'Escribe una descripción antes de enviar.',
 
   // === Hero del empty (variantes alternativas usadas) ===
   'chat.hero_title': '¿Qué te gustaría trabajar con Maity hoy?',
