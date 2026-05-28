@@ -92,6 +92,14 @@ export function ChatConversation({
     );
   }
 
+  // Un turno del assistant en streaming vive en la lista como una fila cuyo
+  // id empieza con `temp-assistant-`. Mientras exista, queremos el cursor
+  // parpadeante en su cuerpo y suprimimos el TypingTurn standalone para no
+  // mostrar dos indicadores de "escribiendo…" a la vez.
+  const hasStreamingAssistant = messages.some(
+    (m) => m.role === 'assistant' && m.id.startsWith('temp-assistant-'),
+  );
+
   return (
     <div className="flex-1 min-h-0 overflow-y-auto px-10 pt-8 flex justify-center">
       <div className="w-full" style={{ maxWidth: 760 }}>
@@ -101,6 +109,7 @@ export function ChatConversation({
             message={m}
             userFirstName={userFirstName}
             ctaConsumed={consumedCta.has(m.id)}
+            streaming={m.role === 'assistant' && m.id.startsWith('temp-assistant-')}
             onCtaClick={
               onCtaClick
                 ? (label) => {
@@ -115,7 +124,7 @@ export function ChatConversation({
             }
           />
         ))}
-        {isSending && <TypingTurn />}
+        {isSending && !hasStreamingAssistant && <TypingTurn />}
         <div ref={endRef} />
       </div>
     </div>

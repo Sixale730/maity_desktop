@@ -1,5 +1,14 @@
 import { ReactNode, useState } from 'react';
-import { FileDown, FileText, Loader2, Sparkles } from 'lucide-react';
+import { useRouter } from 'next/navigation';
+import {
+  ArrowUpRight,
+  CheckSquare,
+  FileDown,
+  FileText,
+  Loader2,
+  Sparkles,
+  StickyNote,
+} from 'lucide-react';
 import ReactMarkdown, { Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { toast } from 'sonner';
@@ -9,6 +18,12 @@ import { useLanguage } from '@/contexts/LanguageContext';
 import { parseMessageMarkers } from '../utils/parseMessageMarkers';
 import { ChatMark } from './ChatMark';
 import type { ChatMessage } from '../types';
+
+// Colores de los pills por destino. El web usa ROUTE_COLOR de shell-v6 (no
+// existe en el shell-v5 del desktop), así que los fijamos localmente. Se usan
+// como hex+alpha (`${color}1a` fondo, `${color}44` borde).
+const PILL_TASK_COLOR = '#10B981'; // emerald — tareas (/tasks)
+const PILL_NOTE_COLOR = '#F59E0B'; // amber — notas (/notes)
 
 export interface ChatTurnMove {
   /** Short uppercase label (e.g. "PREGUNTA", "REFLEJO + RETO"). */
@@ -53,9 +68,16 @@ export function ChatTurn({
   streaming,
 }: ChatTurnProps) {
   const { t } = useLanguage();
+  const router = useRouter();
   const [exporting, setExporting] = useState(false);
   const isMaity = message.role === 'assistant';
-  const { docTitle, ctaLabel, body } = parseMessageMarkers(message.content);
+  const parsed = parseMessageMarkers(message.content);
+  const { docTitle, ctaLabel, body } = parsed;
+  // Los pills vienen de las filas que las tools crearon (hidratadas en el
+  // mensaje por el service). Fallback al marker-parsing para mensajes que
+  // preceden a tool-use (su content aún carga [[TASK:]]/[[NOTE:]]).
+  const tasks = message.tasks ?? parsed.tasks;
+  const notes = message.notes ?? parsed.notes;
   const role = isMaity ? t('chat.role_maity') : t('chat.role_me');
   const time = formatTime(message.created_at);
 
@@ -183,6 +205,70 @@ export function ChatTurn({
               <Sparkles className="w-3 h-3" />
               {ctaLabel}
             </button>
+          </div>
+        )}
+
+        {/* Pills de confirmación de tareas/notas que Maity persistió en este
+            turno. Cada pill enlaza a su página destino para que el usuario
+            verifique la fila. No se necesita id: los más recientes aparecen
+            primero en /tasks y /notes. */}
+        {(tasks.length > 0 || notes.length > 0) && (
+          <div className="mt-2.5 flex flex-wrap gap-1.5">
+            {tasks.map((task, i) => (
+              <button
+                key={`task-${i}`}
+                type="button"
+                onClick={() => router.push('/tasks')}
+                title={task.description}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border transition-colors"
+                style={{
+                  fontSize: 11.5,
+                  background: `${PILL_TASK_COLOR}1a`,
+                  borderColor: `${PILL_TASK_COLOR}44`,
+                  color: PILL_TASK_COLOR,
+                }}
+              >
+                <CheckSquare className="w-3 h-3" strokeWidth={1.8} />
+                <span className="font-semibold uppercase" style={{ letterSpacing: '0.3px' }}>
+                  {t('chat.pill_task_saved')}
+                </span>
+                <span
+                  className="max-w-[18rem] truncate font-medium"
+                  style={{ color: 'hsl(var(--foreground) / 0.78)' }}
+                >
+                  {task.description}
+                </span>
+                {task.due && <span className="text-foreground/40">· {task.due}</span>}
+                <ArrowUpRight className="w-3 h-3" strokeWidth={1.8} />
+              </button>
+            ))}
+            {notes.map((note, i) => (
+              <button
+                key={`note-${i}`}
+                type="button"
+                onClick={() => router.push('/notes')}
+                title={note.content}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border transition-colors"
+                style={{
+                  fontSize: 11.5,
+                  background: `${PILL_NOTE_COLOR}1a`,
+                  borderColor: `${PILL_NOTE_COLOR}44`,
+                  color: PILL_NOTE_COLOR,
+                }}
+              >
+                <StickyNote className="w-3 h-3" strokeWidth={1.8} />
+                <span className="font-semibold uppercase" style={{ letterSpacing: '0.3px' }}>
+                  {t('chat.pill_note_saved')}
+                </span>
+                <span
+                  className="max-w-[18rem] truncate font-medium"
+                  style={{ color: 'hsl(var(--foreground) / 0.78)' }}
+                >
+                  {note.content}
+                </span>
+                <ArrowUpRight className="w-3 h-3" strokeWidth={1.8} />
+              </button>
+            ))}
           </div>
         )}
       </div>

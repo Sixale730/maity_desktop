@@ -32,6 +32,13 @@ export interface ChatMessage {
   content: string;
   client_idempotency_key: string | null;
   created_at: string;
+  /** Tasks created by tools on this (assistant) turn, hydrated from
+   *  chat_tasks by `message_id`. Drives the inline confirmation pills.
+   *  Undefined for messages predating tool-use (those still parse [[TASK:]]
+   *  markers from `content` for backward-compat). */
+  tasks?: Array<{ description: string; due?: string }>;
+  /** Notes created by tools on this turn, hydrated from chat_notes. */
+  notes?: Array<{ content: string }>;
 }
 
 export interface ChatMemory {

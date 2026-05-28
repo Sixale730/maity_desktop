@@ -168,6 +168,10 @@ const STRINGS: Record<string, string> = {
   'chat.export_failed': 'No se pudo exportar',
   'chat.exporting': 'Exportando…',
 
+  // === Pills de tareas/notas (hidratadas desde BD) ===
+  'chat.pill_task_saved': 'Tarea guardada',
+  'chat.pill_note_saved': 'Nota guardada',
+
   // === Hero del empty (variantes alternativas usadas) ===
   'chat.hero_title': '¿Qué te gustaría trabajar con Maity hoy?',
   'chat.hero_subtitle': 'Empieza a escribir, o elige un punto de partida.',
