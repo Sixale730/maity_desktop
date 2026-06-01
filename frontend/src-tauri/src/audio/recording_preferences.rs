@@ -48,40 +48,53 @@ impl Default for RecordingPreferences {
     }
 }
 
+/// Resolve the recordings folder name inside a base directory, preserving
+/// backward compatibility with the legacy `meetily-recordings` folder.
+///
+/// New installs use `maity-recordings`. Existing users who relied on the
+/// default location (legacy `meetily-recordings`) keep seeing their previous
+/// recordings: if the legacy folder exists and the new one does not yet, we
+/// return the legacy path so nothing appears to be lost after the rebrand.
+fn resolve_recordings_folder(base: PathBuf) -> PathBuf {
+    let new_path = base.join("maity-recordings");
+    let legacy_path = base.join("meetily-recordings");
+
+    if !new_path.exists() && legacy_path.exists() {
+        info!(
+            "Using legacy recordings folder for backward compatibility: {:?}",
+            legacy_path
+        );
+        return legacy_path;
+    }
+
+    new_path
+}
+
 /// Get the default recordings folder based on platform
 pub fn get_default_recordings_folder() -> PathBuf {
     #[cfg(target_os = "windows")]
     {
-        // Windows: %USERPROFILE%\Music\meetily-recordings
-        if let Some(music_dir) = dirs::audio_dir() {
-            music_dir.join("meetily-recordings")
-        } else {
-            // Fallback to Documents if Music folder is not available
-            dirs::document_dir()
-                .unwrap_or_else(|| PathBuf::from("."))
-                .join("meetily-recordings")
-        }
+        // Windows: %USERPROFILE%\Music\maity-recordings
+        let base = dirs::audio_dir()
+            .or_else(dirs::document_dir)
+            .unwrap_or_else(|| PathBuf::from("."));
+        resolve_recordings_folder(base)
     }
 
     #[cfg(target_os = "macos")]
     {
-        // macOS: ~/Movies/meetily-recordings
-        if let Some(movies_dir) = dirs::video_dir() {
-            movies_dir.join("meetily-recordings")
-        } else {
-            // Fallback to Documents if Movies folder is not available
-            dirs::document_dir()
-                .unwrap_or_else(|| PathBuf::from("."))
-                .join("meetily-recordings")
-        }
+        // macOS: ~/Movies/maity-recordings
+        let base = dirs::video_dir()
+            .or_else(dirs::document_dir)
+            .unwrap_or_else(|| PathBuf::from("."));
+        resolve_recordings_folder(base)
     }
 
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
-        // Linux/Others: ~/Documents/meetily-recordings
-        dirs::document_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("meetily-recordings")
+        // Linux/Others: ~/Documents/maity-recordings
+        let base = dirs::document_dir().unwrap_or_else(|| PathBuf::from("."));
+        resolve_recordings_folder(base)
     }
 }
 
