@@ -1,6 +1,6 @@
 <div align="center" style="border-bottom: none">
     <h1>
-        <img src="docs/Meetily-6.png" style="border-radius: 10px;" />
+        <img src="docs/Maity-6.png" style="border-radius: 10px;" />
         <br>
         Maity Desktop - Asistente de Reuniones con IA
     </h1>

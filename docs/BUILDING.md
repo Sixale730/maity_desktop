@@ -1,13 +1,13 @@
-# Building Meetily from Source
+# Building Maity from Source
 
-This guide provides detailed instructions for building Meetily from source on different operating systems.
+This guide provides detailed instructions for building Maity from source on different operating systems.
 
 <details>
 <summary>Linux</summary>
 
 ## 🐧 Building on Linux
 
-This guide helps you build Meetily on Linux with **automatic GPU acceleration**. The build system detects your hardware and configures the best performance automatically.
+This guide helps you build Maity on Linux with **automatic GPU acceleration**. The build system detects your hardware and configures the best performance automatically.
 
 ---
 
@@ -227,7 +227,7 @@ TAURI_GPU_FEATURE=openblas ./build-gpu.sh
 After successful build:
 
 ```
-src-tauri/target/release/bundle/appimage/Meetily_<version>_amd64.AppImage
+src-tauri/target/release/bundle/appimage/Maity_<version>_amd64.AppImage
 ```
 
 ---

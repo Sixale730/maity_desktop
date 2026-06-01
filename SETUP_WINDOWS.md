@@ -1,6 +1,6 @@
 # Guia de Configuracion para Desarrollo en Windows
 
-Meetily (Maity Desktop) es un asistente de reuniones con IA que captura, transcribe y resume reuniones localmente. Esta guia cubre la configuracion completa del entorno de desarrollo en Windows desde cero.
+Maity Desktop es un asistente de reuniones con IA que captura, transcribe y resume reuniones localmente. Esta guia cubre la configuracion completa del entorno de desarrollo en Windows desde cero.
 
 El proyecto tiene dos componentes:
 - **Frontend**: aplicacion de escritorio Tauri (Rust + Next.js + TypeScript)

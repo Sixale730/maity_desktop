@@ -112,15 +112,35 @@ impl<R: Runtime> ConsentManager<R> {
 
     /// Get the path where notification settings are stored
     fn get_settings_path() -> Result<PathBuf> {
-        let mut path = dirs::config_dir()
+        let config_dir = dirs::config_dir()
             .ok_or_else(|| anyhow!("Could not find config directory"))?;
 
-        path.push("meetily");
-        path.push("notifications.json");
+        let mut path = config_dir.join("maity");
 
         // Ensure parent directory exists
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
+        std::fs::create_dir_all(&path)?;
+
+        path.push("notifications.json");
+
+        // Backward compatibility: migrate settings from the legacy `meetily`
+        // folder once, so users keep their notification preferences after the
+        // rebrand. Only copy when the new file does not exist yet.
+        if !path.exists() {
+            let legacy_path = config_dir.join("meetily").join("notifications.json");
+            if legacy_path.exists() {
+                match std::fs::copy(&legacy_path, &path) {
+                    Ok(_) => log_info!(
+                        "Migrated notification settings from legacy path {:?} to {:?}",
+                        legacy_path,
+                        path
+                    ),
+                    Err(e) => log_info!(
+                        "Could not migrate legacy notification settings from {:?}: {}",
+                        legacy_path,
+                        e
+                    ),
+                }
+            }
         }
 
         Ok(path)

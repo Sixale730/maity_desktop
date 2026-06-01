@@ -4,7 +4,7 @@ Este archivo proporciona orientacion a Claude Code al trabajar con este reposito
 
 ## Descripcion del Proyecto
 
-**Meetily (Maity Desktop)** es un asistente de reuniones con IA enfocado en privacidad que captura, transcribe y resume reuniones localmente. Dos componentes principales:
+**Maity Desktop** es un asistente de reuniones con IA enfocado en privacidad que captura, transcribe y resume reuniones localmente. Dos componentes principales:
 
 1. **Frontend**: App de escritorio Tauri (Rust + Next.js + TypeScript)
 2. **Backend**: Servidor FastAPI para persistencia y resumenes LLM (Python)

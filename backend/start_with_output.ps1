@@ -14,7 +14,7 @@ if ($args.Count -gt 1) {
 }
 
 Write-Host "====================================="
-Write-Host "Meetily Backend Startup"
+Write-Host "Maity Backend Startup"
 Write-Host "====================================="
 Write-Host "Python Backend Port: $portPython"
 Write-Host "Whisper Server Port: $portWhisper"
@@ -526,7 +526,7 @@ if (-not (Test-Path $modelFile)) {
 }
 
 Write-Host "====================================="
-Write-Host "Starting Meetily Backend"
+Write-Host "Starting Maity Backend"
 Write-Host "====================================="
 Write-Host "Model: $modelName"
 Write-Host "Python Backend Port: $portPython"
@@ -753,22 +753,22 @@ try {
 }
 
 if ($frontendInstalled) {
-    Write-Host "Meetily frontend application is installed."
+    Write-Host "Maity frontend application is installed."
     if ($frontendPath) {
         Write-Host "Location: $frontendPath"
         
         # Ask if user wants to launch the frontend
-        $launchFrontend = Read-Host "Do you want to launch the Meetily frontend application? (Y/N)"
+        $launchFrontend = Read-Host "Do you want to launch the Maity frontend application? (Y/N)"
         if ($launchFrontend -eq 'Y' -or $launchFrontend -eq 'y') {
-            Write-Host "Launching Meetily frontend..."
+            Write-Host "Launching Maity frontend..."
             Start-Process -FilePath $frontendPath
-            Write-Host "Meetily frontend launched successfully."
+            Write-Host "Maity frontend launched successfully."
         }
     }
 } else {
-    Write-Host "Meetily frontend application is not installed."
+    Write-Host "Maity frontend application is not installed."
     Write-Host ""
-    $installFrontend = Read-Host "Would you like to download and install the Meetily frontend application? (Y/N)"
+    $installFrontend = Read-Host "Would you like to download and install the Maity frontend application? (Y/N)"
     
     if ($installFrontend -eq 'Y' -or $installFrontend -eq 'y') {
         Write-Host "Fetching latest release information..."
@@ -827,7 +827,7 @@ if ($frontendInstalled) {
                     Start-Sleep -Seconds 2  # Give the system a moment to register the installation
                     foreach ($path in $possiblePaths) {
                         if (Test-Path $path) {
-                            Write-Host "Launching Meetily frontend..."
+                            Write-Host "Launching Maity frontend..."
                             Start-Process -FilePath $path
                             break
                         }

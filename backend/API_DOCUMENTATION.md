@@ -1,4 +1,4 @@
-# Meetily API Documentation
+# Maity API Documentation
 
 ## Prerequisites
 
