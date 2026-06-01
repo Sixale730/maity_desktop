@@ -251,7 +251,7 @@ jobs:
         if: ${{ github.event.inputs.upload-artifacts == 'true' }}
         uses: actions/upload-artifact@v4
         with:
-          name: meetily-macos-universal-${{ steps.build-profile.outputs.profile }}-${{ steps.get-version.outputs.version }}
+          name: maity-macos-universal-${{ steps.build-profile.outputs.profile }}-${{ steps.get-version.outputs.version }}
           path: |
             target/universal-apple-darwin/${{ steps.build-profile.outputs.profile }}/bundle/dmg/*.dmg
             target/universal-apple-darwin/${{ steps.build-profile.outputs.profile }}/bundle/macos/*.app

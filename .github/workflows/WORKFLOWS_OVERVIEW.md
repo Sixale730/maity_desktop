@@ -263,13 +263,13 @@ Standalone (don't use build.yml):
 ## Artifact Naming Convention
 
 ```
-meetily-{workflow}-{platform}-{target}-{version}
+maity-{workflow}-{platform}-{target}-{version}
 ```
 
 **Examples:**
-- `meetily-devtest-macOS-aarch64-apple-darwin-0.1.3`
+- `maity-devtest-macOS-aarch64-apple-darwin-0.1.3`
 - `meetily-test-windows-x86_64-pc-windows-msvc-0.1.3`
-- `meetily-macos-aarch64-release-0.1.3`
+- `maity-macos-aarch64-release-0.1.3`
 
 ---
 
