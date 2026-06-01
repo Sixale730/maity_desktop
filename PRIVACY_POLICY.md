@@ -182,7 +182,7 @@ Como proyecto open-source bajo licencia MIT, puedes:
 |---|---|---|
 | **2.0** | 2026-04-08 | **LEG-001 (CRITICAL fix)**: Corrige declaración engañosa de v1.x sobre "local-first never transmitted". Documenta honestamente el flujo real con Deepgram + OpenAI/Anthropic/Groq como subprocesadores default. Añade tabla de subprocesadores con DPAs. Avisos por jurisdicción (US/EU/MX/CA). Sección de consentimiento de participantes. Cumple FTC Act §5, art. 5 GDPR, art. 7 LFPDPPP. |
 | 1.1 | 2026-04-07 | LEG-006: Updated metadata, real date, version 0.2.31, product rebranded to Maity |
-| 1.0 | — | Initial version (Meetily fork baseline) |
+| 1.0 | — | Initial version |
 
 ---
 

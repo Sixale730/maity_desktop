@@ -1,7 +1,7 @@
 /**
  * Stub no-op de Analytics — la integracion original con PostHog se removio
  * porque la API key estaba hardcoded apuntando al workspace upstream del fork
- * (Meetily). Este stub mantiene la firma publica para no tocar los ~100
+ * (Maity). Este stub mantiene la firma publica para no tocar los ~100
  * call-sites del codigo, todos quedan no-op.
  *
  * Lo unico que se preserva es el dual-emit a `platformLogger` (Supabase

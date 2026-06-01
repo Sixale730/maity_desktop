@@ -1,4 +1,4 @@
-# Meetily Backend
+# Maity Backend
 
 FastAPI backend for meeting transcription and analysis with **Docker distribution system** for easy deployment.
 
@@ -637,4 +637,4 @@ $SCRIPT_DIR/data/meeting_minutes.db
 - Settings persistence and reuse
 - Configuration validation
 
-This comprehensive guide covers all deployment options and provides clear instructions for getting the Meetily backend running in any environment.
+This comprehensive guide covers all deployment options and provides clear instructions for getting the Maity backend running in any environment.

@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Setup script for Meetily (Maity Desktop) development environment on Windows.
+    Setup script for Maity Desktop development environment on Windows.
 
 .DESCRIPTION
     Detects prerequisites, installs missing tools via winget, configures the
@@ -77,7 +77,7 @@ $ScriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Definition
 # ── Banner ───────────────────────────────────────────────────────────────────
 
 Write-Host ""
-Write-Host "  Meetily (Maity Desktop) - Development Environment Setup" -ForegroundColor Cyan
+Write-Host "  Maity Desktop - Development Environment Setup" -ForegroundColor Cyan
 Write-Host "  --------------------------------------------------------" -ForegroundColor DarkGray
 Write-Host ""
 

@@ -2,7 +2,7 @@
 
 ## Overview
 
-This document describes the audio transcription pipeline in Meetily, including capture, processing, and event emission to the frontend.
+This document describes the audio transcription pipeline in Maity, including capture, processing, and event emission to the frontend.
 
 ## Architecture Diagram
 
