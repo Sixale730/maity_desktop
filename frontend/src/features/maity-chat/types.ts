@@ -41,10 +41,20 @@ export interface ChatMessage {
   tasks?: Array<{ description: string; due?: string }>;
   /** Notes created by tools on this turn, hydrated from chat_notes. */
   notes?: Array<{ content: string }>;
-  /** Structured artifact produced by a tool (no en `content`). Actualmente un
-   *  spec de presentación de `create_presentation` → renderiza la tarjeta .pptx.
-   *  Persistido en la columna `chat_messages.artifact` (jsonb). */
-  artifact?: { type: 'deck'; spec: DeckSpec } | null;
+  /** Documentos que el usuario adjuntó en este turno (de usuario), persistidos
+   *  en la fila. Dibujan los chips read-only pegados al mensaje enviado (como
+   *  Claude/ChatGPT). `text` es el contenido extraído (usado como contexto
+   *  server-side); el chip solo renderiza `filename`. Null/undefined = ninguno. */
+  attachments?: Array<{ filename: string; text?: string }> | null;
+  /** Artifact estructurado producido por un tool (no en `content`). Puede ser un
+   *  spec de presentación de `create_presentation` (→ tarjeta .pptx) o un spec de
+   *  documento de `create_document` (→ tarjeta PDF). Forzar la salida vía tools
+   *  evita que un lead-in conversacional del modelo bloquee el render (como pasaba
+   *  con el marcador legacy `[[DOC:]]`). Persistido en `chat_messages.artifact` (jsonb). */
+  artifact?:
+    | { type: 'deck'; spec: DeckSpec }
+    | { type: 'document'; spec: { title: string; content: string } }
+    | null;
 }
 
 export interface ChatMemory {

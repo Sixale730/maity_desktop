@@ -49,6 +49,9 @@ export function MaityChatLayout() {
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
   const [input, setInput] = useState('');
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
+  // Lente elegida en el composer antes de que exista un thread (creación lazy).
+  // Cuando el thread nace en el primer envío la persistimos; hasta entonces es local.
+  const [pendingLens, setPendingLens] = useState<Lens>('open');
   const [memoriesOpen, setMemoriesOpen] = useState(false);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
 
@@ -82,11 +85,16 @@ export function MaityChatLayout() {
 
   const openThreads = useMemo(() => threads.filter((th) => th.open === true), [threads]);
 
-  const handleNewSession = useCallback(async () => {
-    const thread = await createThread.mutateAsync();
-    setActiveThreadId(thread.id);
+  const handleNewSession = useCallback(() => {
+    // Lazy: no persistimos un thread aquí — eso es lo que dejaba filas vacías
+    // "Nueva conversación" en la DB. Solo reseteamos al estado vacío; el thread
+    // se crea en el primer envío (handleSend lo crea cuando no hay ninguno).
+    setActiveThreadId(null);
+    setInput('');
+    setAttachments([]);
+    setPendingLens('open');
     composerRef.current?.focus();
-  }, [createThread]);
+  }, []);
 
   const handleContinueOpen = useCallback((threadId: string) => {
     setActiveThreadId(threadId);
@@ -104,7 +112,15 @@ export function MaityChatLayout() {
     let thread = activeThread;
     if (!thread) {
       thread = await createThread.mutateAsync();
+      // Llevamos la lente elegida antes de que existiera el thread al nuevo
+      // thread, y la persistimos para que sobreviva un reload. Override local
+      // primero para que este envío ya la use (sendMessage lee thread.lens).
+      if (pendingLens !== 'open') {
+        thread = { ...thread, lens: pendingLens };
+        updateLens.mutate({ threadId: thread.id, lens: pendingLens });
+      }
       setActiveThreadId(thread.id);
+      setPendingLens('open');
     }
 
     const turnAttachments = attachments;
@@ -117,7 +133,7 @@ export function MaityChatLayout() {
       approvedMemories,
       attachments: turnAttachments.length > 0 ? turnAttachments : undefined,
     });
-  }, [activeThread, approvedMemories, attachments, createThread, input, messages, sendMessage, userId]);
+  }, [activeThread, approvedMemories, attachments, createThread, input, messages, pendingLens, sendMessage, updateLens, userId]);
 
   const handlePickStarter = useCallback(
     async (seedText: string, entryType: EntryType, chip?: string) => {
@@ -136,7 +152,11 @@ export function MaityChatLayout() {
   );
 
   const handleLensChange = useCallback((lens: Lens) => {
-    if (!activeThreadId) return;
+    // Aún no hay thread (lazy): guardamos la elección localmente hasta el primer envío.
+    if (!activeThreadId) {
+      setPendingLens(lens);
+      return;
+    }
     updateLens.mutate({ threadId: activeThreadId, lens });
   }, [activeThreadId, updateLens]);
 
@@ -255,7 +275,7 @@ export function MaityChatLayout() {
         onSend={() => handleSend()}
         disabled={sendMessage.isPending}
         isSending={sendMessage.isPending}
-        lens={activeThread?.lens ?? 'open'}
+        lens={activeThread?.lens ?? pendingLens}
         onLensChange={handleLensChange}
         attachments={attachments}
         onAttachmentsChange={setAttachments}

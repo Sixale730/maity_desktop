@@ -58,6 +58,9 @@ export function useSendMessage(userId: string | undefined) {
         content: vars.content,
         client_idempotency_key: null,
         created_at: now,
+        // Muestra el chip de adjunto pegado a la burbuja al instante; la fila
+        // canónica (con los mismos attachments) lo reemplaza en onSuccess.
+        attachments: vars.attachments,
       }
       const optimisticAssistant: ChatMessage = {
         id: tempAssistantId,

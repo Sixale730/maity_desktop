@@ -174,6 +174,10 @@ const STRINGS: Record<string, string> = {
   'chat.download_pdf': 'Descargar PDF',
   'chat.export_failed': 'No se pudo exportar',
   'chat.exporting': 'Exportando…',
+  'chat.copy_markdown': 'Copiar Markdown',
+  'chat.download_markdown': 'Descargar .md',
+  'chat.copy_success': 'Copiado al portapapeles',
+  'chat.copy_failed': 'No se pudo copiar',
 
   // === Presentaciones .pptx (artifact deck) ===
   'chat.download_pptx': 'Descargar .pptx',
