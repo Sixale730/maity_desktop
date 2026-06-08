@@ -157,6 +157,7 @@ const STRINGS: Record<string, string> = {
   // === Adjuntos (extracción de documentos) ===
   'chat.attachment_remove': 'Quitar adjunto',
   'chat.attachment_max': 'Máximo 3 documentos por mensaje.',
+  'chat.drop_hint': 'Suelta el archivo para adjuntarlo',
   'chat.attachment_error.unsupported': 'Formato no soportado. Usa PDF, Word, Excel o texto.',
   'chat.attachment_error.empty': 'No se encontró texto en el documento (¿es un PDF escaneado?).',
   'chat.attachment_error.failed': 'No se pudo leer el documento. Intenta con otro archivo.',

@@ -9,10 +9,12 @@ import { ChatEmpty } from './ChatEmpty';
 import { ChatTopBar } from './ChatTopBar';
 import { Composer, type ComposerAttachment } from './Composer';
 import { MemoriesOverlay } from './MemoriesOverlay';
+import { ChatDropZone } from './ChatDropZone';
 import {
   useCreateThread,
   useThreads,
 } from '../hooks/useThreads';
+import { useDocumentIngest } from '../hooks/useDocumentIngest';
 import { useMessages, useSendMessage } from '../hooks/useMessages';
 import {
   useAddManualMemory,
@@ -60,6 +62,7 @@ export function MaityChatLayout() {
   const sendMessage = useSendMessage(userId);
   const createThread = useCreateThread(userId);
   const updateLens = useThreadLens(userId);
+  const { extracting, ingestFiles } = useDocumentIngest(attachments, setAttachments);
 
   const memoriesQuery = useMemories(userId);
   const settingsQuery = useChatSettings(userId);
@@ -251,35 +254,39 @@ export function MaityChatLayout() {
         />
       }
     >
-      {isEmpty ? (
-        <ChatEmpty
-          onPickStarter={handlePickStarter}
-          openThreads={openThreads}
-          onContinueOpen={handleContinueOpen}
-        />
-      ) : (
-        <ChatConversation
-          messages={messages}
-          isLoading={messagesQuery.isLoading}
-          isSending={sendMessage.isPending}
-          userFirstName={userProfile?.first_name}
-          onSuggestionClick={(text) => handleSend(text)}
-          onCtaClick={(preFill) => handleSend(preFill)}
-        />
-      )}
+      <ChatDropZone onFiles={ingestFiles}>
+        {isEmpty ? (
+          <ChatEmpty
+            onPickStarter={handlePickStarter}
+            openThreads={openThreads}
+            onContinueOpen={handleContinueOpen}
+          />
+        ) : (
+          <ChatConversation
+            messages={messages}
+            isLoading={messagesQuery.isLoading}
+            isSending={sendMessage.isPending}
+            userFirstName={userProfile?.first_name}
+            onSuggestionClick={(text) => handleSend(text)}
+            onCtaClick={(preFill) => handleSend(preFill)}
+          />
+        )}
 
-      <Composer
-        ref={composerRef}
-        value={input}
-        onChange={setInput}
-        onSend={() => handleSend()}
-        disabled={sendMessage.isPending}
-        isSending={sendMessage.isPending}
-        lens={activeThread?.lens ?? pendingLens}
-        onLensChange={handleLensChange}
-        attachments={attachments}
-        onAttachmentsChange={setAttachments}
-      />
+        <Composer
+          ref={composerRef}
+          value={input}
+          onChange={setInput}
+          onSend={() => handleSend()}
+          disabled={sendMessage.isPending}
+          isSending={sendMessage.isPending}
+          lens={activeThread?.lens ?? pendingLens}
+          onLensChange={handleLensChange}
+          attachments={attachments}
+          onAttachmentsChange={setAttachments}
+          extracting={extracting}
+          onAddFiles={ingestFiles}
+        />
+      </ChatDropZone>
 
       <MemoriesOverlay
         open={memoriesOpen}

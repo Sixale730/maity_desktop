@@ -17,20 +17,13 @@ import {
   SendHorizontal,
   X,
 } from 'lucide-react';
-import { toast } from 'sonner';
 import { useLanguage } from '@/contexts/LanguageContext';
-import { extractDocument, DocumentExtractError } from '../utils/extractDocument';
 import { LensPicker } from './LensPicker';
 import { LENSES } from './lensSpec';
+import { MAX_ATTACHMENTS, type ComposerAttachment } from '../hooks/useDocumentIngest';
 import type { Lens } from '../types';
 
-export interface ComposerAttachment {
-  filename: string;
-  text: string;
-}
-
-/** Máximo de adjuntos por turno (igual que el web). */
-const MAX_ATTACHMENTS = 3;
+export type { ComposerAttachment } from '../hooks/useDocumentIngest';
 
 const ATTACH_ACCEPT = '.pdf,.docx,.xlsx,.xls,.csv,.txt,.md';
 
@@ -45,6 +38,10 @@ interface ComposerProps {
   /** Adjuntos del turno (estado dueño = MaityChatLayout). */
   attachments?: ComposerAttachment[];
   onAttachmentsChange?: (next: ComposerAttachment[]) => void;
+  /** True mientras se extrae un documento (clic en clip o drop). */
+  extracting?: boolean;
+  /** Entrega archivos crudos a la ingesta compartida del padre (extraer + validar). */
+  onAddFiles?: (files: File[]) => void;
 }
 
 /**
@@ -67,36 +64,21 @@ export const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function 
     onLensChange,
     attachments = [],
     onAttachmentsChange,
+    extracting = false,
+    onAddFiles,
   },
   externalRef,
 ) {
   const { t } = useLanguage();
   const [pickerOpen, setPickerOpen] = useState(false);
-  const [extracting, setExtracting] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const handleFilePick = async (e: ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
+  const handleFilePick = (e: ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files ?? []);
     // Reset el input para que re-seleccionar el mismo archivo vuelva a disparar.
     e.target.value = '';
-    if (!file || !onAttachmentsChange) return;
-
-    if (attachments.length >= MAX_ATTACHMENTS) {
-      toast.error(t('chat.attachment_max'));
-      return;
-    }
-
-    setExtracting(true);
-    try {
-      const { filename, text } = await extractDocument(file);
-      onAttachmentsChange([...attachments, { filename, text }]);
-    } catch (err) {
-      const code = err instanceof DocumentExtractError ? err.code : 'failed';
-      toast.error(t(`chat.attachment_error.${code}`));
-    } finally {
-      setExtracting(false);
-    }
+    if (files.length > 0) onAddFiles?.(files);
   };
 
   const removeAttachment = (i: number) => {

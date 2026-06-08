@@ -19,7 +19,8 @@
                 "fullscreen": false,
                 "theme": "Dark",
                 "decorations": true,
-                "visible": false
+                "visible": false,
+                "dragDropEnabled": false
             }
         ],
         "macOSPrivateApi": true,
