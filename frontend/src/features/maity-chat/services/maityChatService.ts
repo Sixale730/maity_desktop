@@ -319,6 +319,12 @@ async function callEndpoint(params: {
   const token = session?.access_token
   if (!token) throw new Error('Sesión no disponible. Vuelve a iniciar sesión.')
 
+  // Reportamos la zona horaria IANA del cliente para que el servidor ancle
+  // "hoy"/"ayer"/"esta semana" a la fecha local del usuario en vez de UTC.
+  // Siempre disponible en el webview; el guard deja que un runtime no estándar
+  // simplemente lo omita.
+  const clientTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone
+
   const res = await fetch(MAITY_CHAT_ENDPOINT, {
     method: 'POST',
     headers: {
@@ -334,6 +340,7 @@ async function callEndpoint(params: {
       client_idempotency_key: idempotencyKey,
       lens,
       ...(attachments && attachments.length > 0 ? { attachments } : {}),
+      ...(clientTimezone ? { client_timezone: clientTimezone } : {}),
     }),
   })
 
