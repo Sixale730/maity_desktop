@@ -41,6 +41,20 @@ export function useTranscriptRecovery(): UseTranscriptRecoveryReturn {
     try {
       const meetings = await indexedDBService.getAllMeetings();
 
+      // Exclude the recording that is running RIGHT NOW from the "recoverable" list.
+      // A scheduled (or tray/manual) recording in progress isn't saved to SQLite yet and,
+      // during silence, its lastUpdated can exceed the 15s threshold below — so without this
+      // it would wrongly appear as an "interrupted meeting". Both folderPath values come from
+      // the same Rust command (get_meeting_folder_path), so the comparison is exact.
+      let activeFolderPath: string | null = null;
+      try {
+        if (await invoke<boolean>('is_recording')) {
+          activeFolderPath = await invoke<string | null>('get_meeting_folder_path');
+        }
+      } catch (error) {
+        console.warn('[recovery] could not check active recording:', error);
+      }
+
       // Filter out meetings older than 7 days and newer than 15 seconds
       // The 15 seconds threshold prevents showing meetings from the current session(jus in case)
       // where recording just stopped but hasn't been fully saved yet
@@ -49,6 +63,8 @@ export function useTranscriptRecovery(): UseTranscriptRecoveryReturn {
 
       const recentMeetings = meetings.filter(m => {
         if (m.savedToSQLite) return false; // Already recovered — skip
+        // Skip the currently-active recording (scheduled/tray/manual) — it's not "interrupted".
+        if (activeFolderPath && m.folderPath === activeFolderPath) return false;
         const isWithinRetention = m.lastUpdated > cutoffTime; // Not older than 7 days
         const isOldEnough = m.lastUpdated < secondsAgo; // Older than 15 seconds
         return isWithinRetention && isOldEnough;
