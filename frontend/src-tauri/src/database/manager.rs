@@ -32,7 +32,15 @@ impl DatabaseManager {
 
         let pool = SqlitePool::connect(tauri_db_path).await?;
 
-        sqlx::migrate!("./migrations").run(&pool).await?;
+        // Tolerar una DB "más nueva" que este binario: si la base tiene migraciones aplicadas que
+        // esta versión NO conoce (p. ej. el usuario abrió una versión vieja después de probar/instalar
+        // una más nueva, o tras un rollback), las ignoramos en lugar de abortar el arranque con
+        // "migration X was previously applied but is missing in the resolved migrations".
+        // Es seguro porque nuestras migraciones son aditivas (ADD COLUMN): una app vieja simplemente
+        // no usa la columna nueva. SIN esto, un downgrade rompe el arranque y asusta al usuario.
+        let mut migrator = sqlx::migrate!("./migrations");
+        migrator.set_ignore_missing(true);
+        migrator.run(&pool).await?;
 
         Ok(DatabaseManager { pool })
     }
