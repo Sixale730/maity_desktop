@@ -34,19 +34,24 @@ export class StorageService {
    * @param meetingTitle - Title of the meeting
    * @param transcripts - Array of transcript segments
    * @param folderPath - Optional folder path for audio file
+   * @param meetingId - Optional pre-generated meeting id
+   * @param recordingMode - 'presentation' (ponente) o 'conversation'/null (default).
+   *   Se persiste en meetings.recording_mode y lo lee la evaluación local.
    * @returns Promise with { meeting_id: string }
    */
   async saveMeeting(
     meetingTitle: string,
     transcripts: Transcript[],
     folderPath: string | null,
-    meetingId?: string | null
+    meetingId?: string | null,
+    recordingMode?: 'conversation' | 'presentation' | null
   ): Promise<SaveMeetingResponse> {
     return invoke<SaveMeetingResponse>('api_save_transcript', {
       meetingTitle,
       transcripts,
       folderPath,
       meetingId: meetingId ?? null,
+      recordingMode: recordingMode ?? null,
     });
   }
 

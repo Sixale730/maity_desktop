@@ -18,6 +18,7 @@ impl TranscriptsRepository {
         folder_path: Option<String>,
         meeting_id: Option<String>,
         user_id: &str,
+        recording_mode: Option<&str>,
     ) -> Result<String, SqlxError> {
         let meeting_id = meeting_id.unwrap_or_else(|| format!("meeting-{}", Uuid::new_v4()));
 
@@ -26,9 +27,11 @@ impl TranscriptsRepository {
 
         let now = Utc::now();
 
-        // 1. Create the new meeting (tagged with user_id for privacy isolation)
+        // 1. Create the new meeting (tagged with user_id for privacy isolation).
+        //    recording_mode: 'presentation' (ponente) o 'conversation'/NULL (default).
+        //    Lo lee coach::evaluator para no penalizar al ponente por "acaparar".
         let result = sqlx::query(
-            "INSERT INTO meetings (id, title, created_at, updated_at, folder_path, user_id) VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO meetings (id, title, created_at, updated_at, folder_path, user_id, recording_mode) VALUES (?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&meeting_id)
         .bind(meeting_title)
@@ -36,6 +39,7 @@ impl TranscriptsRepository {
         .bind(now)
         .bind(&folder_path)
         .bind(user_id)
+        .bind(recording_mode)
         .execute(&mut *transaction)
         .await;
 

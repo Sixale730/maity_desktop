@@ -1,0 +1,13 @@
+-- Modo de grabacion: 'conversation' (default) o 'presentation' (ponente/webinar).
+--
+-- Cuando el usuario marca una grabacion como presentacion/ponencia, los motores
+-- de evaluacion NO deben penalizarlo por "acaparar la conversacion" ni por
+-- "hablar de mas":
+--   - Coach en vivo: no dispara el tip de dominancia ni penaliza talk_ratio alto.
+--   - Eval local (coach/evaluator.rs): excluye empatia/adaptacion del promedio
+--     global y fuerza el tipo "Presentacion/Webinar".
+--   - Nube (V4): el flag viaja en el finalize → omi_conversations.recording_mode
+--     (ver issue Sixale730/maity#127).
+--
+-- NULL se interpreta como 'conversation' para no afectar grabaciones existentes.
+ALTER TABLE meetings ADD COLUMN recording_mode TEXT;
