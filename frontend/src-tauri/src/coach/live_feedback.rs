@@ -44,10 +44,27 @@ static LLM_PARSE_FAILED: AtomicU64 = AtomicU64::new(0);
 static PRESENTATION_MODE: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
-/// Fija el modo de la próxima grabación (true = presentación/ponente). Llamado por el
-/// comando Tauri de inicio antes de `start()`. Ver doc de `PRESENTATION_MODE`.
+/// Fija el modo de la grabación (true = presentación/ponente). Lo llama el comando de
+/// inicio (valor inicial) y `coach_set_presentation_mode` (cambio en vivo desde el
+/// toggle de la vista de grabación). El coach lo lee dinámicamente cada tick, así que
+/// el cambio aplica de inmediato. Ver doc de `PRESENTATION_MODE`.
 pub fn set_presentation_mode(is_presentation: bool) {
     PRESENTATION_MODE.store(is_presentation, Ordering::Relaxed);
+}
+
+/// Lee el modo de la grabación en curso (true = presentación). Helper para que los
+/// métodos del coach lean el global de forma uniforme.
+fn is_presentation_mode() -> bool {
+    PRESENTATION_MODE.load(Ordering::Relaxed)
+}
+
+/// Comando Tauri: cambia el modo de la grabación EN CURSO desde el toggle de la vista
+/// de grabación. Como el coach lee el flag en vivo, el cambio surte efecto al instante
+/// (deja de/empieza a suprimir tips de dominancia y penalización de talk_ratio).
+#[tauri::command]
+pub fn coach_set_presentation_mode(is_presentation: bool) {
+    set_presentation_mode(is_presentation);
+    info!("🎤 Modo presentación cambiado a {} (en vivo)", is_presentation);
 }
 
 // ─── Public types (emitted to frontend) ──────────────────────────────────────
@@ -117,11 +134,6 @@ struct FeedbackState {
     /// las plantillas dominan y el LLM no aporta valor (revisar umbrales o quitar §6).
     tips_from_llm: u32,
     tips_from_heuristic: u32,
-    /// Modo Ponente: snapshot del global `PRESENTATION_MODE` al iniciar la sesión.
-    /// Cuando es true, health_score / evaluate_health_tips / el nudge engine no
-    /// penalizan el talk_ratio alto ni emiten tips de dominancia conversacional;
-    /// se mantienen los tips de ritmo (monólogo largo, hablar muy rápido).
-    is_presentation: bool,
 }
 
 impl FeedbackState {
@@ -146,7 +158,6 @@ impl FeedbackState {
             llm_latencies_ms: VecDeque::with_capacity(100),
             tips_from_llm: 0,
             tips_from_heuristic: 0,
-            is_presentation: PRESENTATION_MODE.load(Ordering::Relaxed),
         }
     }
 
@@ -224,7 +235,7 @@ impl FeedbackState {
             s -= 10;
         }
 
-        if !self.is_presentation {
+        if !is_presentation_mode() {
             // Penalizaciones que asumen conversación bidireccional — se omiten en ponencia.
             if r > 0.80 {
                 s -= 15;
@@ -333,7 +344,7 @@ impl FeedbackState {
             health_score: self.health_score(),
             last_nudge_type: self.last_nudge_type.clone(),
             is_monologue: self.is_monologue_mode(),
-            is_presentation: self.is_presentation,
+            is_presentation: is_presentation_mode(),
         }
     }
 
@@ -1014,11 +1025,8 @@ async fn call_ollama_and_emit<R: Runtime>(
     let minute = session_secs / 60;
     // Modo Ponente: encuadrar los tips del LLM como WEBINAR/PRESENTACIÓN (pacing +
     // engagement) en vez de auto-detectar. Así el coach sugiere ritmo/claridad para un
-    // ponente en vez de dinámicas de diálogo ("pregúntale al cliente").
-    let is_presentation = state
-        .lock()
-        .map(|s| s.is_presentation)
-        .unwrap_or(false);
+    // ponente en vez de dinámicas de diálogo ("pregúntale al cliente"). Se lee en vivo.
+    let is_presentation = is_presentation_mode();
     let meeting_type = if is_presentation {
         MeetingType::Webinar
     } else {
