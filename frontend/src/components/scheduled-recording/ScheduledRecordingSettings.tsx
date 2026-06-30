@@ -31,7 +31,7 @@ const PHASE_LABEL: Record<SchedulerPhase, string> = {
   idle: 'En espera',
   armed: 'Listo (dentro de horario)',
   recording: 'Grabando jornada',
-  grace: 'Periodo de gracia',
+  grace: 'Cerrando jornada (esperando reunión)',
   stopping: 'Deteniendo',
 }
 
@@ -58,6 +58,8 @@ export function ScheduledRecordingSettings() {
   const [grace, setGrace] = useState(30)
   const [notify, setNotify] = useState(true)
   const [respectManual, setRespectManual] = useState(true)
+  const [autoCloseEnabled, setAutoCloseEnabled] = useState(false)
+  const [autoCloseTime, setAutoCloseTime] = useState('18:00')
 
   useEffect(() => {
     if (!settings) return
@@ -65,6 +67,8 @@ export function ScheduledRecordingSettings() {
     setGrace(settings.grace_period_minutes)
     setNotify(settings.notify_on_start)
     setRespectManual(settings.respect_manual_recording)
+    setAutoCloseEnabled(settings.auto_close_enabled)
+    setAutoCloseTime(settings.auto_close_time || '18:00')
   }, [settings])
 
   const toggleDay = (day: number) => {
@@ -106,6 +110,8 @@ export function ScheduledRecordingSettings() {
         notify_on_start: notify,
         respect_manual_recording: respectManual,
         configured_by_user: true,
+        auto_close_enabled: autoCloseEnabled,
+        auto_close_time: autoCloseTime,
       })
       toast.success('Horario de jornada guardado')
       await reload()
@@ -167,8 +173,9 @@ export function ScheduledRecordingSettings() {
         <div>
           <p className="font-medium text-foreground">Grabar automáticamente en mi horario</p>
           <p className="text-sm text-muted-foreground">
-            Maity inicia y detiene la grabación sola durante la ventana que definas (funciona con la
-            ventana minimizada en la bandeja).
+            Maity inicia la grabación sola en tu horario y la mantiene hasta que la detengas tú
+            (funciona con la ventana minimizada en la bandeja). Si la detienes dentro del horario,
+            se reanuda a la siguiente hora en punto.
           </p>
         </div>
         <Switch checked={settings.enabled} onCheckedChange={handleToggleEnabled} disabled={isSaving} />
@@ -227,21 +234,47 @@ export function ScheduledRecordingSettings() {
             </p>
           )}
 
-          {/* Periodo de gracia */}
-          <div className="space-y-2">
-            <Label htmlFor="sched-grace" className="text-foreground">Periodo de gracia (minutos)</Label>
-            <Input
-              id="sched-grace"
-              type="number"
-              min={0}
-              value={grace}
-              onChange={(e) => setGrace(parseInt(e.target.value, 10))}
-              className="w-32"
-            />
-            <p className="text-xs text-muted-foreground">
-              Si al terminar el horario sigue una reunión abierta, Maity espera hasta este margen
-              antes de detener la grabación.
-            </p>
+          {/* Cierre por hora fija (opt-in). Si está apagado, la grabación no se cierra sola. */}
+          <div className="space-y-3 rounded-lg border border-border p-3">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="font-medium text-foreground">Cerrar automáticamente a una hora fija</p>
+                <p className="text-sm text-muted-foreground">
+                  Si no lo activas, la grabación sigue hasta que la detengas tú.
+                </p>
+              </div>
+              <Switch checked={autoCloseEnabled} onCheckedChange={setAutoCloseEnabled} />
+            </div>
+
+            {autoCloseEnabled && (
+              <>
+                <div className="grid grid-cols-2 gap-4 pt-1">
+                  <div className="space-y-2">
+                    <Label htmlFor="sched-close" className="text-foreground">Hora de cierre</Label>
+                    <Input
+                      id="sched-close"
+                      type="time"
+                      value={autoCloseTime}
+                      onChange={(e) => setAutoCloseTime(e.target.value)}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="sched-grace" className="text-foreground">Margen de gracia (min)</Label>
+                    <Input
+                      id="sched-grace"
+                      type="number"
+                      min={0}
+                      value={grace}
+                      onChange={(e) => setGrace(parseInt(e.target.value, 10))}
+                    />
+                  </div>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Si a la hora de cierre sigue una reunión abierta, Maity espera hasta este margen
+                  antes de detener la grabación.
+                </p>
+              </>
+            )}
           </div>
 
           {/* Opciones */}

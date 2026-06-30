@@ -70,23 +70,30 @@ pub fn active_window_at<'a>(
     settings.windows.iter().find(|w| is_within_window(now, w))
 }
 
-/// Momento (`NaiveDateTime`) en que termina la ventana activa que contiene a `now`.
-/// Útil para el periodo de gracia y para marcar "ventana cancelada por el usuario".
-pub fn current_window_end(now: NaiveDateTime, w: &ScheduleWindow) -> Option<NaiveDateTime> {
-    let start = parse_hm(&w.start_time)?;
-    let end = parse_hm(&w.end_time)?;
-    let end_time = NaiveTime::from_hms_opt(end / 60, end % 60, 0)?;
-    let now_min = minutes_of(now);
-    let date = now.date();
+/// Próxima hora EN PUNTO estrictamente después de `now` (trunca minutos/segundos y suma 1h).
+/// 9:30→10:00, 9:00:30→10:00, 9:00:00→10:00, 23:30→día siguiente 00:00. Para el re-arme
+/// tras un paro manual dentro de la ventana (Incremento 3).
+pub fn next_hour_boundary(now: NaiveDateTime) -> NaiveDateTime {
+    // `now.hour()` ∈ 0..=23 ⇒ el `and_hms_opt` nunca devuelve None; el `unwrap_or` es defensivo.
+    let truncated = now
+        .date()
+        .and_hms_opt(now.hour(), 0, 0)
+        .unwrap_or(now);
+    truncated + Duration::hours(1)
+}
 
-    if start < end {
-        Some(date.and_time(end_time))
-    } else if now_min >= start {
-        // Porción de noche => termina al día siguiente.
-        Some((date + Duration::days(1)).and_time(end_time))
+/// Primera ocurrencia de la hora-del-día `auto_close_time` ("HH:MM") ESTRICTAMENTE después de
+/// `owned_since`. Robusto a turnos noche: si esa hora ya pasó el día en que arrancó la grabación,
+/// devuelve la del día siguiente. `None` si la hora es inválida. Usado por el cierre por hora fija
+/// (Incremento 3): el instante en que el scheduler debe detener su propia grabación.
+pub fn auto_close_at(owned_since: NaiveDateTime, auto_close_time: &str) -> Option<NaiveDateTime> {
+    let mins = parse_hm(auto_close_time)?;
+    let close_time = NaiveTime::from_hms_opt(mins / 60, mins % 60, 0)?;
+    let candidate = owned_since.date().and_time(close_time);
+    if candidate > owned_since {
+        Some(candidate)
     } else {
-        // Porción de madrugada => termina hoy.
-        Some(date.and_time(end_time))
+        Some(candidate + Duration::days(1))
     }
 }
 
@@ -204,21 +211,45 @@ mod tests {
     }
 
     #[test]
-    fn current_window_end_mismo_dia() {
-        let w = weekday_window(vec![1], "09:00", "18:00");
-        let end = current_window_end(dt(2026, 6, 29, 10, 0), &w).unwrap();
-        assert_eq!(end, dt(2026, 6, 29, 18, 0));
+    fn next_hour_boundary_trunca_y_suma_una_hora() {
+        // 9:30 => 10:00
+        assert_eq!(next_hour_boundary(dt(2026, 6, 29, 9, 30)), dt(2026, 6, 29, 10, 0));
+        // 9:00 (en punto) => 10:00 (estrictamente la siguiente).
+        assert_eq!(next_hour_boundary(dt(2026, 6, 29, 9, 0)), dt(2026, 6, 29, 10, 0));
+        // 9:59 => 10:00
+        assert_eq!(next_hour_boundary(dt(2026, 6, 29, 9, 59)), dt(2026, 6, 29, 10, 0));
     }
 
     #[test]
-    fn current_window_end_wrap_noche_y_madrugada() {
-        let w = weekday_window(vec![1], "22:00", "06:00");
-        // Lunes 23:00 => termina el martes 06:00.
-        let end_noche = current_window_end(dt(2026, 6, 29, 23, 0), &w).unwrap();
-        assert_eq!(end_noche, dt(2026, 6, 30, 6, 0));
-        // Martes 05:00 => termina el martes 06:00 (mismo día).
-        let end_madrugada = current_window_end(dt(2026, 6, 30, 5, 0), &w).unwrap();
-        assert_eq!(end_madrugada, dt(2026, 6, 30, 6, 0));
+    fn next_hour_boundary_cruza_medianoche() {
+        // 23:30 => día siguiente 00:00.
+        assert_eq!(next_hour_boundary(dt(2026, 6, 29, 23, 30)), dt(2026, 6, 30, 0, 0));
+    }
+
+    #[test]
+    fn auto_close_at_mismo_dia() {
+        // Arrancó a las 09:00, cierre 18:00 => hoy 18:00.
+        let close = auto_close_at(dt(2026, 6, 29, 9, 0), "18:00").unwrap();
+        assert_eq!(close, dt(2026, 6, 29, 18, 0));
+    }
+
+    #[test]
+    fn auto_close_at_turno_noche_salta_al_dia_siguiente() {
+        // Arrancó Lunes 22:00, cierre 06:00 (ya pasó hoy) => Martes 06:00.
+        let close = auto_close_at(dt(2026, 6, 29, 22, 0), "06:00").unwrap();
+        assert_eq!(close, dt(2026, 6, 30, 6, 0));
+    }
+
+    #[test]
+    fn auto_close_at_hora_de_cierre_anterior_al_arranque() {
+        // Arrancó 09:00 pero el cierre 08:00 ya pasó => mañana 08:00 (config rara, manejada).
+        let close = auto_close_at(dt(2026, 6, 29, 9, 0), "08:00").unwrap();
+        assert_eq!(close, dt(2026, 6, 30, 8, 0));
+    }
+
+    #[test]
+    fn auto_close_at_hora_invalida_es_none() {
+        assert!(auto_close_at(dt(2026, 6, 29, 9, 0), "25:99").is_none());
     }
 
     #[test]

@@ -41,6 +41,23 @@ pub struct ScheduledRecordingSettings {
     /// gate aunque luego desactive. `#[serde(default)]` para no romper JSONs existentes.
     #[serde(default)]
     pub configured_by_user: bool,
+
+    /// Extra opt-in (Incremento 3): si está activo, la grabación que inicia el scheduler
+    /// se cierra sola al llegar `auto_close_time`. Si está apagado (default), la grabación
+    /// NO se cierra sola — corre hasta que el usuario la detenga a mano.
+    #[serde(default)]
+    pub auto_close_enabled: bool,
+
+    /// Hora "HH:MM" (24h, local) a la que se cierra la última grabación cuando
+    /// `auto_close_enabled` está activo. `#[serde(default = ...)]` para que los JSON viejos
+    /// (sin el campo) tomen "18:00" en vez de "" (string vacío de `Default::default`).
+    #[serde(default = "default_auto_close_time")]
+    pub auto_close_time: String,
+}
+
+/// Default de `auto_close_time` para deserialización de JSONs sin el campo.
+fn default_auto_close_time() -> String {
+    "18:00".to_string()
 }
 
 /// Una ventana horaria recurrente por días de la semana.
@@ -73,6 +90,8 @@ impl Default for ScheduledRecordingSettings {
             notify_on_start: true,
             meeting_name_template: "Jornada {date}".to_string(),
             configured_by_user: false,
+            auto_close_enabled: false, // opt-in: por defecto NO se cierra sola
+            auto_close_time: default_auto_close_time(),
         }
     }
 }

@@ -38,7 +38,7 @@ pub enum SchedulerPhase {
 enum SkipReason {
     ManualInProgress,
     TranscriptionNotReady,
-    UserCancelledWindow,
+    RearmingNextHour,
 }
 
 impl SkipReason {
@@ -46,7 +46,7 @@ impl SkipReason {
         match self {
             SkipReason::ManualInProgress => "manual_in_progress",
             SkipReason::TranscriptionNotReady => "transcription_not_ready",
-            SkipReason::UserCancelledWindow => "user_cancelled_window",
+            SkipReason::RearmingNextHour => "rearming_next_hour",
         }
     }
 
@@ -58,8 +58,8 @@ impl SkipReason {
             SkipReason::TranscriptionNotReady => {
                 "El motor de transcripción no está listo; se reintentará automáticamente."
             }
-            SkipReason::UserCancelledWindow => {
-                "Grabación de jornada detenida manualmente; no se reanudará en esta ventana."
+            SkipReason::RearmingNextHour => {
+                "Grabación de jornada detenida; se reanudará a la siguiente hora en punto."
             }
         }
     }
@@ -81,9 +81,13 @@ struct SchedulerShared {
     phase: Arc<RwLock<SchedulerPhase>>,
     /// `true` si la grabación ACTIVA fue iniciada por este scheduler (ownership, §9).
     owned: Arc<AtomicBool>,
-    /// Fin de la ventana cuya grabación el usuario detuvo manualmente (no re-armar hasta pasarla).
-    cancelled_until: Arc<RwLock<Option<NaiveDateTime>>>,
-    /// Límite del periodo de gracia (None salvo en fase Grace).
+    /// Instante en que arrancó la grabación que poseemos (para calcular el cierre por hora fija
+    /// de forma robusta a turnos noche). `None` cuando no poseemos ninguna grabación.
+    owned_since: Arc<RwLock<Option<NaiveDateTime>>>,
+    /// Instante hasta el cual NO se debe (re)arrancar una grabación programada: re-arme tras un
+    /// paro manual (siguiente hora en punto) o supresión tras el cierre por hora fija (día sig.).
+    rearm_at: Arc<RwLock<Option<NaiveDateTime>>>,
+    /// Límite del periodo de gracia del cierre por hora fija (None salvo en fase Grace).
     grace_deadline: Arc<RwLock<Option<NaiveDateTime>>>,
 }
 
@@ -94,7 +98,8 @@ impl SchedulerShared {
             is_running: Arc::new(RwLock::new(false)),
             phase: Arc::new(RwLock::new(SchedulerPhase::Disabled)),
             owned: Arc::new(AtomicBool::new(false)),
-            cancelled_until: Arc::new(RwLock::new(None)),
+            owned_since: Arc::new(RwLock::new(None)),
+            rearm_at: Arc::new(RwLock::new(None)),
             grace_deadline: Arc::new(RwLock::new(None)),
         }
     }
@@ -305,6 +310,7 @@ async fn evaluate_tick<R: Runtime>(
 ) -> (SchedulerPhase, Option<SkipReason>) {
     if !settings.enabled {
         shared.owned.store(false, Ordering::SeqCst);
+        *shared.owned_since.write().await = None;
         return (SchedulerPhase::Disabled, None);
     }
 
@@ -312,27 +318,62 @@ async fn evaluate_tick<R: Runtime>(
     let is_rec = crate::audio::recording_commands::is_recording_active_fn();
     let owned = shared.owned.load(Ordering::SeqCst);
 
+    // --- Cierre por hora fija (opt-in, Incremento 3). Aplica a NUESTRA grabación esté o no en
+    // ventana, porque depende de un instante ABSOLUTO (no del borde de la ventana). Reutiliza el
+    // periodo de gracia: si a la hora de cierre sigue una reunión abierta, espera hasta el margen.
+    if owned && is_rec && settings.auto_close_enabled {
+        let owned_since = *shared.owned_since.read().await;
+        if let Some(close_at) =
+            owned_since.and_then(|since| schedule::auto_close_at(since, &settings.auto_close_time))
+        {
+            if now >= close_at {
+                let deadline = {
+                    let mut guard = shared.grace_deadline.write().await;
+                    if guard.is_none() {
+                        *guard =
+                            Some(close_at + Duration::minutes(settings.grace_period_minutes as i64));
+                    }
+                    guard.expect("grace_deadline just set")
+                };
+                let still_active =
+                    settings.grace_period_minutes > 0 && process_monitor.is_meeting_active();
+
+                if now >= deadline || !still_active {
+                    info!(
+                        "[scheduled] cierre por hora fija {} (past_deadline={}, still_active={})",
+                        settings.auto_close_time,
+                        now >= deadline,
+                        still_active
+                    );
+                    stop_scheduled(app).await;
+                    shared.owned.store(false, Ordering::SeqCst);
+                    *shared.owned_since.write().await = None;
+                    *shared.grace_deadline.write().await = None;
+                    // Suprimir el re-arranque por el resto del día (no re-grabar tras el cierre).
+                    *shared.rearm_at.write().await = Some(start_of_next_day(now));
+                    return (SchedulerPhase::Idle, None);
+                }
+                return (SchedulerPhase::Grace, None);
+            }
+        }
+    }
+
     match (owned, active.as_ref()) {
         // Dentro de ventana y NO somos dueños de una grabación → intentar arrancar.
-        (false, Some(_window)) => {
-            // ¿Ventana cancelada por el usuario? No re-armar hasta pasarla.
+        (false, Some(_)) => {
+            // ¿Re-arme pendiente (paro manual reciente o supresión por cierre)? No arrancar aún.
             {
-                let cancelled = *shared.cancelled_until.read().await;
-                if let Some(until) = cancelled {
+                let rearm = *shared.rearm_at.read().await;
+                if let Some(until) = rearm {
                     if now < until {
-                        return (SchedulerPhase::Armed, Some(SkipReason::UserCancelledWindow));
+                        return (SchedulerPhase::Armed, Some(SkipReason::RearmingNextHour));
                     }
-                    *shared.cancelled_until.write().await = None;
+                    *shared.rearm_at.write().await = None;
                 }
             }
 
-            // Respetar grabación manual en curso (D3).
-            if is_rec && settings.respect_manual_recording {
-                return (SchedulerPhase::Armed, Some(SkipReason::ManualInProgress));
-            }
+            // Respetar cualquier grabación que no iniciamos nosotros (manual / tray) (D3).
             if is_rec {
-                // Grabación activa que no iniciamos y no la respetamos explícitamente:
-                // igual no podemos arrancar otra, esperamos.
                 return (SchedulerPhase::Armed, Some(SkipReason::ManualInProgress));
             }
 
@@ -346,6 +387,7 @@ async fn evaluate_tick<R: Runtime>(
             {
                 Ok(()) => {
                     shared.owned.store(true, Ordering::SeqCst);
+                    *shared.owned_since.write().await = Some(now);
                     *shared.grace_deadline.write().await = None;
                     if settings.notify_on_start {
                         notify_started(app).await;
@@ -366,59 +408,52 @@ async fn evaluate_tick<R: Runtime>(
 
         // Fuera de toda ventana y sin grabación nuestra → reposo.
         (false, None) => {
-            *shared.cancelled_until.write().await = None;
+            // Limpiar el re-arme SOLO si ya venció (no borrar la supresión del cierre por hora fija).
+            {
+                let rearm = *shared.rearm_at.read().await;
+                if let Some(until) = rearm {
+                    if now >= until {
+                        *shared.rearm_at.write().await = None;
+                    }
+                }
+            }
             *shared.grace_deadline.write().await = None;
             (SchedulerPhase::Idle, None)
         }
 
         // Somos dueños y seguimos dentro de la ventana.
-        (true, Some(window)) => {
+        (true, Some(_)) => {
             if !is_rec {
-                // El usuario detuvo NUESTRA grabación: no reanudar en esta ventana.
-                let end = schedule::current_window_end(now, window);
-                *shared.cancelled_until.write().await = end;
+                // El usuario detuvo NUESTRA grabación dentro del horario → re-armar a la sig. hora.
+                *shared.rearm_at.write().await = Some(schedule::next_hour_boundary(now));
                 shared.owned.store(false, Ordering::SeqCst);
-                (SchedulerPhase::Armed, Some(SkipReason::UserCancelledWindow))
+                *shared.owned_since.write().await = None;
+                (SchedulerPhase::Armed, Some(SkipReason::RearmingNextHour))
             } else {
-                *shared.grace_deadline.write().await = None;
                 (SchedulerPhase::Recording, None)
             }
         }
 
-        // Somos dueños pero la ventana terminó → periodo de gracia (D4).
+        // Somos dueños pero la ventana terminó. Incremento 3: ya NO se auto-detiene; la grabación
+        // sigue hasta el paro manual (o hasta el cierre por hora fija, evaluado arriba).
         (true, None) => {
             if !is_rec {
-                // La grabación ya no está activa (la detuvimos o terminó): limpiar.
+                // El usuario la detuvo (fuera de ventana) → soltar ownership e ir a reposo.
                 shared.owned.store(false, Ordering::SeqCst);
-                return (SchedulerPhase::Idle, None);
-            }
-
-            let deadline = {
-                let mut guard = shared.grace_deadline.write().await;
-                if guard.is_none() {
-                    *guard = Some(now + Duration::minutes(settings.grace_period_minutes as i64));
-                }
-                guard.expect("grace_deadline just set")
-            };
-
-            let past_deadline = now >= deadline;
-            // Señal de actividad: ¿sigue una reunión abierta? (reusa el process monitor).
-            let still_active = settings.grace_period_minutes > 0 && process_monitor.is_meeting_active();
-
-            if past_deadline || !still_active {
-                info!(
-                    "[scheduled] fin de ventana, deteniendo (past_deadline={}, still_active={})",
-                    past_deadline, still_active
-                );
-                stop_scheduled(app).await;
-                shared.owned.store(false, Ordering::SeqCst);
-                *shared.grace_deadline.write().await = None;
+                *shared.owned_since.write().await = None;
                 (SchedulerPhase::Idle, None)
             } else {
-                (SchedulerPhase::Grace, None)
+                (SchedulerPhase::Recording, None)
             }
         }
     }
+}
+
+/// Medianoche del día siguiente a `now` (suprime el re-arranque tras el cierre por hora fija).
+fn start_of_next_day(now: NaiveDateTime) -> NaiveDateTime {
+    (now.date() + Duration::days(1))
+        .and_hms_opt(0, 0, 0)
+        .unwrap_or(now)
 }
 
 /// Renderiza el nombre de reunión a partir de la plantilla.
