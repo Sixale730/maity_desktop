@@ -184,6 +184,10 @@ futures-channel = "0.3.31"
 # CoreML provides additional acceleration for Apple Silicon chips
 whisper-rs = { version = "0.13.2", features = ["raw-api", "metal", "coreml"] }
 
+# ONNX Runtime con CoreML EP para Parakeet/Moonshine/Canary (Apple Silicon / ANE).
+# Hereda los default features (incluye download-binaries) y suma el binding CoreML.
+ort = { version = "2.0.0-rc.10", features = ["coreml"] }
+
 # Windows-specific dependencies
 # Default: CPU-only build (no BLAS)
 # Users can enable features manually:
@@ -194,6 +198,11 @@ whisper-rs = { version = "0.13.2", features = ["raw-api", "metal", "coreml"] }
 # CPU-only build (Vulkan disabled for easier compilation)
 whisper-rs = { version = "0.13.2", features = ["raw-api"] }
 futures-channel = "0.3.31"
+# ONNX Runtime con DirectML EP para Parakeet/Moonshine/Canary.
+# DirectML acelera en cualquier GPU DX12 (NVIDIA/AMD/Intel) sin que el usuario
+# instale CUDA/cuDNN. Hereda default features (download-binaries baja el binario
+# DirectML correcto) y suma el binding DirectML.
+ort = { version = "2.0.0-rc.10", features = ["directml"] }
 # WASAPI for system audio capture (loopback) - captura audio de videollamadas
 windows = { version = "0.58", features = [
     "Win32_Media_Audio",

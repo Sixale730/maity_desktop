@@ -1,7 +1,5 @@
 use ndarray::{Array2, ArrayD};
-use ort::execution_providers::CPUExecutionProvider;
 use ort::inputs;
-use ort::session::builder::GraphOptimizationLevel;
 use ort::session::Session;
 use ort::value::{DynValue, Tensor, TensorRef};
 use std::collections::HashMap;
@@ -226,26 +224,20 @@ impl MoonshineModel {
         model_dir: P,
         model_name: &str,
     ) -> Result<Session, MoonshineError> {
-        // ONNX Runtime CPU usa BFCArena con kNextPowerOfTwo por default. Para shapes
-        // dinamicos (audio variable), la arena acumula buffers y nunca encoge.
-        // Microsoft (issue #11627) recomienda desactivar arena + memory pattern.
-        // Mismo patron aplicado en parakeet_engine/model.rs y canary_engine/model.rs.
-        let providers = vec![
-            CPUExecutionProvider::default()
-                .with_arena_allocator(false)
-                .build(),
-        ];
-
         let model_filename = format!("{}.onnx", model_name);
         log::info!("Loading Moonshine model from {}...", model_filename);
 
-        let session = Session::builder()?
-            .with_optimization_level(GraphOptimizationLevel::Level3)?
-            .with_execution_providers(providers)?
-            // Required when arena is disabled.
-            .with_memory_pattern(false)?
-            .with_parallel_execution(true)?
-            .commit_from_file(model_dir.as_ref().join(&model_filename))?;
+        // Arena desactivada (disable_arena=true): audio de tamaño variable hace crecer
+        // la BFCArena sin liberar (Microsoft issue #11627). El helper aplica
+        // memory_pattern(false) acorde y elige GPU (DirectML/CoreML) si esta disponible.
+        let session = crate::audio::transcription::onnx_providers::build_session(
+            &model_dir.as_ref().join(&model_filename),
+            crate::audio::transcription::onnx_providers::OnnxSessionOpts {
+                disable_arena: true,
+                prefer_gpu: true,
+                label: model_name,
+            },
+        )?;
 
         // Log all inputs and outputs for debugging
         let input_names: Vec<&str> = session.inputs.iter().map(|i| i.name.as_str()).collect();

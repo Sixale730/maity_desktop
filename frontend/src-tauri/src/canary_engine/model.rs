@@ -1,7 +1,5 @@
 use ndarray::{Array1, Array2, Array3, IxDyn};
-use ort::execution_providers::CPUExecutionProvider;
 use ort::inputs;
-use ort::session::builder::GraphOptimizationLevel;
 use ort::session::Session;
 use ort::value::TensorRef;
 
@@ -100,8 +98,6 @@ impl CanaryModel {
         model_name: &str,
         try_quantized: bool,
     ) -> Result<Session, CanaryError> {
-        let providers = vec![CPUExecutionProvider::default().build()];
-
         let model_filename = if try_quantized {
             let quantized_name = format!("{}.int8.onnx", model_name);
             let quantized_path = model_dir.as_ref().join(&quantized_name);
@@ -119,11 +115,16 @@ impl CanaryModel {
             regular_name
         };
 
-        let session = Session::builder()?
-            .with_optimization_level(GraphOptimizationLevel::Level3)?
-            .with_execution_providers(providers)?
-            .with_parallel_execution(true)?
-            .commit_from_file(model_dir.as_ref().join(&model_filename))?;
+        // Canary mantiene la arena ACTIVADA (disable_arena=false), como hasta ahora.
+        // El helper elige GPU (DirectML/CoreML) si esta disponible y cae a CPU si no.
+        let session = crate::audio::transcription::onnx_providers::build_session(
+            &model_dir.as_ref().join(&model_filename),
+            crate::audio::transcription::onnx_providers::OnnxSessionOpts {
+                disable_arena: false,
+                prefer_gpu: true,
+                label: model_name,
+            },
+        )?;
 
         for input in &session.inputs {
             log::info!(

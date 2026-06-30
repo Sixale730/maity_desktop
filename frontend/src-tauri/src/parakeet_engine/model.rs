@@ -1,8 +1,6 @@
 use ndarray::{Array, Array1, Array2, Array3, ArrayD, ArrayViewD, IxDyn};
 use once_cell::sync::Lazy;
-use ort::execution_providers::CPUExecutionProvider;
 use ort::inputs;
-use ort::session::builder::GraphOptimizationLevel;
 use ort::session::Session;
 use ort::value::TensorRef;
 use regex::Regex;
@@ -59,9 +57,9 @@ impl Drop for ParakeetModel {
 
 impl ParakeetModel {
     pub fn new<P: AsRef<Path>>(model_dir: P, quantized: bool) -> Result<Self, ParakeetError> {
-        let encoder = Self::init_session(&model_dir, "encoder-model", None, quantized)?;
-        let decoder_joint = Self::init_session(&model_dir, "decoder_joint-model", None, quantized)?;
-        let preprocessor = Self::init_session(&model_dir, "nemo128", None, false)?;
+        let encoder = Self::init_session(&model_dir, "encoder-model", quantized)?;
+        let decoder_joint = Self::init_session(&model_dir, "decoder_joint-model", quantized)?;
+        let preprocessor = Self::init_session(&model_dir, "nemo128", false)?;
 
         let (vocab, blank_idx) = Self::load_vocab(&model_dir)?;
         let vocab_size = vocab.len();
@@ -85,21 +83,8 @@ impl ParakeetModel {
     fn init_session<P: AsRef<Path>>(
         model_dir: P,
         model_name: &str,
-        intra_threads: Option<usize>,
         try_quantized: bool,
     ) -> Result<Session, ParakeetError> {
-        // ONNX Runtime CPU usa BFCArena con kNextPowerOfTwo por default. Para shapes
-        // dinamicos (Parakeet recibe chunks de 14k-78k samples, distintos por chunk),
-        // la arena acumula buffers para cada tamaño visto y nunca encoge — causa
-        // memoria nativa creciente y eventualmente cuelgue de transcripcion.
-        // Microsoft (issue #11627) recomienda desactivar arena + memory pattern para
-        // shapes dinamicos. Costo: ~5-10% throughput, ~25ms extra en chunks de 500ms.
-        let providers = vec![
-            CPUExecutionProvider::default()
-                .with_arena_allocator(false)
-                .build(),
-        ];
-
         // Try quantized version first if requested, fallback to regular version
         let model_filename = if try_quantized {
             let quantized_name = format!("{}.int8.onnx", model_name);
@@ -121,21 +106,21 @@ impl ParakeetModel {
             regular_name
         };
 
-        let mut builder = Session::builder()?
-            .with_optimization_level(GraphOptimizationLevel::Level3)?
-            .with_execution_providers(providers)?
-            // with_memory_pattern(false) es REQUERIDO cuando arena esta desactivada:
-            // memory pattern depende de arena para optimizar allocations entre runs.
-            .with_memory_pattern(false)?
-            .with_parallel_execution(true)?;
+        // Arena desactivada (disable_arena=true): Parakeet recibe chunks de tamaño
+        // variable (14k-78k samples) y la BFCArena acumula buffers sin liberar
+        // (Microsoft issue #11627). El helper aplica memory_pattern(false) acorde.
+        // El preprocessor mel (nemo128) es chico: lo dejamos en CPU para evitar el
+        // ida/vuelta CPU<->GPU; encoder/decoder_joint usan GPU si esta disponible.
+        let prefer_gpu = model_name != "nemo128";
 
-        if let Some(threads) = intra_threads {
-            builder = builder
-                .with_intra_threads(threads)?
-                .with_inter_threads(threads)?;
-        }
-
-        let session = builder.commit_from_file(model_dir.as_ref().join(&model_filename))?;
+        let session = crate::audio::transcription::onnx_providers::build_session(
+            &model_dir.as_ref().join(&model_filename),
+            crate::audio::transcription::onnx_providers::OnnxSessionOpts {
+                disable_arena: true,
+                prefer_gpu,
+                label: model_name,
+            },
+        )?;
 
         for input in &session.inputs {
             log::info!(
