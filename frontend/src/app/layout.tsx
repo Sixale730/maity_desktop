@@ -24,6 +24,7 @@ import { RecordingPostProcessingProvider } from '@/contexts/RecordingPostProcess
 import { ErrorBoundary } from '@/components/shared/ErrorBoundary'
 import { ChunkErrorRecovery } from '@/components/shared/ChunkErrorRecovery'
 import { MeetingDetectionDialog } from '@/components/meeting-detection/MeetingDetectionDialog'
+import { ScheduledRecordingIndicator } from '@/components/scheduled-recording/ScheduledRecordingIndicator'
 import { OfflineIndicator } from '@/components/shared/OfflineIndicator'
 import { RecordingWidgetFAB } from '@/components/shared/RecordingWidgetFAB'
 import { RecordingWidgetListener } from '@/components/RecordingWidgetListener'
@@ -450,6 +451,11 @@ function AppContent({ children }: { children: React.ReactNode }) {
 
                     {/* Meeting detection dialog - listens for meeting-detected events */}
                     <MeetingDetectionDialog />
+
+                    {/* Listener global de la grabación programada por jornada:
+                        traduce los eventos del scheduler Rust (best-effort) en toasts.
+                        Renderiza null; el arranque real vive en Rust. */}
+                    <ScheduledRecordingIndicator />
 
                     {/* Listener global del widget flotante: escucha el evento
                         widget-request-start-recording (emitido por el comando

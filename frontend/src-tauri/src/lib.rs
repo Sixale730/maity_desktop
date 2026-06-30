@@ -44,6 +44,7 @@ pub mod database;
 pub mod llm;
 pub mod logging;
 pub mod meeting_detector;
+pub mod scheduled_recording;
 pub mod notifications;
 pub mod ollama;
 pub mod onboarding;
@@ -505,6 +506,7 @@ pub fn run() {
         .manage(audio::init_system_audio_state())
         .manage(summary::summary_engine::ModelManagerState(Arc::new(tokio::sync::Mutex::new(None))))
         .manage(Arc::new(RwLock::new(meeting_detector::MeetingDetector::new())) as meeting_detector::commands::MeetingDetectorState)
+        .manage(Arc::new(RwLock::new(scheduled_recording::ScheduledRecordingService::new())) as scheduled_recording::commands::ScheduledRecordingState)
         .setup(|_app| {
             log::info!("Application setup starting");
 
@@ -1008,6 +1010,33 @@ pub fn run() {
                 }
             });
 
+            // Initialize scheduled recording service (grabación programada por jornada)
+            log::info!("Initializing scheduled recording service...");
+            let app_for_scheduler = _app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let scheduler_state = app_for_scheduler
+                    .state::<scheduled_recording::commands::ScheduledRecordingState>();
+                let mut service = scheduler_state.write().await;
+
+                // Load saved settings into shared state.
+                if let Err(e) = service.initialize(&app_for_scheduler).await {
+                    log::error!("Failed to initialize scheduled recording service: {}", e);
+                    return;
+                }
+
+                // Start the background loop only if enabled in settings.
+                let settings = service.get_settings().await;
+                if settings.enabled {
+                    if let Err(e) = service.start(app_for_scheduler.clone()).await {
+                        log::error!("Failed to start scheduled recording service: {}", e);
+                    } else {
+                        log::info!("Scheduled recording service started successfully");
+                    }
+                } else {
+                    log::info!("Scheduled recording is disabled in settings, not starting");
+                }
+            });
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -1247,6 +1276,15 @@ pub fn run() {
             meeting_detector::commands::set_meeting_detector_enabled,
             meeting_detector::commands::set_meeting_auto_record,
             meeting_detector::commands::get_monitored_apps_status,
+            // Scheduled recording commands (grabación programada por jornada)
+            scheduled_recording::commands::get_scheduled_recording_settings,
+            scheduled_recording::commands::set_scheduled_recording_settings,
+            scheduled_recording::commands::set_scheduled_recording_enabled,
+            scheduled_recording::commands::start_scheduled_recording_service,
+            scheduled_recording::commands::stop_scheduled_recording_service,
+            scheduled_recording::commands::is_scheduled_recording_service_running,
+            scheduled_recording::commands::get_scheduled_recording_status,
+            scheduled_recording::commands::check_schedule_now,
             // Logging commands
             logging::commands::get_log_info,
             logging::commands::export_logs,

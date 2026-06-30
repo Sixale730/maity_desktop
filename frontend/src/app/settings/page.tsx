@@ -8,6 +8,7 @@ import { motion } from 'framer-motion';
 import { TranscriptSettings } from '@/components/transcript/TranscriptSettings';
 import type { TranscriptModelProps } from '@/types/transcript';
 import { RecordingSettings } from '@/components/recording/RecordingSettings';
+import { ScheduledRecordingSettings } from '@/components/scheduled-recording/ScheduledRecordingSettings';
 import { PreferenceSettings } from '@/components/settings/PreferenceSettings';
 import { SummaryModelSettings } from '@/components/models/SummaryModelSettings';
 import { PipelineSelector } from '@/components/coach/PipelineSelector';
@@ -153,7 +154,12 @@ export default function SettingsPage() {
               <PreferenceSettings />
             </TabsContent>
             <TabsContent value="recording">
-              <RecordingSettings />
+              <div className="space-y-10">
+                <RecordingSettings />
+                <div className="border-t border-border pt-8">
+                  <ScheduledRecordingSettings />
+                </div>
+              </div>
             </TabsContent>
             <TabsContent value="Transcriptionmodels">
               <TranscriptSettings
