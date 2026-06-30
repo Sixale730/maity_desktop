@@ -52,5 +52,17 @@ export function useScheduledRecording() {
     [reload]
   )
 
-  return { settings, status, isLoading, save, setEnabled, reload }
+  /** Marca que el usuario ya configuró/atendió la jornada (evita el gate de activación). */
+  const markConfigured = useCallback(async () => {
+    try {
+      const s = await scheduledRecordingService.getSettings()
+      if (!s.configured_by_user) {
+        await scheduledRecordingService.setSettings({ ...s, configured_by_user: true })
+      }
+    } catch (error) {
+      console.error('[useScheduledRecording] markConfigured failed:', error)
+    }
+  }, [])
+
+  return { settings, status, isLoading, save, setEnabled, reload, markConfigured }
 }

@@ -35,6 +35,12 @@ pub struct ScheduledRecordingSettings {
 
     /// Plantilla del nombre de reunión. Soporta `{date}` y `{time}`.
     pub meeting_name_template: String,
+
+    /// True una vez que el usuario vio/atendió el gate de activación (onboarding o
+    /// modal post-update), o configuró la jornada desde Settings. Evita re-mostrar el
+    /// gate aunque luego desactive. `#[serde(default)]` para no romper JSONs existentes.
+    #[serde(default)]
+    pub configured_by_user: bool,
 }
 
 /// Una ventana horaria recurrente por días de la semana.
@@ -66,6 +72,7 @@ impl Default for ScheduledRecordingSettings {
             check_interval_seconds: 30,
             notify_on_start: true,
             meeting_name_template: "Jornada {date}".to_string(),
+            configured_by_user: false,
         }
     }
 }

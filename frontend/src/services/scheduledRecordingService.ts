@@ -25,6 +25,8 @@ export interface ScheduledRecordingSettings {
   check_interval_seconds: number
   notify_on_start: boolean
   meeting_name_template: string
+  /** True una vez que el usuario atendió el gate de activación o configuró desde Settings. */
+  configured_by_user: boolean
 }
 
 export type SchedulerPhase =

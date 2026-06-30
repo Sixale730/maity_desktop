@@ -49,7 +49,7 @@ function formatNextFire(iso: string | null): string {
 }
 
 export function ScheduledRecordingSettings() {
-  const { settings, status, isLoading, save, setEnabled, reload } = useScheduledRecording()
+  const { settings, status, isLoading, save, setEnabled, reload, markConfigured } = useScheduledRecording()
   const [isSaving, setIsSaving] = useState(false)
 
   // Editamos una única ventana (windows[0]) — el backend soporta varias, pero la UI
@@ -81,6 +81,7 @@ export function ScheduledRecordingSettings() {
     setIsSaving(true)
     try {
       await setEnabled(enabled)
+      await markConfigured()
       toast.success(enabled ? 'Grabación por jornada activada' : 'Grabación por jornada desactivada')
     } catch (error) {
       console.error('[ScheduledRecordingSettings] Failed to toggle:', error)
@@ -104,6 +105,7 @@ export function ScheduledRecordingSettings() {
         grace_period_minutes: Number.isFinite(grace) ? Math.max(0, grace) : 30,
         notify_on_start: notify,
         respect_manual_recording: respectManual,
+        configured_by_user: true,
       })
       toast.success('Horario de jornada guardado')
       await reload()

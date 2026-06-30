@@ -25,6 +25,8 @@ import { ErrorBoundary } from '@/components/shared/ErrorBoundary'
 import { ChunkErrorRecovery } from '@/components/shared/ChunkErrorRecovery'
 import { MeetingDetectionDialog } from '@/components/meeting-detection/MeetingDetectionDialog'
 import { ScheduledRecordingIndicator } from '@/components/scheduled-recording/ScheduledRecordingIndicator'
+import { ScheduledRecordingSetupGate } from '@/components/scheduled-recording/ScheduledRecordingSetupGate'
+import { scheduledRecordingService } from '@/services/scheduledRecordingService'
 import { OfflineIndicator } from '@/components/shared/OfflineIndicator'
 import { RecordingWidgetFAB } from '@/components/shared/RecordingWidgetFAB'
 import { RecordingWidgetListener } from '@/components/RecordingWidgetListener'
@@ -260,6 +262,7 @@ function AppContent({ children }: { children: React.ReactNode }) {
   const [showOnboarding, setShowOnboarding] = useState(false)
   const [, setOnboardingCompleted] = useState(false)
   const [modelGateActive, setModelGateActive] = useState<boolean | null>(null)
+  const [showScheduledSetup, setShowScheduledSetup] = useState(false)
   const hasEmittedOpenRef = useRef(false)
 
   // Check whether the local STT model is downloaded. The gate is shown only
@@ -424,6 +427,17 @@ function AppContent({ children }: { children: React.ReactNode }) {
     };
   }, [showOnboarding, modelGateActive]);
 
+  // Una vez resueltos el onboarding y el model gate, decidir si mostrar el gate de
+  // activación de la grabación por jornada (solo si el usuario aún no lo atendió).
+  useEffect(() => {
+    if (modelGateActive !== false || showOnboarding) return
+    let cancelled = false
+    scheduledRecordingService.getSettings()
+      .then((s) => { if (!cancelled && !s.configured_by_user) setShowScheduledSetup(true) })
+      .catch(() => { /* si falla, no bloquear la app */ })
+    return () => { cancelled = true }
+  }, [modelGateActive, showOnboarding])
+
   const handleOnboardingComplete = () => {
     logger.debug('[Layout] Onboarding completed, checking model availability')
     setShowOnboarding(false)
@@ -472,6 +486,10 @@ function AppContent({ children }: { children: React.ReactNode }) {
                       <ModelDownloadGate onComplete={handleModelGateComplete} />
                     ) : modelGateActive === null ? (
                       <SplashScreen />
+                    ) : showScheduledSetup ? (
+                      <ScheduledRecordingSetupGate
+                        onDone={() => setShowScheduledSetup(false)}
+                      />
                     ) : (
                       <div className="flex flex-col h-screen">
                         {/* Offline indicator at the top */}
