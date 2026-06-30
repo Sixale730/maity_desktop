@@ -292,6 +292,34 @@ async fn get_eval_model_id(pool: &SqlitePool) -> String {
     .unwrap_or_else(|| "qwen25-7b-q4".to_string())
 }
 
+/// Lee `meetings.recording_mode`. NULL o "conversation" => false (conversación).
+async fn is_presentation_meeting(pool: &SqlitePool, meeting_id: &str) -> bool {
+    // Columna nullable → el scalar es Option<String>; fetch_optional añade otra capa
+    // por "fila encontrada o no". Ok(Some(Some(mode))) = fila existe y columna no-null.
+    let row: Result<Option<Option<String>>, _> =
+        sqlx::query_scalar("SELECT recording_mode FROM meetings WHERE id = ?")
+            .bind(meeting_id)
+            .fetch_optional(pool)
+            .await;
+    matches!(row, Ok(Some(Some(mode))) if mode == "presentation")
+}
+
+// Modo Ponente: directiva que se ANTEPONE al user_prompt cuando la grabación es una
+// presentación. Sobreescribe la heurística de autodetección del prompt v5.1 para que
+// el ponente NO sea penalizado por "acaparar" y para que empatía/adaptación (que asumen
+// diálogo) no hundan la Calidad Global. Espeja la spec del issue Sixale730/maity#127
+// para que eval local y nube sean coherentes.
+const PRESENTATION_DIRECTIVE: &str = r#"## MODO PONENTE / PRESENTACIÓN (INSTRUCCIONES QUE SOBREESCRIBEN LO ANTERIOR):
+
+Esta grabación es una PRESENTACIÓN/PONENCIA (webinar, clase, pitch, conferencia): el USUARIO habla casi todo el tiempo A PROPÓSITO. Eso es CORRECTO, no un defecto.
+
+- Tipo de situación = Presentación/Webinar. Evalúa con peso en Claridad, Estructura, Persuasión y Propósito (más engagement/pacing).
+- NO penalices el ratio_habla ni comentes que "acapara", "domina" o "habla de más". Hablar ~100% del tiempo es lo esperado de un ponente.
+- Empatía y Adaptación NO aplican (no hay diálogo bidireccional). Asígnales nivel "no aplica (presentación)" y EXCLÚYELAS del cálculo de calidad_global.
+- calidad_global.puntaje = promedio SOLO de Claridad, Estructura, Persuasión y Propósito (4 dimensiones), NO de las 6.
+
+"#;
+
 /// Evalúa la comunicación del usuario para un meeting_id dado.
 /// Usa prompt v5.1 — devuelve CoachEvalResult con scores 0-10 y JSON completo en `observations`.
 pub async fn evaluate_meeting<R: Runtime>(
@@ -322,9 +350,17 @@ pub async fn evaluate_meeting<R: Runtime>(
 
     let builtin_model = llama_engine::map_to_builtin_id(&eval_model_id).to_string();
 
+    // Modo Ponente: si la grabación fue una presentación, anteponer la directiva que
+    // evita penalizar al usuario por "acaparar" y excluye empatía/adaptación del global.
+    let is_presentation = is_presentation_meeting(pool, meeting_id).await;
+    if is_presentation {
+        info!("🎤 Evaluación en MODO PONENTE para reunión {}", meeting_id);
+    }
+    let directive = if is_presentation { PRESENTATION_DIRECTIVE } else { "" };
+
     let user_prompt = format!(
-        "Transcripción de la reunión:\n\n{}\n\nEvalúa la comunicación del USUARIO (micrófono).",
-        ctx.formatted
+        "{}Transcripción de la reunión:\n\n{}\n\nEvalúa la comunicación del USUARIO (micrófono).",
+        directive, ctx.formatted
     );
 
     // v5.1: temperature=0.3, max_tokens=4096, n_ctx=4096 para JSON rico completo.

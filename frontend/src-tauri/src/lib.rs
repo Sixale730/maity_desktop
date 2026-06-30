@@ -116,6 +116,11 @@ async fn start_recording<R: Runtime>(
         return Err("Recording already in progress".to_string());
     }
 
+    // Este entrypoint no recibe modo de grabación → conversación (default). Reset
+    // defensivo del flag global para que no se filtre el "presentation" de una sesión
+    // previa. El path principal del frontend usa start_recording_with_devices_and_meeting.
+    crate::coach::live_feedback::set_presentation_mode(false);
+
     // Call the actual audio recording system with meeting name
     match audio::recording_commands::start_recording_with_devices_and_meeting(
         app.clone(),
@@ -317,7 +322,8 @@ async fn start_recording_with_devices<R: Runtime>(
     mic_device_name: Option<String>,
     system_device_name: Option<String>,
 ) -> Result<(), String> {
-    start_recording_with_devices_and_meeting(app, mic_device_name, system_device_name, None).await
+    start_recording_with_devices_and_meeting(app, mic_device_name, system_device_name, None, None)
+        .await
 }
 
 #[tauri::command]
@@ -326,9 +332,16 @@ async fn start_recording_with_devices_and_meeting<R: Runtime>(
     mic_device_name: Option<String>,
     system_device_name: Option<String>,
     meeting_name: Option<String>,
+    recording_mode: Option<String>,
 ) -> Result<(), String> {
-    log_info!("🚀 CALLED start_recording_with_devices_and_meeting - Mic: {:?}, System: {:?}, Meeting: {:?}",
-             mic_device_name, system_device_name, meeting_name);
+    log_info!("🚀 CALLED start_recording_with_devices_and_meeting - Mic: {:?}, System: {:?}, Meeting: {:?}, Mode: {:?}",
+             mic_device_name, system_device_name, meeting_name, recording_mode);
+
+    // Modo Ponente: fijar el flag global ANTES de arrancar la grabación (sincrónicamente,
+    // antes del primer await) para que el coach en vivo lo lea al iniciarse. None o
+    // cualquier valor distinto de "presentation" => conversación (default seguro).
+    let is_presentation = recording_mode.as_deref() == Some("presentation");
+    crate::coach::live_feedback::set_presentation_mode(is_presentation);
 
     // Clone meeting_name for notification use later
     let meeting_name_for_notification = meeting_name.clone();

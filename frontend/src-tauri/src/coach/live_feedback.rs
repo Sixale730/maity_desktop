@@ -34,6 +34,22 @@ static FEEDBACK_STATE: Lazy<Mutex<Option<Arc<Mutex<FeedbackState>>>>> =
 static LLM_PARSE_TOTAL: AtomicU64 = AtomicU64::new(0);
 static LLM_PARSE_FAILED: AtomicU64 = AtomicU64::new(0);
 
+// Modo Ponente: la grabación activa es una presentación/ponencia (el usuario habla
+// casi todo el tiempo: webinar, clase, pitch). El comando Tauri de inicio de grabación
+// fija este flag ANTES de llamar a `start()` (sincrónicamente, antes del primer await),
+// y `FeedbackState::new()` lo lee. En presentación NO penalizamos talk_ratio alto ni
+// disparamos el tip de dominancia ("estás acaparando, pregúntale al otro") — pero SÍ
+// mantenemos los tips de ritmo (monólogo largo, hablar muy rápido). Default false =
+// conversación, así las grabaciones auto (detector/programadas) no cambian de comportamiento.
+static PRESENTATION_MODE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Fija el modo de la próxima grabación (true = presentación/ponente). Llamado por el
+/// comando Tauri de inicio antes de `start()`. Ver doc de `PRESENTATION_MODE`.
+pub fn set_presentation_mode(is_presentation: bool) {
+    PRESENTATION_MODE.store(is_presentation, Ordering::Relaxed);
+}
+
 // ─── Public types (emitted to frontend) ──────────────────────────────────────
 
 /// §1.2 Payload emitido como evento "meeting-metrics" cada 3s mientras hay grabacion.
@@ -101,6 +117,11 @@ struct FeedbackState {
     /// las plantillas dominan y el LLM no aporta valor (revisar umbrales o quitar §6).
     tips_from_llm: u32,
     tips_from_heuristic: u32,
+    /// Modo Ponente: snapshot del global `PRESENTATION_MODE` al iniciar la sesión.
+    /// Cuando es true, health_score / evaluate_health_tips / el nudge engine no
+    /// penalizan el talk_ratio alto ni emiten tips de dominancia conversacional;
+    /// se mantienen los tips de ritmo (monólogo largo, hablar muy rápido).
+    is_presentation: bool,
 }
 
 impl FeedbackState {
@@ -125,6 +146,7 @@ impl FeedbackState {
             llm_latencies_ms: VecDeque::with_capacity(100),
             tips_from_llm: 0,
             tips_from_heuristic: 0,
+            is_presentation: PRESENTATION_MODE.load(Ordering::Relaxed),
         }
     }
 
@@ -182,46 +204,58 @@ impl FeedbackState {
     ///        sesiones largas, profanity detectado en ultimo turno (TurnContext).
     /// Suben: talk_ratio balanceado (40-60%), preguntas, turns interlocutor.
     /// Es algoritmo simple v1 — iterar despues con datos reales (decision §14).
+    ///
+    /// Modo Ponente: cuando `is_presentation`, se omiten TODAS las penalizaciones y
+    /// bonificaciones que asumen diálogo (talk_ratio dominante/pasivo, falta de
+    /// preguntas, balance 40-60%, turnos de interlocutor) — hablar ~100% del tiempo
+    /// es lo esperado de un ponente, no un defecto. Se conserva sólo la penalización
+    /// por monólogo largo, que refleja ritmo/pausas (lo que el usuario sí quiere medir).
     fn health_score(&self) -> u32 {
         let mut s: i32 = 70;
         let r = self.talk_ratio();
         let session_secs = self.session_secs();
 
-        // Penalizaciones
+        // Penalización por monólogo largo: aplica SIEMPRE (es sobre ritmo/pausas, no
+        // sobre acaparar). En presentación un ponente que no hace ninguna pausa en >2min
+        // igual debería variar el ritmo.
         if self.longest_mono_secs > 120 {
             s -= 20;
         } else if self.longest_mono_secs > 60 {
             s -= 10;
         }
-        if r > 0.80 {
-            s -= 15;
-        }
-        if r < 0.15 && session_secs > 180 {
-            // Audience-mode legitimo: usuario escucha a interlocutor activo (>=5 turns).
-            // Sin esa condicion penalizamos como conversacion pasiva.
-            if self.interlocutor_turns < 5 {
+
+        if !self.is_presentation {
+            // Penalizaciones que asumen conversación bidireccional — se omiten en ponencia.
+            if r > 0.80 {
+                s -= 15;
+            }
+            if r < 0.15 && session_secs > 180 {
+                // Audience-mode legitimo: usuario escucha a interlocutor activo (>=5 turns).
+                // Sin esa condicion penalizamos como conversacion pasiva.
+                if self.interlocutor_turns < 5 {
+                    s -= 10;
+                }
+            }
+            if self.user_questions == 0 && session_secs > 300 {
                 s -= 10;
             }
-        }
-        if self.user_questions == 0 && session_secs > 300 {
-            s -= 10;
-        }
-        // NOTA: profanity penalization (§1.1) aplazado — TurnContext aun no expone
-        // profanity_detected; trigger.rs solo lo emite como signal. Sumar en V2 cuando
-        // tengamos TurnContext.profanity_detected o un last_signal cacheado en FeedbackState.
+            // NOTA: profanity penalization (§1.1) aplazado — TurnContext aun no expone
+            // profanity_detected; trigger.rs solo lo emite como signal. Sumar en V2 cuando
+            // tengamos TurnContext.profanity_detected o un last_signal cacheado en FeedbackState.
 
-        // Bonificaciones
-        if r >= 0.40 && r <= 0.60 {
-            s += 5;
-        }
-        if self.user_turns > 0 {
-            let q_ratio = self.user_questions as f32 / self.user_turns as f32;
-            if q_ratio > 0.20 {
-                s += 10;
+            // Bonificaciones (también asumen diálogo)
+            if r >= 0.40 && r <= 0.60 {
+                s += 5;
             }
-        }
-        if self.interlocutor_turns >= 3 {
-            s += 5;
+            if self.user_turns > 0 {
+                let q_ratio = self.user_questions as f32 / self.user_turns as f32;
+                if q_ratio > 0.20 {
+                    s += 10;
+                }
+            }
+            if self.interlocutor_turns >= 3 {
+                s += 5;
+            }
         }
 
         s.clamp(0, 100) as u32
@@ -299,6 +333,7 @@ impl FeedbackState {
             health_score: self.health_score(),
             last_nudge_type: self.last_nudge_type.clone(),
             is_monologue: self.is_monologue_mode(),
+            is_presentation: self.is_presentation,
         }
     }
 
@@ -977,9 +1012,21 @@ async fn call_ollama_and_emit<R: Runtime>(
     cancel: CancellationToken,
 ) {
     let minute = session_secs / 60;
+    // Modo Ponente: encuadrar los tips del LLM como WEBINAR/PRESENTACIÓN (pacing +
+    // engagement) en vez de auto-detectar. Así el coach sugiere ritmo/claridad para un
+    // ponente en vez de dinámicas de diálogo ("pregúntale al cliente").
+    let is_presentation = state
+        .lock()
+        .map(|s| s.is_presentation)
+        .unwrap_or(false);
+    let meeting_type = if is_presentation {
+        MeetingType::Webinar
+    } else {
+        MeetingType::Auto
+    };
     let user_prompt = build_user_prompt(
         &window_text,
-        MeetingType::Auto,
+        meeting_type,
         minute,
         &previous_tips,
         trigger.as_deref(),
@@ -1195,7 +1242,16 @@ struct HeuristicTip {
 /// porque asumen un interlocutor al que preguntarle. Mantenemos los que sí
 /// aplican a presentaciones en solitario: `heuristic_monologue_long` y
 /// `heuristic_health_pacing`.
+///
+/// Modo Ponente: cuando `is_presentation`, también se suprimen los tips dialógicos
+/// (aunque haya turnos de interlocutor por Q&A), en particular `heuristic_dominance`
+/// — un ponente DEBE acaparar el habla. Se conservan los de ritmo (`monologue_long`,
+/// `health_pacing`) porque ahí sí aporta el coach.
 fn evaluate_health_tips(snap: &ConversationSnapshot) -> Option<HeuristicTip> {
+    // Los tips que asumen diálogo bidireccional sólo aplican en conversación real:
+    // ni en monólogo (sin interlocutor) ni en presentación (acaparar es lo esperado).
+    let dialog = !snap.is_monologue && !snap.is_presentation;
+
     // Monologo en curso > 90s — critico, dispara antes que health.
     if snap.longest_user_monologue_sec > 90 {
         return Some(HeuristicTip {
@@ -1206,7 +1262,7 @@ fn evaluate_health_tips(snap: &ConversationSnapshot) -> Option<HeuristicTip> {
         });
     }
     // Health <= 10 — urgente. Solo en diálogo (asume interlocutor).
-    if snap.health_score <= 10 && !snap.is_monologue {
+    if snap.health_score <= 10 && dialog {
         return Some(HeuristicTip {
             tip: "Atención: la conversación necesita mejorar urgentemente. Pregúntale: '¿cómo te sientes con lo que hemos hablado hasta ahora?'",
             category: "service",
@@ -1215,7 +1271,7 @@ fn evaluate_health_tips(snap: &ConversationSnapshot) -> Option<HeuristicTip> {
         });
     }
     // Health <= 25 — perdiendo conexion. Solo en diálogo.
-    if snap.health_score <= 25 && !snap.is_monologue {
+    if snap.health_score <= 25 && dialog {
         return Some(HeuristicTip {
             tip: "Estás perdiendo conexión. Haz una pausa y pregunta: '¿esto te está haciendo sentido?'",
             category: "rapport",
@@ -1223,7 +1279,8 @@ fn evaluate_health_tips(snap: &ConversationSnapshot) -> Option<HeuristicTip> {
             trigger: "heuristic_health_low",
         });
     }
-    // Health <= 40 — ritmo no fluye. Aplica también a monólogo.
+    // Health <= 40 — ritmo no fluye. Aplica también a monólogo y a presentación
+    // (es un tip de pacing/engagement, no de dominancia).
     if snap.health_score <= 40 {
         return Some(HeuristicTip {
             tip: "El ritmo no está fluyendo. Cambia de tema o haz una pregunta abierta.",
@@ -1233,8 +1290,9 @@ fn evaluate_health_tips(snap: &ConversationSnapshot) -> Option<HeuristicTip> {
         });
     }
     // Dominancia > 0.85 con sesion > 90s. En monólogo, talk_ratio siempre es 1.0,
-    // así que el tip "preguntale al otro" es absurdo — suprimir.
-    if snap.user_talk_ratio > 0.85 && snap.session_duration_sec > 90 && !snap.is_monologue {
+    // así que el tip "preguntale al otro" es absurdo — suprimir. En presentación,
+    // acaparar es lo correcto, así que también se suprime.
+    if snap.user_talk_ratio > 0.85 && snap.session_duration_sec > 90 && dialog {
         return Some(HeuristicTip {
             tip: "Estás dominando la conversación. Pregúntale: '¿qué piensas tú sobre esto?'",
             category: "listening",
@@ -1592,6 +1650,7 @@ mod tests {
             health_score: health,
             last_nudge_type: None,
             is_monologue: false,
+            is_presentation: false,
         }
     }
 
@@ -1631,6 +1690,23 @@ mod tests {
         let mature = make_snap(60, 0.95, 0, 120);
         let h = evaluate_health_tips(&mature).expect("dispara con sesion >90s");
         assert_eq!(h.trigger, "heuristic_dominance");
+    }
+
+    #[test]
+    fn heuristic_no_dispara_dominancia_en_presentacion() {
+        // Modo Ponente: la misma señal que dispara dominancia en conversación NO debe
+        // emitir "estás dominando" — acaparar el habla es lo esperado de un ponente.
+        let pres = ConversationSnapshot { is_presentation: true, ..make_snap(60, 0.95, 0, 120) };
+        let trig = evaluate_health_tips(&pres).map(|t| t.trigger);
+        assert_ne!(trig, Some("heuristic_dominance"), "got {:?}", trig);
+    }
+
+    #[test]
+    fn heuristic_mantiene_monologo_largo_en_presentacion() {
+        // Ritmo SÍ se conserva: monólogo > 90s dispara "haz una pausa" aun en presentación.
+        let pres = ConversationSnapshot { is_presentation: true, ..make_snap(80, 0.98, 100, 200) };
+        let h = evaluate_health_tips(&pres).expect("monólogo largo dispara aun en presentación");
+        assert_eq!(h.trigger, "heuristic_monologue_long");
     }
 
     #[test]

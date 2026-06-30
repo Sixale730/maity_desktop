@@ -39,6 +39,11 @@ pub struct ConversationSnapshot {
     /// "¿cómo te sientes?") que no aplican cuando hablas solo.
     #[serde(default)]
     pub is_monologue: bool,
+    /// Modo Ponente: la grabación es una presentación/ponencia. Suprime los nudges
+    /// que asumen diálogo bidireccional (TalkRatioDominant, NoQuestions) — un ponente
+    /// DEBE acaparar el habla. Se conservan los de ritmo (Monologue, SpeakingTooFast).
+    #[serde(default)]
+    pub is_presentation: bool,
 }
 
 /// Evalúa métricas y decide si se debe generar un nudge.
@@ -83,7 +88,11 @@ pub fn evaluate_nudge(snapshot: &ConversationSnapshot) -> NudgeResult {
         };
     }
 
-    if snapshot.user_talk_ratio > 0.65 && snapshot.session_duration_sec > 120 {
+    // Modo Ponente: NO empujar "hablas demasiado" — acaparar el habla es lo esperado.
+    if !snapshot.is_presentation
+        && snapshot.user_talk_ratio > 0.65
+        && snapshot.session_duration_sec > 120
+    {
         if snapshot.last_nudge_type.as_deref() != Some("TalkRatioDominant") {
             return NudgeResult {
                 should_nudge: true,
@@ -105,7 +114,11 @@ pub fn evaluate_nudge(snapshot: &ConversationSnapshot) -> NudgeResult {
         };
     }
 
-    if snapshot.user_questions == 0 && snapshot.session_duration_sec > 180 {
+    // Modo Ponente: no exigir preguntas — un ponente puede informar sin abrir diálogo.
+    if !snapshot.is_presentation
+        && snapshot.user_questions == 0
+        && snapshot.session_duration_sec > 180
+    {
         return NudgeResult {
             should_nudge: true,
             nudge_type: Some(NudgeType::NoQuestions),
@@ -149,6 +162,7 @@ pub fn coach_evaluate_nudge(
         health_score,
         last_nudge_type,
         is_monologue: false,
+        is_presentation: false,
     })
 }
 
@@ -167,6 +181,7 @@ mod tests {
             health_score: 10,
             last_nudge_type: None,
             is_monologue: false,
+            is_presentation: false,
         };
         assert!(!evaluate_nudge(&snap).should_nudge);
     }
@@ -182,6 +197,7 @@ mod tests {
             health_score: 25,
             last_nudge_type: None,
             is_monologue: false,
+            is_presentation: false,
         };
         let r = evaluate_nudge(&snap);
         assert!(r.should_nudge);
@@ -199,6 +215,7 @@ mod tests {
             health_score: 60,
             last_nudge_type: None,
             is_monologue: false,
+            is_presentation: false,
         };
         let r = evaluate_nudge(&snap);
         assert!(r.should_nudge);
@@ -216,8 +233,53 @@ mod tests {
             health_score: 55,
             last_nudge_type: Some("TalkRatioDominant".to_string()),
             is_monologue: false,
+            is_presentation: false,
         };
         assert!(!evaluate_nudge(&snap).should_nudge);
+    }
+
+    #[test]
+    fn presentation_mode_suppresses_dialog_nudges() {
+        // Ponente: habla 95%, 5 min, cero preguntas. En conversación esto dispararía
+        // TalkRatioDominant o NoQuestions; en presentación NO debe empujar ninguno
+        // (acaparar e informar sin preguntar es lo esperado de un ponente).
+        let snap = ConversationSnapshot {
+            user_talk_ratio: 0.95,
+            user_questions: 0,
+            session_duration_sec: 300,
+            user_wpm: 140.0,
+            longest_user_monologue_sec: 30,
+            health_score: 70,
+            last_nudge_type: None,
+            is_monologue: false,
+            is_presentation: true,
+        };
+        let r = evaluate_nudge(&snap);
+        assert!(
+            r.nudge_type != Some(NudgeType::TalkRatioDominant)
+                && r.nudge_type != Some(NudgeType::NoQuestions),
+            "presentación no debe disparar nudges de dominancia/preguntas, got {:?}",
+            r.nudge_type
+        );
+    }
+
+    #[test]
+    fn presentation_mode_keeps_monologue_nudge() {
+        // Ritmo SÍ se mantiene en presentación: monólogo > 60s sigue disparando.
+        let snap = ConversationSnapshot {
+            user_talk_ratio: 0.98,
+            user_questions: 0,
+            session_duration_sec: 200,
+            user_wpm: 140.0,
+            longest_user_monologue_sec: 75,
+            health_score: 70,
+            last_nudge_type: None,
+            is_monologue: false,
+            is_presentation: true,
+        };
+        let r = evaluate_nudge(&snap);
+        assert!(r.should_nudge);
+        assert_eq!(r.nudge_type, Some(NudgeType::Monologue));
     }
 
     #[test]
@@ -231,6 +293,7 @@ mod tests {
             health_score: 82,
             last_nudge_type: None,
             is_monologue: false,
+            is_presentation: false,
         };
         assert!(!evaluate_nudge(&snap).should_nudge);
     }

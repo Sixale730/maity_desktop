@@ -48,7 +48,7 @@ export function useRecordingStart(
 
   const { clearTranscripts, setMeetingTitle } = useTranscripts();
   const { setIsMeetingActive } = useSidebar();
-  const { selectedDevices, transcriptModelConfig } = useConfig();
+  const { selectedDevices, transcriptModelConfig, recordingMode } = useConfig();
   const { setStatus } = useRecordingState();
 
   // Generate meeting title with timestamp
@@ -239,17 +239,22 @@ export function useRecordingStart(
     const meetingId = `meeting-${crypto.randomUUID()}`;
     recordingLogService.setMeetingId(meetingId);
     sessionStorage.setItem('early_meeting_id', meetingId);
-    recordingLogService.log('meeting_id_generated', { meeting_id: meetingId }, 'success');
+    // Modo Ponente: persistir el modo de ESTA sesión para que el stop (que persiste el
+    // meeting y dispara el sync a la nube) lo lea. sessionStorage espeja el patrón de
+    // 'early_meeting_id' y sobrevive navegación durante la grabación.
+    sessionStorage.setItem('active_recording_mode', recordingMode);
+    recordingLogService.log('meeting_id_generated', { meeting_id: meetingId, recording_mode: recordingMode }, 'success');
 
     // Set STARTING status before initiating backend recording
     setStatus(RecordingStatus.STARTING, 'Initializing recording...');
 
     // Start the actual backend recording
-    logger.debug(`Starting backend recording (trigger=${trigger}) with meeting:`, title);
+    logger.debug(`Starting backend recording (trigger=${trigger}, mode=${recordingMode}) with meeting:`, title);
     await recordingService.startRecordingWithDevices(
       selectedDevices?.micDevice || null,
       selectedDevices?.systemDevice || null,
-      title
+      title,
+      recordingMode
     );
     logger.debug('Backend recording started successfully');
 
@@ -271,7 +276,7 @@ export function useRecordingStart(
         body: `Reunión: ${title}`,
       })
     ).catch(() => {});
-  }, [generateMeetingTitle, selectedDevices, transcriptModelConfig, setStatus, setMeetingTitle, setIsRecording, clearTranscripts, setIsMeetingActive]);
+  }, [generateMeetingTitle, selectedDevices, transcriptModelConfig, recordingMode, setStatus, setMeetingTitle, setIsRecording, clearTranscripts, setIsMeetingActive]);
 
   /**
    * Handle transcription not ready — show appropriate toast/modal.

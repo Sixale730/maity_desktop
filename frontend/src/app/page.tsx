@@ -27,6 +27,7 @@ import { useRecordingLevels } from '@/hooks/useRecordingLevels';
 import { usePreviewLevels } from '@/hooks/usePreviewLevels';
 import { GamifiedDashboardV2 } from '@/features/gamification'
 import { HeadphonesRecommendationWarning } from '@/components/recording/HeadphonesRecommendationWarning';
+import { RecordingModeToggle } from '@/components/recording/RecordingModeToggle';
 
 export default function Home() {
   // Local page state
@@ -281,6 +282,7 @@ export default function Home() {
             }}
           >
             <HeadphonesRecommendationWarning enabled={hasMicrophone && !isRecording} />
+            {!isRecording && <RecordingModeToggle />}
             <div className="w-2/3 max-w-[750px] min-w-[200px] flex justify-center">
               <div className="bg-white dark:bg-gray-900 rounded-full shadow-lg flex items-center overflow-visible">
                 <RecordingControls

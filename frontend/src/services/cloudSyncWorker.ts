@@ -377,10 +377,15 @@ class CloudSyncWorkerImpl {
       throw new Error('Could not determine conversation_id for finalize');
     }
 
+    // recording_mode ('presentation' | 'conversation'); default seguro si falta en
+    // payloads antiguos encolados antes de esta feature.
+    const recordingMode = payload.recording_mode === 'presentation' ? 'presentation' : 'conversation';
+
     const result = await invoke<{ ok: boolean; error?: string }>('finalize_conversation_cloud', {
       conversationId,
       durationSeconds: payload.duration_seconds as number,
       accessToken: session.access_token,
+      recordingMode,
     });
 
     if (!result.ok) {

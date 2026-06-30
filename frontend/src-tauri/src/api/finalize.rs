@@ -29,6 +29,12 @@ struct FinalizeRequest {
     action: String,
     conversation_id: String,
     duration_seconds: f64,
+    /// Modo Ponente: 'presentation' | 'conversation'. El endpoint lo guarda en
+    /// omi_conversations.recording_mode para que el análisis V4 no penalice al
+    /// ponente por "acaparar" (ver issue Sixale730/maity#127). Se omite del JSON
+    /// si es None para no romper compatibilidad con el endpoint actual.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    recording_mode: Option<String>,
 }
 
 // ============================================================================
@@ -50,10 +56,11 @@ pub async fn finalize_conversation_cloud(
     conversation_id: String,
     duration_seconds: f64,
     access_token: String,
+    recording_mode: Option<String>,
 ) -> Result<FinalizeResponse, String> {
     info!(
-        "Calling conversations-finalize for conversation: {} (duration: {:.0}s)",
-        conversation_id, duration_seconds
+        "Calling conversations-finalize for conversation: {} (duration: {:.0}s, mode: {:?})",
+        conversation_id, duration_seconds, recording_mode
     );
 
     let client = reqwest::Client::new();
@@ -64,6 +71,7 @@ pub async fn finalize_conversation_cloud(
             action: "finalize".to_string(),
             conversation_id: conversation_id.clone(),
             duration_seconds,
+            recording_mode,
         })
         .send()
         .await

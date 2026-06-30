@@ -14,6 +14,15 @@ import { logger } from '@/lib/logger';
 
 export type { OllamaModel, StorageLocations, NotificationSettings };
 
+/**
+ * Modo de grabación elegido por el usuario antes de grabar.
+ * - 'conversation' (default): reunión/diálogo normal.
+ * - 'presentation': ponencia/webinar/clase donde el usuario habla casi todo el tiempo.
+ *   En este modo los motores de evaluación NO penalizan por "acaparar" ni por
+ *   "hablar de más" (coach en vivo, eval local, y análisis V4 en la nube — issue #127).
+ */
+export type RecordingMode = 'conversation' | 'presentation';
+
 interface ConfigContextType {
   // Model configuration
   modelConfig: ModelConfig;
@@ -43,6 +52,10 @@ interface ConfigContextType {
   // Summary configuration
   isAutoSummary: boolean;
   toggleIsAutoSummary: (checked: boolean) => void;
+
+  // Modo de grabación (Conversación vs Presentación/Ponente)
+  recordingMode: RecordingMode;
+  setRecordingMode: (mode: RecordingMode) => void;
 
   // Preference settings (lazy loaded)
   notificationSettings: NotificationSettings | null;
@@ -104,6 +117,16 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
       return saved !== null ? saved === 'true' : false
     }
     return false;
+  });
+
+  // Modo de grabación — persiste la última elección como default (p.ej. una serie de
+  // webinars se queda en 'presentation' hasta que el usuario lo cambie).
+  const [recordingMode, setRecordingModeState] = useState<RecordingMode>(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('recordingMode');
+      return saved === 'presentation' ? 'presentation' : 'conversation';
+    }
+    return 'conversation';
   });
 
   // Preference settings state (lazy loaded)
@@ -363,6 +386,13 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
+  const setRecordingMode = useCallback((mode: RecordingMode) => {
+    setRecordingModeState(mode);
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('recordingMode', mode);
+    }
+  }, []);
+
   // Lazy load preference settings (only loads if not already cached)
   const loadPreferences = useCallback(async () => {
     // If already loaded, don't reload
@@ -428,6 +458,8 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
     setModelConfig,
     isAutoSummary,
     toggleIsAutoSummary,
+    recordingMode,
+    setRecordingMode,
     transcriptModelConfig,
     setTranscriptModelConfig,
     selectedDevices,
@@ -448,6 +480,8 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
     modelConfig,
     isAutoSummary,
     toggleIsAutoSummary,
+    recordingMode,
+    setRecordingMode,
     transcriptModelConfig,
     selectedDevices,
     selectedLanguage,

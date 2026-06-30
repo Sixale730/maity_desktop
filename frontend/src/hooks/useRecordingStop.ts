@@ -206,12 +206,19 @@ export function useRecordingStop(
         const folderPath = sessionStorage.getItem('last_recording_folder_path');
         const savedMeetingName = sessionStorage.getItem('last_recording_meeting_name');
         const earlyMeetingId = sessionStorage.getItem('early_meeting_id');
+        // Modo Ponente de ESTA sesión (lo escribió useRecordingStart al iniciar).
+        // null/desconocido => 'conversation' (default seguro).
+        const recordingMode: 'conversation' | 'presentation' =
+          sessionStorage.getItem('active_recording_mode') === 'presentation'
+            ? 'presentation'
+            : 'conversation';
 
         logger.debug('Saving transcripts to database...', {
           transcript_count: freshTranscripts.length,
           meeting_name: savedMeetingName || meetingTitle,
           folder_path: folderPath,
           early_meeting_id: earlyMeetingId,
+          recording_mode: recordingMode,
         });
 
         try {
@@ -219,7 +226,8 @@ export function useRecordingStop(
             savedMeetingName || meetingTitle || 'New Meeting',
             freshTranscripts,
             folderPath,
-            earlyMeetingId
+            earlyMeetingId,
+            recordingMode
           );
 
           const meetingId = responseData.meeting_id;
@@ -243,6 +251,7 @@ export function useRecordingStop(
           sessionStorage.removeItem('last_recording_meeting_name');
           sessionStorage.removeItem('last_recording_duration_seconds');
           sessionStorage.removeItem('early_meeting_id');
+          sessionStorage.removeItem('active_recording_mode');
           sessionStorage.removeItem('indexeddb_current_meeting_id');
 
           // Marcar que esta sesion debe pedir feedback. ConversationDetail lee
@@ -264,7 +273,7 @@ export function useRecordingStop(
           // browser descarga el JS inmediatamente: si los invoke() a Rust no
           // han terminado, los jobs nunca llegan al sync_queue y la conversacion
           // queda solo local. await garantiza que las 3 jobs esten enqueued.
-          await enqueueCloudSync(freshTranscripts, meetingId, savedMeetingName, wallClockDuration);
+          await enqueueCloudSync(freshTranscripts, meetingId, savedMeetingName, wallClockDuration, recordingMode);
 
           // Native OS notification (fire-and-forget; el OS la maneja, sobrevive al unload).
           // Si la main window estaba minimizada al hacer stop, el flag global
@@ -371,6 +380,7 @@ export function useRecordingStop(
     meetingId: string,
     savedMeetingName: string | null,
     wallClockDurationSec: number | null,
+    recordingMode: 'conversation' | 'presentation' = 'conversation',
   ) => {
     // Resolve effective user for cloud save (fallback if maityUser is null due to race)
     let effectiveMaityUser = maityUser;
@@ -492,11 +502,15 @@ export function useRecordingStop(
       });
 
       // Job 3: finalize_conversation (depends on Job 2)
+      // recording_mode viaja al finalize de la nube; el endpoint lo guarda en
+      // omi_conversations.recording_mode para que el análisis V4 no penalice al
+      // ponente (ver issue Sixale730/maity#127).
       await invoke<number>('sync_queue_enqueue', {
         jobType: 'finalize_conversation',
         meetingId,
         payload: JSON.stringify({
           duration_seconds: durationSec,
+          recording_mode: recordingMode,
         }),
         dependsOn: job2Id,
       });

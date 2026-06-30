@@ -655,6 +655,7 @@ pub async fn api_save_transcript<R: Runtime>(
     folder_path: Option<String>,
     meeting_id: Option<String>,
     auth_token: Option<String>,
+    recording_mode: Option<String>,
 ) -> Result<serde_json::Value, String> {
     log_info!(
         "api_save_transcript called for meeting: {}, transcripts: {}, folder_path: {:?}, meeting_id: {:?}, auth_token: {}",
@@ -708,6 +709,7 @@ pub async fn api_save_transcript<R: Runtime>(
         folder_path,
         meeting_id,
         &user_id,
+        recording_mode.as_deref(),
     )
     .await
     {
