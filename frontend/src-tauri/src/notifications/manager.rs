@@ -134,6 +134,17 @@ impl<R: Runtime> NotificationManager<R> {
         self.show_notification(notification).await
     }
 
+    /// Show a recurring "still paused" reminder. Reusa la preferencia de pausa.
+    pub async fn show_recording_paused_reminder(&self, minutes: u64) -> Result<()> {
+        let settings = self.settings.read().await;
+        if !settings.notification_preferences.show_recording_paused {
+            return Ok(());
+        }
+
+        let notification = Notification::recording_paused_reminder(minutes);
+        self.show_notification(notification).await
+    }
+
     /// Show a recording resumed notification
     pub async fn show_recording_resumed(&self) -> Result<()> {
         let settings = self.settings.read().await;

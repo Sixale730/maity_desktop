@@ -154,6 +154,19 @@ impl Notification {
         .with_timeout(NotificationTimeout::Seconds(3))
     }
 
+    /// Recordatorio recurrente de que la grabación sigue en pausa.
+    pub fn recording_paused_reminder(minutes: u64) -> Self {
+        let body = if minutes < 1 {
+            "⏸️ Tu grabación sigue en pausa. ¿Reanudar?".to_string()
+        } else {
+            format!("⏸️ Tu grabación lleva {} min en pausa. ¿Reanudar?", minutes)
+        };
+
+        Notification::new("Maity", body, NotificationType::RecordingPaused)
+            .with_priority(NotificationPriority::High)
+            .with_timeout(NotificationTimeout::Seconds(8))
+    }
+
     pub fn transcription_complete(file_path: Option<String>) -> Self {
         let body = match file_path {
             Some(path) => format!("Transcripción completada y guardada en: {}", path),

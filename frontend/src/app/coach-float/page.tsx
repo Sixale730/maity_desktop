@@ -6,7 +6,7 @@ import { invoke } from '@tauri-apps/api/core';
 import {
   Sparkles, AlertTriangle, ChevronLeft, ChevronRight,
   ChevronDown, ChevronUp, X, Timer, ThumbsUp, ThumbsDown,
-  Play, Square, Mic, Volume2,
+  Play, Pause, Square, Mic, Volume2,
 } from 'lucide-react';
 import { useCoachTips } from '@/hooks/useCoachTips';
 import { useMeetingMetrics } from '@/hooks/useMeetingMetrics';
@@ -172,6 +172,8 @@ export default function CoachFloatPage() {
   // grabando o no. El pause/resume se eliminó del flujo coach-float: el user
   // siempre puede detener desde el botón rojo de la barra superior.
   const [recordingActive, setRecordingActive] = useState(false);
+  const [isPaused, setIsPaused] = useState(false);
+  const [pauseSecs, setPauseSecs] = useState(0);
   const [busy, setBusy] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const startTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -315,6 +317,9 @@ export default function CoachFloatPage() {
           }).catch(() => {});
         }
       }),
+      // Pausa/reanuda: sincroniza el estado de pausa al instante.
+      listen('recording-paused', () => { setIsPaused(true); }),
+      listen('recording-resumed', () => { setIsPaused(false); }),
     ];
     return () => { subs.forEach(p => p.then(fn => fn())); };
   }, []);
@@ -341,8 +346,14 @@ export default function CoachFloatPage() {
     let cancelled = false;
     const sync = async () => {
       try {
-        const rec = await invoke<boolean>('is_recording');
-        if (!cancelled) setRecordingActive(rec);
+        const [rec, paused] = await Promise.all([
+          invoke<boolean>('is_recording'),
+          invoke<boolean>('is_recording_paused'),
+        ]);
+        if (!cancelled) {
+          setRecordingActive(rec);
+          setIsPaused(paused);
+        }
       } catch {
         /* ignore */
       }
@@ -354,6 +365,16 @@ export default function CoachFloatPage() {
       clearInterval(id);
     };
   }, []);
+
+  // Ticker local del tiempo en pausa (refuerzo visual). Se reinicia al reanudar.
+  useEffect(() => {
+    if (!isPaused) {
+      setPauseSecs(0);
+      return;
+    }
+    const id = setInterval(() => setPauseSecs((s) => s + 1), 1000);
+    return () => clearInterval(id);
+  }, [isPaused]);
 
   // Sync del timer cuando llega un metric nuevo del backend (cada 3s).
   // Cuando metrics === null (recording stop), reset a 0.
@@ -467,6 +488,32 @@ export default function CoachFloatPage() {
       await invoke('coach_float_stop_recording');
     } catch (err) {
       console.error('coach-float: stop failed', err);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handlePause = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await invoke('pause_recording');
+      setIsPaused(true);
+    } catch (err) {
+      console.error('coach-float: pause failed', err);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleResume = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await invoke('resume_recording');
+      setIsPaused(false);
+    } catch (err) {
+      console.error('coach-float: resume failed', err);
     } finally {
       setBusy(false);
     }
@@ -716,6 +763,30 @@ export default function CoachFloatPage() {
           {/* Reloj inline removido (iter 13): consumía espacio visual al lado
               del logo y duplicaba la info del drawer. El timer sigue visible
               en el drawer expandido cuando el user lo abre. */}
+
+          {/* Indicador "Pausado · MM:SS" — refuerzo visual del estado pausado. */}
+          {recordingActive && isPaused && (
+            <span className="text-[10px] font-bold uppercase tracking-wider text-amber-400 tabular-nums">
+              Pausado · {Math.floor(pauseSecs / 60)}:{String(pauseSecs % 60).padStart(2, '0')}
+            </span>
+          )}
+
+          {/* Pausa / Reanudar — solo mientras graba (h-9 w-9 como el resto). */}
+          {recordingActive && (
+            <button
+              onClick={isPaused ? handleResume : handlePause}
+              disabled={busy}
+              className={
+                isPaused
+                  ? 'h-9 w-9 rounded-full bg-emerald-500 hover:bg-emerald-400 text-white disabled:opacity-50 flex items-center justify-center transition-all shadow-lg shadow-emerald-500/30'
+                  : 'h-9 w-9 rounded-full bg-white/[0.08] hover:bg-white/15 border border-white/10 text-white/75 hover:text-white disabled:opacity-50 flex items-center justify-center transition-all'
+              }
+              title={isPaused ? 'Reanudar grabación' : 'Pausar grabación'}
+              aria-label={isPaused ? 'Reanudar' : 'Pausar'}
+            >
+              {isPaused ? <Play className="w-4 h-4 fill-current ml-0.5" /> : <Pause className="w-4 h-4" />}
+            </button>
+          )}
 
           {/* Play/Stop icon-only (h-9 w-9 circular).
               Idle = Play blanco hover indigo. Recording = Square rojo. */}

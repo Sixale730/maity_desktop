@@ -29,6 +29,11 @@ pub(crate) static TRANSCRIPTION_TASK: Mutex<Option<JoinHandle<()>>> = Mutex::new
 /// Listener ID for proper cleanup - prevents microphone from staying active after recording stops
 pub(crate) static TRANSCRIPT_LISTENER_ID: Mutex<Option<tauri::EventId>> = Mutex::new(None);
 
+/// Guard so only ONE "still paused" reminder task runs at a time.
+static PAUSE_REMINDER_RUNNING: AtomicBool = AtomicBool::new(false);
+/// Intervalo entre recordatorios de "grabación en pausa" (2 min).
+const PAUSE_REMINDER_INTERVAL_SECS: u64 = 120;
+
 /// Set the IS_RECORDING flag
 pub(crate) fn set_recording_flag(value: bool) {
     IS_RECORDING.store(value, Ordering::SeqCst);
@@ -469,6 +474,9 @@ pub async fn pause_recording<R: Runtime>(app: AppHandle<R>) -> Result<(), String
 
         crate::tray::update_tray_menu(&app);
 
+        // Recordatorio recurrente por si el usuario olvida que dejó la grabación en pausa.
+        spawn_pause_reminder(app.clone());
+
         info!("Recording paused successfully");
         Ok(())
     } else {
@@ -504,4 +512,48 @@ pub async fn resume_recording<R: Runtime>(app: AppHandle<R>) -> Result<(), Strin
     } else {
         Err("No recording manager found".to_string())
     }
+}
+
+/// Lanza una tarea de fondo que recuerda al usuario, cada `PAUSE_REMINDER_INTERVAL_SECS`,
+/// que la grabación sigue en pausa. Vive en Rust para funcionar aunque la ventana esté
+/// minimizada al tray. Se autocancela al reanudar/detener y un guard evita duplicados.
+fn spawn_pause_reminder<R: Runtime>(app: AppHandle<R>) {
+    // Si ya hay un recordatorio activo, no apilar otro.
+    if PAUSE_REMINDER_RUNNING.swap(true, Ordering::SeqCst) {
+        return;
+    }
+
+    tauri::async_runtime::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(PAUSE_REMINDER_INTERVAL_SECS)).await;
+
+            // Leer estado de pausa + tiempo transcurrido SIN sostener el std::Mutex
+            // a través de un await (se libera al cerrar el bloque).
+            let (still_paused, pause_secs) = match RECORDING_MANAGER.lock() {
+                Ok(guard) => match guard.as_ref() {
+                    Some(manager) => (
+                        IS_RECORDING.load(Ordering::SeqCst) && manager.is_paused(),
+                        manager.get_current_pause_duration().unwrap_or(0.0),
+                    ),
+                    None => (false, 0.0),
+                },
+                Err(_) => (false, 0.0),
+            };
+
+            if !still_paused {
+                break;
+            }
+
+            let minutes = (pause_secs / 60.0).floor() as u64;
+            let notif_state = app.state::<crate::NotificationManagerState<R>>();
+            let manager_guard = notif_state.read().await;
+            if let Some(manager) = manager_guard.as_ref() {
+                if let Err(e) = manager.show_recording_paused_reminder(minutes).await {
+                    warn!("[pause-reminder] notification failed: {}", e);
+                }
+            }
+        }
+
+        PAUSE_REMINDER_RUNNING.store(false, Ordering::SeqCst);
+    });
 }
