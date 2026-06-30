@@ -234,14 +234,17 @@ export default function Home() {
                 <div className="flex-1">
                   <LiveFeedbackPanel />
                 </div>
-                <button
-                  onClick={() => invoke('open_floating_coach').catch(console.error)}
-                  title="Abrir coach flotante"
-                  className="mt-0.5 shrink-0 flex items-center gap-1 px-2 py-1 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-xs text-muted-foreground hover:text-foreground transition-colors"
-                >
-                  <span className="text-base leading-none">🎙</span>
-                  <span className="hidden sm:inline">Coach</span>
-                </button>
+                <div className="flex flex-col items-end gap-1.5 shrink-0">
+                  <RecordingModeToggle />
+                  <button
+                    onClick={() => invoke('open_floating_coach').catch(console.error)}
+                    title="Abrir coach flotante"
+                    className="mt-0.5 flex items-center gap-1 px-2 py-1 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-xs text-muted-foreground hover:text-foreground transition-colors"
+                  >
+                    <span className="text-base leading-none">🎙</span>
+                    <span className="hidden sm:inline">Coach</span>
+                  </button>
+                </div>
               </div>
             )}
             <TranscriptPanel
@@ -282,7 +285,6 @@ export default function Home() {
             }}
           >
             <HeadphonesRecommendationWarning enabled={hasMicrophone && !isRecording} />
-            {!isRecording && <RecordingModeToggle />}
             <div className="w-2/3 max-w-[750px] min-w-[200px] flex justify-center">
               <div className="bg-white dark:bg-gray-900 rounded-full shadow-lg flex items-center overflow-visible">
                 <RecordingControls
