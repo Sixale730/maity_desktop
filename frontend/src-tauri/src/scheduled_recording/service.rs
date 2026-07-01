@@ -392,6 +392,19 @@ async fn evaluate_tick<R: Runtime>(
                     if settings.notify_on_start {
                         notify_started(app).await;
                     }
+                    // La jornada arranca headless (ruta nativa), así que la UI no
+                    // se entera. Al auto-arrancar en background mostramos el
+                    // coach-float para que el usuario VEA que está grabando —
+                    // respetando su preferencia de visibilidad (si lo desactivó
+                    // a propósito en Settings, no se lo imponemos). Cerrar con la
+                    // X no persiste `false`, así que el caso normal reaparece.
+                    if crate::coach::commands::coach_float_get_visibility_pref(app.clone()).await {
+                        if let Err(e) =
+                            crate::coach::commands::open_floating_coach(app.clone(), None).await
+                        {
+                            warn!("[scheduled] no se pudo abrir el coach-float: {}", e);
+                        }
+                    }
                     info!("[scheduled] grabación de jornada iniciada (ruta nativa)");
                     (SchedulerPhase::Recording, None)
                 }
