@@ -50,9 +50,10 @@ pub(crate) fn set_recording_flag(value: bool) {
     IS_RECORDING.store(value, Ordering::SeqCst);
 }
 
-/// Check if recording is active
+/// Check if recording is active (derivado de la máquina de fases; false en
+/// Starting y Stopping, la misma semántica que tenía el flag).
 pub fn is_recording_active() -> bool {
-    IS_RECORDING.load(Ordering::SeqCst)
+    recording_phase::current_phase().is_session_active()
 }
 
 // ============================================================================
@@ -559,17 +560,15 @@ fn spawn_pause_reminder<R: Runtime>(app: AppHandle<R>) {
             step += 1;
             tokio::time::sleep(std::time::Duration::from_secs(delay_secs)).await;
 
-            // Leer estado de pausa + tiempo transcurrido SIN sostener el std::Mutex
-            // a través de un await (se libera al cerrar el bloque).
-            let (still_paused, pause_secs) = match RECORDING_MANAGER.lock() {
-                Ok(guard) => match guard.as_ref() {
-                    Some(manager) => (
-                        IS_RECORDING.load(Ordering::SeqCst) && manager.is_paused(),
-                        manager.get_current_pause_duration().unwrap_or(0.0),
-                    ),
-                    None => (false, 0.0),
-                },
-                Err(_) => (false, 0.0),
+            // El booleano de pausa sale de la máquina (lock-free); el lock del
+            // manager solo se toma para la duración, SIN sostenerlo por un await.
+            let still_paused = recording_phase::current_phase() == RecordingPhase::Paused;
+            let pause_secs = match RECORDING_MANAGER.lock() {
+                Ok(guard) => guard
+                    .as_ref()
+                    .and_then(|manager| manager.get_current_pause_duration())
+                    .unwrap_or(0.0),
+                Err(_) => 0.0,
             };
 
             if !still_paused {

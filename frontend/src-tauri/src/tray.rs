@@ -338,29 +338,21 @@ pub fn set_tray_state<R: Runtime>(app: &AppHandle<R>, state: RecordingState) {
     }
 }
 
+/// Mapeo directo desde la máquina de fases — elimina la derivación a mano desde
+/// dos booleanos. Bonus: el tray ahora refleja Starting/Stopping reales aunque
+/// el trigger venga del scheduler o del widget. `Pausing`/`Resuming` siguen
+/// siendo feedback UI transitorio vía `set_tray_state`.
 async fn get_current_recording_state() -> RecordingState {
-    // Check if currently recording
-    let is_recording = crate::audio::recording_commands::is_recording().await;
-    log::info!(
-        "Tray: get_current_recording_state - is_recording: {}",
-        is_recording
-    );
+    use crate::audio::recording_phase::{current_phase, RecordingPhase};
 
-    if !is_recording {
-        log::info!("Tray: Recording state is Stopped");
-        return RecordingState::Stopped;
-    }
-
-    // Check if paused
-    let is_paused = crate::audio::recording_commands::is_recording_paused().await;
-    log::info!("Tray: is_paused: {}", is_paused);
-
-    if is_paused {
-        log::info!("Tray: Recording state is Paused");
-        RecordingState::Paused
-    } else {
-        log::info!("Tray: Recording state is Recording");
-        RecordingState::Recording
+    let phase = current_phase();
+    log::info!("Tray: get_current_recording_state - phase: {:?}", phase);
+    match phase {
+        RecordingPhase::Idle => RecordingState::Stopped,
+        RecordingPhase::Starting => RecordingState::Starting,
+        RecordingPhase::Recording => RecordingState::Recording,
+        RecordingPhase::Paused => RecordingState::Paused,
+        RecordingPhase::Stopping => RecordingState::Stopping,
     }
 }
 

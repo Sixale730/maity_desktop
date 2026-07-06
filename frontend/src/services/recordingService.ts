@@ -7,11 +7,14 @@
 
 import { invoke } from '@tauri-apps/api/core';
 import { listen, UnlistenFn } from '@tauri-apps/api/event';
+import type { BackendRecordingPhase } from '@/types/recording';
 
 export interface RecordingState {
   is_recording: boolean;
   is_paused: boolean;
   is_active: boolean;
+  /** Fase exacta de la máquina de estados del backend (campo aditivo). */
+  phase?: BackendRecordingPhase;
   recording_duration: number | null;
   active_duration: number | null;
 }

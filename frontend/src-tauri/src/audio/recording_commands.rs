@@ -5,7 +5,6 @@
 
 use log::{error, info, warn};
 use serde::{Deserialize, Serialize};
-use std::sync::atomic::Ordering;
 
 use super::{
     DeviceEvent,
@@ -27,7 +26,8 @@ pub use super::recording_lifecycle::{
     resume_recording,
 };
 
-use super::recording_lifecycle::{IS_RECORDING, RECORDING_MANAGER};
+use super::recording_lifecycle::RECORDING_MANAGER;
+use super::recording_phase::{self, RecordingPhase};
 
 // ============================================================================
 // PUBLIC TYPES
@@ -49,46 +49,39 @@ pub struct TranscriptionStatus {
 // QUERY COMMANDS (Status, State, Metadata)
 // ============================================================================
 
-/// Check if recording is active
+/// Check if recording is active (derivado de la máquina de fases)
 pub async fn is_recording() -> bool {
-    IS_RECORDING.load(Ordering::SeqCst)
+    recording_phase::current_phase().is_session_active()
 }
 
 /// Get recording statistics
 pub async fn get_transcription_status() -> TranscriptionStatus {
     TranscriptionStatus {
         chunks_in_queue: 0,
-        is_processing: IS_RECORDING.load(Ordering::SeqCst),
+        is_processing: recording_phase::current_phase().is_session_active(),
         last_activity_ms: 0,
     }
 }
 
-/// Check if recording is currently paused
+/// Check if recording is currently paused (lock-free: ya no toma el lock del manager)
 #[tauri::command]
 pub async fn is_recording_paused() -> bool {
-    match RECORDING_MANAGER.lock() {
-        Ok(manager_guard) => {
-            if let Some(manager) = manager_guard.as_ref() {
-                manager.is_paused()
-            } else {
-                false
-            }
-        }
-        Err(_) => false,
-    }
+    recording_phase::current_phase() == RecordingPhase::Paused
 }
 
 /// Get detailed recording state
 #[tauri::command]
 pub async fn get_recording_state() -> serde_json::Value {
-    let is_recording = IS_RECORDING.load(Ordering::SeqCst);
+    let phase = recording_phase::current_phase();
+    let is_recording = phase.is_session_active();
     let manager_guard = match RECORDING_MANAGER.lock() {
         Ok(guard) => guard,
         Err(_) => {
             return serde_json::json!({
                 "is_recording": is_recording,
-                "is_paused": false,
-                "is_active": false,
+                "is_paused": phase == RecordingPhase::Paused,
+                "is_active": phase == RecordingPhase::Recording,
+                "phase": phase.as_str(),
                 "recording_duration": null,
                 "active_duration": null,
                 "total_pause_duration": 0.0,
@@ -101,8 +94,10 @@ pub async fn get_recording_state() -> serde_json::Value {
     if let Some(manager) = manager_guard.as_ref() {
         serde_json::json!({
             "is_recording": is_recording,
-            "is_paused": manager.is_paused(),
-            "is_active": manager.is_active(),
+            "is_paused": phase == RecordingPhase::Paused,
+            "is_active": phase == RecordingPhase::Recording,
+            // Campo ADITIVO: fase exacta para el frontend (el shape previo se conserva).
+            "phase": phase.as_str(),
             "recording_duration": manager.get_recording_duration(),
             "active_duration": manager.get_active_recording_duration(),
             "total_pause_duration": manager.get_total_pause_duration(),
@@ -111,8 +106,9 @@ pub async fn get_recording_state() -> serde_json::Value {
     } else {
         serde_json::json!({
             "is_recording": is_recording,
-            "is_paused": false,
-            "is_active": false,
+            "is_paused": phase == RecordingPhase::Paused,
+            "is_active": phase == RecordingPhase::Recording,
+            "phase": phase.as_str(),
             "recording_duration": null,
             "active_duration": null,
             "total_pause_duration": 0.0,

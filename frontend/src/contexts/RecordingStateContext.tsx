@@ -76,6 +76,7 @@ export function RecordingStateProvider({ children }: { children: React.ReactNode
         isRecording: backendState.is_recording,
         isPaused: backendState.is_paused,
         isActive: backendState.is_active,
+        backendPhase: backendState.phase,
         recordingDuration: backendState.recording_duration,
         activeDuration: backendState.active_duration,
       }));
