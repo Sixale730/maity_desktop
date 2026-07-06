@@ -291,12 +291,18 @@ pub async fn parse_explicit_devices<R: Runtime>(
 
 /// Initialize recording manager, start recording, store global state, and register event listeners.
 /// This is the shared core logic used by both start_recording variants.
+///
+/// Recibe el `StartGate` (fase Starting adquirida por el caller) y lo comitea
+/// (Starting→Recording) en el punto exacto donde la sesión queda activa hacia
+/// afuera — el mismo instante donde históricamente se subía `IS_RECORDING`.
+/// Si esta función retorna Err antes del commit, el Drop del gate revierte a Idle.
 pub async fn initialize_recording<R: Runtime>(
     app: &AppHandle<R>,
     microphone_device: Option<Arc<super::devices::AudioDevice>>,
     system_device: Option<Arc<super::devices::AudioDevice>>,
     meeting_name: Option<String>,
     auto_save: bool,
+    start_gate: super::recording_phase::StartGate,
 ) -> Result<(), String> {
     // Preflight: embudo común de ambos start paths — cubre preferencia, default
     // del OS y dispositivos explícitos.
@@ -342,8 +348,10 @@ pub async fn initialize_recording<R: Runtime>(
         *global_manager = Some(manager);
     }
 
-    // Set recording flag and reset speech detection flag
-    info!("🔍 Setting IS_RECORDING to true and resetting SPEECH_DETECTED_EMITTED");
+    // Starting→Recording: la sesión queda activa hacia afuera. Espejo de
+    // IS_RECORDING durante la migración + reset del flag de speech detection.
+    info!("🔍 Comiteando fase Recording (+ espejo IS_RECORDING) y reseteando SPEECH_DETECTED_EMITTED");
+    start_gate.commit()?;
     set_recording_flag(true);
     reset_speech_detected_flag();
 

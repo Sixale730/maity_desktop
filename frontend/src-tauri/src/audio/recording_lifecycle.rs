@@ -38,37 +38,14 @@ static PAUSE_REMINDER_RUNNING: AtomicBool = AtomicBool::new(false);
 const PAUSE_REMINDER_SCHEDULE_SECS: [u64; 4] = [120, 180, 300, 300];
 const PAUSE_REMINDER_STEADY_SECS: u64 = 900;
 
-/// Single-flight para el arranque de grabación. `IS_RECORDING` no basta como guard:
-/// se setea al final de la inicialización async, así que N invocaciones concurrentes
-/// pasaban el check en esa ventana (TOCTOU — 5 arranques en 16 ms disparados por el
-/// meeting detector en múltiples ventanas, reporte usuario jul-2026, con meeting_ids
-/// duplicados). El `compare_exchange` garantiza que solo la primera llamada inicializa;
-/// el resto falla ANTES de generar meeting_id o tocar el pipeline.
-static START_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
+// Single-flight y estado de fase: viven en `recording_phase` (máquina de fases
+// única con gates RAII). `StartGate::acquire()` subsume en UNA sola CAS el viejo
+// `START_IN_PROGRESS` + el check de `IS_RECORDING` (TOCTOU de los 5 arranques en
+// 16 ms, jul-2026). Durante la migración, `IS_RECORDING` se mantiene como ESPEJO
+// de `current_phase().is_session_active()` — los lectores existentes no cambian.
+use super::recording_phase::{self, RecordingPhase, StartGate, StopGate};
 
-/// Guard RAII del single-flight: libera `START_IN_PROGRESS` en TODOS los caminos de
-/// salida (éxito, error de validación, error de inicialización) al hacer drop.
-struct StartGate;
-
-impl StartGate {
-    fn acquire() -> Result<Self, String> {
-        if START_IN_PROGRESS
-            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-            .is_err()
-        {
-            return Err("Recording start already in progress".to_string());
-        }
-        Ok(StartGate)
-    }
-}
-
-impl Drop for StartGate {
-    fn drop(&mut self) {
-        START_IN_PROGRESS.store(false, Ordering::SeqCst);
-    }
-}
-
-/// Set the IS_RECORDING flag
+/// Set the IS_RECORDING flag (espejo de la máquina de fases durante la migración)
 pub(crate) fn set_recording_flag(value: bool) {
     IS_RECORDING.store(value, Ordering::SeqCst);
 }
@@ -97,15 +74,11 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
         meeting_name
     );
 
-    // Single-flight: solo un arranque concurrente. El guard se libera al salir (Drop).
-    let _start_gate = StartGate::acquire()?;
-
-    // Check if already recording
-    let current_recording_state = IS_RECORDING.load(Ordering::SeqCst);
-    info!("🔍 IS_RECORDING state check: {}", current_recording_state);
-    if current_recording_state {
-        return Err("Recording already in progress".to_string());
-    }
+    // Idle→Starting en una sola CAS: gate + "¿ya grabando?" son la misma operación.
+    // El gate viaja hasta initialize_recording, que lo comitea (Starting→Recording)
+    // en el punto exacto donde la sesión queda activa. Drop sin commit → Idle.
+    let start_gate = StartGate::acquire()?;
+    info!("🔍 Fase: {:?} (gate de arranque adquirido)", recording_phase::current_phase());
 
     // Validate transcription model
     recording_helpers::validate_transcription_ready(&app).await?;
@@ -131,8 +104,8 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
         recording_helpers::resolve_microphone_from_preference(&app, preferred_mic_name).await?;
     let system_device = recording_helpers::resolve_system_audio_from_preference(preferred_system_name);
 
-    // Initialize recording with resolved devices
-    recording_helpers::initialize_recording(&app, microphone_device, system_device, meeting_name, auto_save).await?;
+    // Initialize recording with resolved devices (comitea el gate al activar la sesión)
+    recording_helpers::initialize_recording(&app, microphone_device, system_device, meeting_name, auto_save, start_gate).await?;
 
     // Emit success event
     app.emit("recording-started", serde_json::json!({
@@ -175,15 +148,9 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
         mic_device_name, system_device_name, meeting_name
     );
 
-    // Single-flight: solo un arranque concurrente. El guard se libera al salir (Drop).
-    let _start_gate = StartGate::acquire()?;
-
-    // Check if already recording
-    let current_recording_state = IS_RECORDING.load(Ordering::SeqCst);
-    info!("🔍 IS_RECORDING state check: {}", current_recording_state);
-    if current_recording_state {
-        return Err("Recording already in progress".to_string());
-    }
+    // Idle→Starting en una sola CAS (ver comentario en start_recording_with_meeting_name).
+    let start_gate = StartGate::acquire()?;
+    info!("🔍 Fase: {:?} (gate de arranque adquirido)", recording_phase::current_phase());
 
     // Skip transcription validation here — frontend already validated via checkTranscriptionReady()
     info!("🚀 Starting async recording initialization with custom devices");
@@ -205,8 +172,8 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
         }
     };
 
-    // Initialize recording with explicit devices
-    recording_helpers::initialize_recording(&app, devices.microphone, devices.system_audio, meeting_name, auto_save).await?;
+    // Initialize recording with explicit devices (comitea el gate al activar la sesión)
+    recording_helpers::initialize_recording(&app, devices.microphone, devices.system_audio, meeting_name, auto_save, start_gate).await?;
 
     // Emit success event
     app.emit("recording-started", serde_json::json!({
@@ -244,19 +211,22 @@ pub async fn stop_recording<R: Runtime>(
         "🛑 Starting optimized recording shutdown - ensuring ALL transcript chunks are preserved"
     );
 
-    // Check if recording is active
-    if !IS_RECORDING.load(Ordering::SeqCst) {
-        info!("Recording was not active");
-        return Ok(());
-    }
-
-    // Bajar IS_RECORDING al inicio del flujo. Esto cierra inmediatamente el
-    // loop de emision de `recording-audio-levels` (recording_helpers.rs)
-    // que checa is_recording() en cada tick — antes seguia emitiendo niveles
-    // ~1.7s tras el stop hasta que se ponia a false al final del flujo.
-    // Los workers de transcripcion siguen procesando la cola normalmente; el
-    // flag solo controla la emision de eventos al frontend y queries externas.
-    info!("🔍 Setting IS_RECORDING to false (early)");
+    // Recording|Paused → Stopping en una sola CAS. La fase Stopping ES el viejo
+    // "IS_RECORDING=false early": la sesión deja de estar activa hacia afuera
+    // (eventos/queries) mientras el pipeline drena. Bonus vs el check anterior:
+    // dos stops concurrentes ya no pueden pasar ambos — solo uno gana la CAS,
+    // el otro retorna Ok idempotente. El Drop del gate garantiza Stopping→Idle
+    // en TODOS los caminos de salida (incluidos los `return Err` de en medio):
+    // la fase no puede quedar clavada bloqueando arranques futuros.
+    let stop_gate = match StopGate::acquire() {
+        Ok(gate) => gate,
+        Err(observed) => {
+            info!("Recording was not active (fase: {:?})", observed);
+            return Ok(());
+        }
+    };
+    // Espejo durante la migración (los lectores de IS_RECORDING aún existen).
+    info!("🔍 Fase Stopping adquirida — espejando IS_RECORDING=false (early)");
     IS_RECORDING.store(false, Ordering::SeqCst);
 
     // Capturar wall-clock duration ANTES de que el manager sea tomado/dropeado.
@@ -469,6 +439,10 @@ pub async fn stop_recording<R: Runtime>(
         }),
     );
 
+    // Stopping→Idle ANTES de anunciar el stop: cualquier código que reaccione a
+    // recording-stopped (p. ej. re-arrancar) debe observar ya la fase Idle.
+    drop(stop_gate);
+
     app.emit(
         "recording-stopped",
         serde_json::json!({
@@ -496,13 +470,18 @@ pub async fn stop_recording<R: Runtime>(
 pub async fn pause_recording<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
     info!("Pausing recording");
 
-    if !IS_RECORDING.load(Ordering::SeqCst) {
-        return Err("No recording is currently active".to_string());
-    }
+    // Máquina-primero: gate y cambio de estado en una sola CAS (sin ventana
+    // entre "¿está grabando?" y "pausar"). Doble pausa concurrente: solo una gana.
+    recording_phase::try_transition(RecordingPhase::Recording, RecordingPhase::Paused)
+        .map_err(|observed| format!("Cannot pause from phase '{}'", observed.as_str()))?;
 
     let manager_guard = RECORDING_MANAGER.lock().map_err(|e| format!("Recording manager lock poisoned: {}", e))?;
     if let Some(manager) = manager_guard.as_ref() {
-        manager.pause_recording().map_err(|e| e.to_string())?;
+        if let Err(e) = manager.pause_recording() {
+            // El struct no pudo pausar: revertir la fase para no divergir.
+            let _ = recording_phase::try_transition(RecordingPhase::Paused, RecordingPhase::Recording);
+            return Err(e.to_string());
+        }
 
         app.emit(
             "recording-paused",
@@ -520,6 +499,8 @@ pub async fn pause_recording<R: Runtime>(app: AppHandle<R>) -> Result<(), String
         info!("Recording paused successfully");
         Ok(())
     } else {
+        // Sin manager no hay nada que pausar: revertir la fase.
+        let _ = recording_phase::try_transition(RecordingPhase::Paused, RecordingPhase::Recording);
         Err("No recording manager found".to_string())
     }
 }
@@ -529,13 +510,17 @@ pub async fn pause_recording<R: Runtime>(app: AppHandle<R>) -> Result<(), String
 pub async fn resume_recording<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
     info!("Resuming recording");
 
-    if !IS_RECORDING.load(Ordering::SeqCst) {
-        return Err("No recording is currently active".to_string());
-    }
+    // Paused→Recording en una sola CAS (gate + cambio de estado).
+    recording_phase::try_transition(RecordingPhase::Paused, RecordingPhase::Recording)
+        .map_err(|observed| format!("Cannot resume from phase '{}'", observed.as_str()))?;
 
     let manager_guard = RECORDING_MANAGER.lock().map_err(|e| format!("Recording manager lock poisoned: {}", e))?;
     if let Some(manager) = manager_guard.as_ref() {
-        manager.resume_recording().map_err(|e| e.to_string())?;
+        if let Err(e) = manager.resume_recording() {
+            // El struct no pudo reanudar: revertir la fase para no divergir.
+            let _ = recording_phase::try_transition(RecordingPhase::Recording, RecordingPhase::Paused);
+            return Err(e.to_string());
+        }
 
         app.emit(
             "recording-resumed",
@@ -550,6 +535,7 @@ pub async fn resume_recording<R: Runtime>(app: AppHandle<R>) -> Result<(), Strin
         info!("Recording resumed successfully");
         Ok(())
     } else {
+        let _ = recording_phase::try_transition(RecordingPhase::Recording, RecordingPhase::Paused);
         Err("No recording manager found".to_string())
     }
 }
