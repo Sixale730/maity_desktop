@@ -483,7 +483,13 @@ mod tests {
             3840,
             48000,
         );
-        assert_eq!(timeout, Duration::from_millis(160));
+        // Tolerancia de 1ms: el cálculo es float y Duration::eq exacto fallaba
+        // por precisión (159.999996ms != 160ms).
+        assert!(
+            (timeout.as_secs_f64() - 0.160).abs() < 0.001,
+            "timeout {:?} debe ser ~160ms",
+            timeout
+        );
     }
 
     #[test]

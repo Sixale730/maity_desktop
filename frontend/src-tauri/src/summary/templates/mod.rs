@@ -12,7 +12,10 @@
 //!
 //! # Usage
 //!
-//! ```rust
+//! (`ignore`: es un ejemplo ilustrativo — `crate::` no resuelve en doctests,
+//! que compilan como crate externo, y fallaba `cargo test --doc`.)
+//!
+//! ```rust,ignore
 //! use crate::summary::templates;
 //!
 //! // Load a specific template
