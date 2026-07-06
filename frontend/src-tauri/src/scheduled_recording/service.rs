@@ -21,7 +21,7 @@ use tokio::time::{interval, Duration as TokioDuration};
 use super::schedule;
 use super::settings::{load_settings, save_settings, ScheduledRecordingSettings};
 
-/// Fase del scheduler. Ortogonal al estado de grabación (`IS_RECORDING`/`is_paused`).
+/// Fase del scheduler. Ortogonal a la fase de grabación (`recording_phase`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SchedulerPhase {

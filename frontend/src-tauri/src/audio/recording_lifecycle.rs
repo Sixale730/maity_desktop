@@ -19,9 +19,6 @@ use super::recording_helpers;
 // GLOBAL STATE
 // ============================================================================
 
-/// Simple recording state tracking
-pub(crate) static IS_RECORDING: AtomicBool = AtomicBool::new(false);
-
 /// Global recording manager and transcription task to keep them alive during recording
 pub(crate) static RECORDING_MANAGER: Mutex<Option<RecordingManager>> = Mutex::new(None);
 pub(crate) static TRANSCRIPTION_TASK: Mutex<Option<JoinHandle<()>>> = Mutex::new(None);
@@ -39,19 +36,13 @@ const PAUSE_REMINDER_SCHEDULE_SECS: [u64; 4] = [120, 180, 300, 300];
 const PAUSE_REMINDER_STEADY_SECS: u64 = 900;
 
 // Single-flight y estado de fase: viven en `recording_phase` (máquina de fases
-// única con gates RAII). `StartGate::acquire()` subsume en UNA sola CAS el viejo
-// `START_IN_PROGRESS` + el check de `IS_RECORDING` (TOCTOU de los 5 arranques en
-// 16 ms, jul-2026). Durante la migración, `IS_RECORDING` se mantiene como ESPEJO
-// de `current_phase().is_session_active()` — los lectores existentes no cambian.
+// única con gates RAII, fuente de verdad global). `StartGate::acquire()` subsume
+// en UNA sola CAS el viejo single-flight + el check de "¿ya grabando?" (TOCTOU de
+// los 5 arranques en 16 ms, jul-2026).
 use super::recording_phase::{self, RecordingPhase, StartGate, StopGate};
 
-/// Set the IS_RECORDING flag (espejo de la máquina de fases durante la migración)
-pub(crate) fn set_recording_flag(value: bool) {
-    IS_RECORDING.store(value, Ordering::SeqCst);
-}
-
 /// Check if recording is active (derivado de la máquina de fases; false en
-/// Starting y Stopping, la misma semántica que tenía el flag).
+/// Starting y Stopping).
 pub fn is_recording_active() -> bool {
     recording_phase::current_phase().is_session_active()
 }
@@ -212,8 +203,8 @@ pub async fn stop_recording<R: Runtime>(
         "🛑 Starting optimized recording shutdown - ensuring ALL transcript chunks are preserved"
     );
 
-    // Recording|Paused → Stopping en una sola CAS. La fase Stopping ES el viejo
-    // "IS_RECORDING=false early": la sesión deja de estar activa hacia afuera
+    // Recording|Paused → Stopping en una sola CAS. La fase Stopping modela el
+    // "corte temprano" de la sesión: deja de estar activa hacia afuera
     // (eventos/queries) mientras el pipeline drena. Bonus vs el check anterior:
     // dos stops concurrentes ya no pueden pasar ambos — solo uno gana la CAS,
     // el otro retorna Ok idempotente. El Drop del gate garantiza Stopping→Idle
@@ -226,9 +217,7 @@ pub async fn stop_recording<R: Runtime>(
             return Ok(());
         }
     };
-    // Espejo durante la migración (los lectores de IS_RECORDING aún existen).
-    info!("🔍 Fase Stopping adquirida — espejando IS_RECORDING=false (early)");
-    IS_RECORDING.store(false, Ordering::SeqCst);
+    info!("🔍 Fase Stopping adquirida — la sesión ya no está activa hacia afuera");
 
     // Capturar wall-clock duration ANTES de que el manager sea tomado/dropeado.
     // Esto se incluira en el evento recording-stopped para que el frontend tenga
@@ -412,8 +401,8 @@ pub async fn stop_recording<R: Runtime>(
         (None, None)
     };
 
-    // IS_RECORDING ya se bajo al inicio del flujo (ver arriba) para que el
-    // loop de recording-audio-levels termine rapido. Aqui no es necesario.
+    // La fase pasó a Stopping al inicio del flujo (ver arriba), por lo que el
+    // loop de recording-audio-levels ya terminó. Aquí no hay flag que bajar.
 
     // Prepare metadata for frontend
     let (folder_path_str, meeting_name_str) = match (&meeting_folder, &meeting_name) {

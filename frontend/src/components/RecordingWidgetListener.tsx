@@ -55,8 +55,8 @@ export function RecordingWidgetListener() {
       'widget-request-start-recording',
       (e) => {
         // Guard: si ya estamos grabando, ignorar el evento. El comando Rust
-        // también valida (vía IS_RECORDING flag) pero defendemos en frontend
-        // para evitar invocar handleRecordingStart con state inconsistente.
+        // también valida (vía la máquina de fases de grabación) pero defendemos
+        // en frontend para evitar invocar handleRecordingStart con state inconsistente.
         if (isRecording) return;
 
         // Iter 6: aplicar devices custom del payload (si vienen) ANTES de

@@ -21,7 +21,7 @@ use super::transcription::{
     TranscriptUpdate,
 };
 
-use super::recording_lifecycle::{RECORDING_MANAGER, TRANSCRIPTION_TASK, TRANSCRIPT_LISTENER_ID, set_recording_flag};
+use super::recording_lifecycle::{RECORDING_MANAGER, TRANSCRIPTION_TASK, TRANSCRIPT_LISTENER_ID};
 
 /// Result of device resolution for recording
 pub struct ResolvedDevices {
@@ -294,8 +294,8 @@ pub async fn parse_explicit_devices<R: Runtime>(
 ///
 /// Recibe el `StartGate` (fase Starting adquirida por el caller) y lo comitea
 /// (Starting→Recording) en el punto exacto donde la sesión queda activa hacia
-/// afuera — el mismo instante donde históricamente se subía `IS_RECORDING`.
-/// Si esta función retorna Err antes del commit, el Drop del gate revierte a Idle.
+/// afuera. Si esta función retorna Err antes del commit, el Drop del gate
+/// revierte a Idle.
 pub async fn initialize_recording<R: Runtime>(
     app: &AppHandle<R>,
     microphone_device: Option<Arc<super::devices::AudioDevice>>,
@@ -348,11 +348,10 @@ pub async fn initialize_recording<R: Runtime>(
         *global_manager = Some(manager);
     }
 
-    // Starting→Recording: la sesión queda activa hacia afuera. Espejo de
-    // IS_RECORDING durante la migración + reset del flag de speech detection.
-    info!("🔍 Comiteando fase Recording (+ espejo IS_RECORDING) y reseteando SPEECH_DETECTED_EMITTED");
+    // Starting→Recording: la sesión queda activa hacia afuera. Reset del flag
+    // de speech detection para la nueva sesión.
+    info!("🔍 Comiteando fase Recording y reseteando SPEECH_DETECTED_EMITTED");
     start_gate.commit()?;
-    set_recording_flag(true);
     reset_speech_detected_flag();
 
     // Spawn audio level emission task — polls RecordingState atomics every 100ms

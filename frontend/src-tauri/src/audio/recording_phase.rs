@@ -1,9 +1,9 @@
 // audio/recording_phase.rs
 //
 // Máquina de fases ÚNICA de la grabación — la fuente de verdad global del
-// proceso. Reemplaza los flags dispersos (`IS_RECORDING`, `START_IN_PROGRESS`)
-// cuya separación check-then-act permitió arranques concurrentes duplicados
-// (5 arranques en 16 ms, reporte usuario jul-2026).
+// proceso. Reemplaza los flags booleanos globales dispersos que existían antes
+// (jul-2026), cuya separación check-then-act permitió arranques concurrentes
+// duplicados (5 arranques en 16 ms, reporte usuario jul-2026).
 //
 // Principios de diseño:
 // - Transiciones vía `compare_exchange` tipadas: el check y el act son la MISMA
@@ -30,9 +30,9 @@
 
 use std::sync::atomic::{AtomicU8, Ordering};
 
-/// Fase global de la grabación. `Stopping` modela explícitamente el antiguo
-/// "IS_RECORDING=false early" del stop: la sesión ya no está activa hacia
-/// afuera, pero el pipeline sigue drenando/salvando.
+/// Fase global de la grabación. `Stopping` modela explícitamente el "corte
+/// temprano" del stop: la sesión ya no está activa hacia afuera, pero el
+/// pipeline sigue drenando/salvando.
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RecordingPhase {
@@ -55,9 +55,9 @@ impl RecordingPhase {
         }
     }
 
-    /// Equivalente semántico del viejo `IS_RECORDING`: hay una sesión activa.
-    /// False en `Starting` (aún no arranca) y en `Stopping` (el "early false"
-    /// intencional que corta eventos/queries durante el drenaje).
+    /// Hay una sesión activa hacia afuera. False en `Starting` (aún no
+    /// arranca) y en `Stopping` (el corte temprano intencional que frena
+    /// eventos/queries durante el drenaje).
     pub fn is_session_active(&self) -> bool {
         matches!(self, RecordingPhase::Recording | RecordingPhase::Paused)
     }
@@ -151,7 +151,7 @@ pub fn try_transition(from: RecordingPhase, to: RecordingPhase) -> Result<(), Re
 // ============================================================================
 
 /// Gate de arranque: `acquire()` ES la transición `Idle → Starting` (una sola
-/// CAS subsume el viejo `START_IN_PROGRESS` + el check de `IS_RECORDING`).
+/// CAS subsume el viejo single-flight + el check de "¿ya grabando?").
 /// `commit()` consume el gate con `Starting → Recording` — el punto único donde
 /// "empieza" la grabación. Si el gate se dropea sin commit (error en cualquier
 /// camino del arranque), revierte `Starting → Idle` automáticamente.
@@ -192,7 +192,7 @@ impl StartGate {
     }
 
     /// `Starting → Recording`. Consumir el gate marca el instante exacto en que
-    /// la sesión queda activa hacia afuera (donde antes se subía `IS_RECORDING`).
+    /// la sesión queda activa hacia afuera.
     pub fn commit(mut self) -> Result<(), String> {
         match self
             .machine
