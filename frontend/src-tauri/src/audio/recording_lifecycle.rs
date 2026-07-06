@@ -34,6 +34,36 @@ static PAUSE_REMINDER_RUNNING: AtomicBool = AtomicBool::new(false);
 /// Intervalo entre recordatorios de "grabación en pausa" (2 min).
 const PAUSE_REMINDER_INTERVAL_SECS: u64 = 120;
 
+/// Single-flight para el arranque de grabación. `IS_RECORDING` no basta como guard:
+/// se setea al final de la inicialización async, así que N invocaciones concurrentes
+/// pasaban el check en esa ventana (TOCTOU — 5 arranques en 16 ms disparados por el
+/// meeting detector en múltiples ventanas, reporte usuario jul-2026, con meeting_ids
+/// duplicados). El `compare_exchange` garantiza que solo la primera llamada inicializa;
+/// el resto falla ANTES de generar meeting_id o tocar el pipeline.
+static START_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
+
+/// Guard RAII del single-flight: libera `START_IN_PROGRESS` en TODOS los caminos de
+/// salida (éxito, error de validación, error de inicialización) al hacer drop.
+struct StartGate;
+
+impl StartGate {
+    fn acquire() -> Result<Self, String> {
+        if START_IN_PROGRESS
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            return Err("Recording start already in progress".to_string());
+        }
+        Ok(StartGate)
+    }
+}
+
+impl Drop for StartGate {
+    fn drop(&mut self) {
+        START_IN_PROGRESS.store(false, Ordering::SeqCst);
+    }
+}
+
 /// Set the IS_RECORDING flag
 pub(crate) fn set_recording_flag(value: bool) {
     IS_RECORDING.store(value, Ordering::SeqCst);
@@ -62,6 +92,9 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
         "Starting recording with default devices, meeting: {:?}",
         meeting_name
     );
+
+    // Single-flight: solo un arranque concurrente. El guard se libera al salir (Drop).
+    let _start_gate = StartGate::acquire()?;
 
     // Check if already recording
     let current_recording_state = IS_RECORDING.load(Ordering::SeqCst);
@@ -137,6 +170,9 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
         "Starting recording with specific devices: mic={:?}, system={:?}, meeting={:?}",
         mic_device_name, system_device_name, meeting_name
     );
+
+    // Single-flight: solo un arranque concurrente. El guard se libera al salir (Drop).
+    let _start_gate = StartGate::acquire()?;
 
     // Check if already recording
     let current_recording_state = IS_RECORDING.load(Ordering::SeqCst);
