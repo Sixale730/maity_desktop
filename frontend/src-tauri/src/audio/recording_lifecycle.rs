@@ -31,8 +31,12 @@ pub(crate) static TRANSCRIPT_LISTENER_ID: Mutex<Option<tauri::EventId>> = Mutex:
 
 /// Guard so only ONE "still paused" reminder task runs at a time.
 static PAUSE_REMINDER_RUNNING: AtomicBool = AtomicBool::new(false);
-/// Intervalo entre recordatorios de "grabación en pausa" (2 min).
-const PAUSE_REMINDER_INTERVAL_SECS: u64 = 120;
+/// Escalado de recordatorios de pausa: a los 2, 5, 10 y 15 min de pausa, luego cada
+/// 15 min (deltas de espera entre recordatorios). El intervalo fijo anterior (2 min)
+/// generaba ~30 toasts/hora — fatiga de alertas — y aun así el usuario no los veía
+/// porque Windows suprime toasts al compartir pantalla (Focus Assist automático).
+const PAUSE_REMINDER_SCHEDULE_SECS: [u64; 4] = [120, 180, 300, 300];
+const PAUSE_REMINDER_STEADY_SECS: u64 = 900;
 
 /// Single-flight para el arranque de grabación. `IS_RECORDING` no basta como guard:
 /// se setea al final de la inicialización async, así que N invocaciones concurrentes
@@ -560,8 +564,14 @@ fn spawn_pause_reminder<R: Runtime>(app: AppHandle<R>) {
     }
 
     tauri::async_runtime::spawn(async move {
+        let mut step: usize = 0;
         loop {
-            tokio::time::sleep(std::time::Duration::from_secs(PAUSE_REMINDER_INTERVAL_SECS)).await;
+            let delay_secs = PAUSE_REMINDER_SCHEDULE_SECS
+                .get(step)
+                .copied()
+                .unwrap_or(PAUSE_REMINDER_STEADY_SECS);
+            step += 1;
+            tokio::time::sleep(std::time::Duration::from_secs(delay_secs)).await;
 
             // Leer estado de pausa + tiempo transcurrido SIN sostener el std::Mutex
             // a través de un await (se libera al cerrar el bloque).
@@ -581,9 +591,28 @@ fn spawn_pause_reminder<R: Runtime>(app: AppHandle<R>) {
             }
 
             let minutes = (pause_secs / 60.0).floor() as u64;
+
+            // Refuerzo in-app (broadcast a todas las ventanas): el toast del OS puede
+            // ser suprimido por Windows (Focus Assist / compartir pantalla), así que el
+            // estado también debe ser visible dentro de la propia UI.
+            if let Err(e) = app.emit(
+                "recording-paused-reminder",
+                serde_json::json!({ "minutes": minutes }),
+            ) {
+                warn!("[pause-reminder] emit in-app reminder failed: {}", e);
+            }
+
             let notif_state = app.state::<crate::NotificationManagerState<R>>();
             let manager_guard = notif_state.read().await;
             if let Some(manager) = manager_guard.as_ref() {
+                // Telemetría: si el DND del sistema está activo, el toast que sigue
+                // probablemente no será visible para el usuario.
+                if manager.get_system_dnd_status().await {
+                    warn!(
+                        "[pause-reminder] DND/Focus Assist activo — el toast de pausa ({} min) probablemente no es visible",
+                        minutes
+                    );
+                }
                 if let Err(e) = manager.show_recording_paused_reminder(minutes).await {
                     warn!("[pause-reminder] notification failed: {}", e);
                 }

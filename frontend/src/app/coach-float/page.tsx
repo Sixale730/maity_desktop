@@ -689,7 +689,12 @@ export default function CoachFloatPage() {
           // proyectaba sombra rectangular fuera del rounded del WebView2. Con
           // -4px de spread negativo, la sombra se mantiene dentro de los
           // contornos redondeados del card.
-          boxShadow: '0 8px 24px -4px rgba(0,0,0,0.65)',
+          // En pausa se suma un ring ámbar INSET: un ring exterior sería
+          // recortado por el clipPath de la barra.
+          boxShadow:
+            recordingActive && isPaused
+              ? '0 8px 24px -4px rgba(0,0,0,0.65), inset 0 0 0 2px rgba(251,191,36,0.85)'
+              : '0 8px 24px -4px rgba(0,0,0,0.65)',
         }}
         data-tauri-drag-region
       >
@@ -712,8 +717,15 @@ export default function CoachFloatPage() {
           />
           {recordingActive && (
             <span className="absolute -top-1 -right-1 flex h-2.5 w-2.5 pointer-events-none">
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-500 opacity-75" />
-              <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-red-500" />
+              {/* En pausa: dot ámbar estático — el ping rojo comunicaba "grabando". */}
+              {!isPaused && (
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-500 opacity-75" />
+              )}
+              <span
+                className={`relative inline-flex rounded-full h-2.5 w-2.5 ${
+                  isPaused ? 'bg-amber-400' : 'bg-red-500'
+                }`}
+              />
             </span>
           )}
         </button>
@@ -764,9 +776,11 @@ export default function CoachFloatPage() {
               del logo y duplicaba la info del drawer. El timer sigue visible
               en el drawer expandido cuando el user lo abre. */}
 
-          {/* Indicador "Pausado · MM:SS" — refuerzo visual del estado pausado. */}
+          {/* Indicador "Pausado · MM:SS" — refuerzo visual del estado pausado.
+              animate-pulse: los toasts del OS se suprimen al compartir pantalla
+              (Focus Assist), así que este chip es la señal primaria de pausa. */}
           {recordingActive && isPaused && (
-            <span className="text-[10px] font-bold uppercase tracking-wider text-amber-400 tabular-nums">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-amber-400 tabular-nums animate-pulse">
               Pausado · {Math.floor(pauseSecs / 60)}:{String(pauseSecs % 60).padStart(2, '0')}
             </span>
           )}
