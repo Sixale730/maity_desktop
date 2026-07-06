@@ -16,6 +16,7 @@ pub mod diagnostics;
 pub mod ffmpeg_mixer;  // NEW: FFmpeg-style adaptive audio mixer
 
 // New simplified audio system
+pub mod recording_phase; // Máquina de fases única (fuente de verdad global de la grabación)
 pub mod recording_state;
 pub mod pipeline;
 pub mod stream;
