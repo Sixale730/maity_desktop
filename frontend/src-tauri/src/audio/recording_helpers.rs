@@ -70,6 +70,46 @@ fn emit_microphone_fallback<R: Runtime>(
     }
 }
 
+/// Nombres de dispositivos de ENTRADA que en realidad son loopbacks de la salida
+/// (no micrófonos). Grabar con uno de estos como "micrófono" significa que la voz
+/// del usuario NO se captura y la atribución de hablantes L/R queda rota (reporte
+/// usuario jul-2026: el default de Windows era "Mezcla estéreo (Realtek)" → 87 min
+/// de jornada sin voz). Windows/Realtek localizan el nombre según el idioma del OS,
+/// por eso hay variantes en español e inglés; "monitor of" cubre PulseAudio (Linux).
+const LOOPBACK_INPUT_MARKERS: [&str; 7] = [
+    "mezcla estéreo",
+    "mezcla estereo",
+    "stereo mix",
+    "what u hear",
+    "wave out",
+    "loopback",
+    "monitor of",
+];
+
+/// True si el nombre de un dispositivo de entrada corresponde a un loopback conocido.
+fn is_loopback_like_input(name: &str) -> bool {
+    let lower = name.to_lowercase();
+    LOOPBACK_INPUT_MARKERS.iter().any(|m| lower.contains(m))
+}
+
+/// Preflight: avisa (log + evento `mic-loopback-warning` para toast) si el micrófono
+/// con el que se va a grabar es un loopback. La grabación continúa — puede ser
+/// intencional — pero el usuario debe saber que su voz no se capturará.
+fn warn_if_loopback_mic<R: Runtime>(app: &AppHandle<R>, mic: &Option<Arc<AudioDevice>>) {
+    if let Some(device) = mic {
+        if is_loopback_like_input(&device.name) {
+            warn!(
+                "⚠️ El micrófono seleccionado parece un loopback del sistema: '{}' — la voz del usuario probablemente NO se grabará",
+                device.name
+            );
+            let payload = serde_json::json!({ "device": device.name });
+            if let Err(e) = app.emit("mic-loopback-warning", payload) {
+                warn!("failed to emit mic-loopback-warning event: {}", e);
+            }
+        }
+    }
+}
+
 /// Returns true if `requested_name` matches any input device in the live
 /// OS enumeration using the fuzzy matcher. Strips the trailing `(input)` /
 /// `(Input)` suffix that preferences carry but enumerated names don't.
@@ -258,6 +298,10 @@ pub async fn initialize_recording<R: Runtime>(
     meeting_name: Option<String>,
     auto_save: bool,
 ) -> Result<(), String> {
+    // Preflight: embudo común de ambos start paths — cubre preferencia, default
+    // del OS y dispositivos explícitos.
+    warn_if_loopback_mic(app, &microphone_device);
+
     // Create new recording manager
     let mut manager = RecordingManager::new();
 

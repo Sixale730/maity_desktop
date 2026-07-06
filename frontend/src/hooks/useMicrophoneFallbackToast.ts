@@ -8,6 +8,10 @@ interface MicrophoneFallbackPayload {
   reason?: 'not_found' | 'invalid_format' | string
 }
 
+interface MicLoopbackPayload {
+  device?: string
+}
+
 function describeReason(reason?: string): string {
   switch (reason) {
     case 'not_found':
@@ -31,6 +35,7 @@ function describeReason(reason?: string): string {
 export function useMicrophoneFallbackToast(): void {
   useEffect(() => {
     let unlisten: UnlistenFn | undefined
+    let unlistenLoopback: UnlistenFn | undefined
 
     const subscribe = async () => {
       unlisten = await listen<MicrophoneFallbackPayload>(
@@ -44,12 +49,26 @@ export function useMicrophoneFallbackToast(): void {
           })
         },
       )
+
+      // Preflight de grabación: el "micrófono" resuelto es un loopback del audio
+      // del sistema (Stereo Mix y afines) — la voz del usuario no se grabará.
+      unlistenLoopback = await listen<MicLoopbackPayload>(
+        'mic-loopback-warning',
+        (event) => {
+          const device = event.payload?.device ?? 'dispositivo desconocido'
+          toast.warning('El micrófono seleccionado no es un micrófono', {
+            description: `"${device}" es un loopback del audio del sistema: tu voz no se grabará. Elige otro micrófono en Configuración o en el widget.`,
+            duration: 15000,
+          })
+        },
+      )
     }
 
     subscribe()
 
     return () => {
       unlisten?.()
+      unlistenLoopback?.()
     }
   }, [])
 }
