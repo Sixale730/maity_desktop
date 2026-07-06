@@ -57,6 +57,17 @@ if (platform === 'linux' && feature === 'cuda') {
   env.CMAKE_POSITION_INDEPENDENT_CODE = 'ON';
 }
 
+// Builds DEBUG en Windows: omitir la firma Authenticode por default.
+// Sin SimplySign/Certum conectado, sign-windows.ps1 sale != 0 y Tauri aborta el
+// bundling ("failed to bundle project `failed to run powershell`") ANTES de
+// generar MSI/NSIS. Un build debug nunca necesita Authenticode; sign-windows.ps1
+// respeta SKIP_CODE_SIGNING=true (exit 0 sin firmar). Los builds release no se
+// tocan: ahí la firma sigue siendo obligatoria salvo override explícito.
+if (command === 'build' && isDebug && platform === 'win32' && env.SKIP_CODE_SIGNING === undefined) {
+  env.SKIP_CODE_SIGNING = 'true';
+  console.log('🔏 Build debug: firma Authenticode omitida (SKIP_CODE_SIGNING=true automático)');
+}
+
 // Build the tauri command
 let tauriCmd = `tauri ${command}`;
 if (isDebug) {
@@ -77,6 +88,11 @@ if (feature && feature !== 'none') {
 console.log('');
 
 // Execute the command
+// Timestamp del arranque del build: el escaneo de artefactos del catch solo debe
+// contar archivos escritos DESPUÉS de este instante. Antes miraba el filesystem
+// sin filtro y artefactos VIEJOS de builds anteriores enmascaraban fallos reales
+// de bundling como "éxito con warning" (exit 0 engañoso).
+const buildStartTime = Date.now();
 try {
   execSync(tauriCmd, { stdio: 'inherit', env });
 } catch (err) {
@@ -87,6 +103,15 @@ try {
     const targetDir = tauriTarget
       ? path.resolve(__dirname, '..', '..', 'target', tauriTarget, isDebug ? 'debug' : 'release', 'bundle')
       : path.resolve(__dirname, '..', '..', 'target', isDebug ? 'debug' : 'release', 'bundle');
+
+    // Solo cuentan artefactos frescos (escritos por ESTE build).
+    const isFreshArtifact = (fullPath) => {
+      try {
+        return fs.statSync(fullPath).mtimeMs >= buildStartTime;
+      } catch {
+        return false;
+      }
+    };
 
     // Walk bundle dir for FINAL installer artifacts. Mere presence of intermediate
     // files (.app, rw.*.dmg) is not enough — earlier bug masked real bundling failures
@@ -100,7 +125,7 @@ try {
         for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
           const full = path.join(dir, entry.name);
           if (entry.isDirectory()) stack.push(full);
-          else if (FINAL_ARTIFACT_EXTS.some((ext) => entry.name.endsWith(ext))) return true;
+          else if (FINAL_ARTIFACT_EXTS.some((ext) => entry.name.endsWith(ext)) && isFreshArtifact(full)) return true;
         }
       }
       return false;
@@ -109,7 +134,7 @@ try {
     // matching unrelated .exe files
     const nsisDir = path.join(targetDir, 'nsis');
     const hasNsisInstaller = fs.existsSync(nsisDir) &&
-      fs.readdirSync(nsisDir).some((f) => f.endsWith('-setup.exe'));
+      fs.readdirSync(nsisDir).some((f) => f.endsWith('-setup.exe') && isFreshArtifact(path.join(nsisDir, f)));
 
     if ((hasFinalArtifact || hasNsisInstaller) && !process.env.TAURI_SIGNING_PRIVATE_KEY) {
       console.log('');
