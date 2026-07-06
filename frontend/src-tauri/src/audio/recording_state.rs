@@ -115,8 +115,11 @@ pub struct RecordingState {
     error_count: AtomicU32,
     recoverable_error_count: AtomicU32,
     last_error: Mutex<Option<AudioError>>,
-    // FIX C2: Usar Arc en lugar de Box para poder clonar y liberar lock antes de llamar
-    error_callback: Mutex<Option<Arc<dyn Fn(&AudioError) + Send + Sync>>>,
+    // FIX C2: Usar Arc en lugar de Box para poder clonar y liberar lock antes de llamar.
+    // Firma: (error, session_stopped) — el bool indica que este error detuvo la
+    // sesión de captura (fatal o acumulación), para que el caller propague el
+    // stop completo hacia afuera (máquina de fases, drenaje, guardado).
+    error_callback: Mutex<Option<Arc<dyn Fn(&AudioError, bool) + Send + Sync>>>,
 
     // Statistics
     stats: Mutex<RecordingStats>,
@@ -377,9 +380,13 @@ impl RecordingState {
     }
 
     // Error handling
+    /// El callback recibe `(error, session_stopped)`: `session_stopped=true`
+    /// significa que este error detuvo la sesión de captura del struct (error
+    /// no-recuperable o acumulación de errores) y el caller debe propagar el
+    /// stop completo hacia afuera.
     pub fn set_error_callback<F>(&self, callback: F)
     where
-        F: Fn(&AudioError) + Send + Sync + 'static,
+        F: Fn(&AudioError, bool) + Send + Sync + 'static,
     {
         match self.error_callback.lock() {
             Ok(mut guard) => *guard = Some(Arc::new(callback)),
@@ -417,7 +424,9 @@ impl RecordingState {
             Err(e) => log::error!("last_error lock poisoned in report_error: {e}"),
         }
 
-        // Clone callback and release lock BEFORE calling to prevent deadlock
+        // Clone callback and release lock BEFORE calling to prevent deadlock.
+        // `should_stop` ya está calculado: el callback recibe si este error
+        // detiene la sesión, para propagar el stop completo hacia afuera.
         let callback_clone = match self.error_callback.lock() {
             Ok(guard) => guard.clone(),
             Err(e) => {
@@ -426,7 +435,7 @@ impl RecordingState {
             }
         };
         if let Some(callback) = callback_clone {
-            callback(&error);
+            callback(&error, should_stop);
         }
 
         // DEADLOCK FIX: Call stop_recording AFTER releasing all locks above
@@ -737,7 +746,9 @@ mod tests {
             let state = RecordingState::new();
             let count = Arc::new(std::sync::atomic::AtomicU32::new(0));
             let count_clone = count.clone();
-            state.set_error_callback(move |_err| {
+            state.set_error_callback(move |_err, session_stopped| {
+                // Un solo error recuperable NO detiene la sesión.
+                assert!(!session_stopped);
                 count_clone.fetch_add(1, Ordering::SeqCst);
             });
 
@@ -751,9 +762,24 @@ mod tests {
         fn non_recoverable_error_stops_recording_and_is_fatal() {
             let state = RecordingState::new();
             state.start_recording().unwrap();
+
+            // El callback debe recibir session_stopped=true: el caller usa ese
+            // bool para propagar el stop completo hacia afuera.
+            let stopped_seen = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let stopped_seen_clone = stopped_seen.clone();
+            state.set_error_callback(move |_err, session_stopped| {
+                if session_stopped {
+                    stopped_seen_clone.store(true, Ordering::SeqCst);
+                }
+            });
+
             state.report_error(AudioError::InitializationFailed);
             assert!(!state.is_recording(), "non-recoverable error should stop recording");
             assert!(state.has_fatal_error());
+            assert!(
+                stopped_seen.load(Ordering::SeqCst),
+                "callback should be notified that the session stopped"
+            );
         }
 
         #[test]

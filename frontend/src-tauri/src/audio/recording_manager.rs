@@ -417,10 +417,12 @@ impl RecordingManager {
         self.stream_manager.active_stream_count()
     }
 
-    /// Set error callback for handling errors
+    /// Set error callback for handling errors.
+    /// El segundo argumento (`session_stopped`) indica que el error detuvo la
+    /// sesión de captura y el stop debe propagarse hacia afuera.
     pub fn set_error_callback<F>(&self, callback: F)
     where
-        F: Fn(&super::recording_state::AudioError) + Send + Sync + 'static,
+        F: Fn(&super::recording_state::AudioError, bool) + Send + Sync + 'static,
     {
         self.state.set_error_callback(callback);
     }

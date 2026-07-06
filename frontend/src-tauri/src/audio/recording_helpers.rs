@@ -327,10 +327,25 @@ pub async fn initialize_recording<R: Runtime>(
     });
     manager.set_meeting_name(Some(effective_meeting_name));
 
-    // Set up error callback
+    // Set up error callback. Si `session_stopped=true`, el struct ya detuvo la
+    // captura internamente (error fatal o acumulación de errores): propagar el
+    // stop COMPLETO — máquina de fases, drenaje de transcripción y guardado —
+    // o el mundo exterior (tray/UI/scheduler) seguiría creyendo que graba.
     let app_for_error = app.clone();
-    manager.set_error_callback(move |error| {
+    manager.set_error_callback(move |error, session_stopped| {
         let _ = app_for_error.emit("recording-error", error.user_message());
+        if session_stopped {
+            warn!("🛑 Error fatal de audio detuvo la sesión — lanzando stop_recording completo");
+            let app_for_stop = app_for_error.clone();
+            tauri::async_runtime::spawn(async move {
+                // save_path se ignora en el flujo de stop (el manager deriva la
+                // carpeta de la reunión por su cuenta).
+                let args = super::recording_commands::RecordingArgs { save_path: String::new() };
+                if let Err(e) = super::recording_lifecycle::stop_recording(app_for_stop, args).await {
+                    error!("Auto-stop tras error fatal falló: {}", e);
+                }
+            });
+        }
     });
 
     // Start recording with resolved devices
