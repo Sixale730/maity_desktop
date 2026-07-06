@@ -39,6 +39,24 @@ use super::models;
 /// Secuencia global de ids de correlación (compartida entre managers del pool).
 static REQUEST_SEQ: AtomicU64 = AtomicU64::new(1);
 
+// ── Contadores de supervisión (proceso-globales, compartidos por el pool) ──
+// Solo crecen durante la vida del proceso; los consumidores (session-summary
+// del coach) toman snapshot al inicio de sesión y reportan el DELTA. Sin esto,
+// los mecanismos de supervisión (strikes, restart budget, cooldown) actúan
+// pero no dejan rastro medible fuera de los logs.
+static SIDECAR_TIMEOUTS_TOTAL: AtomicU64 = AtomicU64::new(0);
+static SIDECAR_RESTARTS_TOTAL: AtomicU64 = AtomicU64::new(0);
+static SIDECAR_COOLDOWNS_TOTAL: AtomicU64 = AtomicU64::new(0);
+
+/// Snapshot de los contadores de supervisión: `(timeouts, restarts, cooldowns)`.
+pub fn supervision_counters() -> (u64, u64, u64) {
+    (
+        SIDECAR_TIMEOUTS_TOTAL.load(Ordering::Relaxed),
+        SIDECAR_RESTARTS_TOTAL.load(Ordering::Relaxed),
+        SIDECAR_COOLDOWNS_TOTAL.load(Ordering::Relaxed),
+    )
+}
+
 /// Timeouts consecutivos antes de presumir proceso colgado y reiniciarlo.
 const TIMEOUT_STRIKES_BEFORE_RESTART: u32 = 3;
 /// Máximo de spawns dentro de `RESTART_WINDOW` antes de entrar en cooldown.
@@ -372,6 +390,7 @@ impl SidecarManager {
             if history.len() >= MAX_RESTARTS_PER_WINDOW {
                 let mut cooldown = self.cooldown_until.lock().await;
                 *cooldown = Some(now + RESTART_COOLDOWN);
+                SIDECAR_COOLDOWNS_TOTAL.fetch_add(1, Ordering::Relaxed);
                 log::error!(
                     "Sidecar: {} reinicios en {}s — presupuesto agotado, cooldown de {}s",
                     history.len(),
@@ -466,6 +485,9 @@ impl SidecarManager {
         self.should_shutdown.store(false, Ordering::SeqCst);
         self.update_activity().await;
 
+        // Cuenta TODOS los spawns (incluido el inicial); el delta por sesión
+        // del session-summary del coach revela los respawns durante grabación.
+        SIDECAR_RESTARTS_TOTAL.fetch_add(1, Ordering::Relaxed);
         log::info!("Sidecar spawned successfully");
 
         // Start background tasks
@@ -533,6 +555,7 @@ impl SidecarManager {
             }
             Ok(Err(e)) => Err(e),
             Err(_) => {
+                SIDECAR_TIMEOUTS_TOTAL.fetch_add(1, Ordering::Relaxed);
                 if self.ids_confirmed.load(Ordering::SeqCst) {
                     // El helper soporta ids: el proceso sigue vivo (request lento ≠
                     // proceso muerto) y la respuesta tardía se descartará por id.

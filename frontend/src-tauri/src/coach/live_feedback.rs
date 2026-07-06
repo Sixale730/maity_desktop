@@ -46,6 +46,14 @@ static COACH_BREAKER_OPEN_UNTIL_MS: AtomicU64 = AtomicU64::new(0);
 const COACH_BREAKER_FAIL_THRESHOLD: u64 = 3;
 const COACH_BREAKER_COOLDOWN: Duration = Duration::from_secs(300);
 
+// Observabilidad de la supervisión (WS3): cuántas veces abrió el breaker en la
+// sesión (reset en start()) + snapshot de los contadores del sidecar al inicio
+// de sesión para reportar el DELTA en el session-summary de stop().
+static COACH_BREAKER_OPENS: AtomicU64 = AtomicU64::new(0);
+static SIDECAR_TIMEOUTS_AT_START: AtomicU64 = AtomicU64::new(0);
+static SIDECAR_RESTARTS_AT_START: AtomicU64 = AtomicU64::new(0);
+static SIDECAR_COOLDOWNS_AT_START: AtomicU64 = AtomicU64::new(0);
+
 fn epoch_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -471,6 +479,15 @@ pub async fn start<R: Runtime + 'static>(app: AppHandle<R>) -> Result<(), String
     LLM_PARSE_FAILED.store(0, Ordering::Relaxed);
     COACH_LLM_CONSEC_FAILS.store(0, Ordering::Relaxed);
     COACH_BREAKER_OPEN_UNTIL_MS.store(0, Ordering::Relaxed);
+    COACH_BREAKER_OPENS.store(0, Ordering::Relaxed);
+
+    // Snapshot de los contadores de supervisión del sidecar (proceso-globales,
+    // solo crecen): stop() reporta la diferencia = actividad de ESTA sesión.
+    let (sc_timeouts, sc_restarts, sc_cooldowns) =
+        crate::summary::summary_engine::sidecar::supervision_counters();
+    SIDECAR_TIMEOUTS_AT_START.store(sc_timeouts, Ordering::Relaxed);
+    SIDECAR_RESTARTS_AT_START.store(sc_restarts, Ordering::Relaxed);
+    SIDECAR_COOLDOWNS_AT_START.store(sc_cooldowns, Ordering::Relaxed);
 
     // Leer config del pipeline activo
     let cfg = get_active_live_feedback_config(&app).await;
@@ -1020,9 +1037,24 @@ pub fn stop<R: Runtime>(app: &AppHandle<R>) {
     } else {
         0.0
     };
+
+    // Observabilidad de la supervisión (WS3): delta de los contadores del
+    // sidecar respecto al snapshot de start() = actividad de esta sesión.
+    // saturating_sub por si stop() corre sin un start() previo (delta 0).
+    let (sc_timeouts, sc_restarts, sc_cooldowns) =
+        crate::summary::summary_engine::sidecar::supervision_counters();
+    let sidecar_timeouts =
+        sc_timeouts.saturating_sub(SIDECAR_TIMEOUTS_AT_START.load(Ordering::Relaxed));
+    let sidecar_restarts =
+        sc_restarts.saturating_sub(SIDECAR_RESTARTS_AT_START.load(Ordering::Relaxed));
+    let sidecar_cooldowns =
+        sc_cooldowns.saturating_sub(SIDECAR_COOLDOWNS_AT_START.load(Ordering::Relaxed));
+    let breaker_opens = COACH_BREAKER_OPENS.load(Ordering::Relaxed);
+
     info!(
-        "[METRIC] session-summary llm_parse_total={} llm_parse_failed={} ({:.1}%) llm_latency_p95_ms={:?} tips_from_llm={} tips_from_heuristic={} heuristic_pct={:.1}%",
-        parse_total, parse_failed, parse_failed_pct, p95_ms, tips_llm, tips_heur, heur_pct
+        "[METRIC] session-summary llm_parse_total={} llm_parse_failed={} ({:.1}%) llm_latency_p95_ms={:?} tips_from_llm={} tips_from_heuristic={} heuristic_pct={:.1}% sidecar_timeouts={} sidecar_restarts={} sidecar_cooldowns={} breaker_opens={}",
+        parse_total, parse_failed, parse_failed_pct, p95_ms, tips_llm, tips_heur, heur_pct,
+        sidecar_timeouts, sidecar_restarts, sidecar_cooldowns, breaker_opens
     );
     let _ = app.emit(
         "coach-metrics",
@@ -1035,6 +1067,10 @@ pub fn stop<R: Runtime>(app: &AppHandle<R>) {
                 "tips_from_llm": tips_llm,
                 "tips_from_heuristic": tips_heur,
                 "heuristic_pct": heur_pct,
+                "sidecar_timeouts": sidecar_timeouts,
+                "sidecar_restarts": sidecar_restarts,
+                "sidecar_cooldowns": sidecar_cooldowns,
+                "breaker_opens": breaker_opens,
             }
         }),
     );
@@ -1164,6 +1200,8 @@ async fn call_ollama_and_emit<R: Runtime>(
                 if fails >= COACH_BREAKER_FAIL_THRESHOLD {
                     COACH_BREAKER_OPEN_UNTIL_MS
                         .store(epoch_ms() + COACH_BREAKER_COOLDOWN.as_millis() as u64, Ordering::Relaxed);
+                    // Cuenta aperturas y re-aperturas (fallo en half-open) por sesión.
+                    COACH_BREAKER_OPENS.fetch_add(1, Ordering::Relaxed);
                     error!(
                         "Coach: {} fallos LLM consecutivos — breaker ABIERTO por {}s (tips heurísticos siguen activos)",
                         fails,

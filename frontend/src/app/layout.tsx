@@ -45,6 +45,7 @@ import { fileLogger } from '@/lib/fileLogger'
 import { platformLogger } from '@/lib/platformLogger'
 import { usePageViewTracker } from '@/hooks/usePageViewTracker'
 import { useMicrophoneFallbackToast } from '@/hooks/useMicrophoneFallbackToast'
+import { useCoachMetricsTelemetry } from '@/hooks/useCoachMetricsTelemetry'
 import { useAutostartBootstrap } from '@/hooks/useAutostartBootstrap'
 import { registerNotificationActionHandler } from '@/lib/nativeNotification'
 
@@ -290,6 +291,11 @@ function AppContent({ children }: { children: React.ReactNode }) {
   // device is actually capturing audio so silent transcription failures
   // stop being a mystery.
   useMicrophoneFallbackToast()
+
+  // Reenvía el session-summary del coach (métricas LLM + supervisión del
+  // sidecar) a Supabase platform_logs. Sin este listener, el evento
+  // `coach-metrics` moría en los logs locales sin dejar rastro medible.
+  useCoachMetricsTelemetry()
 
   // Registra Maity en el autostart del OS al primer arranque post-instalación (US-1).
   // El hook hace no-op en builds debug y en arranques subsiguientes. Mostrar el toast
