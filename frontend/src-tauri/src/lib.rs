@@ -78,6 +78,13 @@ static LANGUAGE_PREFERENCE: std::sync::LazyLock<StdMutex<String>> =
 // manual) o visible+minimizada-en-taskbar (apertura por boot, patrón Steam/Discord).
 static STARTED_AT_BOOT: AtomicBool = AtomicBool::new(false);
 
+// One-shot: true después del primer `app-ready`. El frontend re-emite `app-ready` en cada
+// remount del webview (p. ej. el hard-navigate post-stop de `useRecordingStop`), y el manejo
+// de ventana (minimize/set_focus) solo es válido para el PRIMER evento de la sesión:
+// re-aplicarlo minimizaba la main window al detener una grabación en sesiones --autostart
+// (STARTED_AT_BOOT nunca se resetea) y re-enfocarla en remounts robaría el foco al usuario.
+static MAIN_WINDOW_PLACEMENT_DONE: AtomicBool = AtomicBool::new(false);
+
 // Flag one-shot que `stop_recording_from_widget` y `coach_float_stop_recording` setean a
 // true ANTES de detener cuando la main window estaba minimizada. El `on_window_event`
 // handler de la main window lo consume al primer `Focused(true)` (disparado por el hard
@@ -566,17 +573,29 @@ pub fn run() {
             // The window starts hidden (visible: false in tauri.conf.json) to avoid
             // showing a black screen or ChunkLoadError while Next.js compiles/loads.
             //
-            // Bifurcación introducida con el autostart (US-2):
+            // Bifurcación introducida con el autostart (US-2), SOLO en el primer app-ready:
             // - STARTED_AT_BOOT=true → show()+minimize(): la ventana aparece en taskbar
             //   pero no se abre en pantalla (patrón Steam/Discord).
             // - STARTED_AT_BOOT=false (apertura manual) → show()+set_focus(): comportamiento
             //   histórico, ventana visible y enfocada.
+            // Eventos app-ready posteriores (remounts por hard-navigate) solo hacen show():
+            // minimize robaría la ventana al usuario y set_focus robaría el foco. show()
+            // sobre una ventana minimizada NO la restaura (SW_SHOW conserva el estado), así
+            // que el flujo KEEP_MAIN_MINIMIZED_AFTER_STOP del widget no se ve afectado.
             let app_handle_for_show = _app.handle().clone();
             _app.listen("app-ready", move |_event| {
                 let at_boot = STARTED_AT_BOOT.load(Ordering::Relaxed);
-                log::info!("Frontend signaled app-ready, started_at_boot={}", at_boot);
+                let first_ready = !MAIN_WINDOW_PLACEMENT_DONE.swap(true, Ordering::SeqCst);
+                log::info!(
+                    "Frontend signaled app-ready, started_at_boot={}, first_ready={}",
+                    at_boot,
+                    first_ready
+                );
                 if let Some(window) = app_handle_for_show.get_webview_window("main") {
                     let _ = window.show();
+                    if !first_ready {
+                        return;
+                    }
                     if at_boot {
                         // Visible en taskbar de Windows pero no en pantalla. El usuario puede
                         // clickear el ícono para restaurarla cuando quiera.
@@ -596,6 +615,9 @@ pub fn run() {
                 if let Some(window) = app_handle_for_fallback.get_webview_window("main") {
                     if !window.is_visible().unwrap_or(true) {
                         log::warn!("Fallback: showing window after 3s timeout");
+                        // Consume el one-shot: si este fallback hizo el placement, un
+                        // app-ready tardío ya no debe re-minimizar/re-enfocar.
+                        MAIN_WINDOW_PLACEMENT_DONE.store(true, Ordering::SeqCst);
                         let _ = window.show();
                         if STARTED_AT_BOOT.load(Ordering::Relaxed) {
                             let _ = window.minimize();

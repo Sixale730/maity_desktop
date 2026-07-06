@@ -31,8 +31,42 @@ pub(crate) static TRANSCRIPT_LISTENER_ID: Mutex<Option<tauri::EventId>> = Mutex:
 
 /// Guard so only ONE "still paused" reminder task runs at a time.
 static PAUSE_REMINDER_RUNNING: AtomicBool = AtomicBool::new(false);
-/// Intervalo entre recordatorios de "grabación en pausa" (2 min).
-const PAUSE_REMINDER_INTERVAL_SECS: u64 = 120;
+/// Escalado de recordatorios de pausa: a los 2, 5, 10 y 15 min de pausa, luego cada
+/// 15 min (deltas de espera entre recordatorios). El intervalo fijo anterior (2 min)
+/// generaba ~30 toasts/hora — fatiga de alertas — y aun así el usuario no los veía
+/// porque Windows suprime toasts al compartir pantalla (Focus Assist automático).
+const PAUSE_REMINDER_SCHEDULE_SECS: [u64; 4] = [120, 180, 300, 300];
+const PAUSE_REMINDER_STEADY_SECS: u64 = 900;
+
+/// Single-flight para el arranque de grabación. `IS_RECORDING` no basta como guard:
+/// se setea al final de la inicialización async, así que N invocaciones concurrentes
+/// pasaban el check en esa ventana (TOCTOU — 5 arranques en 16 ms disparados por el
+/// meeting detector en múltiples ventanas, reporte usuario jul-2026, con meeting_ids
+/// duplicados). El `compare_exchange` garantiza que solo la primera llamada inicializa;
+/// el resto falla ANTES de generar meeting_id o tocar el pipeline.
+static START_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
+
+/// Guard RAII del single-flight: libera `START_IN_PROGRESS` en TODOS los caminos de
+/// salida (éxito, error de validación, error de inicialización) al hacer drop.
+struct StartGate;
+
+impl StartGate {
+    fn acquire() -> Result<Self, String> {
+        if START_IN_PROGRESS
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            return Err("Recording start already in progress".to_string());
+        }
+        Ok(StartGate)
+    }
+}
+
+impl Drop for StartGate {
+    fn drop(&mut self) {
+        START_IN_PROGRESS.store(false, Ordering::SeqCst);
+    }
+}
 
 /// Set the IS_RECORDING flag
 pub(crate) fn set_recording_flag(value: bool) {
@@ -62,6 +96,9 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
         "Starting recording with default devices, meeting: {:?}",
         meeting_name
     );
+
+    // Single-flight: solo un arranque concurrente. El guard se libera al salir (Drop).
+    let _start_gate = StartGate::acquire()?;
 
     // Check if already recording
     let current_recording_state = IS_RECORDING.load(Ordering::SeqCst);
@@ -137,6 +174,9 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
         "Starting recording with specific devices: mic={:?}, system={:?}, meeting={:?}",
         mic_device_name, system_device_name, meeting_name
     );
+
+    // Single-flight: solo un arranque concurrente. El guard se libera al salir (Drop).
+    let _start_gate = StartGate::acquire()?;
 
     // Check if already recording
     let current_recording_state = IS_RECORDING.load(Ordering::SeqCst);
@@ -524,8 +564,14 @@ fn spawn_pause_reminder<R: Runtime>(app: AppHandle<R>) {
     }
 
     tauri::async_runtime::spawn(async move {
+        let mut step: usize = 0;
         loop {
-            tokio::time::sleep(std::time::Duration::from_secs(PAUSE_REMINDER_INTERVAL_SECS)).await;
+            let delay_secs = PAUSE_REMINDER_SCHEDULE_SECS
+                .get(step)
+                .copied()
+                .unwrap_or(PAUSE_REMINDER_STEADY_SECS);
+            step += 1;
+            tokio::time::sleep(std::time::Duration::from_secs(delay_secs)).await;
 
             // Leer estado de pausa + tiempo transcurrido SIN sostener el std::Mutex
             // a través de un await (se libera al cerrar el bloque).
@@ -545,9 +591,28 @@ fn spawn_pause_reminder<R: Runtime>(app: AppHandle<R>) {
             }
 
             let minutes = (pause_secs / 60.0).floor() as u64;
+
+            // Refuerzo in-app (broadcast a todas las ventanas): el toast del OS puede
+            // ser suprimido por Windows (Focus Assist / compartir pantalla), así que el
+            // estado también debe ser visible dentro de la propia UI.
+            if let Err(e) = app.emit(
+                "recording-paused-reminder",
+                serde_json::json!({ "minutes": minutes }),
+            ) {
+                warn!("[pause-reminder] emit in-app reminder failed: {}", e);
+            }
+
             let notif_state = app.state::<crate::NotificationManagerState<R>>();
             let manager_guard = notif_state.read().await;
             if let Some(manager) = manager_guard.as_ref() {
+                // Telemetría: si el DND del sistema está activo, el toast que sigue
+                // probablemente no será visible para el usuario.
+                if manager.get_system_dnd_status().await {
+                    warn!(
+                        "[pause-reminder] DND/Focus Assist activo — el toast de pausa ({} min) probablemente no es visible",
+                        minutes
+                    );
+                }
                 if let Err(e) = manager.show_recording_paused_reminder(minutes).await {
                     warn!("[pause-reminder] notification failed: {}", e);
                 }

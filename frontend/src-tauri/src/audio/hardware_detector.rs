@@ -106,14 +106,19 @@ impl HardwareProfile {
 
     /// Detect available system memory in GB
     fn detect_memory_gb() -> u8 {
-        // Simple memory detection - could be enhanced with system-specific calls
-        match std::env::var("MEMORY_GB") {
-            Ok(mem_str) => mem_str.parse().unwrap_or(8),
-            Err(_) => {
-                // Default estimates based on common configurations
-                8 // Conservative default
+        // Override manual para pruebas
+        if let Ok(mem_str) = std::env::var("MEMORY_GB") {
+            if let Ok(v) = mem_str.parse() {
+                return v;
             }
         }
+        // RAM real vía sysinfo (misma técnica que summary_engine::get_system_ram_gb).
+        // Antes retornaba 8 hardcodeado → máquinas con 28 GB quedaban en tier Low
+        // (reporte usuario jul-2026) y las configs adaptativas decidían con datos falsos.
+        let mut sys = sysinfo::System::new();
+        sys.refresh_memory();
+        let gb = sys.total_memory() / (1024 * 1024 * 1024);
+        gb.clamp(1, 255) as u8
     }
 
     /// Calculate performance tier based on hardware
@@ -157,14 +162,32 @@ impl HardwareProfile {
     }
 
     fn has_cuda_support() -> bool {
-        // Check for CUDA environment or libraries
+        // Windows: nvcuda.dll la instala el DRIVER de NVIDIA (presente con cualquier
+        // GPU NVIDIA, sin requerir el CUDA Toolkit). Chequear solo CUDA_PATH producía
+        // falsos negativos: una RTX 3060 reportaba gpu=None (reporte usuario jul-2026).
+        #[cfg(target_os = "windows")]
+        {
+            let sysroot = std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".to_string());
+            if std::path::Path::new(&sysroot).join("System32").join("nvcuda.dll").exists() {
+                return true;
+            }
+        }
+        // Entornos de desarrollo / Linux con toolkit instalado
         std::env::var("CUDA_PATH").is_ok() ||
         std::env::var("CUDA_HOME").is_ok() ||
         std::path::Path::new("/usr/local/cuda").exists()
     }
 
     fn has_vulkan_support() -> bool {
-        // Basic Vulkan detection - could be enhanced
+        // Windows: vulkan-1.dll la instalan los drivers de GPU modernos
+        // (NVIDIA/AMD/Intel). Señal de que hay una GPU con soporte Vulkan.
+        #[cfg(target_os = "windows")]
+        {
+            let sysroot = std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".to_string());
+            if std::path::Path::new(&sysroot).join("System32").join("vulkan-1.dll").exists() {
+                return true;
+            }
+        }
         std::env::var("VULKAN_SDK").is_ok() ||
         std::path::Path::new("/usr/lib/x86_64-linux-gnu/libvulkan.so").exists() ||
         std::path::Path::new("/usr/lib/libvulkan.so").exists()
