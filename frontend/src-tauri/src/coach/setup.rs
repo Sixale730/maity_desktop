@@ -3,6 +3,7 @@
 //! binario externo que descargar.
 
 use super::{llama_engine, model_registry};
+use crate::events;
 use once_cell::sync::Lazy;
 use reqwest::Client;
 use serde::Serialize;
@@ -38,7 +39,7 @@ struct GgufDownloadProgress {
 
 fn emit_setup<R: Runtime>(app: &AppHandle<R>, step: &str, progress: u8, message: &str) {
     let _ = app.emit(
-        "coach-setup-progress",
+        events::COACH_SETUP_PROGRESS,
         SetupProgress {
             step: step.to_string(),
             progress,
@@ -55,7 +56,7 @@ fn emit_download<R: Runtime>(
     total_mb: f64,
 ) {
     let _ = app.emit(
-        "coach-gguf-download-progress",
+        events::COACH_GGUF_DOWNLOAD_PROGRESS,
         GgufDownloadProgress {
             model_id: model_id.to_string(),
             progress,

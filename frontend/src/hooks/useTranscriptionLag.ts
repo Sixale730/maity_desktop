@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { listen } from '@tauri-apps/api/event';
+import { TauriEvent } from '@/lib/tauri-events';
 
 export interface TranscriptionLagData {
   queue_depth: number;
@@ -33,7 +34,7 @@ export function useTranscriptionLag(isRecording: boolean): UseTranscriptionLagRe
     let unlisten: (() => void) | undefined;
 
     const setup = async () => {
-      unlisten = await listen<TranscriptionLagData>('transcription-lag-update', (event) => {
+      unlisten = await listen<TranscriptionLagData>(TauriEvent.TRANSCRIPTION_LAG_UPDATE, (event) => {
         const { queue_depth, lag_seconds, chunks_per_second } = event.payload;
         setState({
           lagSeconds: lag_seconds,

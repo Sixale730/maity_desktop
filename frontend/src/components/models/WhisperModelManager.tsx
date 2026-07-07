@@ -15,6 +15,7 @@ import {
 } from '@/lib/engines/whisper';
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '@/components/ui/accordion';
 import { logger } from '@/lib/logger';
+import { TauriEvent } from '@/lib/tauri-events';
 
 interface ModelManagerProps {
   selectedModel?: string;
@@ -145,7 +146,7 @@ export function ModelManager({
 
       // Download progress with throttling
       unlistenProgress = await listen<{ modelName: string; progress: number }>(
-        'model-download-progress',
+        TauriEvent.MODEL_DOWNLOAD_PROGRESS,
         (event) => {
           const { modelName, progress } = event.payload;
           const now = Date.now();
@@ -173,7 +174,7 @@ export function ModelManager({
 
       // Download complete
       unlistenComplete = await listen<{ modelName: string }>(
-        'model-download-complete',
+        TauriEvent.MODEL_DOWNLOAD_COMPLETE,
         (event) => {
           const { modelName } = event.payload;
           const model = models.find(m => m.name === modelName);
@@ -213,7 +214,7 @@ export function ModelManager({
 
       // Download error
       unlistenError = await listen<{ modelName: string; error: string }>(
-        'model-download-error',
+        TauriEvent.MODEL_DOWNLOAD_ERROR,
         (event) => {
           const { modelName, error } = event.payload;
           const displayName = getDisplayName(modelName);

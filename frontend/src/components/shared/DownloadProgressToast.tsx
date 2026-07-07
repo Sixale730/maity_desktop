@@ -4,6 +4,7 @@ import React, { useEffect, useState, useCallback } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { toast } from 'sonner';
 import { X, Check, ArrowBigDownDash } from 'lucide-react';
+import { TauriEvent } from '@/lib/tauri-events';
 
 interface DownloadProgress {
   modelName: string;
@@ -225,7 +226,7 @@ export function useDownloadProgressToast() {
       total_mb?: number;
       speed_mbps?: number;
       status?: string;
-    }>('parakeet-model-download-progress', (event) => {
+    }>(TauriEvent.PARAKEET_MODEL_DOWNLOAD_PROGRESS, (event) => {
       const { modelName, progress, downloaded_mb, total_mb, speed_mbps, status } = event.payload;
 
       const downloadData: DownloadProgress = {
@@ -252,7 +253,7 @@ export function useDownloadProgressToast() {
     });
 
     const unlistenComplete = listen<{ modelName: string }>(
-      'parakeet-model-download-complete',
+      TauriEvent.PARAKEET_MODEL_DOWNLOAD_COMPLETE,
       (event) => {
         const { modelName } = event.payload;
         const downloadData: DownloadProgress = {
@@ -271,7 +272,7 @@ export function useDownloadProgressToast() {
     );
 
     const unlistenError = listen<{ modelName: string; error: string }>(
-      'parakeet-model-download-error',
+      TauriEvent.PARAKEET_MODEL_DOWNLOAD_ERROR,
       (event) => {
         const { modelName, error } = event.payload;
         const downloadData: DownloadProgress = {
@@ -307,7 +308,7 @@ export function useDownloadProgressToast() {
       speed_mbps?: number;
       status: string;
       error?: string;
-    }>('builtin-ai-download-progress', (event) => {
+    }>(TauriEvent.BUILTIN_AI_DOWNLOAD_PROGRESS, (event) => {
       const { model, progress, downloaded_mb, total_mb, speed_mbps, status, error } = event.payload;
 
       const downloadData: DownloadProgress = {

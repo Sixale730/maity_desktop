@@ -12,6 +12,7 @@ import {
   formatFileSize
 } from '@/lib/engines/parakeet';
 import { logger } from '@/lib/logger';
+import { TauriEvent } from '@/lib/tauri-events';
 
 interface ParakeetModelManagerProps {
   selectedModel?: string;
@@ -96,7 +97,7 @@ export function ParakeetModelManager({
 
       // Download progress with throttling
       unlistenProgress = await listen<{ modelName: string; progress: number }>(
-        'parakeet-model-download-progress',
+        TauriEvent.PARAKEET_MODEL_DOWNLOAD_PROGRESS,
         (event) => {
           const { modelName, progress } = event.payload;
           const now = Date.now();
@@ -124,7 +125,7 @@ export function ParakeetModelManager({
 
       // Download complete
       unlistenComplete = await listen<{ modelName: string }>(
-        'parakeet-model-download-complete',
+        TauriEvent.PARAKEET_MODEL_DOWNLOAD_COMPLETE,
         (event) => {
           const { modelName } = event.payload;
           const displayInfo = getModelDisplayInfo(modelName);
@@ -164,7 +165,7 @@ export function ParakeetModelManager({
 
       // Download error
       unlistenError = await listen<{ modelName: string; error: string }>(
-        'parakeet-model-download-error',
+        TauriEvent.PARAKEET_MODEL_DOWNLOAD_ERROR,
         (event) => {
           const { modelName, error } = event.payload;
           const displayInfo = getModelDisplayInfo(modelName);

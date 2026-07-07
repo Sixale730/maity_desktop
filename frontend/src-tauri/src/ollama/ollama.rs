@@ -8,6 +8,7 @@ use tokio::time::{timeout, Duration, sleep};
 use tokio::sync::RwLock;
 use futures_util::StreamExt;
 use once_cell::sync::Lazy;
+use crate::events;
 use crate::ollama::metadata::ModelMetadataCache;
 
 // Global set to track models currently being downloaded
@@ -315,7 +316,7 @@ pub async fn pull_ollama_model<R: Runtime>(
 
         // Emit error event
         let _ = app_handle.emit(
-            "ollama-model-download-error",
+            events::OLLAMA_MODEL_DOWNLOAD_ERROR,
             serde_json::json!({
                 "modelName": model_name,
                 "error": format!("HTTP {}: {}", status, error_text)
@@ -342,7 +343,7 @@ pub async fn pull_ollama_model<R: Runtime>(
             });
 
             let _ = app_handle.emit(
-                "ollama-model-download-error",
+                events::OLLAMA_MODEL_DOWNLOAD_ERROR,
                 serde_json::json!({
                     "modelName": model_name,
                     "error": error_msg
@@ -377,7 +378,7 @@ pub async fn pull_ollama_model<R: Runtime>(
                             log::info!("Ollama download progress for {}: {}%", model_name, progress);
 
                             let _ = app_handle.emit(
-                                "ollama-model-download-progress",
+                                events::OLLAMA_MODEL_DOWNLOAD_PROGRESS,
                                 serde_json::json!({
                                     "modelName": model_name,
                                     "progress": progress
@@ -400,7 +401,7 @@ pub async fn pull_ollama_model<R: Runtime>(
                     }
 
                     let _ = app_handle.emit(
-                        "ollama-model-download-error",
+                        events::OLLAMA_MODEL_DOWNLOAD_ERROR,
                         serde_json::json!({
                             "modelName": model_name,
                             "error": error_msg
@@ -421,7 +422,7 @@ pub async fn pull_ollama_model<R: Runtime>(
 
     // Emit completion event
     let _ = app_handle.emit(
-        "ollama-model-download-complete",
+        events::OLLAMA_MODEL_DOWNLOAD_COMPLETE,
         serde_json::json!({
             "modelName": model_name
         }),

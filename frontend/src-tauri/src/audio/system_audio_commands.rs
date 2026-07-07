@@ -5,6 +5,7 @@ use crate::audio::{
 };
 use std::sync::{Arc, Mutex};
 use anyhow::Result;
+use crate::events;
 
 // Global state for system audio detector
 type SystemAudioDetectorState = Arc<Mutex<Option<SystemAudioDetector>>>;
@@ -54,10 +55,10 @@ pub async fn start_system_audio_monitoring(
         match event {
             SystemAudioEvent::SystemAudioStarted(apps) => {
                 tracing::info!("System audio started by apps: {:?}", apps);
-                let _ = app_handle.emit("system-audio-started", apps);
+                let _ = app_handle.emit(events::SYSTEM_AUDIO_STARTED, apps);
             }
             SystemAudioEvent::SystemAudioStopped => {
-                let _ = app_handle.emit("system-audio-stopped", ());
+                let _ = app_handle.emit(events::SYSTEM_AUDIO_STOPPED, ());
                 tracing::info!("System audio stopped");
             }
         }

@@ -8,6 +8,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen, UnlistenFn } from '@tauri-apps/api/event';
 import type { BackendRecordingPhase } from '@/types/recording';
+import { TauriEvent } from '@/lib/tauri-events';
 
 export interface RecordingState {
   is_recording: boolean;
@@ -120,7 +121,7 @@ export class RecordingService {
    * @returns Promise that resolves to unlisten function
    */
   async onRecordingStarted(callback: () => void): Promise<UnlistenFn> {
-    return listen('recording-started', callback);
+    return listen(TauriEvent.RECORDING_STARTED, callback);
   }
 
   /**
@@ -129,7 +130,7 @@ export class RecordingService {
    * @returns Promise that resolves to unlisten function
    */
   async onRecordingStopped(callback: (payload: RecordingStoppedPayload) => void): Promise<UnlistenFn> {
-    return listen<RecordingStoppedPayload>('recording-stopped', (event) => {
+    return listen<RecordingStoppedPayload>(TauriEvent.RECORDING_STOPPED, (event) => {
       callback(event.payload);
     });
   }
@@ -140,7 +141,7 @@ export class RecordingService {
    * @returns Promise that resolves to unlisten function
    */
   async onRecordingPaused(callback: () => void): Promise<UnlistenFn> {
-    return listen('recording-paused', callback);
+    return listen(TauriEvent.RECORDING_PAUSED, callback);
   }
 
   /**
@@ -149,18 +150,7 @@ export class RecordingService {
    * @returns Promise that resolves to unlisten function
    */
   async onRecordingResumed(callback: () => void): Promise<UnlistenFn> {
-    return listen('recording-resumed', callback);
-  }
-
-  /**
-   * Listen for chunk-drop-warning event (audio buffer overflow)
-   * @param callback - Function to call when chunks are dropped
-   * @returns Promise that resolves to unlisten function
-   */
-  async onChunkDropWarning(callback: (warning: string) => void): Promise<UnlistenFn> {
-    return listen<string>('chunk-drop-warning', (event) => {
-      callback(event.payload);
-    });
+    return listen(TauriEvent.RECORDING_RESUMED, callback);
   }
 
   /**
@@ -169,7 +159,7 @@ export class RecordingService {
    * @returns Promise that resolves to unlisten function
    */
   async onSpeechDetected(callback: () => void): Promise<UnlistenFn> {
-    return listen('speech-detected', callback);
+    return listen(TauriEvent.SPEECH_DETECTED, callback);
   }
 }
 

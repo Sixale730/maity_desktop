@@ -11,6 +11,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { useAuth } from '@/contexts/AuthContext';
 import { getUserRoleFromEmail, isAdmin as checkIsAdmin } from '@/lib/roles';
 import { logger } from '@/lib/logger';
+import { TauriEvent } from '@/lib/tauri-events';
 
 export type { OllamaModel, StorageLocations, NotificationSettings };
 
@@ -306,7 +307,7 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const setupListener = async () => {
       const { listen } = await import('@tauri-apps/api/event');
-      const unlisten = await listen<ModelConfig>('model-config-updated', (event) => {
+      const unlisten = await listen<ModelConfig>(TauriEvent.MODEL_CONFIG_UPDATED, (event) => {
         logger.debug('[ConfigContext] Received model-config-updated event:', event.payload);
         setModelConfig(event.payload);
       });

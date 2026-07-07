@@ -6,6 +6,7 @@ import { invoke } from '@tauri-apps/api/core';
 import {
   ChevronDown, ChevronUp, X, Play, Pause, Square, Mic, Volume2,
 } from 'lucide-react';
+import { TauriEvent } from '@/lib/tauri-events';
 
 interface AudioLevels {
   micRms: number;
@@ -144,10 +145,10 @@ export default function RecordingWidgetPage() {
   // desalineamientos.
   useEffect(() => {
     const subs = [
-      listen<AudioLevels>('recording-audio-levels', (e) => {
+      listen<AudioLevels>(TauriEvent.RECORDING_AUDIO_LEVELS, (e) => {
         setLevels({ micRms: e.payload.micRms, sysRms: e.payload.sysRms });
       }),
-      listen('recording-start-complete', () => {
+      listen(TauriEvent.RECORDING_START_COMPLETE, () => {
         setIsRecording(true);
         setIsPaused(false);
         recordingStartRef.current = Date.now();
@@ -159,7 +160,7 @@ export default function RecordingWidgetPage() {
           startTimeoutRef.current = null;
         }
       }),
-      listen('recording-stop-complete', () => {
+      listen(TauriEvent.RECORDING_STOP_COMPLETE, () => {
         setIsRecording(false);
         setIsPaused(false);
         recordingStartRef.current = null;
@@ -168,7 +169,7 @@ export default function RecordingWidgetPage() {
         setBusy(false);
         userManuallyCollapsedRef.current = false;
       }),
-      listen('recording-stopped', () => {
+      listen(TauriEvent.RECORDING_STOPPED, () => {
         setIsRecording(false);
         setIsPaused(false);
         recordingStartRef.current = null;

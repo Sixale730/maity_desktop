@@ -19,6 +19,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { AlertTriangle, RefreshCw, FileArchive, X, CheckCircle2 } from 'lucide-react'
+import { TauriEvent } from '@/lib/tauri-events'
 
 interface DbInitErrorPayload {
   error: string
@@ -35,7 +36,7 @@ export function DbInitErrorGate({ children }: { children: React.ReactNode }) {
   const [exportPath, setExportPath] = useState<string | null>(null)
 
   useEffect(() => {
-    const unlistenPromise = listen<DbInitErrorPayload>('db-init-failed', (event) => {
+    const unlistenPromise = listen<DbInitErrorPayload>(TauriEvent.DB_INIT_FAILED, (event) => {
       console.error('[DbInitErrorGate] db-init-failed event:', event.payload)
       setErrorPayload(event.payload)
     })

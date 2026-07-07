@@ -7,9 +7,9 @@ import { GeistSans } from 'geist/font/sans'
 import Sidebar from '@/components/Sidebar'
 import { SidebarProvider } from '@/components/Sidebar/SidebarProvider'
 import MainContent from '@/components/MainContent'
-import { Toaster, toast } from 'sonner'
+import { Toaster } from 'sonner'
 import { useState, useEffect, useRef } from 'react'
-import { listen, emit } from '@tauri-apps/api/event'
+import { emit } from '@tauri-apps/api/event'
 import { invoke } from '@tauri-apps/api/core'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { RecordingStateProvider } from '@/contexts/RecordingStateContext'
@@ -43,6 +43,7 @@ import Script from 'next/script'
 import { logger } from '@/lib/logger'
 import { fileLogger } from '@/lib/fileLogger'
 import { platformLogger } from '@/lib/platformLogger'
+import { TauriEvent } from '@/lib/tauri-events'
 import { usePageViewTracker } from '@/hooks/usePageViewTracker'
 import { useMicrophoneFallbackToast } from '@/hooks/useMicrophoneFallbackToast'
 import { useCoachMetricsTelemetry } from '@/hooks/useCoachMetricsTelemetry'
@@ -186,7 +187,7 @@ function AuthGate({ children }: { children: React.ReactNode }) {
     if (!mounted || isLoading || hasSignaledReady.current) return
     // At this point we have real UI to show (login, maityUser wait, or app)
     hasSignaledReady.current = true
-    emit('app-ready').catch(() => {
+    emit(TauriEvent.APP_READY).catch(() => {
       // Silently ignore — may fail outside Tauri (e.g. browser dev)
     })
   }, [mounted, isLoading])
@@ -407,31 +408,6 @@ function AppContent({ children }: { children: React.ReactNode }) {
       return () => document.removeEventListener('contextmenu', handleContextMenu);
     }
   }, []);
-
-  useEffect(() => {
-    // Listen for tray recording toggle request
-    const unlisten = listen('request-recording-toggle', () => {
-      logger.debug('[Layout] Received request-recording-toggle from tray');
-
-      if (showOnboarding) {
-        toast.error("Por favor completa la configuración primero", {
-          description: "Necesitas terminar la configuración inicial antes de poder grabar."
-        });
-      } else if (modelGateActive) {
-        toast.error("Necesitas descargar el modelo primero", {
-          description: "Acepta la descarga del modelo de transcripción para poder grabar."
-        });
-      } else {
-        // If in main app, forward to useRecordingStart via window event
-        logger.debug('[Layout] Forwarding to start-recording-from-sidebar');
-        window.dispatchEvent(new CustomEvent('start-recording-from-sidebar'));
-      }
-    });
-
-    return () => {
-      unlisten.then(fn => fn());
-    };
-  }, [showOnboarding, modelGateActive]);
 
   // Una vez resueltos el onboarding y el model gate, decidir si mostrar el gate de
   // activación de la grabación por jornada (solo si el usuario aún no lo atendió).

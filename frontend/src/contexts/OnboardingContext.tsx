@@ -5,6 +5,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import type { PermissionStatus, OnboardingPermissions } from '@/types/onboarding';
 import { logger } from '@/lib/logger';
+import { TauriEvent } from '@/lib/tauri-events';
 
 const PARAKEET_MODEL = 'parakeet-tdt-0.6b-v3-int8';
 
@@ -215,7 +216,7 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
       speed_mbps?: number;
       status?: string;
     }>(
-      'parakeet-model-download-progress',
+      TauriEvent.PARAKEET_MODEL_DOWNLOAD_PROGRESS,
       (event) => {
         const { modelName, progress, downloaded_mb, total_mb, speed_mbps, status } = event.payload;
         if (modelName === PARAKEET_MODEL) {
@@ -234,7 +235,7 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
     );
 
     const unlistenComplete = listen<{ modelName: string }>(
-      'parakeet-model-download-complete',
+      TauriEvent.PARAKEET_MODEL_DOWNLOAD_COMPLETE,
       (event) => {
         const { modelName } = event.payload;
         if (modelName === PARAKEET_MODEL) {
@@ -245,7 +246,7 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
     );
 
     const unlistenError = listen<{ modelName: string; error: string }>(
-      'parakeet-model-download-error',
+      TauriEvent.PARAKEET_MODEL_DOWNLOAD_ERROR,
       (event) => {
         const { modelName } = event.payload;
         if (modelName === PARAKEET_MODEL) {
@@ -271,7 +272,7 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
       speed_mbps?: number;
       status: string;
     }>(
-      'builtin-ai-download-progress',
+      TauriEvent.BUILTIN_AI_DOWNLOAD_PROGRESS,
       (event) => {
         const { model, progress, downloaded_mb, total_mb, speed_mbps, status } = event.payload;
         // §4.1 Solo trackeamos progreso de gemma3:4b (1b ya no se descarga en onboarding).

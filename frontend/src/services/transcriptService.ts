@@ -9,6 +9,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { logger } from '@/lib/logger';
 import { listen, UnlistenFn } from '@tauri-apps/api/event';
 import { TranscriptUpdate, Transcript } from '@/types';
+import { TauriEvent } from '@/lib/tauri-events';
 
 export interface TranscriptionStatus {
   chunks_in_queue: number;
@@ -56,7 +57,7 @@ export class TranscriptService {
    */
   async onTranscriptUpdate(callback: (update: TranscriptUpdate) => void): Promise<UnlistenFn> {
     logger.debug('📡 [SERVICE] Registrando listener para transcript-update...');
-    return listen<TranscriptUpdate>('transcript-update', (event) => {
+    return listen<TranscriptUpdate>(TauriEvent.TRANSCRIPT_UPDATE, (event) => {
       logger.debug('📥 [SERVICE] Evento transcript-update recibido:', {
         text: event.payload.text?.substring(0, 50) + '...',
         sequence_id: event.payload.sequence_id,
@@ -73,7 +74,7 @@ export class TranscriptService {
    * @returns Promise that resolves to unlisten function
    */
   async onTranscriptionComplete(callback: () => void): Promise<UnlistenFn> {
-    return listen('transcription-complete', callback);
+    return listen(TauriEvent.TRANSCRIPTION_COMPLETE, callback);
   }
 
   /**
@@ -82,18 +83,7 @@ export class TranscriptService {
    * @returns Promise that resolves to unlisten function
    */
   async onTranscriptionError(callback: (error: TranscriptionErrorPayload) => void): Promise<UnlistenFn> {
-    return listen<TranscriptionErrorPayload>('transcription-error', (event) => {
-      callback(event.payload);
-    });
-  }
-
-  /**
-   * Listen for transcript-error event (legacy error format)
-   * @param callback - Function to call when transcript error occurs
-   * @returns Promise that resolves to unlisten function
-   */
-  async onTranscriptError(callback: (error: string) => void): Promise<UnlistenFn> {
-    return listen<string>('transcript-error', (event) => {
+    return listen<TranscriptionErrorPayload>(TauriEvent.TRANSCRIPTION_ERROR, (event) => {
       callback(event.payload);
     });
   }
@@ -104,7 +94,7 @@ export class TranscriptService {
    * @returns Promise that resolves to unlisten function
    */
   async onModelDownloadComplete(callback: (modelName: string) => void): Promise<UnlistenFn> {
-    return listen<ModelDownloadCompletePayload>('model-download-complete', (event) => {
+    return listen<ModelDownloadCompletePayload>(TauriEvent.MODEL_DOWNLOAD_COMPLETE, (event) => {
       callback(event.payload.modelName);
     });
   }
@@ -115,7 +105,7 @@ export class TranscriptService {
    * @returns Promise that resolves to unlisten function
    */
   async onParakeetModelDownloadComplete(callback: (modelName: string) => void): Promise<UnlistenFn> {
-    return listen<ModelDownloadCompletePayload>('parakeet-model-download-complete', (event) => {
+    return listen<ModelDownloadCompletePayload>(TauriEvent.PARAKEET_MODEL_DOWNLOAD_COMPLETE, (event) => {
       callback(event.payload.modelName);
     });
   }

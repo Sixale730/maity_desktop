@@ -1,3 +1,4 @@
+use crate::events;
 use crate::whisper_engine::{ModelInfo, WhisperEngine};
 use std::sync::{Arc, Mutex};
 use std::path::PathBuf;
@@ -80,7 +81,7 @@ pub async fn whisper_load_model(
     if let Some(engine) = engine {
         // FIX 6: Emit model loading started event
         if let Err(e) = app_handle.emit(
-            "model-loading-started",
+            events::MODEL_LOADING_STARTED,
             serde_json::json!({
                 "modelName": model_name
             }),
@@ -96,7 +97,7 @@ pub async fn whisper_load_model(
         // FIX 6: Emit model loading completed/failed event
         if result.is_ok() {
             if let Err(e) = app_handle.emit(
-                "model-loading-completed",
+                events::MODEL_LOADING_COMPLETED,
                 serde_json::json!({
                     "modelName": model_name
                 }),
@@ -105,7 +106,7 @@ pub async fn whisper_load_model(
             }
         } else if let Err(ref error) = result {
             if let Err(e) = app_handle.emit(
-                "model-loading-failed",
+                events::MODEL_LOADING_FAILED,
                 serde_json::json!({
                     "modelName": model_name,
                     "error": error
@@ -382,7 +383,7 @@ pub async fn whisper_download_model(
 
             // Emit download progress event
             if let Err(e) = app_handle_clone.emit(
-                "model-download-progress",
+                events::MODEL_DOWNLOAD_PROGRESS,
                 serde_json::json!({
                     "modelName": model_name_clone,
                     "progress": progress
@@ -400,7 +401,7 @@ pub async fn whisper_download_model(
             Ok(()) => {
                 // Emit completion event
                 if let Err(e) = app_handle.emit(
-                    "model-download-complete",
+                    events::MODEL_DOWNLOAD_COMPLETE,
                     serde_json::json!({
                         "modelName": model_name
                     }),
@@ -412,7 +413,7 @@ pub async fn whisper_download_model(
             Err(e) => {
                 // Emit error event
                 if let Err(emit_e) = app_handle.emit(
-                    "model-download-error",
+                    events::MODEL_DOWNLOAD_ERROR,
                     serde_json::json!({
                         "modelName": model_name,
                         "error": e.to_string()

@@ -1,6 +1,7 @@
 import { useEffect } from 'react'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { toast } from 'sonner'
+import { TauriEvent } from '@/lib/tauri-events'
 
 interface MicrophoneFallbackPayload {
   requested?: string
@@ -39,7 +40,7 @@ export function useMicrophoneFallbackToast(): void {
 
     const subscribe = async () => {
       unlisten = await listen<MicrophoneFallbackPayload>(
-        'microphone-fallback',
+        TauriEvent.MICROPHONE_FALLBACK,
         (event) => {
           const requested = event.payload?.requested ?? 'micrófono preferido'
           const actual = event.payload?.actual ?? 'desconocido'
@@ -53,7 +54,7 @@ export function useMicrophoneFallbackToast(): void {
       // Preflight de grabación: el "micrófono" resuelto es un loopback del audio
       // del sistema (Stereo Mix y afines) — la voz del usuario no se grabará.
       unlistenLoopback = await listen<MicLoopbackPayload>(
-        'mic-loopback-warning',
+        TauriEvent.MIC_LOOPBACK_WARNING,
         (event) => {
           const device = event.payload?.device ?? 'dispositivo desconocido'
           toast.warning('El micrófono seleccionado no es un micrófono', {

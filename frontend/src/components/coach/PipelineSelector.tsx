@@ -3,6 +3,7 @@
 import React, { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import { TauriEvent } from '@/lib/tauri-events';
 import {
   CheckCircle2,
   Circle,
@@ -90,7 +91,7 @@ export function PipelineSelector() {
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     listen<{ step: string; progress: number; message: string }>(
-      'coach-setup-progress',
+      TauriEvent.COACH_SETUP_PROGRESS,
       (e) => {
         setSetupStep(e.payload.step as SetupStep);
         setSetupProgress(e.payload.progress);
@@ -104,7 +105,7 @@ export function PipelineSelector() {
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     listen<{ model_id: string; progress: number; downloaded_mb: number; total_mb: number }>(
-      'coach-gguf-download-progress',
+      TauriEvent.COACH_GGUF_DOWNLOAD_PROGRESS,
       (e) => {
         const { model_id, progress, downloaded_mb, total_mb } = e.payload;
         setDownloads((prev) => ({ ...prev, [model_id]: { progress, downloaded_mb, total_mb } }));
@@ -116,7 +117,7 @@ export function PipelineSelector() {
   // Refresh model list when a download completes
   useEffect(() => {
     let unlisten: (() => void) | undefined;
-    listen<{ model_id: string }>('coach-gguf-download-complete', (e) => {
+    listen<{ model_id: string }>(TauriEvent.COACH_GGUF_DOWNLOAD_COMPLETE, (e) => {
       setDownloads((prev) => {
         const next = { ...prev };
         delete next[e.payload.model_id];
@@ -131,7 +132,7 @@ export function PipelineSelector() {
   // Clear download state when a download errors or is cancelled
   useEffect(() => {
     let unlisten: (() => void) | undefined;
-    listen<{ model_id: string; error: string }>('coach-gguf-download-error', (e) => {
+    listen<{ model_id: string; error: string }>(TauriEvent.COACH_GGUF_DOWNLOAD_ERROR, (e) => {
       setDownloads((prev) => {
         const next = { ...prev };
         delete next[e.payload.model_id];

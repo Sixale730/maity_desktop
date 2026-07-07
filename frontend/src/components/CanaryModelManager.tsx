@@ -3,6 +3,7 @@ import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { motion } from 'framer-motion';
 import { toast } from 'sonner';
+import { TauriEvent } from '@/lib/tauri-events';
 import {
   CanaryModelInfo,
   CanaryModelStatus,
@@ -82,7 +83,7 @@ export function CanaryModelManager({
 
     const setupListeners = async () => {
       unlistenProgress = await listen<{ modelName: string; progress: number }>(
-        'canary-model-download-progress',
+        TauriEvent.CANARY_MODEL_DOWNLOAD_PROGRESS,
         (event) => {
           const { modelName, progress } = event.payload;
           const now = Date.now();
@@ -106,7 +107,7 @@ export function CanaryModelManager({
       );
 
       unlistenComplete = await listen<{ modelName: string }>(
-        'canary-model-download-complete',
+        TauriEvent.CANARY_MODEL_DOWNLOAD_COMPLETE,
         (event) => {
           const { modelName } = event.payload;
           const displayInfo = getCanaryModelDisplayInfo(modelName);
@@ -143,7 +144,7 @@ export function CanaryModelManager({
       );
 
       unlistenError = await listen<{ modelName: string; error: string }>(
-        'canary-model-download-error',
+        TauriEvent.CANARY_MODEL_DOWNLOAD_ERROR,
         (event) => {
           const { modelName, error } = event.payload;
           const displayInfo = getCanaryModelDisplayInfo(modelName);

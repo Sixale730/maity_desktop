@@ -14,6 +14,7 @@ use tokio::task::JoinHandle;
 use super::RecordingManager;
 
 use super::recording_helpers;
+use crate::events;
 
 // ============================================================================
 // GLOBAL STATE
@@ -100,7 +101,7 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
     recording_helpers::initialize_recording(&app, microphone_device, system_device, meeting_name, auto_save, start_gate).await?;
 
     // Emit success event
-    app.emit("recording-started", serde_json::json!({
+    app.emit(events::RECORDING_STARTED, serde_json::json!({
         "message": "Recording started successfully with parallel processing",
         "devices": ["Default Microphone", "Default System Audio"],
         "workers": 3
@@ -168,7 +169,7 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
     recording_helpers::initialize_recording(&app, devices.microphone, devices.system_audio, meeting_name, auto_save, start_gate).await?;
 
     // Emit success event
-    app.emit("recording-started", serde_json::json!({
+    app.emit(events::RECORDING_STARTED, serde_json::json!({
         "message": "Recording started with custom devices and parallel processing",
         "devices": [
             mic_device_name.unwrap_or_else(|| "Default Microphone".to_string()),
@@ -239,7 +240,7 @@ pub async fn stop_recording<R: Runtime>(
 
     // Emit shutdown progress to frontend
     let _ = app.emit(
-        "recording-shutdown-progress",
+        events::RECORDING_SHUTDOWN_PROGRESS,
         serde_json::json!({
             "stage": "stopping_audio",
             "message": "Stopping audio capture...",
@@ -290,7 +291,7 @@ pub async fn stop_recording<R: Runtime>(
 
     // Step 2: Signal transcription workers to finish processing ALL queued chunks
     let _ = app.emit(
-        "recording-shutdown-progress",
+        events::RECORDING_SHUTDOWN_PROGRESS,
         serde_json::json!({
             "stage": "processing_transcripts",
             "message": "Processing remaining transcript chunks...",
@@ -327,7 +328,7 @@ pub async fn stop_recording<R: Runtime>(
 
                     // Emit progress event for frontend
                     let _ = app.emit(
-                        "recording-shutdown-progress",
+                        events::RECORDING_SHUTDOWN_PROGRESS,
                         serde_json::json!({
                             "stage": "processing_transcripts",
                             "message": format!("Processing transcripts... ({:.0}s elapsed)", elapsed.as_secs_f64()),
@@ -363,7 +364,7 @@ pub async fn stop_recording<R: Runtime>(
 
     // Step 4: Finalize recording state and cleanup resources safely
     let _ = app.emit(
-        "recording-shutdown-progress",
+        events::RECORDING_SHUTDOWN_PROGRESS,
         serde_json::json!({
             "stage": "finalizing",
             "message": "Finalizing recording and cleaning up resources...",
@@ -421,7 +422,7 @@ pub async fn stop_recording<R: Runtime>(
 
     // Step 5: Complete shutdown
     let _ = app.emit(
-        "recording-shutdown-progress",
+        events::RECORDING_SHUTDOWN_PROGRESS,
         serde_json::json!({
             "stage": "complete",
             "message": "Recording stopped successfully",
@@ -434,7 +435,7 @@ pub async fn stop_recording<R: Runtime>(
     drop(stop_gate);
 
     app.emit(
-        "recording-stopped",
+        events::RECORDING_STOPPED,
         serde_json::json!({
             "message": "Recording stopped - frontend will save after all transcripts received",
             "folder_path": folder_path_str,
@@ -474,7 +475,7 @@ pub async fn pause_recording<R: Runtime>(app: AppHandle<R>) -> Result<(), String
         }
 
         app.emit(
-            "recording-paused",
+            events::RECORDING_PAUSED,
             serde_json::json!({
                 "message": "Recording paused"
             }),
@@ -513,7 +514,7 @@ pub async fn resume_recording<R: Runtime>(app: AppHandle<R>) -> Result<(), Strin
         }
 
         app.emit(
-            "recording-resumed",
+            events::RECORDING_RESUMED,
             serde_json::json!({
                 "message": "Recording resumed"
             }),
@@ -570,7 +571,7 @@ fn spawn_pause_reminder<R: Runtime>(app: AppHandle<R>) {
             // ser suprimido por Windows (Focus Assist / compartir pantalla), así que el
             // estado también debe ser visible dentro de la propia UI.
             if let Err(e) = app.emit(
-                "recording-paused-reminder",
+                events::RECORDING_PAUSED_REMINDER,
                 serde_json::json!({ "minutes": minutes }),
             ) {
                 warn!("[pause-reminder] emit in-app reminder failed: {}", e);

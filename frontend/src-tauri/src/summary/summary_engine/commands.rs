@@ -7,6 +7,7 @@ use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 use tokio::sync::Mutex;
 
 use super::model_manager::{DownloadProgress, ModelInfo, ModelManager};
+use crate::events;
 
 // ============================================================================
 // Global State
@@ -124,7 +125,7 @@ pub async fn builtin_ai_download_model<R: Runtime>(
     let model_name_clone = model_name.clone();
     let progress_callback = Box::new(move |progress: DownloadProgress| {
         let _ = app_clone.emit(
-            "builtin-ai-download-progress",
+            events::BUILTIN_AI_DOWNLOAD_PROGRESS,
             serde_json::json!({
                 "model": model_name_clone,
                 "progress": progress.percent,
@@ -143,7 +144,7 @@ pub async fn builtin_ai_download_model<R: Runtime>(
         Ok(_) => {
             // Download task completed successfully (validation passed, status set to Available)
             let _ = app.emit(
-                "builtin-ai-download-progress",
+                events::BUILTIN_AI_DOWNLOAD_PROGRESS,
                 serde_json::json!({
                     "model": model_name,
                     "progress": 100,
@@ -163,7 +164,7 @@ pub async fn builtin_ai_download_model<R: Runtime>(
             if !error_msg.starts_with("CANCELLED:") {
                 // Emit error via progress event for frontend to display (only for real errors)
                 let _ = app.emit(
-                    "builtin-ai-download-progress",
+                    events::BUILTIN_AI_DOWNLOAD_PROGRESS,
                     serde_json::json!({
                         "model": model_name,
                         "progress": 0,
@@ -201,7 +202,7 @@ pub async fn builtin_ai_cancel_download<R: Runtime>(
         .map_err(|e| e.to_string())?;
 
     let _ = app.emit(
-        "builtin-ai-download-progress",
+        events::BUILTIN_AI_DOWNLOAD_PROGRESS,
         serde_json::json!({
             "model": model_name,
             "progress": 0,

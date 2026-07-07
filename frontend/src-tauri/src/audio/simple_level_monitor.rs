@@ -5,6 +5,7 @@ use log::{debug, error, info, warn};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{SampleFormat, StreamConfig};
 use serde::Serialize;
+use crate::events;
 
 #[derive(Debug, Serialize, Clone)]
 pub struct AudioLevelData {
@@ -266,7 +267,7 @@ pub async fn start_monitoring<R: Runtime>(
                 ],
             };
 
-            if let Err(e) = app_handle.emit("audio-levels", &update) {
+            if let Err(e) = app_handle.emit(events::AUDIO_LEVELS, &update) {
                 error!("Failed to emit audio levels: {}", e);
                 break;
             }

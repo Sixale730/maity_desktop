@@ -2,6 +2,7 @@ use log::{error, info};
 use tauri::{AppHandle, Emitter, Manager};
 
 use super::manager::DatabaseManager;
+use crate::events;
 use crate::state::AppState;
 
 /// Initialize database on app startup.
@@ -60,7 +61,7 @@ pub async fn initialize_database_on_startup(app: &AppHandle) -> Result<(), Strin
         let app_handle = app.clone();
         tauri::async_runtime::spawn(async move {
             tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-            if let Err(e) = app_handle.emit("first-launch-detected", ()) {
+            if let Err(e) = app_handle.emit(events::FIRST_LAUNCH_DETECTED, ()) {
                 error!("Failed to emit first-launch-detected event: {}", e);
             } else {
                 info!("Emitted first-launch-detected after delay");

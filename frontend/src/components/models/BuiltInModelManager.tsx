@@ -8,6 +8,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { cn } from '@/lib/utils';
 import { Download, RefreshCw, BadgeAlert, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
+import { TauriEvent } from '@/lib/tauri-events';
 
 interface ModelInfo {
   name: string;
@@ -73,7 +74,7 @@ export function BuiltInModelManager({ selectedModel, onModelSelect }: BuiltInMod
 
     const setupListener = async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Tauri event payload structure
-      unlisten = await listen('builtin-ai-download-progress', (event: any) => {
+      unlisten = await listen(TauriEvent.BUILTIN_AI_DOWNLOAD_PROGRESS, (event: any) => {
         const { model, progress, downloaded_mb, total_mb, speed_mbps, status } = event.payload;
 
         // Update percentage progress

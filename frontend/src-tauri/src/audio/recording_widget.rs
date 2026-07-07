@@ -17,10 +17,10 @@ use tauri::{AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Runtime, 
 use tauri_plugin_store::StoreExt;
 use tracing::{info, warn};
 
+use crate::events;
+
 const WIDGET_LABEL: &str = "recording-widget";
 const MAIN_LABEL: &str = "main";
-const VISIBILITY_EVENT: &str = "recording-widget-visibility-changed";
-const REQUEST_START_EVENT: &str = "widget-request-start-recording";
 const PREFS_FILE: &str = "widget-preferences.json";
 const PREF_KEY_VISIBLE: &str = "recording_widget_visible";
 
@@ -196,7 +196,7 @@ pub async fn stop_recording_from_widget<R: Runtime>(app: AppHandle<R>) -> Result
             info!("✅ Recording stopped from widget");
             // Notificar al frontend principal para que dispare post-procesamiento
             // (SQLite save, navigation, analytics). Mismo evento que el tray.
-            if let Err(e) = app.emit("recording-stop-complete", true) {
+            if let Err(e) = app.emit(events::RECORDING_STOP_COMPLETE, true) {
                 warn!("Widget: failed to emit recording-stop-complete: {}", e);
             }
             Ok(())
@@ -221,7 +221,7 @@ pub async fn stop_recording_from_widget<R: Runtime>(app: AppHandle<R>) -> Result
 /// graba, preservando su foco visual sobre Zoom/Teams/Meet.
 #[tauri::command]
 pub async fn recording_widget_request_start<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
-    app.emit(REQUEST_START_EVENT, ())
+    app.emit(events::WIDGET_REQUEST_START_RECORDING, ())
         .map_err(|e| format!("Failed to emit widget-request-start-recording: {}", e))?;
     info!("📡 Widget solicitó iniciar grabación al main (sin alterar visibilidad)");
     Ok(())
@@ -250,8 +250,8 @@ fn save_visibility_pref<R: Runtime>(app: &AppHandle<R>, visible: bool) -> Result
 /// main window lo escucha para mostrarse/ocultarse, y el toggle de Settings
 /// puede reaccionar al cambio si lo hicieron desde otro origen (tray, X).
 fn emit_visibility<R: Runtime>(app: &AppHandle<R>, visible: bool) {
-    if let Err(e) = app.emit(VISIBILITY_EVENT, serde_json::json!({ "visible": visible })) {
-        warn!("Failed to emit {}: {}", VISIBILITY_EVENT, e);
+    if let Err(e) = app.emit(events::RECORDING_WIDGET_VISIBILITY_CHANGED, serde_json::json!({ "visible": visible })) {
+        warn!("Failed to emit {}: {}", events::RECORDING_WIDGET_VISIBILITY_CHANGED, e);
     }
 }
 

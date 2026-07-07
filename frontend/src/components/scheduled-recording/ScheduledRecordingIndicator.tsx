@@ -4,6 +4,7 @@ import { useEffect, useRef } from 'react'
 import { listen } from '@tauri-apps/api/event'
 import { toast } from 'sonner'
 import { logger } from '@/lib/logger'
+import { TauriEvent } from '@/lib/tauri-events'
 
 /**
  * Listener global de la grabación programada. Vive en el layout (dentro de todos los
@@ -17,7 +18,7 @@ export function ScheduledRecordingIndicator() {
   useEffect(() => {
     const subscriptions = [
       listen<{ phase: string; next_fire_at: string | null; in_window: boolean }>(
-        'scheduled-recording-status',
+        TauriEvent.SCHEDULED_RECORDING_STATUS,
         (event) => {
           const phase = event.payload?.phase
           if (!phase || phase === prevPhase.current) return
@@ -29,7 +30,7 @@ export function ScheduledRecordingIndicator() {
           logger.debug('[ScheduledRecording] phase:', phase)
         }
       ),
-      listen<{ reason: string; message: string }>('scheduled-recording-skipped', (event) => {
+      listen<{ reason: string; message: string }>(TauriEvent.SCHEDULED_RECORDING_SKIPPED, (event) => {
         const message = event.payload?.message
         if (message) toast.info(message)
       }),

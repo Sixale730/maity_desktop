@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import { TauriEvent } from '@/lib/tauri-events';
 
 interface AudioLevelData {
   device_name: string;
@@ -72,7 +73,7 @@ export function usePreviewLevels(
       // Iter 11: el payload ahora incluye DOS levels — input (mic) y output
       // (sistema vía WASAPI loopback / CoreAudio). Filtrar por device_type
       // para popular ambos canales correctamente.
-      unlisten = await listen<AudioLevelUpdate>('audio-levels', (event) => {
+      unlisten = await listen<AudioLevelUpdate>(TauriEvent.AUDIO_LEVELS, (event) => {
         const update = event.payload;
         const inputLvl = update.levels.find((l) => l.device_type === 'input');
         const outputLvl = update.levels.find((l) => l.device_type === 'output');

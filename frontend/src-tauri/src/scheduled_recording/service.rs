@@ -18,6 +18,8 @@ use tauri::{AppHandle, Emitter, Manager, Runtime};
 use tokio::sync::{mpsc, RwLock};
 use tokio::time::{interval, Duration as TokioDuration};
 
+use crate::events;
+
 use super::schedule;
 use super::settings::{load_settings, save_settings, ScheduledRecordingSettings};
 
@@ -500,7 +502,7 @@ async fn stop_scheduled<R: Runtime>(app: &AppHandle<R>) {
     {
         Ok(()) => {
             // Igual que el tray: el frontend hace el guardado local + sync cloud.
-            if let Err(e) = app.emit("recording-stop-complete", true) {
+            if let Err(e) = app.emit(events::RECORDING_STOP_COMPLETE, true) {
                 warn!("[scheduled] no se pudo emitir recording-stop-complete: {}", e);
             }
         }
@@ -530,7 +532,7 @@ fn emit_status<R: Runtime>(
 ) {
     let next = schedule::next_fire_at(now, settings).map(|d| d.format("%Y-%m-%dT%H:%M:%S").to_string());
     let _ = app.emit(
-        "scheduled-recording-status",
+        events::SCHEDULED_RECORDING_STATUS,
         serde_json::json!({
             "phase": phase,
             "next_fire_at": next,
@@ -541,7 +543,7 @@ fn emit_status<R: Runtime>(
 
 fn emit_skipped<R: Runtime>(app: &AppHandle<R>, reason: SkipReason) {
     let _ = app.emit(
-        "scheduled-recording-skipped",
+        events::SCHEDULED_RECORDING_SKIPPED,
         serde_json::json!({
             "reason": reason.as_str(),
             "message": reason.message(),

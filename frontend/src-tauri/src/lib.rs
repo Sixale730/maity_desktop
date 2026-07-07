@@ -41,6 +41,7 @@ pub mod builtin_ai;
 pub mod coach;
 pub mod console_utils;
 pub mod database;
+pub mod events;
 pub mod llm;
 pub mod logging;
 pub mod meeting_detector;
@@ -502,7 +503,7 @@ pub fn run() {
             // Forward deep-link URLs as a Tauri event so the frontend can handle them
             if let Some(url) = argv.iter().find(|arg| arg.starts_with("maity://")) {
                 log::info!("Deep link received via single-instance: {}", url);
-                let _ = app.emit("deep-link-received", url.clone());
+                let _ = app.emit(events::DEEP_LINK_RECEIVED, url.clone());
             }
             // Si una segunda instancia se lanzó por autostart (poco común — el usuario
             // probablemente la abrió manualmente mientras la primera ya corría), respetar
@@ -557,7 +558,7 @@ pub fn run() {
                             .map(|p| p.join("meeting_minutes.sqlite").to_string_lossy().to_string())
                             .unwrap_or_default();
                         if let Err(emit_err) = app_handle_for_db_err.emit(
-                            "db-init-failed",
+                            events::DB_INIT_FAILED,
                             serde_json::json!({
                                 "error": err_msg,
                                 "sqlitePath": sqlite_path,
@@ -583,7 +584,7 @@ pub fn run() {
             // sobre una ventana minimizada NO la restaura (SW_SHOW conserva el estado), así
             // que el flujo KEEP_MAIN_MINIMIZED_AFTER_STOP del widget no se ve afectado.
             let app_handle_for_show = _app.handle().clone();
-            _app.listen("app-ready", move |_event| {
+            _app.listen(events::APP_READY, move |_event| {
                 let at_boot = STARTED_AT_BOOT.load(Ordering::Relaxed);
                 let first_ready = !MAIN_WINDOW_PLACEMENT_DONE.swap(true, Ordering::SeqCst);
                 log::info!(

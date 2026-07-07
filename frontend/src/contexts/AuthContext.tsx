@@ -10,6 +10,7 @@ import { onOpenUrl } from '@tauri-apps/plugin-deep-link'
 import { logger } from '@/lib/logger'
 import { fileLogger } from '@/lib/fileLogger'
 import { translateAuthError } from '@/lib/auth-errors'
+import { TauriEvent } from '@/lib/tauri-events'
 
 interface AuthContextType {
   session: Session | null
@@ -400,7 +401,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   // Listen for auth tokens from the localhost OAuth server (primary on Windows)
   useEffect(() => {
     const unlistenTokens = listen<{ access_token: string; refresh_token: string }>(
-      'auth-tokens-received',
+      TauriEvent.AUTH_TOKENS_RECEIVED,
       async (event) => {
         const { access_token, refresh_token } = event.payload
         await processAuthTokens(access_token, refresh_token)
@@ -455,7 +456,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   // Listen for PKCE auth code from the localhost OAuth server
   useEffect(() => {
     const unlistenCode = listen<{ code: string }>(
-      'auth-code-received',
+      TauriEvent.AUTH_CODE_RECEIVED,
       async (event) => {
         await processAuthCode(event.payload.code)
       }
@@ -497,7 +498,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     })
 
     // Windows/Linux: single-instance plugin forwards deep-link URLs as events
-    const unlistenPromise = listen<string>('deep-link-received', (event) => {
+    const unlistenPromise = listen<string>(TauriEvent.DEEP_LINK_RECEIVED, (event) => {
       const url = event.payload
       if (url.startsWith('maity://auth/callback')) {
         handleDeepLinkCallback(url)

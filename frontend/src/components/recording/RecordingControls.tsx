@@ -10,6 +10,7 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import Analytics from '@/lib/analytics';
 import { logger } from '@/lib/logger';
+import { TauriEvent } from '@/lib/tauri-events';
 import { useRecordingState } from '@/contexts/RecordingStateContext';
 import { InlineDeviceSelector } from './InlineDeviceSelector';
 
@@ -290,10 +291,9 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
     let cancelled = false;
     const unsubscribes: (() => void)[] = [];
 
-    // Unified error handler with circuit breaker. Both transcript-error and
-    // transcription-error funnel through here so we count them globally and
-    // only invoke stop_recording once the threshold is hit (or immediately on
-    // actionable errors).
+    // Unified error handler with circuit breaker. transcription-error funnels
+    // through here so we count errors globally and only invoke stop_recording
+    // once the threshold is hit (or immediately on actionable errors).
     const handleErrorEvent = async (errorMessage: string, isActionable: boolean) => {
       Analytics.trackTranscriptionError(errorMessage);
       setIsProcessing(false);
@@ -337,13 +337,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
 
     const setupListeners = async () => {
       try {
-        const transcriptErrorUnsubscribe = await listen('transcript-error', (event) => {
-          logger.debug('transcript-error event received:', event);
-          const errorMessage = event.payload as string;
-          handleErrorEvent(errorMessage, false);
-        });
-
-        const transcriptionErrorUnsubscribe = await listen('transcription-error', (event) => {
+        const transcriptionErrorUnsubscribe = await listen(TauriEvent.TRANSCRIPTION_ERROR, (event) => {
           logger.debug('transcription-error event received:', event);
 
           let errorMessage: string;
@@ -364,13 +358,12 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
         // No need for duplicate listeners here
 
         // Speech detected listener - for UX feedback when VAD detects speech
-        const speechDetectedUnsubscribe = await listen('speech-detected', (event) => {
+        const speechDetectedUnsubscribe = await listen(TauriEvent.SPEECH_DETECTED, (event) => {
           logger.debug('speech-detected event received:', event);
           setSpeechDetected(true);
         });
 
         unsubscribes.push(
-          transcriptErrorUnsubscribe,
           transcriptionErrorUnsubscribe,
           speechDetectedUnsubscribe
         );

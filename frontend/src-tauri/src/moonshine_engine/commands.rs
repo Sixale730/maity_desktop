@@ -1,3 +1,4 @@
+use crate::events;
 use crate::moonshine_engine::{ModelInfo, ModelStatus, MoonshineEngine, DownloadProgress};
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -81,7 +82,7 @@ pub async fn moonshine_load_model<R: Runtime>(
     if let Some(engine) = engine {
         // Emit model loading started event
         if let Err(e) = app_handle.emit(
-            "moonshine-model-loading-started",
+            events::MOONSHINE_MODEL_LOADING_STARTED,
             serde_json::json!({
                 "modelName": model_name
             }),
@@ -97,7 +98,7 @@ pub async fn moonshine_load_model<R: Runtime>(
         // Emit model loading completed/failed event
         if result.is_ok() {
             if let Err(e) = app_handle.emit(
-                "moonshine-model-loading-completed",
+                events::MOONSHINE_MODEL_LOADING_COMPLETED,
                 serde_json::json!({
                     "modelName": model_name
                 }),
@@ -106,7 +107,7 @@ pub async fn moonshine_load_model<R: Runtime>(
             }
         } else if let Err(ref error) = result {
             if let Err(e) = app_handle.emit(
-                "moonshine-model-loading-failed",
+                events::MOONSHINE_MODEL_LOADING_FAILED,
                 serde_json::json!({
                     "modelName": model_name,
                     "error": error
@@ -382,7 +383,7 @@ pub async fn moonshine_download_model<R: Runtime>(
 
             // Emit download progress event with detailed info
             if let Err(e) = app_handle_clone.emit(
-                "moonshine-model-download-progress",
+                events::MOONSHINE_MODEL_DOWNLOAD_PROGRESS,
                 serde_json::json!({
                     "modelName": model_name_clone,
                     "progress": progress.percent,
@@ -411,7 +412,7 @@ pub async fn moonshine_download_model<R: Runtime>(
             Ok(()) => {
                 // Emit completion event
                 if let Err(e) = app_handle.emit(
-                    "moonshine-model-download-complete",
+                    events::MOONSHINE_MODEL_DOWNLOAD_COMPLETE,
                     serde_json::json!({
                         "modelName": model_name
                     }),
@@ -428,7 +429,7 @@ pub async fn moonshine_download_model<R: Runtime>(
             Err(e) => {
                 // Emit error event
                 if let Err(emit_e) = app_handle.emit(
-                    "moonshine-model-download-error",
+                    events::MOONSHINE_MODEL_DOWNLOAD_ERROR,
                     serde_json::json!({
                         "modelName": model_name,
                         "error": e.to_string()
@@ -462,7 +463,7 @@ pub async fn moonshine_cancel_download<R: Runtime>(
 
         // Emit cancellation event to update UI
         let _ = app_handle.emit(
-            "moonshine-model-download-progress",
+            events::MOONSHINE_MODEL_DOWNLOAD_PROGRESS,
             serde_json::json!({
                 "modelName": model_name,
                 "progress": 0,

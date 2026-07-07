@@ -9,6 +9,7 @@ use crate::coach::llm_helper::build_coach_service_with_model;
 use crate::coach::nudge_engine::{evaluate_nudge, ConversationSnapshot};
 use crate::coach::prompt::{build_user_prompt, MeetingType, COACH_SYSTEM_PROMPT, DEFAULT_TIPS_MODEL};
 use crate::coach::trigger::{analyze_turn_with_context, SignalPriority, TurnContext};
+use crate::events;
 use crate::recording_pipeline::get_active_live_feedback_config;
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
@@ -591,7 +592,7 @@ pub async fn start<R: Runtime + 'static>(app: AppHandle<R>) -> Result<(), String
     let endpoint_ev = endpoint.clone();
     let token_ev = token.clone();
 
-    let listener_id = app.listen("transcript-update", move |event| {
+    let listener_id = app.listen(events::TRANSCRIPT_UPDATE, move |event| {
         let Ok(payload) = serde_json::from_str::<TranscriptPayload>(event.payload()) else {
             warn!("🪲 Coach: payload transcript-update inválido");
             return;
@@ -822,7 +823,7 @@ pub async fn start<R: Runtime + 'static>(app: AppHandle<R>) -> Result<(), String
                             trigger: trigger_str,
                             timestamp_secs: dur as u64,
                         };
-                        let _ = app_bg.emit("coach-tip-update", &update);
+                        let _ = app_bg.emit(events::COACH_TIP_UPDATE, &update);
                         let ttfb_ms = if let Ok(mut st) = state_bg.lock() {
                             let ttfb = st.mark_first_tip_if_needed();
                             st.tips_from_heuristic += 1; // §1.5.4 nudge predefinido = heuristico
@@ -834,7 +835,7 @@ pub async fn start<R: Runtime + 'static>(app: AppHandle<R>) -> Result<(), String
                         if let Some(ms) = ttfb_ms {
                             info!("[METRIC] TTFB primer tip: {}ms", ms);
                             let _ = app_bg.emit(
-                                "coach-metrics",
+                                events::COACH_METRICS,
                                 serde_json::json!({ "ttfb_first_tip_ms": ms as u64 }),
                             );
                         }
@@ -907,7 +908,7 @@ pub async fn start<R: Runtime + 'static>(app: AppHandle<R>) -> Result<(), String
                             interlocutor_turns: st.interlocutor_turns,
                         }
                     };
-                    let _ = app_mm.emit("meeting-metrics", &payload);
+                    let _ = app_mm.emit(events::MEETING_METRICS, &payload);
                 }
                 _ = token_mm.cancelled() => {
                     info!("🛑 Coach meeting-metrics emitter cancelled");
@@ -966,7 +967,7 @@ pub async fn start<R: Runtime + 'static>(app: AppHandle<R>) -> Result<(), String
                         trigger: Some(h.trigger.to_string()),
                         timestamp_secs: dur as u64,
                     };
-                    let _ = app_he.emit("coach-tip-update", &update);
+                    let _ = app_he.emit(events::COACH_TIP_UPDATE, &update);
                     info!(
                         "[heuristic] tip directo emitido: trigger={} priority={}",
                         h.trigger, h.priority
@@ -982,7 +983,7 @@ pub async fn start<R: Runtime + 'static>(app: AppHandle<R>) -> Result<(), String
                     if let Some(ms) = ttfb_ms {
                         info!("[METRIC] TTFB primer tip: {}ms (heuristic)", ms);
                         let _ = app_he.emit(
-                            "coach-metrics",
+                            events::COACH_METRICS,
                             serde_json::json!({ "ttfb_first_tip_ms": ms as u64 }),
                         );
                     }
@@ -1057,7 +1058,7 @@ pub fn stop<R: Runtime>(app: &AppHandle<R>) {
         sidecar_timeouts, sidecar_restarts, sidecar_cooldowns, breaker_opens
     );
     let _ = app.emit(
-        "coach-metrics",
+        events::COACH_METRICS,
         serde_json::json!({
             "session_summary": {
                 "llm_parse_total": parse_total,
@@ -1238,7 +1239,7 @@ async fn call_ollama_and_emit<R: Runtime>(
         warn!("Coach: tip duplicado descartado (Jaccard >= 0.85)");
         return;
     }
-    let _ = app.emit("coach-tip-update", &update);
+    let _ = app.emit(events::COACH_TIP_UPDATE, &update);
     info!("💡 Coach tip emitted: {}", update.tip);
     let ttfb_ms = if let Ok(mut st) = state.lock() {
         let ttfb = st.mark_first_tip_if_needed();
@@ -1251,7 +1252,7 @@ async fn call_ollama_and_emit<R: Runtime>(
     if let Some(ms) = ttfb_ms {
         info!("[METRIC] TTFB primer tip: {}ms", ms);
         let _ = app.emit(
-            "coach-metrics",
+            events::COACH_METRICS,
             serde_json::json!({ "ttfb_first_tip_ms": ms as u64 }),
         );
     }

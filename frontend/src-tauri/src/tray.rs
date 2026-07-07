@@ -1,3 +1,4 @@
+use crate::events;
 use tauri::{
     Emitter,
     menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem},
@@ -99,7 +100,7 @@ fn toggle_recording_handler<R: Runtime>(app: &AppHandle<R>) {
 
                     // Trigger frontend post-processing via event (works from any page)
                     // (SQLite save, navigation, analytics)
-                    if let Err(e) = app_clone.emit("recording-stop-complete", true) {
+                    if let Err(e) = app_clone.emit(events::RECORDING_STOP_COMPLETE, true) {
                         log::error!("Tray toggle: Failed to emit recording-stop-complete event: {}", e);
                     }
                 }
@@ -127,13 +128,13 @@ fn toggle_recording_handler<R: Runtime>(app: &AppHandle<R>) {
                     log::info!("Tray toggle: Recording started successfully (native path)");
 
                     // Notify frontend so it updates the UI when the window is restored
-                    if let Err(e) = app_clone.emit("recording-start-complete", true) {
+                    if let Err(e) = app_clone.emit(events::RECORDING_START_COMPLETE, true) {
                         log::warn!("Tray toggle: failed to emit recording-start-complete: {}", e);
                     }
 
                     // Analytics: notify frontend of tray-triggered start so the dual-emit
                     // to platform_logs captures the correct trigger source.
-                    if let Err(e) = app_clone.emit("tray-recording-started", ()) {
+                    if let Err(e) = app_clone.emit(events::TRAY_RECORDING_STARTED, ()) {
                         log::warn!("Tray toggle: failed to emit tray-recording-started: {}", e);
                     }
 
@@ -232,7 +233,7 @@ fn stop_recording_handler<R: Runtime>(app: &AppHandle<R>) {
 
                 // Trigger frontend post-processing via event (works from any page)
                 // (SQLite save, navigation, analytics)
-                if let Err(e) = app_clone.emit("recording-stop-complete", true) {
+                if let Err(e) = app_clone.emit(events::RECORDING_STOP_COMPLETE, true) {
                     log::error!("Tray: Failed to emit recording-stop-complete event: {}", e);
                 }
             }

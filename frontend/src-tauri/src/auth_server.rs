@@ -1,3 +1,4 @@
+use crate::events;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager, Runtime};
@@ -161,7 +162,7 @@ async fn run_server<R: Runtime>(listener: TcpListener, app: AppHandle<R>) {
         }
     };
 
-    if let Err(e) = app.emit("auth-server-stopped", AuthServerStopped {
+    if let Err(e) = app.emit(events::AUTH_SERVER_STOPPED, AuthServerStopped {
         reason: shutdown_reason.to_string(),
     }) {
         log::error!("[AuthServer] Failed to emit auth-server-stopped: {}", e);
@@ -277,7 +278,7 @@ async fn handle_connection<R: Runtime>(
                             *guard = Some(code_value.to_string());
                         }
 
-                        if let Err(e) = app.emit("auth-code-received", AuthCode { code: code_value.to_string() }) {
+                        if let Err(e) = app.emit(events::AUTH_CODE_RECEIVED, AuthCode { code: code_value.to_string() }) {
                             log::error!("[AuthServer] Failed to emit auth-code-received: {}", e);
                         }
 
@@ -353,7 +354,7 @@ async fn handle_connection<R: Runtime>(
             }
 
             // Emit event to the frontend
-            if let Err(e) = app.emit("auth-tokens-received", tokens.clone()) {
+            if let Err(e) = app.emit(events::AUTH_TOKENS_RECEIVED, tokens.clone()) {
                 log::error!("[AuthServer] Failed to emit auth-tokens-received: {}", e);
                 send_response(&mut stream, 500, "Internal error").await;
                 return false;

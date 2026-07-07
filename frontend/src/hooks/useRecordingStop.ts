@@ -2,6 +2,7 @@ import { useEffect, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { listen } from '@tauri-apps/api/event';
 import { toast } from 'sonner';
+import { TauriEvent } from '@/lib/tauri-events';
 import { useTranscripts } from '@/contexts/TranscriptContext';
 import { useSidebar } from '@/components/Sidebar/SidebarProvider';
 import { useRecordingState, RecordingStatus } from '@/contexts/RecordingStateContext';
@@ -84,7 +85,7 @@ export function useRecordingStop(
           folder_path?: string;
           meeting_name?: string;
           duration_seconds?: number | null;
-        }>('recording-stopped', async (event) => {
+        }>(TauriEvent.RECORDING_STOPPED, async (event) => {
           // Create promise that resolves when sessionStorage is set (prevents race condition)
           recordingStoppedDataRef.current = (async () => {
             const { folder_path, meeting_name, duration_seconds } = event.payload;

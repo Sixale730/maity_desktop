@@ -8,6 +8,8 @@ use log::{info, warn, error};
 use std::sync::{Arc, LazyLock, RwLock};
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 
+use crate::events;
+
 // ============================================================================
 // FAST PATH: PRELOADED ENGINE FLAG
 // ============================================================================
@@ -195,7 +197,7 @@ pub async fn preload_transcription_engine<R: Runtime>(app: AppHandle<R>) {
                     // Available for a future UI indicator ("Modelo listo"
                     // toast). No frontend subscriber required today.
                     let _ = app.emit(
-                        "transcription-preload-completed",
+                        events::TRANSCRIPTION_PRELOAD_COMPLETED,
                         serde_json::json!({
                             "provider": config.provider,
                             "model": config.model,
@@ -234,7 +236,7 @@ pub async fn validate_transcription_model_ready<R: Runtime>(app: &AppHandle<R>) 
                        Check earlier logs for DB init errors (sqlx migration checksum mismatch?).";
             log::error!("{}", msg);
             let _ = app.emit(
-                "transcription-error",
+                events::TRANSCRIPTION_ERROR,
                 serde_json::json!({
                     "error": msg,
                     "userMessage": "La base de datos no se pudo inicializar. Reinicia la app o contacta soporte si persiste.",
@@ -531,11 +533,11 @@ pub async fn get_or_init_transcription_engine<R: Runtime>(
                         let speech_flag = &super::worker::SPEECH_DETECTED_EMITTED;
                         if !speech_flag.load(std::sync::atomic::Ordering::SeqCst) {
                             speech_flag.store(true, std::sync::atomic::Ordering::SeqCst);
-                            let _ = app_for_mic.emit("speech-detected", serde_json::json!({
+                            let _ = app_for_mic.emit(events::SPEECH_DETECTED, serde_json::json!({
                                 "message": "Speech activity detected"
                             }));
                         }
-                        match app_for_mic.emit("transcript-update", &update) {
+                        match app_for_mic.emit(events::TRANSCRIPT_UPDATE, &update) {
                             Ok(_) => {
                                 println!("[DEEPGRAM-MIC] transcript-update emitted: seq={}, partial={}, source={:?}",
                                     update.sequence_id, update.is_partial, update.source_type);
@@ -552,11 +554,11 @@ pub async fn get_or_init_transcription_engine<R: Runtime>(
                         let speech_flag = &super::worker::SPEECH_DETECTED_EMITTED;
                         if !speech_flag.load(std::sync::atomic::Ordering::SeqCst) {
                             speech_flag.store(true, std::sync::atomic::Ordering::SeqCst);
-                            let _ = app_for_sys.emit("speech-detected", serde_json::json!({
+                            let _ = app_for_sys.emit(events::SPEECH_DETECTED, serde_json::json!({
                                 "message": "Speech activity detected"
                             }));
                         }
-                        match app_for_sys.emit("transcript-update", &update) {
+                        match app_for_sys.emit(events::TRANSCRIPT_UPDATE, &update) {
                             Ok(_) => {
                                 println!("[DEEPGRAM-SYS] transcript-update emitted: seq={}, partial={}, source={:?}",
                                     update.sequence_id, update.is_partial, update.source_type);

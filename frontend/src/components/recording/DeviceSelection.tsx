@@ -9,6 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Label } from '@/components/ui/label';
 import Analytics from '@/lib/analytics';
 import { logger } from '@/lib/logger';
+import { TauriEvent } from '@/lib/tauri-events';
 import type { AudioDevice, SelectedDevices, AudioLevelData, AudioLevelUpdate } from '@/types/audio';
 
 export type { AudioDevice, SelectedDevices, AudioLevelData, AudioLevelUpdate };
@@ -75,7 +76,7 @@ export function DeviceSelection({ selectedDevices, onDeviceChange, disabled = fa
 
     const setupAudioLevelListener = async () => {
       try {
-        unlisten = await listen<AudioLevelUpdate>('audio-levels', (event) => {
+        unlisten = await listen<AudioLevelUpdate>(TauriEvent.AUDIO_LEVELS, (event) => {
           const levelUpdate = event.payload;
           const newLevels = new Map<string, AudioLevelData>();
 

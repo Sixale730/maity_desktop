@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { logger } from '@/lib/logger';
+import { TauriEvent } from '@/lib/tauri-events';
 
 export interface ParakeetAutoDownloadState {
   isModelReady: boolean;
@@ -123,7 +124,7 @@ export function useParakeetAutoDownload(): ParakeetAutoDownloadState {
         downloaded_mb?: number;
         total_mb?: number;
         speed_mbps?: number;
-      }>('parakeet-model-download-progress', (event) => {
+      }>(TauriEvent.PARAKEET_MODEL_DOWNLOAD_PROGRESS, (event) => {
         const { progress, status, downloaded_mb, total_mb, speed_mbps } = event.payload;
         if (status === 'cancelled') {
           setIsDownloading(false);
@@ -137,7 +138,7 @@ export function useParakeetAutoDownload(): ParakeetAutoDownloadState {
       });
       unlisteners.push(unProgress);
 
-      const unComplete = await listen<void>('parakeet-model-download-complete', () => {
+      const unComplete = await listen<void>(TauriEvent.PARAKEET_MODEL_DOWNLOAD_COMPLETE, () => {
         logger.debug('[ParakeetAutoDownload] Download complete');
         setIsModelReady(true);
         setIsDownloading(false);
@@ -146,7 +147,7 @@ export function useParakeetAutoDownload(): ParakeetAutoDownloadState {
       });
       unlisteners.push(unComplete);
 
-      const unError = await listen<{ error?: string }>('parakeet-model-download-error', (event) => {
+      const unError = await listen<{ error?: string }>(TauriEvent.PARAKEET_MODEL_DOWNLOAD_ERROR, (event) => {
         const errorMsg = event.payload?.error || 'Download failed';
         console.error('[ParakeetAutoDownload] Download error:', errorMsg);
         setError(errorMsg);

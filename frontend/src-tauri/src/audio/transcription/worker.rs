@@ -13,6 +13,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Runtime};
 
+use crate::events;
+
 // Sequence counter for transcript updates (pub for use by streaming providers like Deepgram)
 pub static SEQUENCE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -178,7 +180,7 @@ pub fn start_transcription_task<R: Runtime>(
             }
             Err(e) => {
                 error!("Failed to initialize transcription engine: {}", e);
-                let _ = app.emit("transcription-error", serde_json::json!({
+                let _ = app.emit(events::TRANSCRIPTION_ERROR, serde_json::json!({
                     "error": e,
                     "userMessage": "Recording failed: Unable to initialize speech recognition. Please check your model settings.",
                     "actionable": true
@@ -361,7 +363,7 @@ pub fn start_transcription_task<R: Runtime>(
 
                                         if !current_flag {
                                             SPEECH_DETECTED_EMITTED.store(true, Ordering::SeqCst);
-                                            match app_clone.emit("speech-detected", serde_json::json!({
+                                            match app_clone.emit(events::SPEECH_DETECTED, serde_json::json!({
                                                 "message": "Speech activity detected"
                                             })) {
                                                 Ok(_) => info!("🎤 ✅ First speech detected - successfully emitted speech-detected event"),
@@ -404,7 +406,7 @@ pub fn start_transcription_task<R: Runtime>(
                                         debug!("[WORKER] emit transcript-update: '{}' (seq={}, partial={}, conf={:.2})",
                                                  update.text, update.sequence_id, update.is_partial, update.confidence);
 
-                                        match app_clone.emit("transcript-update", &update) {
+                                        match app_clone.emit(events::TRANSCRIPT_UPDATE, &update) {
                                             Ok(_) => {
                                                 debug!("[WORKER] transcript-update emitido OK");
                                             }
@@ -440,7 +442,7 @@ pub fn start_transcription_task<R: Runtime>(
                                         }
                                         _ => {
                                             warn!("Worker {}: Transcription failed: {}", worker_id, e);
-                                            let _ = app_clone.emit("transcription-warning", e.to_string());
+                                            let _ = app_clone.emit(events::TRANSCRIPTION_WARNING, e.to_string());
                                         }
                                     }
                                 }
@@ -469,7 +471,7 @@ pub fn start_transcription_task<R: Runtime>(
                                 100
                             };
 
-                            let _ = app_clone.emit("transcription-progress", serde_json::json!({
+                            let _ = app_clone.emit(events::TRANSCRIPTION_PROGRESS, serde_json::json!({
                                 "worker_id": worker_id,
                                 "chunks_completed": completed,
                                 "chunks_queued": queued,
@@ -567,7 +569,7 @@ pub fn start_transcription_task<R: Runtime>(
                     0.0
                 };
                 let _ = app.emit(
-                    "transcription-backpressure",
+                    events::TRANSCRIPTION_BACKPRESSURE,
                     serde_json::json!({
                         "dropped_now": dropped_now,
                         "dropped_total": dropped_total,
@@ -713,7 +715,7 @@ pub fn start_transcription_task<R: Runtime>(
             if pending >= LAG_WARNING_LOW && pending < backpressure_threshold {
                 if pending % 100 == 0 {
                     let _ = app.emit(
-                        "transcription-lag-warning",
+                        events::TRANSCRIPTION_LAG_WARNING,
                         serde_json::json!({
                             "queue_depth": pending,
                             "threshold_drop": backpressure_threshold,
@@ -731,7 +733,7 @@ pub fn start_transcription_task<R: Runtime>(
                 } else {
                     0.0
                 };
-                let _ = app.emit("transcription-lag-update", serde_json::json!({
+                let _ = app.emit(events::TRANSCRIPTION_LAG_UPDATE, serde_json::json!({
                     "queue_depth": pending,
                     "lag_seconds": lag_seconds,
                     "chunks_per_second": chunks_per_second,
@@ -755,7 +757,7 @@ pub fn start_transcription_task<R: Runtime>(
         let completed_now = chunks_completed.load(Ordering::SeqCst);
         let remaining = total_chunks_queued.saturating_sub(completed_now);
         let estimated_seconds = remaining as f64 * 0.5; // ~500ms per accumulated chunk
-        let _ = app.emit("transcription-finishing", serde_json::json!({
+        let _ = app.emit(events::TRANSCRIPTION_FINISHING, serde_json::json!({
             "total_remaining": remaining,
             "processed": 0,
             "estimated_seconds": estimated_seconds,
@@ -764,7 +766,7 @@ pub fn start_transcription_task<R: Runtime>(
         }));
 
         // Emit final chunk count to frontend
-        let _ = app.emit("transcription-queue-complete", serde_json::json!({
+        let _ = app.emit(events::TRANSCRIPTION_QUEUE_COMPLETE, serde_json::json!({
             "total_chunks": total_chunks_queued,
             "message": format!("{} chunks queued for processing - waiting for completion", total_chunks_queued)
         }));
@@ -823,7 +825,7 @@ pub fn start_transcription_task<R: Runtime>(
                     0.0
                 };
 
-                let _ = app.emit("transcription-summary", serde_json::json!({
+                let _ = app.emit(events::TRANSCRIPTION_SUMMARY, serde_json::json!({
                     "chunks_queued": final_queued,
                     "chunks_completed": final_completed,
                     "chunks_dropped": final_dropped,
@@ -848,7 +850,7 @@ pub fn start_transcription_task<R: Runtime>(
 
                 // Emit critical error event with full metrics
                 let _ = app.emit(
-                    "transcript-chunk-loss-detected",
+                    events::TRANSCRIPT_CHUNK_LOSS_DETECTED,
                     serde_json::json!({
                         "chunks_queued": final_queued,
                         "chunks_completed": final_completed,
@@ -866,7 +868,7 @@ pub fn start_transcription_task<R: Runtime>(
         let final_completed = chunks_completed.load(Ordering::SeqCst);
         let final_dropped = chunks_dropped.load(Ordering::SeqCst);
         let was_cancelled = CANCEL_PENDING.load(Ordering::SeqCst);
-        let _ = app.emit("transcription-complete", serde_json::json!({
+        let _ = app.emit(events::TRANSCRIPTION_COMPLETE, serde_json::json!({
             "chunks_completed": final_completed,
             "chunks_dropped": final_dropped,
             "total_chunks": total_chunks_queued,
@@ -964,7 +966,7 @@ async fn transcribe_chunk_with_provider<R: Runtime>(
 
                     let transcription_error = TranscriptionError::EngineFailed(e.to_string());
                     let _ = app.emit(
-                        "transcription-error",
+                        events::TRANSCRIPTION_ERROR,
                         &serde_json::json!({
                             "error": transcription_error.to_string(),
                             "userMessage": format!("Transcription failed: {}", transcription_error),
@@ -1000,7 +1002,7 @@ async fn transcribe_chunk_with_provider<R: Runtime>(
 
                     let transcription_error = TranscriptionError::EngineFailed(e.to_string());
                     let _ = app.emit(
-                        "transcription-error",
+                        events::TRANSCRIPTION_ERROR,
                         &serde_json::json!({
                             "error": transcription_error.to_string(),
                             "userMessage": format!("Transcription failed: {}", transcription_error),
@@ -1036,7 +1038,7 @@ async fn transcribe_chunk_with_provider<R: Runtime>(
 
                     let transcription_error = TranscriptionError::EngineFailed(e.to_string());
                     let _ = app.emit(
-                        "transcription-error",
+                        events::TRANSCRIPTION_ERROR,
                         &serde_json::json!({
                             "error": transcription_error.to_string(),
                             "userMessage": format!("Transcription failed: {}", transcription_error),
@@ -1074,7 +1076,7 @@ async fn transcribe_chunk_with_provider<R: Runtime>(
                     // would cause RecordingControls to call onRecordingStop(false) and kill the
                     // entire recording session, which is too aggressive for a single chunk fail.
                     warn!("Deepgram chunk {} send failed ({:?}): {}", chunk.chunk_id, device_type, err_msg);
-                    let _ = app.emit("transcription-warning", &err_msg);
+                    let _ = app.emit(events::TRANSCRIPTION_WARNING, &err_msg);
                     Err(e)
                 }
             }
@@ -1117,7 +1119,7 @@ async fn transcribe_chunk_with_provider<R: Runtime>(
                     );
 
                     let _ = app.emit(
-                        "transcription-error",
+                        events::TRANSCRIPTION_ERROR,
                         &serde_json::json!({
                             "error": e.to_string(),
                             "userMessage": format!("Transcription failed: {}", e),

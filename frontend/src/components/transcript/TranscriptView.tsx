@@ -7,6 +7,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { RecordingStatusBar } from '@/components/recording/RecordingStatusBar';
 import { motion, AnimatePresence } from 'framer-motion';
 import { logger } from '@/lib/logger';
+import { TauriEvent } from '@/lib/tauri-events';
 
 // Speaker indicator component to show who is speaking
 const SpeakerIndicator = memo(function SpeakerIndicator({
@@ -176,7 +177,7 @@ export const TranscriptView: React.FC<TranscriptViewProps> = ({ transcripts, isR
 
     const setupListener = async () => {
       const { listen } = await import('@tauri-apps/api/event');
-      unsubscribe = await listen<SpeechDetectedEvent>('speech-detected', () => {
+      unsubscribe = await listen<SpeechDetectedEvent>(TauriEvent.SPEECH_DETECTED, () => {
         setSpeechDetected(true);
       });
     };

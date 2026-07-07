@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import { TauriEvent } from '@/lib/tauri-events';
 
 /**
  * Estado reactivo de la ventana flotante coach-float (la única ventana
@@ -35,7 +36,7 @@ export function useRecordingWidgetOpen(): boolean | null {
 
   useEffect(() => {
     const unlistenP = listen<{ visible: boolean }>(
-      'coach-float-visibility-changed',
+      TauriEvent.COACH_FLOAT_VISIBILITY_CHANGED,
       (e) => setWidgetOpen(e.payload.visible),
     );
     return () => { unlistenP.then(fn => fn()); };

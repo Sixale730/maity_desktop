@@ -92,15 +92,15 @@ describe('RecordingControls — listener subscription', () => {
     }
     await new Promise(resolve => setTimeout(resolve, 0));
 
-    // Three listeners: transcript-error, transcription-error, speech-detected.
-    // Should be exactly 3 — not 33.
+    // Two listeners: transcription-error, speech-detected.
+    // Should be exactly 2 — not 22. (transcript-error era un listener huérfano
+    // sin emisor — typo legacy — eliminado en WS4.)
     const subscribedEvents = listenMock.mock.calls.map(([event]) => event).sort();
     expect(subscribedEvents).toEqual([
       'speech-detected',
-      'transcript-error',
       'transcription-error',
     ]);
-    expect(listenMock).toHaveBeenCalledTimes(3);
+    expect(listenMock).toHaveBeenCalledTimes(2);
 
     cleanup();
   });
@@ -122,11 +122,11 @@ describe('RecordingControls — listener subscription', () => {
     const { unmount } = render(<Parent />);
     await new Promise(resolve => setTimeout(resolve, 0));
 
-    expect(listenMock).toHaveBeenCalledTimes(3);
+    expect(listenMock).toHaveBeenCalledTimes(2);
     unmount();
 
-    // All 3 unsubscribes must run (cleanup race fix).
-    expect(unsubMock).toHaveBeenCalledTimes(3);
+    // All 2 unsubscribes must run (cleanup race fix).
+    expect(unsubMock).toHaveBeenCalledTimes(2);
   });
 
   it('immediately unsubscribes if cleanup runs before async listen() resolves (cancelled flag)', async () => {

@@ -4,6 +4,7 @@ import React, { createContext, useContext, useState, useEffect } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { toast } from 'sonner';
 import { logger } from '@/lib/logger';
+import { TauriEvent } from '@/lib/tauri-events';
 
 /**
  * Ollama download state synchronized with backend
@@ -50,7 +51,7 @@ export function OllamaDownloadProvider({ children }: { children: React.ReactNode
       try {
         // Download progress
         const unlistenProgress = await listen<{ modelName: string; progress: number }>(
-          'ollama-model-download-progress',
+          TauriEvent.OLLAMA_MODEL_DOWNLOAD_PROGRESS,
           (event) => {
             const { modelName, progress } = event.payload;
             logger.debug(`🔵 [OllamaDownloadContext] Progress for ${modelName}: ${progress}%`);
@@ -74,7 +75,7 @@ export function OllamaDownloadProvider({ children }: { children: React.ReactNode
 
         // Download complete
         const unlistenComplete = await listen<{ modelName: string }>(
-          'ollama-model-download-complete',
+          TauriEvent.OLLAMA_MODEL_DOWNLOAD_COMPLETE,
           (event) => {
             const { modelName } = event.payload;
             logger.debug(`✅ [OllamaDownloadContext] Download complete for ${modelName}`);
@@ -102,7 +103,7 @@ export function OllamaDownloadProvider({ children }: { children: React.ReactNode
 
         // Download error
         const unlistenError = await listen<{ modelName: string; error: string }>(
-          'ollama-model-download-error',
+          TauriEvent.OLLAMA_MODEL_DOWNLOAD_ERROR,
           (event) => {
             const { modelName, error } = event.payload;
             console.error(`❌ [OllamaDownloadContext] Download error for ${modelName}:`, error);

@@ -15,6 +15,7 @@ import { TalkSplitBar } from '@/components/coach/TalkSplitBar';
 import { getPriorityColor, getCategoryMeta, PRIORITY_META } from '@/components/coach/tipMeta';
 import { supabase } from '@/lib/supabase';
 import { Analytics } from '@/lib/analytics';
+import { TauriEvent } from '@/lib/tauri-events';
 
 interface AudioLevels {
   micRms: number;
@@ -228,7 +229,7 @@ export default function CoachFloatPage() {
       // recording-audio-levels: solo aplicar cuando realmente estamos grabando.
       // Iter 9: en idle la pipeline puede emitir niveles spurious (warm-up)
       // que movían las barras de sistema sin razón. Gate explícito.
-      listen<AudioLevels>('recording-audio-levels', (e) => {
+      listen<AudioLevels>(TauriEvent.RECORDING_AUDIO_LEVELS, (e) => {
         if (!recordingActiveRef.current) return; // ignorar en idle
         setLevels({ micRms: e.payload.micRms, sysRms: e.payload.sysRms });
       }),
@@ -247,7 +248,7 @@ export default function CoachFloatPage() {
           peak_level: number;
           is_active: boolean;
         }>;
-      }>('audio-levels', (e) => {
+      }>(TauriEvent.AUDIO_LEVELS, (e) => {
         const inputLvl = e.payload.levels.find(l => l.device_type === 'input');
         const outputLvl = e.payload.levels.find(l => l.device_type === 'output');
         setLevels({
@@ -255,13 +256,10 @@ export default function CoachFloatPage() {
           sysRms: outputLvl?.rms_level ?? 0,
         });
       }),
-      listen<string>('early-meeting-id', (e) => {
-        meetingIdRef.current = e.payload;
-      }),
       // Iter 9: el device-picker (mini-ventana) emite este evento al click
       // en un device. Aplicamos la selección + hot-swap si grabando.
       listen<{ deviceName: string; deviceType: 'Microphone' | 'SystemAudio' }>(
-        'device-picker-selected',
+        TauriEvent.DEVICE_PICKER_SELECTED,
         (e) => {
           applyPickedDevice(e.payload.deviceName, e.payload.deviceType);
         },
@@ -270,7 +268,7 @@ export default function CoachFloatPage() {
       // inmediato sin esperar al polling de 2s. Ya NO cerramos la ventana al
       // terminar grabación — ahora el coach-float es la UI permanente y
       // simplemente vuelve a modo compact (idle) cuando se detiene.
-      listen('recording-start-complete', () => {
+      listen(TauriEvent.RECORDING_START_COMPLETE, () => {
         setRecordingActive(true);
         setBusy(false);
         setErrorMsg(null);
@@ -290,7 +288,7 @@ export default function CoachFloatPage() {
           }).catch(() => {});
         }
       }),
-      listen('recording-stop-complete', () => {
+      listen(TauriEvent.RECORDING_STOP_COMPLETE, () => {
         setRecordingActive(false);
         setBusy(false);
         // Iter 11: cerrar drawer al detener + resetear guard para el próximo cycle.
@@ -304,7 +302,7 @@ export default function CoachFloatPage() {
           }).catch(() => {});
         }
       }),
-      listen('recording-stopped', () => {
+      listen(TauriEvent.RECORDING_STOPPED, () => {
         setRecordingActive(false);
         setBusy(false);
         const wasDrawerOpen = drawerOpenRef.current;
@@ -318,8 +316,8 @@ export default function CoachFloatPage() {
         }
       }),
       // Pausa/reanuda: sincroniza el estado de pausa al instante.
-      listen('recording-paused', () => { setIsPaused(true); }),
-      listen('recording-resumed', () => { setIsPaused(false); }),
+      listen(TauriEvent.RECORDING_PAUSED, () => { setIsPaused(true); }),
+      listen(TauriEvent.RECORDING_RESUMED, () => { setIsPaused(false); }),
     ];
     return () => { subs.forEach(p => p.then(fn => fn())); };
   }, []);

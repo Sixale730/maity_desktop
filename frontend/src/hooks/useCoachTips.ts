@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
+import { TauriEvent } from '@/lib/tauri-events';
 
 export interface CoachTipUpdate {
   tip: string;
@@ -42,7 +43,7 @@ export function useCoachTips(maxTips = 20): UseCoachTipsResult {
       });
 
     // Escuchar nuevos tips y acumular (no overwrite)
-    const unlistenTip = listen<CoachTipUpdate>('coach-tip-update', (event) => {
+    const unlistenTip = listen<CoachTipUpdate>(TauriEvent.COACH_TIP_UPDATE, (event) => {
       setTips((prev) => {
         const next = [...prev, event.payload];
         return next.length > maxTipsRef.current
@@ -52,17 +53,17 @@ export function useCoachTips(maxTips = 20): UseCoachTipsResult {
     });
 
     // Limpiar al iniciar nueva grabación
-    const unlistenReset = listen('recording-start-complete', () => {
+    const unlistenReset = listen(TauriEvent.RECORDING_START_COMPLETE, () => {
       setTips([]);
     });
 
     // Limpiar también al detener para que el drawer no muestre tips stale
     // cuando el usuario lo reabre en idle. Antes solo limpiábamos en start,
     // así que el tip card quedaba con el último tip de la sesión anterior.
-    const unlistenStopComplete = listen('recording-stop-complete', () => {
+    const unlistenStopComplete = listen(TauriEvent.RECORDING_STOP_COMPLETE, () => {
       setTips([]);
     });
-    const unlistenStopped = listen('recording-stopped', () => {
+    const unlistenStopped = listen(TauriEvent.RECORDING_STOPPED, () => {
       setTips([]);
     });
 

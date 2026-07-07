@@ -18,6 +18,7 @@ import { Video, Mic, X, Clock } from 'lucide-react'
 import { toast } from 'sonner'
 import { useRecordingState, RecordingStatus } from '@/contexts/RecordingStateContext'
 import { logger } from '@/lib/logger'
+import { TauriEvent } from '@/lib/tauri-events'
 
 interface DetectedMeeting {
   app: string | { Unknown: string }
@@ -106,7 +107,7 @@ export function MeetingDetectionDialog() {
     let unlisten: UnlistenFn | undefined
 
     const setupListener = async () => {
-      unlisten = await listen<MeetingDetectedEvent>('meeting-detected', (event) => {
+      unlisten = await listen<MeetingDetectedEvent>(TauriEvent.MEETING_DETECTED, (event) => {
         const { meeting, action } = event.payload
         logger.debug('[MeetingDetection] Detected:', meeting, 'Action:', action)
 
@@ -172,13 +173,13 @@ export function MeetingDetectionDialog() {
           reject(new Error('Tiempo de espera agotado al iniciar grabacion'))
         }, 10000)
 
-        listen('recording-started', () => {
+        listen(TauriEvent.RECORDING_STARTED, () => {
           clearTimeout(timeout)
           cleanup?.()
           resolve()
         }).then(unlisten => { cleanup = unlisten })
 
-        listen<{ error: string }>('transcription-error', (event) => {
+        listen<{ error: string }>(TauriEvent.TRANSCRIPTION_ERROR, (event) => {
           clearTimeout(timeout)
           cleanup?.()
           reject(new Error(event.payload.error || 'Error al iniciar transcripcion'))

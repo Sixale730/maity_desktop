@@ -1,6 +1,7 @@
 import { useEffect } from 'react'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { platformLogger } from '@/lib/platformLogger'
+import { TauriEvent } from '@/lib/tauri-events'
 
 interface CoachSessionSummary {
   llm_parse_total?: number
@@ -41,7 +42,7 @@ export function useCoachMetricsTelemetry(): void {
     let unlisten: UnlistenFn | undefined
 
     const subscribe = async () => {
-      unlisten = await listen<CoachMetricsPayload>('coach-metrics', (event) => {
+      unlisten = await listen<CoachMetricsPayload>(TauriEvent.COACH_METRICS, (event) => {
         const summary = event.payload?.session_summary
         if (!summary) return
         void platformLogger.log('coach.session_summary', { ...summary })

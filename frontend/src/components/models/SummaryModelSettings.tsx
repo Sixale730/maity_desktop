@@ -8,6 +8,7 @@ import type { ModelConfig } from '@/types/models';
 import { Switch } from '@/components/ui/switch';
 import { useConfig } from '@/contexts/ConfigContext';
 import { logger } from '@/lib/logger';
+import { TauriEvent } from '@/lib/tauri-events';
 
 interface SummaryModelSettingsProps {
   refetchTrigger?: number; // Change this to trigger refetch
@@ -85,7 +86,7 @@ export function SummaryModelSettings({ refetchTrigger }: SummaryModelSettingsPro
   useEffect(() => {
     const setupListener = async () => {
       const { listen } = await import('@tauri-apps/api/event');
-      const unlisten = await listen<ModelConfig>('model-config-updated', (event) => {
+      const unlisten = await listen<ModelConfig>(TauriEvent.MODEL_CONFIG_UPDATED, (event) => {
         logger.debug('SummaryModelSettings received model-config-updated event:', event.payload);
         setModelConfig(event.payload);
       });
@@ -116,7 +117,7 @@ export function SummaryModelSettings({ refetchTrigger }: SummaryModelSettingsPro
 
       // Emit event to sync other components
       const { emit } = await import('@tauri-apps/api/event');
-      await emit('model-config-updated', config);
+      await emit(TauriEvent.MODEL_CONFIG_UPDATED, config);
 
       toast.success('Configuración del modelo guardada exitosamente');
     } catch (error) {

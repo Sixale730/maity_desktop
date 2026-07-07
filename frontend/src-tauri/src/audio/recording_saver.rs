@@ -11,6 +11,7 @@ use std::path::PathBuf;
 use super::recording_state::AudioChunk;
 use super::audio_processing::create_meeting_folder;
 use super::incremental_saver::IncrementalAudioSaver;
+use crate::events;
 
 /// Structured transcript segment for JSON export
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -498,7 +499,7 @@ impl RecordingSaver {
                 .map(|f| f.to_string_lossy().to_string())
         });
 
-        if let Err(e) = app.emit("recording-saved", &save_event) {
+        if let Err(e) = app.emit(events::RECORDING_SAVED, &save_event) {
             warn!("Failed to emit recording-saved event: {}", e);
         }
 

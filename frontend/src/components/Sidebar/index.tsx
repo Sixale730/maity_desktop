@@ -9,6 +9,7 @@ import type { ModelConfig } from '@/types/models';
 import type { TranscriptModelProps } from '@/types/transcript';
 import Analytics from '@/lib/analytics';
 import { logger } from '@/lib/logger';
+import { TauriEvent } from '@/lib/tauri-events';
 import { invoke } from '@tauri-apps/api/core';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { toast } from 'sonner';
@@ -165,7 +166,7 @@ const Sidebar: React.FC = () => {
   useEffect(() => {
     const setupListener = async () => {
       const { listen } = await import('@tauri-apps/api/event');
-      const unlisten = await listen<ModelConfig>('model-config-updated', (event) => {
+      const unlisten = await listen<ModelConfig>(TauriEvent.MODEL_CONFIG_UPDATED, (event) => {
         logger.debug('Sidebar received model-config-updated event:', event.payload);
         setModelConfig(event.payload);
       });
@@ -200,7 +201,7 @@ const Sidebar: React.FC = () => {
 
       // Emit event to sync other components
       const { emit } = await import('@tauri-apps/api/event');
-      await emit('model-config-updated', config);
+      await emit(TauriEvent.MODEL_CONFIG_UPDATED, config);
 
       // Track settings change
       await Analytics.trackSettingsChanged('model_config', `${config.provider}_${config.model}`);

@@ -4,6 +4,7 @@ import { invoke as invokeTauri } from '@tauri-apps/api/core';
 import { toast } from 'sonner';
 import Analytics from '@/lib/analytics';
 import { logger } from '@/lib/logger';
+import { TauriEvent } from '@/lib/tauri-events';
 
 interface UseModelConfigurationProps {
   serverAddress: string | null;
@@ -99,7 +100,7 @@ export function useModelConfiguration({ serverAddress }: UseModelConfigurationPr
   useEffect(() => {
     const setupListener = async () => {
       const { listen } = await import('@tauri-apps/api/event');
-      const unlisten = await listen<ModelConfig>('model-config-updated', (event) => {
+      const unlisten = await listen<ModelConfig>(TauriEvent.MODEL_CONFIG_UPDATED, (event) => {
         logger.debug('Meeting details received model-config-updated event:', event.payload);
         setModelConfig(event.payload);
       });
@@ -154,7 +155,7 @@ export function useModelConfiguration({ serverAddress }: UseModelConfigurationPr
 
       // Emit event to sync other components
       const { emit } = await import('@tauri-apps/api/event');
-      await emit('model-config-updated', payload);
+      await emit(TauriEvent.MODEL_CONFIG_UPDATED, payload);
 
       toast.success("Configuración de resumen guardada exitosamente");
 

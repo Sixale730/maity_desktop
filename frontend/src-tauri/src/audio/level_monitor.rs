@@ -10,6 +10,7 @@ use cpal::{Sample, SampleFormat, SampleRate, StreamConfig};
 use serde::Serialize;
 
 use super::audio_processing::audio_to_mono;
+use crate::events;
 
 #[derive(Debug, Serialize, Clone)]
 pub struct AudioLevelData {
@@ -104,7 +105,7 @@ impl AudioLevelMonitor {
                         levels,
                     };
 
-                    if let Err(e) = app_handle_clone.emit("audio-levels", &update) {
+                    if let Err(e) = app_handle_clone.emit(events::AUDIO_LEVELS, &update) {
                         error!("Failed to emit audio levels: {}", e);
                     }
                 }

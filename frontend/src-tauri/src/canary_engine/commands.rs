@@ -1,4 +1,5 @@
 use crate::canary_engine::{CanaryEngine, DownloadProgress, ModelInfo, ModelStatus};
+use crate::events;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -82,7 +83,7 @@ pub async fn canary_load_model<R: Runtime>(
 
     if let Some(engine) = engine {
         let _ = app_handle.emit(
-            "canary-model-loading-started",
+            events::CANARY_MODEL_LOADING_STARTED,
             serde_json::json!({ "modelName": model_name }),
         );
 
@@ -93,12 +94,12 @@ pub async fn canary_load_model<R: Runtime>(
 
         if result.is_ok() {
             let _ = app_handle.emit(
-                "canary-model-loading-completed",
+                events::CANARY_MODEL_LOADING_COMPLETED,
                 serde_json::json!({ "modelName": model_name }),
             );
         } else if let Err(ref error) = result {
             let _ = app_handle.emit(
-                "canary-model-loading-failed",
+                events::CANARY_MODEL_LOADING_FAILED,
                 serde_json::json!({ "modelName": model_name, "error": error }),
             );
         }
@@ -305,7 +306,7 @@ pub async fn canary_download_model<R: Runtime>(
             );
 
             let _ = app_handle_clone.emit(
-                "canary-model-download-progress",
+                events::CANARY_MODEL_DOWNLOAD_PROGRESS,
                 serde_json::json!({
                     "modelName": model_name_clone,
                     "progress": progress.percent,
@@ -331,7 +332,7 @@ pub async fn canary_download_model<R: Runtime>(
         match result {
             Ok(()) => {
                 let _ = app_handle.emit(
-                    "canary-model-download-complete",
+                    events::CANARY_MODEL_DOWNLOAD_COMPLETE,
                     serde_json::json!({ "modelName": model_name }),
                 );
                 crate::tray::update_tray_menu(&app_handle);
@@ -339,7 +340,7 @@ pub async fn canary_download_model<R: Runtime>(
             }
             Err(e) => {
                 let _ = app_handle.emit(
-                    "canary-model-download-error",
+                    events::CANARY_MODEL_DOWNLOAD_ERROR,
                     serde_json::json!({
                         "modelName": model_name,
                         "error": e.to_string()
@@ -370,7 +371,7 @@ pub async fn canary_cancel_download<R: Runtime>(
             .map_err(|e| format!("Failed to cancel Canary download: {}", e))?;
 
         let _ = app_handle.emit(
-            "canary-model-download-progress",
+            events::CANARY_MODEL_DOWNLOAD_PROGRESS,
             serde_json::json!({
                 "modelName": model_name,
                 "progress": 0,

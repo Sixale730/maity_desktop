@@ -7,6 +7,7 @@ use super::manager::DatabaseManager;
 use super::repositories::meeting::MeetingsRepository;
 use super::repositories::recording_log::RecordingLogRepository;
 use crate::database::models::RecordingLog;
+use crate::events;
 use crate::state::AppState;
 
 #[derive(Serialize)]
@@ -172,7 +173,7 @@ pub async fn import_and_initialize_database(
     info!("Legacy database imported and initialized successfully");
 
     // Emit event to notify frontend that database is ready
-    app.emit("database-initialized", ())
+    app.emit(events::DATABASE_INITIALIZED, ())
         .map_err(|e| format!("Failed to emit database-initialized event: {}", e))?;
 
     Ok(())
@@ -223,7 +224,7 @@ pub async fn initialize_fresh_database(app: AppHandle) -> Result<(), String> {
     info!("Fresh database initialized successfully with default models");
 
     // Emit event to notify frontend that database is ready
-    app.emit("database-initialized", ())
+    app.emit(events::DATABASE_INITIALIZED, ())
         .map_err(|e| format!("Failed to emit database-initialized event: {}", e))?;
 
     Ok(())

@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button';
 import { OnboardingContainer } from '../OnboardingContainer';
 import { useOnboarding } from '@/contexts/OnboardingContext';
 import { useUserRole } from '@/hooks/useUserRole';
+import { TauriEvent } from '@/lib/tauri-events';
 
 // §4.1 Solo gemma3:4b: tips en vivo + evaluacion post-reunion con un solo modelo.
 // Antes descargabamos 1b (1 GB) + 4b (2.4 GB). Ahora solo 4b (2.4 GB) — ahorro de
@@ -84,7 +85,7 @@ export function ModelDownloadStep() {
       downloaded_mb: number;
       total_mb: number;
       status: string;
-    }>('builtin-ai-download-progress', (e) => {
+    }>(TauriEvent.BUILTIN_AI_DOWNLOAD_PROGRESS, (e) => {
       const { model, progress, downloaded_mb, total_mb, status } = e.payload;
       const name = model as ModelName;
       setState(prev => {

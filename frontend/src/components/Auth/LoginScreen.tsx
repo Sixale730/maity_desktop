@@ -6,6 +6,7 @@ import { Loader2, X, Eye, EyeOff } from 'lucide-react'
 import { listen } from '@tauri-apps/api/event'
 import { logger } from '@/lib/logger'
 import { validatePassword } from '@/lib/password-validation'
+import { TauriEvent } from '@/lib/tauri-events'
 import { PasswordStrengthIndicator } from './PasswordStrengthIndicator'
 
 type AuthMode = 'signin' | 'signup' | 'reset'
@@ -95,7 +96,7 @@ export function LoginScreen() {
 
   // Listen for auth-server-stopped event from Rust
   useEffect(() => {
-    const unlisten = listen<{ reason: string }>('auth-server-stopped', (event) => {
+    const unlisten = listen<{ reason: string }>(TauriEvent.AUTH_SERVER_STOPPED, (event) => {
       if (event.payload.reason === 'timeout') {
         logger.debug('[LoginScreen] Auth server timed out, resetting spinner')
         setIsSigningIn(false)

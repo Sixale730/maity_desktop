@@ -7,6 +7,7 @@ use crate::coach::llama_engine;
 use crate::coach::llm_helper::build_coach_service_with_model;
 use crate::coach::model_registry;
 use crate::coach::prompt::DEFAULT_CHAT_MODEL;
+use crate::events;
 use crate::state::AppState;
 use crate::summary::llm_client::{generate_summary, LLMProvider};
 use once_cell::sync::Lazy;
@@ -38,8 +39,6 @@ const COACH_DRAWER_H: f64 = 420.0;
 // reactiva). El frontend ya no lo usa: el toggle es ahora barra↔drawer.
 const COACH_EXPANDED_W: f64 = 320.0;
 const COACH_EXPANDED_H: f64 = 540.0;
-const COACH_VIS_EVENT: &str = "coach-float-visibility-changed";
-const COACH_REQUEST_START_EVENT: &str = "widget-request-start-recording";
 const COACH_PREFS_FILE: &str = "widget-preferences.json";
 const COACH_PREF_KEY_VISIBLE: &str = "coach_float_visible";
 
@@ -210,13 +209,13 @@ pub async fn coach_evaluate_meeting<R: Runtime + 'static>(
     tokio::spawn(async move {
         match evaluate_meeting(&app2, &meeting_id).await {
             Ok(result) => {
-                let _ = app2.emit("coach-eval-complete", &result);
+                let _ = app2.emit(events::COACH_EVAL_COMPLETE, &result);
                 info!("✅ Coach eval emitido para {}", meeting_id);
             }
             Err(e) => {
                 warn!("Coach eval falló para {}: {}", meeting_id, e);
                 let _ = app2.emit(
-                    "coach-eval-error",
+                    events::COACH_EVAL_ERROR,
                     serde_json::json!({ "meeting_id": meeting_id, "error": e }),
                 );
             }
@@ -373,7 +372,7 @@ pub async fn coach_float_set_visibility_pref<R: Runtime>(
 /// `tauri.conf.json` (coherente con `recording_widget_request_start`, US-3).
 #[tauri::command]
 pub async fn coach_float_request_start<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
-    app.emit(COACH_REQUEST_START_EVENT, ())
+    app.emit(events::WIDGET_REQUEST_START_RECORDING, ())
         .map_err(|e| format!("Failed to emit widget-request-start-recording: {}", e))?;
     info!("📡 Coach-float solicitó iniciar grabación al main (sin alterar visibilidad)");
     Ok(())
@@ -397,7 +396,7 @@ pub async fn coach_float_request_start_with_devices<R: Runtime>(
         "micDevice": mic_device,
         "sysDevice": sys_device,
     });
-    app.emit(COACH_REQUEST_START_EVENT, payload)
+    app.emit(events::WIDGET_REQUEST_START_RECORDING, payload)
         .map_err(|e| format!("Failed to emit widget-request-start-recording with devices: {}", e))?;
     info!("📡 Coach-float solicitó iniciar grabación con devices custom (sin alterar visibilidad)");
     Ok(())
@@ -439,7 +438,7 @@ pub async fn coach_float_stop_recording<R: Runtime>(app: AppHandle<R>) -> Result
     match stop_result {
         Ok(_) => {
             info!("✅ Recording stopped from coach-float");
-            if let Err(e) = app.emit("recording-stop-complete", true) {
+            if let Err(e) = app.emit(events::RECORDING_STOP_COMPLETE, true) {
                 warn!("Coach-float: failed to emit recording-stop-complete: {}", e);
             }
             Ok(())
@@ -472,8 +471,8 @@ pub(crate) fn save_coach_visibility_pref<R: Runtime>(app: &AppHandle<R>, visible
 }
 
 fn emit_coach_visibility<R: Runtime>(app: &AppHandle<R>, visible: bool) {
-    if let Err(e) = app.emit(COACH_VIS_EVENT, serde_json::json!({ "visible": visible })) {
-        warn!("Failed to emit {}: {}", COACH_VIS_EVENT, e);
+    if let Err(e) = app.emit(events::COACH_FLOAT_VISIBILITY_CHANGED, serde_json::json!({ "visible": visible })) {
+        warn!("Failed to emit {}: {}", events::COACH_FLOAT_VISIBILITY_CHANGED, e);
     }
 }
 
@@ -624,7 +623,7 @@ pub async fn device_picker_select<R: Runtime>(
     device_type: String, // "Microphone" | "SystemAudio"
 ) -> Result<(), String> {
     app.emit(
-        "device-picker-selected",
+        events::DEVICE_PICKER_SELECTED,
         serde_json::json!({ "deviceName": device_name, "deviceType": device_type }),
     )
     .map_err(|e| format!("Failed to emit device-picker-selected: {}", e))?;
@@ -749,14 +748,14 @@ pub async fn coach_download_gguf_model<R: Runtime + 'static>(
         match crate::coach::setup::download_gguf_model_file(&app2, &model_id).await {
             Ok(()) => {
                 let _ = app2.emit(
-                    "coach-gguf-download-complete",
+                    events::COACH_GGUF_DOWNLOAD_COMPLETE,
                     serde_json::json!({ "model_id": model_id }),
                 );
             }
             Err(e) => {
                 warn!("Error descargando modelo {}: {}", model_id, e);
                 let _ = app2.emit(
-                    "coach-gguf-download-error",
+                    events::COACH_GGUF_DOWNLOAD_ERROR,
                     serde_json::json!({ "model_id": model_id, "error": e }),
                 );
             }
@@ -803,7 +802,7 @@ pub async fn coach_switch_model<R: Runtime + 'static>(
         .map_err(|e| format!("Error guardando modelo: {}", e))?;
 
     let _ = app.emit(
-        "coach-engine-ready",
+        events::COACH_ENGINE_READY,
         serde_json::json!({ "purpose": purpose, "model_id": model_id }),
     );
 

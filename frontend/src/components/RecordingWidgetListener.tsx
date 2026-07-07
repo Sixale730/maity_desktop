@@ -5,6 +5,7 @@ import { listen } from '@tauri-apps/api/event';
 import { useRecordingStart } from '@/hooks/useRecordingStart';
 import { useRecordingState } from '@/contexts/RecordingStateContext';
 import { useConfig } from '@/contexts/ConfigContext';
+import { TauriEvent } from '@/lib/tauri-events';
 
 /**
  * Payload opcional del evento `widget-request-start-recording`. El coach-float
@@ -52,7 +53,7 @@ export function RecordingWidgetListener() {
 
   useEffect(() => {
     const unlistenP = listen<WidgetStartPayload | null>(
-      'widget-request-start-recording',
+      TauriEvent.WIDGET_REQUEST_START_RECORDING,
       (e) => {
         // Guard: si ya estamos grabando, ignorar el evento. El comando Rust
         // también valida (vía la máquina de fases de grabación) pero defendemos

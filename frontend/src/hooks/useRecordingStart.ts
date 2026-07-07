@@ -12,6 +12,7 @@ import { toast } from 'sonner';
 import { getDeepgramProxyConfig, hasValidCachedProxyConfig, DeepgramError } from '@/lib/deepgram';
 import type { DeepgramErrorType } from '@/lib/deepgram';
 import { logger } from '@/lib/logger';
+import { TauriEvent } from '@/lib/tauri-events';
 
 
 interface UseRecordingStartReturn {
@@ -388,7 +389,7 @@ export function useRecordingStart(
     const setupMeetingDetectorListener = async () => {
       try {
         const { listen } = await import('@tauri-apps/api/event');
-        unlisten = await listen<string>('start-recording-from-detector', async (event) => {
+        unlisten = await listen<string>(TauriEvent.START_RECORDING_FROM_DETECTOR, async (event) => {
           const meetingName = event.payload;
           logger.debug(`Meeting detector triggered recording: "${meetingName}"`);
 

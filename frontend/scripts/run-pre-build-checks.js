@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Pre-build checks. Runs BEFORE tauri:build / tauri:build:debug.
-// Currently: state-access lint (fast, ~1s) + providers-tree lint (fast, <100ms).
+// Currently: state-access lint (fast, ~1s) + providers-tree lint (fast, <100ms)
+// + tauri-events lint (fast, <1s).
 //
 // To skip (NOT recommended), use: pnpm run tauri:build:debug:skip-checks
 
@@ -11,6 +12,7 @@ const path = require('path');
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
 const LINT_SCRIPT = path.join(REPO_ROOT, 'scripts', 'lint-state-access.sh');
 const PROVIDERS_TREE_SCRIPT = path.join(__dirname, 'lint-providers-tree.js');
+const TAURI_EVENTS_SCRIPT = path.join(__dirname, 'lint-tauri-events.js');
 // On Windows, bash (Git Bash/MINGW) treats backslashes as escapes, mangling
 // `C:\maity_desktop\...` into `C:maity_desktop...`. Forward slashes work on
 // every platform.
@@ -67,3 +69,21 @@ if (treeResult.status !== 0) {
 }
 
 console.log('[pre-build] OK: providers-tree lint passed');
+
+console.log('[pre-build] Running tauri-events lint...');
+const eventsResult = spawnSync(process.execPath, [TAURI_EVENTS_SCRIPT], {
+    stdio: 'inherit',
+    shell: false,
+});
+
+if (eventsResult.status !== 0) {
+    console.error('');
+    console.error('[pre-build] FAIL: tauri-events lint failed.');
+    console.error('  Usa las constantes de src-tauri/src/events.rs (Rust) o');
+    console.error('  src/lib/tauri-events.ts (TS) en vez de strings inline, y mantén');
+    console.error('  ambos archivos como espejo exacto. Escape por línea: // event-allow: <razón>');
+    console.error('  Escape hatch: pnpm run tauri:build:debug:skip-checks');
+    process.exit(1);
+}
+
+console.log('[pre-build] OK: tauri-events lint passed');

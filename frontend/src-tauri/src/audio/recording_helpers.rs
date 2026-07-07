@@ -7,6 +7,8 @@ use log::{error, info, warn};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Runtime};
 
+use crate::events;
+
 use super::{
     parse_audio_device,
     default_input_device,
@@ -65,7 +67,7 @@ fn emit_microphone_fallback<R: Runtime>(
         "actual": actual,
         "reason": reason.as_str(),
     });
-    if let Err(e) = app.emit("microphone-fallback", payload) {
+    if let Err(e) = app.emit(events::MICROPHONE_FALLBACK, payload) {
         warn!("failed to emit microphone-fallback event: {}", e);
     }
 }
@@ -103,7 +105,7 @@ fn warn_if_loopback_mic<R: Runtime>(app: &AppHandle<R>, mic: &Option<Arc<AudioDe
                 device.name
             );
             let payload = serde_json::json!({ "device": device.name });
-            if let Err(e) = app.emit("mic-loopback-warning", payload) {
+            if let Err(e) = app.emit(events::MIC_LOOPBACK_WARNING, payload) {
                 warn!("failed to emit mic-loopback-warning event: {}", e);
             }
         }
@@ -333,7 +335,7 @@ pub async fn initialize_recording<R: Runtime>(
     // o el mundo exterior (tray/UI/scheduler) seguiría creyendo que graba.
     let app_for_error = app.clone();
     manager.set_error_callback(move |error, session_stopped| {
-        let _ = app_for_error.emit("recording-error", error.user_message());
+        let _ = app_for_error.emit(events::RECORDING_ERROR, error.user_message());
         if session_stopped {
             warn!("🛑 Error fatal de audio detuvo la sesión — lanzando stop_recording completo");
             let app_for_stop = app_for_error.clone();
@@ -381,7 +383,7 @@ pub async fn initialize_recording<R: Runtime>(
                     break;
                 }
                 let (mic_rms, mic_peak, sys_rms, sys_peak) = state_for_levels.get_audio_levels();
-                let _ = app_for_levels.emit("recording-audio-levels", serde_json::json!({
+                let _ = app_for_levels.emit(events::RECORDING_AUDIO_LEVELS, serde_json::json!({
                     "micRms": mic_rms,
                     "micPeak": mic_peak,
                     "sysRms": sys_rms,
@@ -408,7 +410,7 @@ pub async fn initialize_recording<R: Runtime>(
 /// Stores the listener ID for cleanup during stop_recording.
 fn register_transcript_listener<R: Runtime>(app: &AppHandle<R>) {
     use tauri::Listener;
-    let listener_id = app.listen("transcript-update", move |event: tauri::Event| {
+    let listener_id = app.listen(events::TRANSCRIPT_UPDATE, move |event: tauri::Event| {
         if let Ok(update) = serde_json::from_str::<TranscriptUpdate>(event.payload()) {
             let segment = crate::audio::recording_saver::TranscriptSegment {
                 id: format!("seg_{}", update.sequence_id),
@@ -447,7 +449,7 @@ pub async fn validate_transcription_ready<R: Runtime>(app: &AppHandle<R>) -> Res
     if let Err(validation_error) = transcription::validate_transcription_model_ready(app).await {
         error!("Model validation failed: {}", validation_error);
 
-        let _ = app.emit("transcription-error", serde_json::json!({
+        let _ = app.emit(events::TRANSCRIPTION_ERROR, serde_json::json!({
             "error": validation_error,
             "userMessage": "Recording cannot start: Transcription model is still downloading. Please wait for the download to complete.",
             "actionable": false

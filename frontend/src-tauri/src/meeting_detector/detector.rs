@@ -11,6 +11,7 @@ use anyhow::Result;
 
 use super::process_monitor::{ProcessMonitor, DetectedMeeting};
 use super::settings::{MeetingDetectorSettings, AppAction, load_settings, save_settings};
+use crate::events;
 
 /// Events emitted by the meeting detector
 #[derive(Debug, Clone, serde::Serialize)]
@@ -279,7 +280,7 @@ fn emit_meeting_detected<R: Runtime>(
     // emit_to("main") y no emit(): el MeetingDetectionDialog vive en layout.tsx, que
     // comparten main + coach-float + recording-widget. Un broadcast montaba N diálogos
     // y cada uno respondía/arrancaba grabación (5 arranques en 16 ms, jul-2026).
-    if let Err(e) = app_handle.emit_to("main", "meeting-detected", &event) {
+    if let Err(e) = app_handle.emit_to("main", events::MEETING_DETECTED, &event) {
         error!("Failed to emit meeting-detected event: {}", e);
     }
 }
@@ -297,7 +298,7 @@ async fn handle_user_response<R: Runtime>(
             info!("User chose to start recording: {}", meeting_name);
             // Emit event to start recording — targeted a main: useRecordingStart registra
             // este listener en cada ventana que monta el hook; broadcast = N arranques.
-            if let Err(e) = app_handle.emit_to("main", "start-recording-from-detector", &meeting_name) {
+            if let Err(e) = app_handle.emit_to("main", events::START_RECORDING_FROM_DETECTOR, &meeting_name) {
                 error!("Failed to emit start-recording event: {}", e);
             }
         }

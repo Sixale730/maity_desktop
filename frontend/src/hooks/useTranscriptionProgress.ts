@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
+import { TauriEvent } from '@/lib/tauri-events';
 
 export interface TranscriptionFinishingData {
   total_remaining: number;
@@ -49,7 +50,7 @@ export function useTranscriptionProgress(): UseTranscriptionProgressResult {
     const setup = async () => {
       // Listen for finishing progress updates
       const unlistenFinishing = await listen<TranscriptionFinishingData>(
-        'transcription-finishing',
+        TauriEvent.TRANSCRIPTION_FINISHING,
         (event) => {
           const { total_remaining, processed: proc, estimated_seconds } = event.payload;
           setIsFinishing(true);
@@ -62,7 +63,7 @@ export function useTranscriptionProgress(): UseTranscriptionProgressResult {
       unlisteners.push(unlistenFinishing);
 
       // Listen for transcription complete
-      const unlistenComplete = await listen<void>('transcription-complete', () => {
+      const unlistenComplete = await listen<void>(TauriEvent.TRANSCRIPTION_COMPLETE, () => {
         setIsFinishing(false);
         setIsComplete(true);
       });

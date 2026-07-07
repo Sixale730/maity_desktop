@@ -3,6 +3,7 @@ import { listen } from '@tauri-apps/api/event';
 import { toast } from 'sonner';
 import type { TranscriptModelProps } from '@/types/transcript';
 import { logger } from '@/lib/logger';
+import { TauriEvent } from '@/lib/tauri-events';
 
 export type ModalType =
   | 'modelSettings'
@@ -99,33 +100,6 @@ export function useModalState(transcriptModelConfig?: TranscriptModelProps): Use
     });
   }, []);
 
-  // Set up chunk drop warning listener
-  useEffect(() => {
-    let unlistenFn: (() => void) | undefined;
-
-    const setupChunkDropListener = async () => {
-      try {
-        logger.debug('Setting up chunk-drop-warning listener...');
-        unlistenFn = await listen<string>('chunk-drop-warning', (event) => {
-          logger.debug('Chunk drop warning received:', event.payload);
-          showModal('chunkDropWarning', event.payload);
-        });
-        logger.debug('Chunk drop warning listener setup complete');
-      } catch (error) {
-        console.error('Failed to setup chunk drop warning listener:', error);
-      }
-    };
-
-    setupChunkDropListener();
-
-    return () => {
-      logger.debug('Cleaning up chunk drop warning listener...');
-      if (unlistenFn) {
-        unlistenFn();
-      }
-    };
-  }, [showModal]);
-
   // Set up transcription error listener for model loading failures
   useEffect(() => {
     let unlistenFn: (() => void) | undefined;
@@ -133,7 +107,7 @@ export function useModalState(transcriptModelConfig?: TranscriptModelProps): Use
     const setupTranscriptionErrorListener = async () => {
       try {
         logger.debug('Setting up transcription-error listener...');
-        unlistenFn = await listen<{ error: string, userMessage: string, actionable: boolean }>('transcription-error', (event) => {
+        unlistenFn = await listen<{ error: string, userMessage: string, actionable: boolean }>(TauriEvent.TRANSCRIPTION_ERROR, (event) => {
           logger.debug('Transcription error received:', event.payload);
           const { userMessage, actionable } = event.payload;
 
@@ -170,7 +144,7 @@ export function useModalState(transcriptModelConfig?: TranscriptModelProps): Use
       const unlisteners: (() => void)[] = [];
 
       // Listen for Whisper model download complete
-      const unlistenWhisper = await listen<{ modelName: string }>('model-download-complete', (event) => {
+      const unlistenWhisper = await listen<{ modelName: string }>(TauriEvent.MODEL_DOWNLOAD_COMPLETE, (event) => {
         const { modelName } = event.payload;
         logger.debug('[useModalState] Whisper model download complete:', modelName);
 
