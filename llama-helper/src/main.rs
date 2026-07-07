@@ -19,6 +19,13 @@ use serde::{Deserialize, Serialize};
 // Protocol Messages (JSON over stdin/stdout)
 // ============================================================================
 
+// Correlación request/respuesta estilo JSON-RPC 2.0: cada request puede traer un
+// `id` que la respuesta correspondiente devuelve tal cual. Permite al cliente
+// descartar respuestas de requests que abandonó por timeout SIN matar el proceso
+// (antes, la única forma de sanear el pipe era reiniciar el sidecar y recargar
+// ~2.4 GB de modelo — el origen del death spiral del coach, jul-2026).
+// Compat: `id` es opcional en ambas direcciones; un cliente viejo no lo manda y
+// un helper viejo lo ignora (serde descarta campos desconocidos por default).
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum Request {
@@ -32,18 +39,37 @@ enum Request {
         top_k: Option<i32>,
         top_p: Option<f32>,
         stop_tokens: Option<Vec<String>>,
+        #[serde(default)]
+        id: Option<u64>,
     },
-    Ping,
+    Ping {
+        #[serde(default)]
+        id: Option<u64>,
+    },
+    // Sin `id`: la respuesta (Goodbye) no se correlaciona, y serde acepta
+    // igualmente un `{"type":"shutdown","id":N}` (ignora campos desconocidos).
     Shutdown,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum Response {
-    Response { text: String, error: Option<String> },
-    Pong,
+    Response {
+        text: String,
+        error: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        id: Option<u64>,
+    },
+    Pong {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        id: Option<u64>,
+    },
     Goodbye,
-    Error { message: String },
+    Error {
+        message: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        id: Option<u64>,
+    },
 }
 
 // ============================================================================
@@ -343,6 +369,7 @@ fn main() -> Result<()> {
                         top_k,
                         top_p,
                         stop_tokens,
+                        id,
                     }) => {
                         let max_tokens = max_tokens.unwrap_or(512);
                         let context_size = context_size.unwrap_or(2048);
@@ -360,6 +387,7 @@ fn main() -> Result<()> {
                                 send_response(&Response::Response {
                                     text: String::new(),
                                     error: Some(format!("Failed to load model: {}", e)),
+                                    id,
                                 })?;
                                 continue;
                             }
@@ -375,19 +403,20 @@ fn main() -> Result<()> {
                             stop_tokens,
                         ) {
                             Ok(text) => {
-                                send_response(&Response::Response { text, error: None })?;
+                                send_response(&Response::Response { text, error: None, id })?;
                             }
                             Err(e) => {
                                 send_response(&Response::Response {
                                     text: String::new(),
                                     error: Some(format!("Generation failed: {}", e)),
+                                    id,
                                 })?;
                             }
                         }
                     }
-                    Ok(Request::Ping) => {
+                    Ok(Request::Ping { id }) => {
                         state.update_activity();
-                        send_response(&Response::Pong)?;
+                        send_response(&Response::Pong { id })?;
                     }
                     Ok(Request::Shutdown) => {
                         eprintln!("🛑 Shutdown requested");
@@ -398,6 +427,7 @@ fn main() -> Result<()> {
                         eprintln!("❌ Failed to parse request: {}", e);
                         send_response(&Response::Error {
                             message: format!("Invalid request: {}", e),
+                            id: None,
                         })?;
                     }
                 }

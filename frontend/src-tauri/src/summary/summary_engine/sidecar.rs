@@ -3,7 +3,7 @@
 
 use std::path::PathBuf;
 use std::process::Stdio;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -20,10 +20,57 @@ use std::os::windows::process::CommandExt;
 use super::models;
 
 // ============================================================================
+// Supervisión (jul-2026, reporte usuario)
+// ============================================================================
+//
+// Antes: cada timeout de request MATABA el proceso (para sanear el pipe) y el
+// siguiente request lo re-spawneaba recargando ~2.4 GB de modelo. Bajo carga,
+// la carga tarda más que el timeout → death spiral (141 kills/hora en logs).
+//
+// Ahora, tres mecanismos (patrones: JSON-RPC ids / circuit-breaker strikes /
+// restart-budget estilo Erlang OTP + backoff estilo CrashLoopBackOff):
+// 1. Correlación por `id`: un timeout ya no envenena el pipe — la respuesta
+//    tardía se descarta por id en el siguiente read. Sin necesidad de kill.
+// 2. Strikes: N timeouts consecutivos ⇒ proceso presuntamente colgado ⇒ un
+//    reinicio controlado (distinción liveness/readiness: 1 timeout = lento).
+// 3. Presupuesto de reinicios: máx N spawns por ventana; agotado ⇒ cooldown.
+//    Backoff creciente entre spawns para no martillar CPU/disco.
+
+/// Secuencia global de ids de correlación (compartida entre managers del pool).
+static REQUEST_SEQ: AtomicU64 = AtomicU64::new(1);
+
+// ── Contadores de supervisión (proceso-globales, compartidos por el pool) ──
+// Solo crecen durante la vida del proceso; los consumidores (session-summary
+// del coach) toman snapshot al inicio de sesión y reportan el DELTA. Sin esto,
+// los mecanismos de supervisión (strikes, restart budget, cooldown) actúan
+// pero no dejan rastro medible fuera de los logs.
+static SIDECAR_TIMEOUTS_TOTAL: AtomicU64 = AtomicU64::new(0);
+static SIDECAR_RESTARTS_TOTAL: AtomicU64 = AtomicU64::new(0);
+static SIDECAR_COOLDOWNS_TOTAL: AtomicU64 = AtomicU64::new(0);
+
+/// Snapshot de los contadores de supervisión: `(timeouts, restarts, cooldowns)`.
+pub fn supervision_counters() -> (u64, u64, u64) {
+    (
+        SIDECAR_TIMEOUTS_TOTAL.load(Ordering::Relaxed),
+        SIDECAR_RESTARTS_TOTAL.load(Ordering::Relaxed),
+        SIDECAR_COOLDOWNS_TOTAL.load(Ordering::Relaxed),
+    )
+}
+
+/// Timeouts consecutivos antes de presumir proceso colgado y reiniciarlo.
+const TIMEOUT_STRIKES_BEFORE_RESTART: u32 = 3;
+/// Máximo de spawns dentro de `RESTART_WINDOW` antes de entrar en cooldown.
+const MAX_RESTARTS_PER_WINDOW: usize = 3;
+const RESTART_WINDOW: Duration = Duration::from_secs(120);
+/// Cooldown cuando se agota el presupuesto de reinicios.
+const RESTART_COOLDOWN: Duration = Duration::from_secs(300);
+
+// ============================================================================
 // Sidecar State Management
 // ============================================================================
 
 /// Sidecar process manager with keep-alive and health monitoring
+#[derive(Clone)]
 pub struct SidecarManager {
     /// Child process handle
     child_process: Arc<Mutex<Option<Child>>>,
@@ -54,6 +101,26 @@ pub struct SidecarManager {
 
     /// Idle timeout in seconds (configurable via env var)
     idle_timeout_secs: u64,
+
+    /// Timeouts consecutivos de requests (se resetea en cada éxito y cada spawn).
+    consecutive_timeouts: Arc<AtomicU32>,
+
+    /// True cuando el helper de este proceso demostró soportar ids de correlación
+    /// (respondió con `id`). Con un helper legacy (binario viejo sin ids) el
+    /// timeout conserva el comportamiento anterior (kill) porque sin ids no hay
+    /// forma de distinguir una respuesta tardía huérfana de la siguiente.
+    ids_confirmed: Arc<AtomicBool>,
+
+    /// Serializa spawns: `ensure_running` era check-then-act sin lock y dos
+    /// llamadas concurrentes spawneaban DOS procesos (visto en logs jul-2026,
+    /// mismo milisegundo), uno quedaba huérfano con el modelo cargado.
+    spawn_lock: Arc<Mutex<()>>,
+
+    /// Timestamps de spawns recientes (presupuesto de reinicios).
+    restart_history: Arc<Mutex<Vec<Instant>>>,
+
+    /// Si está seteado y en el futuro, los spawns fallan rápido (cooldown).
+    cooldown_until: Arc<Mutex<Option<Instant>>>,
 }
 
 /// RAII guard for tracking active requests
@@ -103,6 +170,11 @@ impl SidecarManager {
             helper_binary_path,
             current_model_path: Arc::new(RwLock::new(None)),
             idle_timeout_secs,
+            consecutive_timeouts: Arc::new(AtomicU32::new(0)),
+            ids_confirmed: Arc::new(AtomicBool::new(false)),
+            spawn_lock: Arc::new(Mutex::new(())),
+            restart_history: Arc::new(Mutex::new(Vec::new())),
+            cooldown_until: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -263,7 +335,7 @@ impl SidecarManager {
 
     /// Ensure sidecar is running, spawn if needed
     pub async fn ensure_running(&self, model_path: PathBuf) -> Result<()> {
-        // Check if already running with correct model
+        // Fast path sin lock: ya corre con el modelo correcto
         {
             let current_model = self.current_model_path.read().await;
             if current_model.as_ref() == Some(&model_path) && self.is_healthy() {
@@ -273,14 +345,86 @@ impl SidecarManager {
             }
         }
 
-        // Need to spawn or restart
+        // Slow path: serializar el spawn. Double-check tras adquirir el lock —
+        // otra llamada concurrente pudo habernos ganado y spawneado ya.
+        let _spawn_guard = self.spawn_lock.lock().await;
+        {
+            let current_model = self.current_model_path.read().await;
+            if current_model.as_ref() == Some(&model_path) && self.is_healthy() {
+                log::debug!("Sidecar spawned by concurrent caller while waiting for lock");
+                self.update_activity().await;
+                return Ok(());
+            }
+        }
+
         self.spawn(model_path).await
     }
 
-    /// Spawn the sidecar process
+    /// Spawn the sidecar process.
+    ///
+    /// Presupuesto de reinicios (Erlang OTP `max_restarts/max_seconds`): si el
+    /// proceso no logra mantenerse vivo, re-spawnearlo más rápido no lo arregla —
+    /// solo martilla CPU/disco recargando el modelo. Agotado el presupuesto se
+    /// entra en cooldown y los callers fallan rápido (el circuit breaker del
+    /// coach absorbe esos errores).
     async fn spawn(&self, model_path: PathBuf) -> Result<()> {
+        // Cooldown activo → fallar rápido sin tocar el proceso
+        {
+            let cooldown = self.cooldown_until.lock().await;
+            if let Some(until) = *cooldown {
+                let now = Instant::now();
+                if now < until {
+                    return Err(anyhow!(
+                        "Sidecar en cooldown tras agotar presupuesto de reinicios ({}s restantes)",
+                        (until - now).as_secs()
+                    ));
+                }
+            }
+        }
+
+        // Presupuesto: máx MAX_RESTARTS_PER_WINDOW spawns por RESTART_WINDOW
+        let recent_restarts = {
+            let mut history = self.restart_history.lock().await;
+            let now = Instant::now();
+            history.retain(|t| now.duration_since(*t) < RESTART_WINDOW);
+            if history.len() >= MAX_RESTARTS_PER_WINDOW {
+                let mut cooldown = self.cooldown_until.lock().await;
+                *cooldown = Some(now + RESTART_COOLDOWN);
+                SIDECAR_COOLDOWNS_TOTAL.fetch_add(1, Ordering::Relaxed);
+                log::error!(
+                    "Sidecar: {} reinicios en {}s — presupuesto agotado, cooldown de {}s",
+                    history.len(),
+                    RESTART_WINDOW.as_secs(),
+                    RESTART_COOLDOWN.as_secs()
+                );
+                return Err(anyhow!(
+                    "Presupuesto de reinicios del sidecar agotado ({} en {}s); cooldown de {}s",
+                    history.len(),
+                    RESTART_WINDOW.as_secs(),
+                    RESTART_COOLDOWN.as_secs()
+                ));
+            }
+            history.push(now);
+            history.len()
+        };
+
+        // Backoff creciente entre reinicios (el primer spawn no espera)
+        if recent_restarts > 1 {
+            let backoff_secs = 1u64 << (recent_restarts - 2).min(3); // 1, 2, 4...
+            log::info!(
+                "Sidecar: backoff de {}s antes del reinicio #{} en la ventana",
+                backoff_secs,
+                recent_restarts
+            );
+            tokio::time::sleep(Duration::from_secs(backoff_secs)).await;
+        }
+
         // Shutdown existing process if running
         self.shutdown().await?;
+
+        // Estado por-proceso: el nuevo proceso aún no demostró soportar ids
+        self.consecutive_timeouts.store(0, Ordering::SeqCst);
+        self.ids_confirmed.store(false, Ordering::SeqCst);
 
         log::info!("Spawning llama-helper sidecar");
         log::info!("Model path: {}", model_path.display());
@@ -341,6 +485,9 @@ impl SidecarManager {
         self.should_shutdown.store(false, Ordering::SeqCst);
         self.update_activity().await;
 
+        // Cuenta TODOS los spawns (incluido el inicial); el delta por sesión
+        // del session-summary del coach revela los respawns durante grabación.
+        SIDECAR_RESTARTS_TOTAL.fetch_add(1, Ordering::Relaxed);
         log::info!("Sidecar spawned successfully");
 
         // Start background tasks
@@ -349,18 +496,7 @@ impl SidecarManager {
 
         // LLM-005: fire-and-forget warmup to pre-load GGUF weights.
         // Runs concurrently with app startup — first real Generate will find the model hot.
-        let warmup_manager = Self {
-            child_process: self.child_process.clone(),
-            stdin_writer: self.stdin_writer.clone(),
-            stdout_reader: self.stdout_reader.clone(),
-            last_activity: self.last_activity.clone(),
-            is_healthy: self.is_healthy.clone(),
-            should_shutdown: self.should_shutdown.clone(),
-            active_request_count: self.active_request_count.clone(),
-            helper_binary_path: self.helper_binary_path.clone(),
-            current_model_path: self.current_model_path.clone(),
-            idle_timeout_secs: self.idle_timeout_secs,
-        };
+        let warmup_manager = self.clone();
         tokio::spawn(async move {
             if let Err(e) = warmup_manager.warmup().await {
                 log::warn!("LLM-005: warmup failed (non-fatal): {}", e);
@@ -370,10 +506,27 @@ impl SidecarManager {
         Ok(())
     }
 
-    /// Send a request to the sidecar and wait for response
+    /// Send a request to the sidecar and wait for response.
+    ///
+    /// Correlación estilo JSON-RPC: se inyecta un `id` en el request y se leen
+    /// líneas hasta encontrar la respuesta con ese id, descartando respuestas
+    /// huérfanas de requests abandonados por timeout. Con esto un timeout deja
+    /// de requerir matar el proceso (y recargar el modelo): la respuesta tardía
+    /// se drena por id en el siguiente read. El helper es síncrono/FIFO, así que
+    /// un request enviado mientras genera otro simplemente espera su turno.
     pub async fn send_request(&self, request_json: String, timeout: Duration) -> Result<String> {
         // Track active request
         let _guard = RequestGuard::new(self.active_request_count.clone());
+
+        let request_id = REQUEST_SEQ.fetch_add(1, Ordering::Relaxed);
+        // Inyectar id de correlación. Payloads no-objeto se envían tal cual.
+        let payload = match serde_json::from_str::<serde_json::Value>(&request_json) {
+            Ok(serde_json::Value::Object(mut map)) => {
+                map.insert("id".to_string(), serde_json::json!(request_id));
+                serde_json::Value::Object(map).to_string()
+            }
+            _ => request_json,
+        };
 
         // Write request to stdin
         {
@@ -383,7 +536,7 @@ impl SidecarManager {
                 .ok_or_else(|| anyhow!("Sidecar not running"))?;
 
             stdin
-                .write_all(request_json.as_bytes())
+                .write_all(payload.as_bytes())
                 .await
                 .context("Failed to write request to stdin")?;
             stdin
@@ -394,41 +547,107 @@ impl SidecarManager {
         }
 
         // Read response from stdout with timeout
-        match tokio::time::timeout(timeout, self.read_response()).await {
+        match tokio::time::timeout(timeout, self.read_matching_response(request_id)).await {
             Ok(Ok(response)) => {
                 self.update_activity().await;
+                self.consecutive_timeouts.store(0, Ordering::SeqCst);
                 Ok(response)
             }
             Ok(Err(e)) => Err(e),
             Err(_) => {
-                // Timeout reached - shutdown sidecar to stop generation
-                log::error!("Request timeout after {:?}, shutting down sidecar", timeout);
-                if let Err(shutdown_err) = self.shutdown().await {
-                    log::error!("Failed to shutdown sidecar after timeout: {}", shutdown_err);
+                SIDECAR_TIMEOUTS_TOTAL.fetch_add(1, Ordering::Relaxed);
+                if self.ids_confirmed.load(Ordering::SeqCst) {
+                    // El helper soporta ids: el proceso sigue vivo (request lento ≠
+                    // proceso muerto) y la respuesta tardía se descartará por id.
+                    // Solo tras N strikes consecutivos presumimos proceso colgado.
+                    let strikes = self.consecutive_timeouts.fetch_add(1, Ordering::SeqCst) + 1;
+                    log::warn!(
+                        "Request {} timed out after {:?} (strike {}/{}) — proceso vivo, respuesta tardía se drenará por id",
+                        request_id,
+                        timeout,
+                        strikes,
+                        TIMEOUT_STRIKES_BEFORE_RESTART
+                    );
+                    if strikes >= TIMEOUT_STRIKES_BEFORE_RESTART {
+                        log::error!(
+                            "{} timeouts consecutivos — sidecar presuntamente colgado, reinicio controlado",
+                            strikes
+                        );
+                        self.consecutive_timeouts.store(0, Ordering::SeqCst);
+                        if let Err(e) = self.shutdown().await {
+                            log::error!("Failed to shutdown wedged sidecar: {}", e);
+                        }
+                        // El respawn ocurre lazy en el siguiente ensure_running,
+                        // sujeto a presupuesto de reinicios + backoff.
+                    }
+                } else {
+                    // Helper legacy sin ids: sin correlación no se puede drenar la
+                    // respuesta tardía, el kill sigue siendo la única forma de
+                    // sanear el pipe (comportamiento anterior).
+                    log::error!(
+                        "Request timeout after {:?} con helper legacy (sin ids) — shutting down sidecar",
+                        timeout
+                    );
+                    if let Err(shutdown_err) = self.shutdown().await {
+                        log::error!("Failed to shutdown sidecar after timeout: {}", shutdown_err);
+                    }
                 }
                 Err(anyhow!("Request timed out after {:?}", timeout))
             }
         }
     }
 
-    /// Read a single line response from stdout
-    async fn read_response(&self) -> Result<String> {
+    /// Lee líneas de stdout hasta encontrar la respuesta con `expected_id`,
+    /// descartando respuestas huérfanas (de requests abandonados por timeout).
+    /// Compat: una respuesta SIN id (helper legacy) se acepta como match.
+    ///
+    /// Nota: si el timeout cancela este future a mitad de una línea, esa línea
+    /// puede perderse (read_line no es cancel-safe). El peor caso es UN request
+    /// posterior con respuesta ilegible — estrictamente mejor que el kill
+    /// incondicional anterior, que descartaba 2.4 GB de modelo caliente.
+    async fn read_matching_response(&self, expected_id: u64) -> Result<String> {
         let mut stdout_lock = self.stdout_reader.lock().await;
         let reader = stdout_lock
             .as_mut()
             .ok_or_else(|| anyhow!("Sidecar not running"))?;
 
-        let mut line = String::new();
-        reader
-            .read_line(&mut line)
-            .await
-            .context("Failed to read response from stdout")?;
+        loop {
+            let mut line = String::new();
+            let bytes = reader
+                .read_line(&mut line)
+                .await
+                .context("Failed to read response from stdout")?;
 
-        if line.is_empty() {
-            return Err(anyhow!("Sidecar closed stdout (process may have crashed)"));
+            if bytes == 0 {
+                return Err(anyhow!("Sidecar closed stdout (process may have crashed)"));
+            }
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+
+            match serde_json::from_str::<serde_json::Value>(trimmed) {
+                Ok(value) => match value.get("id").and_then(|i| i.as_u64()) {
+                    Some(id) if id == expected_id => {
+                        self.ids_confirmed.store(true, Ordering::SeqCst);
+                        return Ok(trimmed.to_string());
+                    }
+                    Some(stale_id) => {
+                        self.ids_confirmed.store(true, Ordering::SeqCst);
+                        log::warn!(
+                            "Descartando respuesta huérfana del sidecar (id={}, esperado={}) — request abandonado por timeout",
+                            stale_id,
+                            expected_id
+                        );
+                        continue;
+                    }
+                    // Helper legacy sin ids: entregar tal cual (semántica anterior)
+                    None => return Ok(trimmed.to_string()),
+                },
+                // Línea no-JSON: entregar tal cual; el caller reporta el parse error
+                Err(_) => return Ok(trimmed.to_string()),
+            }
         }
-
-        Ok(line.trim().to_string())
     }
 
     /// LLM-005: Warm up the model to eliminate cold-start latency on the first real Generate.
@@ -438,10 +657,23 @@ impl SidecarManager {
         log::info!("LLM-005: Starting llama-helper warmup (max_tokens=1)...");
         let start = std::time::Instant::now();
 
+        // El warmup DEBE incluir model_path: sin él, el helper responde
+        // `error: "Model not loaded"` y antes eso se reportaba como "warmup
+        // complete in 0.0s" (éxito falso, visto en logs jul-2026) dejando la
+        // carga real del modelo para el primer request de producción.
+        let model_path = {
+            let current = self.current_model_path.read().await;
+            current
+                .as_ref()
+                .map(|p| p.to_string_lossy().to_string())
+                .ok_or_else(|| anyhow!("LLM-005: warmup sin modelo asignado al sidecar"))?
+        };
+
         let request = serde_json::json!({
             "type": "generate",
             "prompt": "warmup",
             "max_tokens": 1,
+            "model_path": model_path,
         })
         .to_string();
 
@@ -450,6 +682,13 @@ impl SidecarManager {
         let response = self.send_request(request, timeout).await.map_err(|e| {
             anyhow!("LLM-005: warmup Generate failed: {}", e)
         })?;
+
+        // Warmup honesto: una respuesta con `error` NO es un warmup exitoso.
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&response) {
+            if let Some(err) = value.get("error").and_then(|e| e.as_str()) {
+                return Err(anyhow!("LLM-005: warmup respondió con error: {}", err));
+            }
+        }
 
         log::info!(
             "LLM-005: llama-helper warmup complete in {:.1}s (response preview: {})",
@@ -461,12 +700,13 @@ impl SidecarManager {
 
     /// Send ping to keep sidecar alive
     async fn send_ping(&self) -> Result<()> {
-        let request = serde_json::json!({"type": "ping"}).to_string();
+        let ping_id = REQUEST_SEQ.fetch_add(1, Ordering::Relaxed);
+        let request = serde_json::json!({"type": "ping", "id": ping_id}).to_string();
         let timeout = Duration::from_secs(5);
 
         // Note: We don't use send_request here to avoid incrementing active_request_count
         // for internal health checks, as that would prevent graceful shutdown
-        
+
         // Write request
         {
             let mut stdin_lock = self.stdin_writer.lock().await;
@@ -479,8 +719,11 @@ impl SidecarManager {
             }
         }
 
-        // Read response
-        let response = tokio::time::timeout(timeout, self.read_response()).await??;
+        // Lectura con correlación: sin ella, un ping que llegara justo después
+        // de una respuesta huérfana (de un generate abandonado por timeout)
+        // leería esa respuesta, fallaría el health check y marcaría el sidecar
+        // unhealthy → respawn innecesario con el modelo caliente.
+        let response = tokio::time::timeout(timeout, self.read_matching_response(ping_id)).await??;
 
         let resp: serde_json::Value = serde_json::from_str(&response)?;
         if resp.get("type").and_then(|t| t.as_str()) == Some("pong") {
@@ -605,18 +848,7 @@ impl SidecarManager {
 
     /// Start health check loop (runs in background)
     fn start_health_check_loop(&self) {
-        let manager = Self {
-            child_process: self.child_process.clone(),
-            stdin_writer: self.stdin_writer.clone(),
-            stdout_reader: self.stdout_reader.clone(),
-            last_activity: self.last_activity.clone(),
-            is_healthy: self.is_healthy.clone(),
-            should_shutdown: self.should_shutdown.clone(),
-            active_request_count: self.active_request_count.clone(),
-            helper_binary_path: self.helper_binary_path.clone(),
-            current_model_path: self.current_model_path.clone(),
-            idle_timeout_secs: self.idle_timeout_secs,
-        };
+        let manager = self.clone();
 
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(30));
@@ -653,18 +885,7 @@ impl SidecarManager {
 
     /// Start idle check loop (runs in background)
     fn start_idle_check_loop(&self) {
-        let manager = Self {
-            child_process: self.child_process.clone(),
-            stdin_writer: self.stdin_writer.clone(),
-            stdout_reader: self.stdout_reader.clone(),
-            last_activity: self.last_activity.clone(),
-            is_healthy: self.is_healthy.clone(),
-            should_shutdown: self.should_shutdown.clone(),
-            active_request_count: self.active_request_count.clone(),
-            helper_binary_path: self.helper_binary_path.clone(),
-            current_model_path: self.current_model_path.clone(),
-            idle_timeout_secs: self.idle_timeout_secs,
-        };
+        let manager = self.clone();
 
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(60));
@@ -710,11 +931,11 @@ impl SidecarManager {
 
 impl Drop for SidecarManager {
     fn drop(&mut self) {
-        // Set shutdown flag
-        self.should_shutdown.store(true, Ordering::SeqCst);
-
-        // Note: Actual cleanup happens in shutdown() method
-        // We can't do async work in Drop, so this is best-effort
-        log::debug!("SidecarManager dropped");
+        // NO tocar should_shutdown aquí: el flag es COMPARTIDO (Arc) entre todos
+        // los clones. Setearlo al dropear un clon (warmup, health/idle loops)
+        // mataba los background loops del manager real que sigue vivo en el pool
+        // — p. ej. el clon del warmup lo activaba al terminar el warmup.
+        // El shutdown real lo orquesta SidecarPool::shutdown_all / shutdown().
+        log::debug!("SidecarManager clone dropped");
     }
 }

@@ -34,6 +34,33 @@ static FEEDBACK_STATE: Lazy<Mutex<Option<Arc<Mutex<FeedbackState>>>>> =
 static LLM_PARSE_TOTAL: AtomicU64 = AtomicU64::new(0);
 static LLM_PARSE_FAILED: AtomicU64 = AtomicU64::new(0);
 
+// Circuit breaker del LLM del coach (patrón Fowler/Release It!). Antes, cada tick
+// (30s) reintentaba a ciegas tras un fallo: si el sidecar no podía cargar el modelo
+// bajo carga, el coach lo martillaba durante horas (death spiral, logs jul-2026).
+// Tras N fallos consecutivos el circuito abre COACH_BREAKER_COOLDOWN y los ticks se
+// saltan la llamada LLM (los tips heurísticos siguen por su propio loop). Pasado el
+// cooldown, el siguiente tick actúa como half-open: un intento de prueba; si falla,
+// re-abre; si funciona, cierra y resetea. Reset en start().
+static COACH_LLM_CONSEC_FAILS: AtomicU64 = AtomicU64::new(0);
+static COACH_BREAKER_OPEN_UNTIL_MS: AtomicU64 = AtomicU64::new(0);
+const COACH_BREAKER_FAIL_THRESHOLD: u64 = 3;
+const COACH_BREAKER_COOLDOWN: Duration = Duration::from_secs(300);
+
+// Observabilidad de la supervisión (WS3): cuántas veces abrió el breaker en la
+// sesión (reset en start()) + snapshot de los contadores del sidecar al inicio
+// de sesión para reportar el DELTA en el session-summary de stop().
+static COACH_BREAKER_OPENS: AtomicU64 = AtomicU64::new(0);
+static SIDECAR_TIMEOUTS_AT_START: AtomicU64 = AtomicU64::new(0);
+static SIDECAR_RESTARTS_AT_START: AtomicU64 = AtomicU64::new(0);
+static SIDECAR_COOLDOWNS_AT_START: AtomicU64 = AtomicU64::new(0);
+
+fn epoch_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 // Modo Ponente: la grabación activa es una presentación/ponencia (el usuario habla
 // casi todo el tiempo: webinar, clase, pitch). El comando Tauri de inicio de grabación
 // fija este flag ANTES de llamar a `start()` (sincrónicamente, antes del primer await),
@@ -450,6 +477,17 @@ pub async fn start<R: Runtime + 'static>(app: AppHandle<R>) -> Result<(), String
     // FeedbackState::new() resetea los campos del state mas abajo automaticamente.
     LLM_PARSE_TOTAL.store(0, Ordering::Relaxed);
     LLM_PARSE_FAILED.store(0, Ordering::Relaxed);
+    COACH_LLM_CONSEC_FAILS.store(0, Ordering::Relaxed);
+    COACH_BREAKER_OPEN_UNTIL_MS.store(0, Ordering::Relaxed);
+    COACH_BREAKER_OPENS.store(0, Ordering::Relaxed);
+
+    // Snapshot de los contadores de supervisión del sidecar (proceso-globales,
+    // solo crecen): stop() reporta la diferencia = actividad de ESTA sesión.
+    let (sc_timeouts, sc_restarts, sc_cooldowns) =
+        crate::summary::summary_engine::sidecar::supervision_counters();
+    SIDECAR_TIMEOUTS_AT_START.store(sc_timeouts, Ordering::Relaxed);
+    SIDECAR_RESTARTS_AT_START.store(sc_restarts, Ordering::Relaxed);
+    SIDECAR_COOLDOWNS_AT_START.store(sc_cooldowns, Ordering::Relaxed);
 
     // Leer config del pipeline activo
     let cfg = get_active_live_feedback_config(&app).await;
@@ -481,10 +519,25 @@ pub async fn start<R: Runtime + 'static>(app: AppHandle<R>) -> Result<(), String
             None
         };
 
+        // Tier-aware (jul-2026): en hardware tier Low el 4b bajo carga no produce
+        // tips (timeouts de 30s cargando/generando → antes, death spiral del
+        // sidecar). Ahí el tradeoff de §4.1 se invierte: un tip de 1B con ~33% de
+        // JSON malformado (mitigado por el parse-retry x2) supera a CERO tips.
+        // En Medium+ se mantiene §4.1: 4b primero. La elección explícita del
+        // usuario (DB) siempre gana.
+        let tier = crate::audio::HardwareProfile::detect().performance_tier.clone();
+        let low_tier_pref: Option<String> = if tier == crate::audio::PerformanceTier::Low {
+            info!("Coach: hardware tier Low — priorizando modelo 1B si está instalado");
+            Some("gemma3-1b-q8".to_string())
+        } else {
+            None
+        };
+
         let candidates: Vec<String> = std::iter::empty::<String>()
             .chain(from_db.into_iter())
+            .chain(low_tier_pref.into_iter())
             .chain(std::iter::once(configured_model.clone()))
-            // §4.1 Eliminar 1b de candidatos: unificamos a 4b (% JSON malformado ~33% -> ~10%).
+            // §4.1 Eliminar 1b de candidatos (en Medium+): unificamos a 4b (% JSON malformado ~33% -> ~10%).
             .chain(["gemma3-4b-q4", "qwen25-3b-q4"].iter().map(|s| s.to_string()))
             .collect();
 
@@ -984,9 +1037,24 @@ pub fn stop<R: Runtime>(app: &AppHandle<R>) {
     } else {
         0.0
     };
+
+    // Observabilidad de la supervisión (WS3): delta de los contadores del
+    // sidecar respecto al snapshot de start() = actividad de esta sesión.
+    // saturating_sub por si stop() corre sin un start() previo (delta 0).
+    let (sc_timeouts, sc_restarts, sc_cooldowns) =
+        crate::summary::summary_engine::sidecar::supervision_counters();
+    let sidecar_timeouts =
+        sc_timeouts.saturating_sub(SIDECAR_TIMEOUTS_AT_START.load(Ordering::Relaxed));
+    let sidecar_restarts =
+        sc_restarts.saturating_sub(SIDECAR_RESTARTS_AT_START.load(Ordering::Relaxed));
+    let sidecar_cooldowns =
+        sc_cooldowns.saturating_sub(SIDECAR_COOLDOWNS_AT_START.load(Ordering::Relaxed));
+    let breaker_opens = COACH_BREAKER_OPENS.load(Ordering::Relaxed);
+
     info!(
-        "[METRIC] session-summary llm_parse_total={} llm_parse_failed={} ({:.1}%) llm_latency_p95_ms={:?} tips_from_llm={} tips_from_heuristic={} heuristic_pct={:.1}%",
-        parse_total, parse_failed, parse_failed_pct, p95_ms, tips_llm, tips_heur, heur_pct
+        "[METRIC] session-summary llm_parse_total={} llm_parse_failed={} ({:.1}%) llm_latency_p95_ms={:?} tips_from_llm={} tips_from_heuristic={} heuristic_pct={:.1}% sidecar_timeouts={} sidecar_restarts={} sidecar_cooldowns={} breaker_opens={}",
+        parse_total, parse_failed, parse_failed_pct, p95_ms, tips_llm, tips_heur, heur_pct,
+        sidecar_timeouts, sidecar_restarts, sidecar_cooldowns, breaker_opens
     );
     let _ = app.emit(
         "coach-metrics",
@@ -999,6 +1067,10 @@ pub fn stop<R: Runtime>(app: &AppHandle<R>) {
                 "tips_from_llm": tips_llm,
                 "tips_from_heuristic": tips_heur,
                 "heuristic_pct": heur_pct,
+                "sidecar_timeouts": sidecar_timeouts,
+                "sidecar_restarts": sidecar_restarts,
+                "sidecar_cooldowns": sidecar_cooldowns,
+                "breaker_opens": breaker_opens,
             }
         }),
     );
@@ -1040,6 +1112,21 @@ async fn call_ollama_and_emit<R: Runtime>(
         trigger.as_deref(),
     );
 
+    // Circuit breaker: con el circuito abierto, saltarse la llamada LLM por completo.
+    // Reintentar cada 30s contra un sidecar que no puede cargar el modelo solo
+    // amplifica la sobrecarga (cada intento fallido costaba una recarga de 2.4 GB).
+    let breaker_until = COACH_BREAKER_OPEN_UNTIL_MS.load(Ordering::Relaxed);
+    if breaker_until > 0 && epoch_ms() < breaker_until {
+        info!(
+            "Coach: breaker abierto ({}s restantes) — tick LLM omitido, heurísticos siguen activos",
+            (breaker_until.saturating_sub(epoch_ms())) / 1000
+        );
+        if let Ok(mut st) = state.lock() {
+            st.last_tip_at = None;
+        }
+        return;
+    }
+
     let builtin_model = llama_engine::map_to_builtin_id(model).to_string();
     info!(
         "🦙 Coach calling sidecar: model={} (builtin={}), prompt_len={} chars",
@@ -1079,6 +1166,9 @@ async fn call_ollama_and_emit<R: Runtime>(
 
         match result {
             Ok(raw) => {
+                // El LLM respondió: cerrar/resetear el breaker (éxito en half-open).
+                COACH_LLM_CONSEC_FAILS.store(0, Ordering::Relaxed);
+                COACH_BREAKER_OPEN_UNTIL_MS.store(0, Ordering::Relaxed);
                 if let Ok(mut st) = state.lock() {
                     st.push_llm_latency(latency_ms);
                 }
@@ -1102,7 +1192,22 @@ async fn call_ollama_and_emit<R: Runtime>(
                 last_raw = Some(raw);
             }
             Err(e) => {
-                warn!("Coach LLM call failed: {}", e);
+                let fails = COACH_LLM_CONSEC_FAILS.fetch_add(1, Ordering::Relaxed) + 1;
+                warn!(
+                    "Coach LLM call failed ({}/{} antes de abrir breaker): {}",
+                    fails, COACH_BREAKER_FAIL_THRESHOLD, e
+                );
+                if fails >= COACH_BREAKER_FAIL_THRESHOLD {
+                    COACH_BREAKER_OPEN_UNTIL_MS
+                        .store(epoch_ms() + COACH_BREAKER_COOLDOWN.as_millis() as u64, Ordering::Relaxed);
+                    // Cuenta aperturas y re-aperturas (fallo en half-open) por sesión.
+                    COACH_BREAKER_OPENS.fetch_add(1, Ordering::Relaxed);
+                    error!(
+                        "Coach: {} fallos LLM consecutivos — breaker ABIERTO por {}s (tips heurísticos siguen activos)",
+                        fails,
+                        COACH_BREAKER_COOLDOWN.as_secs()
+                    );
+                }
                 if let Ok(mut st) = state.lock() {
                     st.last_tip_at = None;
                 }
