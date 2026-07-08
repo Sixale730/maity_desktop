@@ -82,6 +82,22 @@ pub fn next_hour_boundary(now: NaiveDateTime) -> NaiveDateTime {
     truncated + Duration::hours(1)
 }
 
+/// ¿Debe rotarse el segmento actual? (Incremento 4, troceo por hora alineado al reloj.)
+///
+/// `true` cuando la rotación está activa, seguimos DENTRO de la ventana, y `now` ya cruzó la
+/// próxima hora en punto posterior al arranque del segmento (`owned_since`). Fuera de ventana
+/// devuelve `false`: en overtime NO se rota — el cierre lo maneja `auto_close`. Como
+/// `owned_since` se actualiza en cada rotación, la siguiente frontera se recalcula sola y el
+/// chequeo es robusto a sleep/suspend (un salto de varias horas dispara una sola rotación).
+pub fn should_rotate(
+    owned_since: NaiveDateTime,
+    now: NaiveDateTime,
+    in_window: bool,
+    enabled: bool,
+) -> bool {
+    enabled && in_window && now >= next_hour_boundary(owned_since)
+}
+
 /// Primera ocurrencia de la hora-del-día `auto_close_time` ("HH:MM") ESTRICTAMENTE después de
 /// `owned_since`. Robusto a turnos noche: si esa hora ya pasó el día en que arrancó la grabación,
 /// devuelve la del día siguiente. `None` si la hora es inválida. Usado por el cierre por hora fija
@@ -250,6 +266,36 @@ mod tests {
     #[test]
     fn auto_close_at_hora_invalida_es_none() {
         assert!(auto_close_at(dt(2026, 6, 29, 9, 0), "25:99").is_none());
+    }
+
+    #[test]
+    fn should_rotate_cruza_frontera_dentro_de_ventana() {
+        // Arranque 10:20, ahora 11:00 (cruzó la hora en punto) dentro de ventana => rota.
+        assert!(should_rotate(dt(2026, 6, 29, 10, 20), dt(2026, 6, 29, 11, 0), true, true));
+    }
+
+    #[test]
+    fn should_rotate_mismo_bloque_no_rota() {
+        // Arranque 10:20, ahora 10:59 (aún antes de las 11:00) => no rota.
+        assert!(!should_rotate(dt(2026, 6, 29, 10, 20), dt(2026, 6, 29, 10, 59), true, true));
+    }
+
+    #[test]
+    fn should_rotate_fuera_de_ventana_no_rota() {
+        // Cruzó la frontera pero ya está fuera de la ventana (overtime) => no rota (lo cierra auto_close).
+        assert!(!should_rotate(dt(2026, 6, 29, 17, 30), dt(2026, 6, 29, 18, 5), false, true));
+    }
+
+    #[test]
+    fn should_rotate_deshabilitado_no_rota() {
+        assert!(!should_rotate(dt(2026, 6, 29, 10, 20), dt(2026, 6, 29, 12, 0), true, false));
+    }
+
+    #[test]
+    fn should_rotate_salto_por_suspend_dispara_una_vez() {
+        // Suspend: el reloj saltó de 10:20 a 13:05 (se perdieron 11:00 y 12:00). Con la
+        // frontera derivada de owned_since, un solo tick dispara la rotación (no backfill).
+        assert!(should_rotate(dt(2026, 6, 29, 10, 20), dt(2026, 6, 29, 13, 5), true, true));
     }
 
     #[test]

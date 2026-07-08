@@ -3,6 +3,7 @@
 import React, { useEffect, useRef } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { useRecordingStop } from '@/hooks/useRecordingStop';
+import { useTranscripts } from '@/contexts/TranscriptContext';
 import { logger } from '@/lib/logger';
 import { TauriEvent } from '@/lib/tauri-events';
 
@@ -27,10 +28,19 @@ export function RecordingPostProcessingProvider({ children }: { children: React.
     handleRecordingStop,
   } = useRecordingStop(setIsRecordingDisabled);
 
+  // Reset del buffer de transcripción en cada rotación por hora (Incremento 4).
+  const { clearTranscripts } = useTranscripts();
+
   // Mantener ref estable al callback para evitar re-subscripciones innecesarias
   const handleRecordingStopRef = useRef(handleRecordingStop);
   useEffect(() => {
     handleRecordingStopRef.current = handleRecordingStop;
+  });
+
+  // Ref estable a clearTranscripts para el listener de rotación (sin re-subscribir).
+  const clearTranscriptsRef = useRef(clearTranscripts);
+  useEffect(() => {
+    clearTranscriptsRef.current = clearTranscripts;
   });
 
   useEffect(() => {
@@ -62,6 +72,36 @@ export function RecordingPostProcessingProvider({ children }: { children: React.
       }
     };
   }, []); // Sin dependencias - solo se ejecuta una vez al montar
+
+  // Rotación por hora (Incremento 4): al cerrar un segmento y arrancar el siguiente, Rust ya
+  // guardó el segmento cerrado en local (headless). Aquí SOLO reseteamos el buffer de
+  // transcripción — SIN navegar — para que (a) la UI del nuevo segmento arranque limpia y
+  // (b) el stop final NO re-guarde todos los segmentos acumulados como una reunión duplicada.
+  useEffect(() => {
+    let unlistenRotate: (() => void) | undefined;
+
+    const setupRotateListener = async () => {
+      try {
+        unlistenRotate = await listen<{ meetingId: string | null; meetingName: string }>(
+          TauriEvent.SCHEDULED_SEGMENT_ROTATED,
+          (event) => {
+            logger.debug('[RecordingPostProcessing] Segmento rotado, reseteando buffer:', event.payload);
+            clearTranscriptsRef.current();
+          }
+        );
+      } catch (error) {
+        console.error('[RecordingPostProcessing] Failed to set up rotation listener:', error);
+      }
+    };
+
+    setupRotateListener();
+
+    return () => {
+      if (unlistenRotate) {
+        unlistenRotate();
+      }
+    };
+  }, []); // Solo se monta una vez
 
   return <>{children}</>;
 }

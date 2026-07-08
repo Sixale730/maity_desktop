@@ -42,10 +42,11 @@ pub struct ScheduledRecordingSettings {
     #[serde(default)]
     pub configured_by_user: bool,
 
-    /// Extra opt-in (Incremento 3): si está activo, la grabación que inicia el scheduler
-    /// se cierra sola al llegar `auto_close_time`. Si está apagado (default), la grabación
-    /// NO se cierra sola — corre hasta que el usuario la detenga a mano.
-    #[serde(default)]
+    /// Si está activo, la grabación que inicia el scheduler se cierra sola al llegar
+    /// `auto_close_time`. Default ON (Incremento 4): la jornada debe cerrarse a las 18:00
+    /// por defecto. `#[serde(default = ...)]` (en vez de `#[serde(default)]` = false) para
+    /// que los JSON viejos sin el campo TAMBIÉN adopten el cierre por hora fija.
+    #[serde(default = "default_auto_close_enabled")]
     pub auto_close_enabled: bool,
 
     /// Hora "HH:MM" (24h, local) a la que se cierra la última grabación cuando
@@ -53,11 +54,24 @@ pub struct ScheduledRecordingSettings {
     /// (sin el campo) tomen "18:00" en vez de "" (string vacío de `Default::default`).
     #[serde(default = "default_auto_close_time")]
     pub auto_close_time: String,
+
+    /// Opt-in (Incremento 4): si está activo, la grabación de jornada se trocea en un
+    /// segmento por hora (alineado al reloj). Al cruzar la hora en punto dentro de la
+    /// ventana, el scheduler detiene el segmento actual (guarda local + nube) y arranca
+    /// uno nuevo. Fuera de ventana NO rota — el cierre lo maneja `auto_close`. Default OFF.
+    #[serde(default)]
+    pub hourly_rotation_enabled: bool,
 }
 
 /// Default de `auto_close_time` para deserialización de JSONs sin el campo.
 fn default_auto_close_time() -> String {
     "18:00".to_string()
+}
+
+/// Default de `auto_close_enabled` (Incremento 4): la jornada se cierra a las 18:00 por
+/// defecto. Aplica también a JSONs persistidos que no traen el campo todavía.
+fn default_auto_close_enabled() -> bool {
+    true
 }
 
 /// Una ventana horaria recurrente por días de la semana.
@@ -90,8 +104,9 @@ impl Default for ScheduledRecordingSettings {
             notify_on_start: true,
             meeting_name_template: "Jornada {date}".to_string(),
             configured_by_user: false,
-            auto_close_enabled: false, // opt-in: por defecto NO se cierra sola
+            auto_close_enabled: default_auto_close_enabled(), // Incremento 4: cierra 18:00 por defecto
             auto_close_time: default_auto_close_time(),
+            hourly_rotation_enabled: false, // opt-in: por defecto NO trocea por hora
         }
     }
 }
@@ -145,6 +160,35 @@ mod tests {
         assert!(s.catch_up_on_start);
         assert_eq!(s.grace_period_minutes, 30);
         assert_eq!(s.check_interval_seconds, 30);
+    }
+
+    #[test]
+    fn test_default_cierra_18_y_no_rota() {
+        // Incremento 4: la jornada se cierra a las 18:00 por defecto; el troceo por hora es opt-in.
+        let s = ScheduledRecordingSettings::default();
+        assert!(s.auto_close_enabled, "auto_close debe estar ON por defecto (cerrar 18:00)");
+        assert_eq!(s.auto_close_time, "18:00");
+        assert!(!s.hourly_rotation_enabled, "rotación horaria debe ser opt-in (OFF por defecto)");
+    }
+
+    #[test]
+    fn test_json_viejo_sin_campos_adopta_cierre_18() {
+        // Un JSON persistido antes del Incremento 4 (sin auto_close_enabled ni hourly_rotation_enabled)
+        // debe deserializar cerrando a las 18:00 (serde default fn) y sin rotación.
+        let json = r#"{
+            "enabled": true,
+            "windows": [{"days_of_week":[1,2,3,4,5],"start_time":"09:00","end_time":"18:00"}],
+            "grace_period_minutes": 30,
+            "respect_manual_recording": true,
+            "catch_up_on_start": true,
+            "check_interval_seconds": 30,
+            "notify_on_start": true,
+            "meeting_name_template": "Jornada {date}"
+        }"#;
+        let s: ScheduledRecordingSettings = serde_json::from_str(json).unwrap();
+        assert!(s.auto_close_enabled, "JSON viejo debe adoptar el cierre por hora fija");
+        assert_eq!(s.auto_close_time, "18:00");
+        assert!(!s.hourly_rotation_enabled);
     }
 
     #[test]
