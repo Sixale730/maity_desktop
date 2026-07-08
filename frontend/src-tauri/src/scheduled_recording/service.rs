@@ -360,6 +360,23 @@ async fn evaluate_tick<R: Runtime>(
         }
     }
 
+    // --- Rotación por hora (Incremento 4, opt-in). Como el cierre por hora fija, actúa sobre
+    // NUESTRA grabación por un instante ABSOLUTO, pero SOLO dentro de la ventana: en overtime
+    // el cierre lo maneja `auto_close`. Deriva la frontera de `owned_since`, así que no añade
+    // estado nuevo y es robusto a sleep/suspend (un salto de horas dispara UNA sola rotación).
+    if owned && is_rec && settings.hourly_rotation_enabled {
+        if let Some(since) = *shared.owned_since.read().await {
+            if schedule::should_rotate(since, now, active.is_some(), settings.hourly_rotation_enabled) {
+                info!(
+                    "[scheduled] rotación por hora: cerrando segmento (arranque {}) @ {}",
+                    since, now
+                );
+                let phase = rotate_scheduled(app, shared, settings, since, now).await;
+                return (phase, None);
+            }
+        }
+    }
+
     match (owned, active.as_ref()) {
         // Dentro de ventana y NO somos dueños de una grabación → intentar arrancar.
         (false, Some(_)) => {
@@ -380,7 +397,7 @@ async fn evaluate_tick<R: Runtime>(
             }
 
             // Arranque autónomo (ruta Rust-directa, igual que el tray).
-            let meeting_name = render_meeting_name(&settings.meeting_name_template, now);
+            let meeting_name = render_segment_name(settings, now);
             match crate::audio::recording_commands::start_recording_with_meeting_name(
                 app.clone(),
                 Some(meeting_name),
@@ -478,8 +495,22 @@ fn render_meeting_name(template: &str, now: NaiveDateTime) -> String {
         .replace("{time}", &now.format("%H:%M").to_string())
 }
 
-/// Detiene la grabación de jornada y dispara el post-procesado del frontend (como el tray).
-async fn stop_scheduled<R: Runtime>(app: &AppHandle<R>) {
+/// Nombre del segmento de jornada. Igual que `render_meeting_name`, pero cuando la rotación por
+/// hora está activa y la plantilla no incluye `{time}`, añade la hora en punto (" HH:00") para
+/// que los segmentos horarios se distingan en la lista de conversaciones. Con rotación apagada
+/// el nombre queda idéntico al histórico (sin cambios para usuarios que no rotan).
+fn render_segment_name(settings: &ScheduledRecordingSettings, ts: NaiveDateTime) -> String {
+    let base = render_meeting_name(&settings.meeting_name_template, ts);
+    if settings.hourly_rotation_enabled && !settings.meeting_name_template.contains("{time}") {
+        format!("{} {}", base, ts.format("%H:00"))
+    } else {
+        base
+    }
+}
+
+/// Detiene la grabación de jornada (ruta nativa). Devuelve el resultado del `stop_recording`.
+/// El `save_path` es ignorado por `stop_recording` (`_args`), pero se construye por compatibilidad.
+async fn stop_current_recording<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
     let save_path = app
         .path()
         .app_data_dir()
@@ -494,12 +525,18 @@ async fn stop_scheduled<R: Runtime>(app: &AppHandle<R>) {
         })
         .unwrap_or_else(|| "scheduled-recording.wav".to_string());
 
-    match crate::audio::recording_commands::stop_recording(
+    crate::audio::recording_commands::stop_recording(
         app.clone(),
         crate::audio::recording_commands::RecordingArgs { save_path },
     )
     .await
-    {
+}
+
+/// Detiene la grabación de jornada y dispara el post-procesado del frontend (como el tray).
+/// Usado por el cierre por hora fija / fin de día: emite `recording-stop-complete` para que el
+/// frontend guarde local + sync + navegue.
+async fn stop_scheduled<R: Runtime>(app: &AppHandle<R>) {
+    match stop_current_recording(app).await {
         Ok(()) => {
             // Igual que el tray: el frontend hace el guardado local + sync cloud.
             if let Err(e) = app.emit(events::RECORDING_STOP_COMPLETE, true) {
@@ -507,6 +544,170 @@ async fn stop_scheduled<R: Runtime>(app: &AppHandle<R>) {
             }
         }
         Err(e) => error!("[scheduled] stop_recording falló: {}", e),
+    }
+}
+
+/// Rota el segmento por hora (Incremento 4): cierra el segmento actual y arranca uno nuevo, SIN
+/// navegar ni resetear la UI a "detenido". Secuencial y seguro: `stop_recording` deja la fase en
+/// `Idle` antes de retornar, así el `StartGate` del nuevo arranque no colisiona. Devuelve la fase
+/// resultante (`Recording` si re-arrancó, `Armed` si el re-arranque falló y hay que reintentar).
+async fn rotate_scheduled<R: Runtime>(
+    app: &AppHandle<R>,
+    shared: &SchedulerShared,
+    settings: &ScheduledRecordingSettings,
+    owned_since: NaiveDateTime,
+    now: NaiveDateTime,
+) -> SchedulerPhase {
+    // 1. Capturar el folder ANTES del stop: `stop_recording` hace `take()` del manager, así que
+    //    después `get_meeting_folder_path()` devolvería None.
+    let folder = crate::audio::recording_commands::get_meeting_folder_path()
+        .await
+        .ok()
+        .flatten();
+    // Re-render determinista del nombre con el que arrancó el segmento que cerramos.
+    let closing_name = render_segment_name(settings, owned_since);
+
+    // 2. Detener el segmento actual (finaliza audio.mp4 + transcripts.json en el folder).
+    if let Err(e) = stop_current_recording(app).await {
+        error!("[scheduled] rotación: stop_recording falló: {}", e);
+        // El segmento parcial queda en disco; seguimos intentando re-arrancar abajo.
+    }
+
+    // 3. Guardado LOCAL headless del segmento cerrado (no depende del buffer del frontend).
+    let meeting_id = match folder.as_deref() {
+        Some(f) => finalize_segment_native(app, f, &closing_name).await,
+        None => {
+            warn!("[scheduled] rotación: sin folder del segmento; no se guarda a DB");
+            None
+        }
+    };
+
+    // 4. Evento para que el frontend (si está vivo) resetee su buffer y encole la sync del
+    //    segmento cerrado, SIN navegar. Best-effort, como el resto del scheduler.
+    if let Err(e) = app.emit(
+        events::SCHEDULED_SEGMENT_ROTATED,
+        serde_json::json!({ "meetingId": meeting_id, "meetingName": closing_name }),
+    ) {
+        warn!("[scheduled] no se pudo emitir scheduled-segment-rotated: {}", e);
+    }
+
+    // 5. Arrancar el nuevo segmento (nombre re-renderizado con la hora actual).
+    let new_name = render_segment_name(settings, now);
+    match crate::audio::recording_commands::start_recording_with_meeting_name(
+        app.clone(),
+        Some(new_name),
+    )
+    .await
+    {
+        Ok(()) => {
+            shared.owned.store(true, Ordering::SeqCst);
+            *shared.owned_since.write().await = Some(now);
+            *shared.grace_deadline.write().await = None;
+            info!("[scheduled] rotación por hora: nuevo segmento iniciado @ {}", now);
+            SchedulerPhase::Recording
+        }
+        Err(e) => {
+            // No se pudo re-arrancar (ej. transcripción no lista): soltar ownership. El próximo
+            // tick `(false, Some)` reintenta arranque inmediato (sin rearm_at), auto-sanando.
+            warn!("[scheduled] rotación: fallo al re-arrancar el segmento: {}", e);
+            shared.owned.store(false, Ordering::SeqCst);
+            *shared.owned_since.write().await = None;
+            SchedulerPhase::Armed
+        }
+    }
+}
+
+/// Guarda a SQLite el segmento recién cerrado leyendo su `transcripts.json` (headless, sin
+/// depender del buffer de React ni de la ventana viva). Devuelve el `meeting_id` creado, o `None`
+/// si no hay transcripts, no hay usuario logueado, o falla la lectura/parseo. NO encola la sync a
+/// la nube: eso lo hace el frontend vía `scheduled-segment-rotated` (best-effort).
+async fn finalize_segment_native<R: Runtime>(
+    app: &AppHandle<R>,
+    folder_path: &str,
+    meeting_name: &str,
+) -> Option<String> {
+    let json_path = std::path::Path::new(folder_path).join("transcripts.json");
+    let content = match tokio::fs::read_to_string(&json_path).await {
+        Ok(c) => c,
+        Err(e) => {
+            warn!("[scheduled] no se pudo leer {}: {}", json_path.display(), e);
+            return None;
+        }
+    };
+
+    let parsed: serde_json::Value = serde_json::from_str(&content).ok()?;
+    let raw_segments = parsed.get("segments").and_then(|v| v.as_array())?;
+    if raw_segments.is_empty() {
+        info!("[scheduled] segmento sin transcripts; no se guarda a DB");
+        return None;
+    }
+
+    // Mapear el shape de transcripts.json (recording_saver::TranscriptSegment, con `display_time`)
+    // al shape que espera el repositorio (api::models::TranscriptSegment, con `timestamp`).
+    let segments: Vec<crate::api::models::TranscriptSegment> = raw_segments
+        .iter()
+        .filter_map(|s| {
+            Some(crate::api::models::TranscriptSegment {
+                id: s.get("id")?.as_str()?.to_string(),
+                text: s.get("text").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                timestamp: s
+                    .get("display_time")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                audio_start_time: s.get("audio_start_time").and_then(|v| v.as_f64()),
+                audio_end_time: s.get("audio_end_time").and_then(|v| v.as_f64()),
+                duration: s.get("duration").and_then(|v| v.as_f64()),
+                source_type: s
+                    .get("source_type")
+                    .and_then(|v| v.as_str())
+                    .map(|x| x.to_string()),
+            })
+        })
+        .collect();
+
+    if segments.is_empty() {
+        warn!("[scheduled] segmento con transcripts inválidos; no se guarda a DB");
+        return None;
+    }
+
+    // Extraer usuario + pool y SOLTAR el guard de State antes del await largo del guardado
+    // (evita mantener `State<AppState>` vivo cruzando el await dentro de la task del scheduler).
+    let (user_id, pool) = {
+        let state = match app.try_state::<crate::state::AppState>() {
+            Some(s) => s,
+            None => {
+                warn!("[scheduled] AppState no inicializado; no se guarda el segmento");
+                return None;
+            }
+        };
+        let user_id = state.current_user_id().await?; // sin usuario => no se guarda (privacidad)
+        (user_id, state.db_manager.pool().clone()) // SqlitePool es Arc: clonar es barato
+    };
+
+    match crate::database::repositories::transcript::TranscriptsRepository::save_transcript(
+        &pool,
+        meeting_name,
+        &segments,
+        Some(folder_path.to_string()),
+        None,
+        &user_id,
+        None,
+    )
+    .await
+    {
+        Ok(mid) => {
+            info!(
+                "[scheduled] segmento guardado a DB: {} ({} segmentos)",
+                mid,
+                segments.len()
+            );
+            Some(mid)
+        }
+        Err(e) => {
+            error!("[scheduled] fallo al guardar segmento a DB: {}", e);
+            None
+        }
     }
 }
 

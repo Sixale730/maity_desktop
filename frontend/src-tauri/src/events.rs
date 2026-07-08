@@ -84,6 +84,10 @@ pub const START_RECORDING_FROM_DETECTOR: &str = "start-recording-from-detector";
 // ── Grabación programada (scheduler) ────────────────────────────────────────
 pub const SCHEDULED_RECORDING_STATUS: &str = "scheduled-recording-status";
 pub const SCHEDULED_RECORDING_SKIPPED: &str = "scheduled-recording-skipped";
+/// Emitido tras rotar el segmento por hora (Incremento 4). El frontend lo usa para
+/// resetear su buffer de transcripción y encolar la sync del segmento cerrado, SIN
+/// navegar (a diferencia de `recording-stop-complete`). Payload: `{ meetingId, meetingName }`.
+pub const SCHEDULED_SEGMENT_ROTATED: &str = "scheduled-segment-rotated";
 
 // ── Modelos: Whisper (nombres genéricos legacy) + config ────────────────────
 pub const MODEL_LOADING_STARTED: &str = "model-loading-started";

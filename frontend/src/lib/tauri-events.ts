@@ -84,6 +84,8 @@ export const TauriEvent = {
   // ── Grabación programada (scheduler) ──────────────────────────────────────
   SCHEDULED_RECORDING_STATUS: 'scheduled-recording-status',
   SCHEDULED_RECORDING_SKIPPED: 'scheduled-recording-skipped',
+  // Rotación por hora (Incremento 4): resetear buffer + encolar sync SIN navegar.
+  SCHEDULED_SEGMENT_ROTATED: 'scheduled-segment-rotated',
 
   // ── Modelos: Whisper (nombres genéricos legacy) + config ─────────────────
   MODEL_LOADING_STARTED: 'model-loading-started',
