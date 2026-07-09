@@ -81,8 +81,10 @@ pub fn set_presentation_mode(is_presentation: bool) {
 }
 
 /// Lee el modo de la grabación en curso (true = presentación). Helper para que los
-/// métodos del coach lean el global de forma uniforme.
-fn is_presentation_mode() -> bool {
+/// métodos del coach lean el global de forma uniforme. `pub` para que el scheduler
+/// pueda propagar el modo al payload de sync cloud durante la rotación por hora
+/// (que corre headless, sin buffer de React del que leerlo).
+pub fn is_presentation_mode() -> bool {
     PRESENTATION_MODE.load(Ordering::Relaxed)
 }
 

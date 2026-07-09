@@ -74,9 +74,12 @@ export function RecordingPostProcessingProvider({ children }: { children: React.
   }, []); // Sin dependencias - solo se ejecuta una vez al montar
 
   // Rotación por hora (Incremento 4): al cerrar un segmento y arrancar el siguiente, Rust ya
-  // guardó el segmento cerrado en local (headless). Aquí SOLO reseteamos el buffer de
-  // transcripción — SIN navegar — para que (a) la UI del nuevo segmento arranque limpia y
-  // (b) el stop final NO re-guarde todos los segmentos acumulados como una reunión duplicada.
+  // guardó el segmento cerrado en local Y encoló sus 3 jobs de sync cloud (Transactional
+  // Outbox — ver `scheduled_recording/service.rs::finalize_segment_native`). Aquí SOLO
+  // reseteamos el buffer de transcripción — SIN navegar, SIN llamar a enqueueCloudSync — para
+  // que (a) la UI del nuevo segmento arranque limpia y (b) el stop final NO re-guarde todos
+  // los segmentos acumulados como una reunión duplicada. Encolar aquí también crearía jobs
+  // duplicados apuntando al mismo meeting_id.
   useEffect(() => {
     let unlistenRotate: (() => void) | undefined;
 

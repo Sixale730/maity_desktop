@@ -13,7 +13,8 @@ use std::sync::Arc;
 use anyhow::Result;
 use chrono::{Duration, Local, NaiveDateTime};
 use log::{error, info, warn};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use sqlx::SqlitePool;
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 use tokio::sync::{mpsc, RwLock};
 use tokio::time::{interval, Duration as TokioDuration};
@@ -22,6 +23,25 @@ use crate::events;
 
 use super::schedule;
 use super::settings::{load_settings, save_settings, ScheduledRecordingSettings};
+
+/// Shape idéntico al `TranscriptSegment` que escribe `recording_saver` en `transcripts.json`.
+/// Lo mantengo local (en vez de reusar el struct público) para dos motivos: (a) desacoplo el
+/// scheduler del layout interno del saver — un cambio allí queda contenido aquí; (b) tengo
+/// TODOS los campos (incluye `sequence_id` y `display_time`) para servir a los DOS consumidores
+/// downstream sin doble parse: `save_transcript` (mapea a `api::models::TranscriptSegment`) y
+/// el payload de sync cloud (usa `sequence_id` como `segment_index`, espejando el frontend).
+#[derive(Debug, Deserialize)]
+struct RawTranscriptSegment {
+    id: String,
+    text: String,
+    audio_start_time: f64,
+    audio_end_time: f64,
+    duration: f64,
+    display_time: String,
+    sequence_id: u64,
+    #[serde(default)]
+    source_type: Option<String>,
+}
 
 /// Fase del scheduler. Ortogonal a la fase de grabación (`recording_phase`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -535,6 +555,16 @@ async fn stop_current_recording<R: Runtime>(app: &AppHandle<R>) -> Result<(), St
 /// Detiene la grabación de jornada y dispara el post-procesado del frontend (como el tray).
 /// Usado por el cierre por hora fija / fin de día: emite `recording-stop-complete` para que el
 /// frontend guarde local + sync + navegue.
+///
+/// TODO(headless-safe auto_close): si el usuario cerró la ventana al tray antes de las 18:00,
+/// este path pierde el ÚLTIMO segmento (nada local, nada nube). El fix pareado a
+/// `finalize_segment_native` no es plug-in: la ruta del frontend (`storageService.saveMeeting` →
+/// `api_save_transcript` con `early_meeting_id`) y la ruta headless de Rust (`save_transcript`
+/// generando UUID nuevo) usan meeting_ids distintos, así que llamar a ambas duplica la reunión.
+/// La solución limpia requiere que Rust conozca el `early_meeting_id` de la grabación activa
+/// (persistirlo en `AppState` al iniciar), y coordinar con el frontend un flag "ya lo guardé"
+/// en el payload del evento. Fuera de scope de este fix (que ataca la rotación); dejar aquí
+/// solo emite el evento como siempre.
 async fn stop_scheduled<R: Runtime>(app: &AppHandle<R>) {
     match stop_current_recording(app).await {
         Ok(()) => {
@@ -582,8 +612,10 @@ async fn rotate_scheduled<R: Runtime>(
         }
     };
 
-    // 4. Evento para que el frontend (si está vivo) resetee su buffer y encole la sync del
-    //    segmento cerrado, SIN navegar. Best-effort, como el resto del scheduler.
+    // 4. Evento para que el frontend (si está vivo) resetee su buffer, SIN navegar. La sync
+    //    cloud ya la encoló `finalize_segment_native` (headless): este evento SOLO limpia el
+    //    buffer de React para que el nuevo segmento arranque limpio y el stop manual final NO
+    //    reguarde los segmentos ya rotados como una reunión duplicada.
     if let Err(e) = app.emit(
         events::SCHEDULED_SEGMENT_ROTATED,
         serde_json::json!({ "meetingId": meeting_id, "meetingName": closing_name }),
@@ -617,10 +649,17 @@ async fn rotate_scheduled<R: Runtime>(
     }
 }
 
-/// Guarda a SQLite el segmento recién cerrado leyendo su `transcripts.json` (headless, sin
-/// depender del buffer de React ni de la ventana viva). Devuelve el `meeting_id` creado, o `None`
-/// si no hay transcripts, no hay usuario logueado, o falla la lectura/parseo. NO encola la sync a
-/// la nube: eso lo hace el frontend vía `scheduled-segment-rotated` (best-effort).
+/// Guarda a SQLite el segmento recién cerrado leyendo su `transcripts.json` Y encola los 3 jobs
+/// de sync cloud (`save_conversation` → `save_transcript_segments` → `finalize_conversation`)
+/// contra el mismo `meeting_id`. Todo headless: sin depender del buffer de React ni de la ventana
+/// viva. Devuelve el `meeting_id` creado, o `None` si no hay transcripts, no hay usuario logueado,
+/// o falla la lectura/parseo. La brecha original —"el frontend hace la sync via
+/// `scheduled-segment-rotated`"— nunca se implementó y era la causa de que los segmentos
+/// intermedios rotados quedaran local-only.
+///
+/// Patrón: Transactional Outbox (Chris Richardson). Fuente de verdad = `transcripts.json` en disco;
+/// tanto el guardado local como el encolado a la cola de sync se derivan de la misma lectura, así
+/// no divergen. El worker de sync (fuera de este archivo) drena `sync_queue` y publica a Supabase.
 async fn finalize_segment_native<R: Runtime>(
     app: &AppHandle<R>,
     folder_path: &str,
@@ -642,34 +681,32 @@ async fn finalize_segment_native<R: Runtime>(
         return None;
     }
 
-    // Mapear el shape de transcripts.json (recording_saver::TranscriptSegment, con `display_time`)
-    // al shape que espera el repositorio (api::models::TranscriptSegment, con `timestamp`).
-    let segments: Vec<crate::api::models::TranscriptSegment> = raw_segments
+    // Deserializar UNA vez al shape completo del saver. Los dos consumidores downstream
+    // (save_transcript local + payload de sync cloud) leen del mismo Vec — un solo parse.
+    let raws: Vec<RawTranscriptSegment> = raw_segments
         .iter()
-        .filter_map(|s| {
-            Some(crate::api::models::TranscriptSegment {
-                id: s.get("id")?.as_str()?.to_string(),
-                text: s.get("text").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                timestamp: s
-                    .get("display_time")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string(),
-                audio_start_time: s.get("audio_start_time").and_then(|v| v.as_f64()),
-                audio_end_time: s.get("audio_end_time").and_then(|v| v.as_f64()),
-                duration: s.get("duration").and_then(|v| v.as_f64()),
-                source_type: s
-                    .get("source_type")
-                    .and_then(|v| v.as_str())
-                    .map(|x| x.to_string()),
-            })
-        })
+        .filter_map(|s| serde_json::from_value(s.clone()).ok())
         .collect();
 
-    if segments.is_empty() {
+    if raws.is_empty() {
         warn!("[scheduled] segmento con transcripts inválidos; no se guarda a DB");
         return None;
     }
+
+    // Vista compatible con el repositorio (api::models::TranscriptSegment usa `timestamp`
+    // en vez de `display_time`, y todos los campos numéricos son Option<f64>).
+    let segments: Vec<crate::api::models::TranscriptSegment> = raws
+        .iter()
+        .map(|r| crate::api::models::TranscriptSegment {
+            id: r.id.clone(),
+            text: r.text.clone(),
+            timestamp: r.display_time.clone(),
+            audio_start_time: Some(r.audio_start_time),
+            audio_end_time: Some(r.audio_end_time),
+            duration: Some(r.duration),
+            source_type: r.source_type.clone(),
+        })
+        .collect();
 
     // Extraer usuario + pool y SOLTAR el guard de State antes del await largo del guardado
     // (evita mantener `State<AppState>` vivo cruzando el await dentro de la task del scheduler).
@@ -685,6 +722,16 @@ async fn finalize_segment_native<R: Runtime>(
         (user_id, state.db_manager.pool().clone()) // SqlitePool es Arc: clonar es barato
     };
 
+    // Modo de grabación (Ponente vs Conversación). Lo mantiene un atomic global que setea el
+    // arranque de grabación. El scheduler nunca lo pone en "presentation" (no hay UI para ello),
+    // así que en la práctica siempre es "conversation" — pero leemos el flag para respetar el
+    // toggle en vivo del coach si el usuario lo activó durante la jornada.
+    let recording_mode = if crate::coach::live_feedback::is_presentation_mode() {
+        "presentation"
+    } else {
+        "conversation"
+    };
+
     match crate::database::repositories::transcript::TranscriptsRepository::save_transcript(
         &pool,
         meeting_name,
@@ -692,7 +739,7 @@ async fn finalize_segment_native<R: Runtime>(
         Some(folder_path.to_string()),
         None,
         &user_id,
-        None,
+        Some(recording_mode),
     )
     .await
     {
@@ -702,6 +749,19 @@ async fn finalize_segment_native<R: Runtime>(
                 mid,
                 segments.len()
             );
+
+            // Outbox: encolar los 3 jobs de sync cloud contra el mismo meeting_id, ANTES de
+            // reportar éxito. Un fallo aquí NO invalida el guardado local (ya committed), pero sí
+            // se loggea al nivel error para diagnosticar rotaciones que no lleguen a la nube.
+            if let Err(e) =
+                enqueue_cloud_sync_jobs(&pool, &mid, meeting_name, &raws, &user_id, recording_mode)
+                    .await
+            {
+                error!(
+                    "[scheduled] fallo al encolar sync cloud para {} (local OK, nube pendiente): {}",
+                    mid, e
+                );
+            }
             Some(mid)
         }
         Err(e) => {
@@ -709,6 +769,170 @@ async fn finalize_segment_native<R: Runtime>(
             None
         }
     }
+}
+
+/// Encola los 3 jobs de sync cloud (save_conversation → save_transcript_segments →
+/// finalize_conversation) para el segmento rotado. Espeja 1:1 el shape que arma el frontend en
+/// `useRecordingStop.ts:enqueueCloudSync` — si el contrato del Cloudflare Worker / Vercel API
+/// diverge (nombres de campo, tipos), la fila cae corrupta en Supabase, así que cualquier cambio
+/// en el frontend debe replicarse aquí (y viceversa).
+async fn enqueue_cloud_sync_jobs(
+    pool: &SqlitePool,
+    meeting_id: &str,
+    meeting_name: &str,
+    raws: &[RawTranscriptSegment],
+    user_id: &str,
+    recording_mode: &str,
+) -> Result<(), sqlx::Error> {
+    // Orden cronológico: los chunks dual-channel llegan al buffer fuera de orden (mic + system),
+    // así que ordenar por `audio_start_time` garantiza que transcript_text lea natural y que
+    // `duration_seconds` se compute contra el último sample real. Mismo criterio que el frontend.
+    let mut sorted: Vec<&RawTranscriptSegment> = raws.iter().collect();
+    sorted.sort_by(|a, b| {
+        a.audio_start_time
+            .partial_cmp(&b.audio_start_time)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    // Idempotency key para la reunión: cross-retry-stable UUID persistido en meetings. Si un job
+    // reintenta tras un fallo mid-sync, Supabase colapsa el duplicado por UNIQUE(idempotency_key).
+    let idempotency_key =
+        crate::database::repositories::meeting::MeetingsRepository::get_or_create_idempotency_key(
+            pool, meeting_id,
+        )
+        .await?;
+
+    // Idioma de transcripción (Deepgram default `es-419`); fallback `"es"` conservador si la
+    // tabla `transcript_settings` está vacía (primer arranque antes de guardar config).
+    let language = crate::database::repositories::setting::SettingsRepository::get_transcript_config(pool)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|s| s.language)
+        .unwrap_or_else(|| "es".to_string());
+
+    // transcript_text espeja el join del frontend: `"Usuario: ..."` / `"Interlocutor: ..."` por
+    // línea. Es lo que el análisis V4 en la nube consume como cuerpo.
+    let transcript_text = sorted
+        .iter()
+        .map(|t| {
+            let speaker = match t.source_type.as_deref() {
+                Some("user") => "Usuario",
+                _ => "Interlocutor",
+            };
+            format!("{}: {}", speaker, t.text)
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let words_count: i64 = sorted
+        .iter()
+        .map(|t| t.text.split_whitespace().count() as i64)
+        .sum();
+
+    // Duración: fallback del frontend (max audio_end_time redondeado). En rotación no tenemos
+    // wall-clock del segmento (finalize corre después del stop y ya se dropeó el manager), pero
+    // el max de los timestamps VAD/Deepgram es lo mismo que usa el frontend cuando no hay wall-clock.
+    let max_end = sorted
+        .iter()
+        .map(|t| t.audio_end_time)
+        .fold(0.0_f64, f64::max);
+    let duration_seconds = max_end.round() as i64;
+
+    // Timestamps: mismo enfoque que el frontend — `finished_at = now`, `started_at = now - dur`.
+    // El backend cloud los usa solo como metadata display; el orden real lo dan los segmentos.
+    let now = chrono::Utc::now();
+    let finished_at = now.to_rfc3339();
+    let started_at = (now - chrono::Duration::seconds(duration_seconds)).to_rfc3339();
+
+    let segments_payload: Vec<serde_json::Value> = sorted
+        .iter()
+        .map(|t| {
+            let is_user = t.source_type.as_deref() == Some("user");
+            serde_json::json!({
+                "segment_index": t.sequence_id,
+                "text": t.text,
+                "speaker": if is_user { "user" } else { "interlocutor" },
+                "speaker_id": if is_user { 0 } else { 1 },
+                "is_user": is_user,
+                "start_time": t.audio_start_time,
+                "end_time": t.audio_end_time,
+            })
+        })
+        .collect();
+
+    // Job 1: save_conversation (root, sin dependencia).
+    let job1_payload = serde_json::json!({
+        "user_id": user_id,
+        "title": meeting_name,
+        "started_at": started_at,
+        "finished_at": finished_at,
+        "transcript_text": transcript_text,
+        "source": "maity_desktop",
+        "language": language,
+        "words_count": words_count,
+        "duration_seconds": duration_seconds,
+        "idempotency_key": idempotency_key,
+    })
+    .to_string();
+
+    let job1_id = crate::database::repositories::sync_queue::SyncQueueRepository::enqueue(
+        pool,
+        "save_conversation",
+        meeting_id,
+        &job1_payload,
+        10,
+        None,
+        user_id,
+    )
+    .await?;
+
+    // Job 2: save_transcript_segments (depende de Job 1).
+    let job2_payload = serde_json::json!({
+        "user_id": user_id,
+        "segments": segments_payload,
+    })
+    .to_string();
+
+    let job2_id = crate::database::repositories::sync_queue::SyncQueueRepository::enqueue(
+        pool,
+        "save_transcript_segments",
+        meeting_id,
+        &job2_payload,
+        10,
+        Some(job1_id),
+        user_id,
+    )
+    .await?;
+
+    // Job 3: finalize_conversation (depende de Job 2). `recording_mode` viaja al backend cloud
+    // para que el análisis V4 no penalice al ponente por dominancia de talk_ratio.
+    let job3_payload = serde_json::json!({
+        "duration_seconds": duration_seconds,
+        "recording_mode": recording_mode,
+    })
+    .to_string();
+
+    crate::database::repositories::sync_queue::SyncQueueRepository::enqueue(
+        pool,
+        "finalize_conversation",
+        meeting_id,
+        &job3_payload,
+        10,
+        Some(job2_id),
+        user_id,
+    )
+    .await?;
+
+    info!(
+        "[scheduled] 3 jobs de sync cloud encolados para {} (dur={}s, palabras={}, segments={})",
+        meeting_id,
+        duration_seconds,
+        words_count,
+        sorted.len()
+    );
+
+    Ok(())
 }
 
 /// Notificación al usuario (best-effort).
