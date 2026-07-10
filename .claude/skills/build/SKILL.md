@@ -14,6 +14,32 @@ El build se adapta automaticamente a la plataforma actual:
 - **macOS**: Firma con Developer ID + notarizacion Apple + .dmg
 - **Windows**: Code Signing Certum + Tauri Updater Signing + .exe
 
+## Materiales de firma locales (`/signing/` — gitignored)
+
+Los materiales de firma viven en `<repo>/signing/`. **Este directorio esta en `.gitignore` (`/signing/`) y NUNCA debe commitearse.** Es la ubicacion canonica de respaldo; si se pierde `frontend/.env`, se reconstruye desde aqui.
+
+```
+signing/
+├── certum-code-signing/                         # Cadena PUBLICA del cert Certum (Windows)
+│   ├── 7bdd674642e796564467b07310f0eea6.pem/.cer   # LEAF: CN=Asertio, SHA1 81DACE30…7DCF7F
+│   ├── 99a3800a26553b65abdc6e84a6b3ea39.pem/.cer   # Intermedio: Certum Code Signing 2021 CA
+│   ├── 1bb58f252adf23004928c9ae3d7eed27.pem/.cer   # Root: Certum Trusted Network CA 2
+│   ├── 444c0.pem/.cer                              # Root: Certum Trusted Network CA
+│   └── codesigncert-certum-activation.pdf          # Doc de activacion del cert
+└── tauri-updater-key/                           # Clave rsign del Tauri Updater (todas las plataformas)
+    ├── maity.key                                   # Secret key (== TAURI_SIGNING_PRIVATE_KEY del .env)
+    └── maity.key.pub                               # Public key (id 35A3FAE3F5A7F430)
+```
+
+**Certum (Windows):** los `.pem`/`.cer` son la **cadena publica** — sirven para verificar la firma o importar la cadena al store de Windows. La **clave privada NO esta aqui**: vive en el HSM de Certum y se usa via SimplySign Desktop, seleccionada por SHA1 thumbprint (`81DACE307F40CC0BB002FFB5B4785BFAB97DCF7F`) en `frontend/src-tauri/scripts/sign-windows.ps1`. No se firma desde el `.pem`.
+
+**Updater key:** `tauri-updater-key/maity.key` contiene el **mismo string base64** que la variable `TAURI_SIGNING_PRIVATE_KEY` de `frontend/.env` (verificado por hash). Es el respaldo de esa variable — si falta en `.env`, restaurar con:
+```bash
+# Restaurar la key del updater al .env desde el respaldo canonico
+echo "TAURI_SIGNING_PRIVATE_KEY=$(tr -d '\r\n' < <repo>/signing/tauri-updater-key/maity.key)" >> <repo>/frontend/.env
+# (la password sigue siendo TAURI_SIGNING_PRIVATE_KEY_PASSWORD, ya presente en .env)
+```
+
 ## Instrucciones
 
 > **Nota**: `pnpm run tauri:build` ahora encadena automaticamente un pre-check de lint
@@ -38,8 +64,10 @@ Ejecutar `uname -s` para determinar la plataforma:
    ```
    - Si aparece `Issued to: Asertio` → continuar.
    - Si NO → **DETENER** y avisar: "SimplySign Desktop no esta conectado."
+   - El SHA1 esperado (`81DACE307F40CC0BB002FFB5B4785BFAB97DCF7F`) es el del leaf en `<repo>/signing/certum-code-signing/7bdd674642e796564467b07310f0eea6.pem`. Si el store de Windows no reconoce la cadena, importarla desde ese directorio (`signing/certum-code-signing/*.cer`).
 
 2. Verificar que `frontend/.env` tenga `TAURI_SIGNING_PRIVATE_KEY` con valor (no vacio).
+   - Si falta o esta vacio, restaurarla desde el respaldo canonico: `TAURI_SIGNING_PRIVATE_KEY` == contenido de `<repo>/signing/tauri-updater-key/maity.key` (ver seccion "Materiales de firma locales").
 
 **En macOS:**
 1. Verificar identidad de firma:
@@ -370,7 +398,8 @@ Mostrar resumen completo:
 - NO hacer git push. Solo commit local + release en GitHub.
 - Si el release ya existe con artefactos de otra plataforma, usar `gh release upload` para agregar los de la plataforma actual.
 - El updater busca `latest.json` en `https://github.com/Sixale730/maity_desktop/releases/latest/download/latest.json`. Critico que el release tenga `--latest` y que `latest.json` sea asset.
-- **Certificado Certum (Windows)**: Expira Feb 19, 2027. SHA1: `81DACE307F40CC0BB002FFB5B4785BFAB97DCF7F`.
+- **Certificado Certum (Windows)**: Expira Feb 19, 2027. SHA1: `81DACE307F40CC0BB002FFB5B4785BFAB97DCF7F`. Cadena publica de respaldo en `<repo>/signing/certum-code-signing/` (gitignored). La clave privada vive en el HSM de Certum (SimplySign), no en disco.
+- **Clave del Tauri Updater**: respaldo canonico en `<repo>/signing/tauri-updater-key/maity.key` (== `TAURI_SIGNING_PRIVATE_KEY` del `.env`); public key en `maity.key.pub` (id `35A3FAE3F5A7F430`). Directorio `signing/` gitignored — nunca commitear.
 - **Certificado Apple (macOS)**: Developer ID Application: Julio Alexis Gonzalez Villa (8YLD233TA2).
 
 ## Troubleshooting (errores conocidos en builds universales macOS)
