@@ -106,3 +106,6 @@ frontend/.claude/
 *.dmg
 *.msi
 *-setup.exe
+
+# Code-signing certs + Tauri updater private key (never commit)
+/signing/
