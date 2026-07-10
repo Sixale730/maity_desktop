@@ -683,10 +683,25 @@ async fn finalize_segment_native<R: Runtime>(
 
     // Deserializar UNA vez al shape completo del saver. Los dos consumidores downstream
     // (save_transcript local + payload de sync cloud) leen del mismo Vec — un solo parse.
+    let total_raw = raw_segments.len();
     let raws: Vec<RawTranscriptSegment> = raw_segments
         .iter()
         .filter_map(|s| serde_json::from_value(s.clone()).ok())
         .collect();
+
+    // Observabilidad: `RawTranscriptSegment` tiene campos requeridos (id, text, timestamps,
+    // sequence_id...). Si `recording_saver` cambiara su shape y dejara de escribir alguno,
+    // `from_value` fallaría y `filter_map(...).ok()` descartaría el segmento en SILENCIO. Contar
+    // y loggear los descartes convierte esa pérdida silenciosa en una señal diagnosticable
+    // (análogo a un Dead Letter Channel: no se tira el mensaje corrupto sin dejar rastro).
+    let dropped = total_raw - raws.len();
+    if dropped > 0 {
+        warn!(
+            "[scheduled] {}/{} segmentos descartados por deserialización inválida \
+             (posible drift de shape con recording_saver::TranscriptSegment)",
+            dropped, total_raw
+        );
+    }
 
     if raws.is_empty() {
         warn!("[scheduled] segmento con transcripts inválidos; no se guarda a DB");
@@ -825,6 +840,11 @@ async fn enqueue_cloud_sync_jobs(
         .collect::<Vec<_>>()
         .join("\n");
 
+    // words_count: `split_whitespace` ignora tokens vacíos y espacios repetidos. Diverge a
+    // PROPÓSITO del frontend (`text.split(/\s+/).length`, que cuenta 1 para "" y sobre-cuenta con
+    // espacio inicial): la versión de Rust es la correcta y la diferencia es ±1 sólo en segmentos
+    // vacíos — inocua para los umbrales del análisis V4. No alineamos el frontend para no tocar el
+    // path caliente `enqueueCloudSync`. El golden test de este módulo fija este comportamiento.
     let words_count: i64 = sorted
         .iter()
         .map(|t| t.text.split_whitespace().count() as i64)
@@ -861,6 +881,18 @@ async fn enqueue_cloud_sync_jobs(
         })
         .collect();
 
+    // Outbox ATÓMICO: los 3 jobs entran en UNA sola transacción. O el worker ve el grafo
+    // completo (save_conversation → save_transcript_segments → finalize_conversation), o no ve
+    // ninguno. Sin la transacción, un fallo tras el primer INSERT dejaría un outbox a medias:
+    // el worker compuerta por `depends_on` completado (ver `SyncQueueRepository::get_ready_jobs`),
+    // así que ejecutaría `save_conversation` solo y publicaría en Supabase una conversación SIN
+    // segmentos ni finalize — dato corrupto. Es el invariante de atomicidad del patrón Outbox.
+    //
+    // El idempotency key y `language` se leyeron arriba (fuera de la tx, son lecturas): si la tx
+    // hace rollback, un idempotency key ya persistido queda inofensivo (se reusa en el próximo
+    // intento gracias al COALESCE de `get_or_create_idempotency_key`).
+    let mut tx = pool.begin().await?;
+
     // Job 1: save_conversation (root, sin dependencia).
     let job1_payload = serde_json::json!({
         "user_id": user_id,
@@ -877,7 +909,7 @@ async fn enqueue_cloud_sync_jobs(
     .to_string();
 
     let job1_id = crate::database::repositories::sync_queue::SyncQueueRepository::enqueue(
-        pool,
+        &mut *tx,
         "save_conversation",
         meeting_id,
         &job1_payload,
@@ -895,7 +927,7 @@ async fn enqueue_cloud_sync_jobs(
     .to_string();
 
     let job2_id = crate::database::repositories::sync_queue::SyncQueueRepository::enqueue(
-        pool,
+        &mut *tx,
         "save_transcript_segments",
         meeting_id,
         &job2_payload,
@@ -914,7 +946,7 @@ async fn enqueue_cloud_sync_jobs(
     .to_string();
 
     crate::database::repositories::sync_queue::SyncQueueRepository::enqueue(
-        pool,
+        &mut *tx,
         "finalize_conversation",
         meeting_id,
         &job3_payload,
@@ -923,6 +955,9 @@ async fn enqueue_cloud_sync_jobs(
         user_id,
     )
     .await?;
+
+    // Commit: recién aquí los 3 jobs se hacen visibles al worker, todos juntos.
+    tx.commit().await?;
 
     info!(
         "[scheduled] 3 jobs de sync cloud encolados para {} (dur={}s, palabras={}, segments={})",
@@ -974,4 +1009,248 @@ fn emit_skipped<R: Runtime>(app: &AppHandle<R>, reason: SkipReason) {
             "message": reason.message(),
         }),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    //! Golden / contract test del outbox de sync cloud de segmentos rotados.
+    //!
+    //! `enqueue_cloud_sync_jobs` DEBE producir payloads idénticos a los que arma el frontend en
+    //! `useRecordingStop.ts::enqueueCloudSync`. Ese contrato hoy sólo lo protege un comentario; si
+    //! divergen (una key renombrada, un campo perdido, un mapeo de speaker cambiado), la fila cae
+    //! corrupta en Supabase sin error visible. Este test fija el shape EXACTO (keys + valores) del
+    //! lado Rust, de modo que cualquier cambio accidental falle ruidosamente en CI local.
+    //!
+    //! Es una versión ligera de un Consumer-Driven Contract (Fowler) de un solo lado — golden
+    //! master / characterization test. El salto a un fixture compartido Rust+TS (estilo Pact) que
+    //! detecte drift también del frontend queda como trabajo futuro (issue de seguimiento).
+    use super::*;
+    use sqlx::sqlite::SqlitePoolOptions;
+    use sqlx::SqlitePool;
+
+    /// Pool in-memory con el ESQUEMA REAL (migraciones), no un SCHEMA a mano: el test necesita
+    /// `meetings.cloud_idempotency_key` + `transcript_settings` + `sync_queue`, y aplicar las
+    /// migraciones evita el drift que sufre el SCHEMA hand-written de `sync_queue.rs`.
+    async fn setup_pool() -> SqlitePool {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1) // `:memory:` da una DB por conexión; capar a 1 mantiene una sola.
+            .connect(":memory:")
+            .await
+            .expect("in-memory sqlite");
+        sqlx::migrate!("./migrations")
+            .run(&pool)
+            .await
+            .expect("run migrations");
+        pool
+    }
+
+    /// `get_or_create_idempotency_key` hace `UPDATE meetings ... WHERE id = ?`; la fila debe existir.
+    async fn insert_meeting(pool: &SqlitePool, id: &str) {
+        sqlx::query("INSERT INTO meetings (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)")
+            .bind(id)
+            .bind("Segmento de prueba")
+            .bind("2026-01-01T00:00:00Z")
+            .bind("2026-01-01T00:00:00Z")
+            .execute(pool)
+            .await
+            .expect("insert meeting");
+    }
+
+    /// Fixture DESORDENADO por `audio_start_time` a propósito: así el test verifica el sort
+    /// cronológico (user@1.0 debe quedar antes que interlocutor@5.0) además del mapeo de speaker.
+    fn fixture_segments() -> Vec<RawTranscriptSegment> {
+        vec![
+            RawTranscriptSegment {
+                id: "seg-b".to_string(),
+                text: "que tal".to_string(),
+                audio_start_time: 5.0,
+                audio_end_time: 7.5,
+                duration: 2.5,
+                display_time: "[00:05]".to_string(),
+                sequence_id: 2,
+                source_type: Some("interlocutor".to_string()),
+            },
+            RawTranscriptSegment {
+                id: "seg-a".to_string(),
+                text: "hola mundo".to_string(),
+                audio_start_time: 1.0,
+                audio_end_time: 3.0,
+                duration: 2.0,
+                display_time: "[00:01]".to_string(),
+                sequence_id: 1,
+                source_type: Some("user".to_string()),
+            },
+        ]
+    }
+
+    fn keys(v: &serde_json::Value) -> std::collections::BTreeSet<String> {
+        v.as_object()
+            .expect("objeto JSON")
+            .keys()
+            .cloned()
+            .collect()
+    }
+
+    fn expected_keys(list: &[&str]) -> std::collections::BTreeSet<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[tokio::test]
+    async fn enqueue_cloud_sync_jobs_mirrors_frontend_contract() {
+        let pool = setup_pool().await;
+        let meeting_id = "mid-test";
+        insert_meeting(&pool, meeting_id).await;
+
+        let raws = fixture_segments();
+        enqueue_cloud_sync_jobs(
+            &pool,
+            meeting_id,
+            "Segmento de prueba",
+            &raws,
+            "user-test",
+            "conversation",
+        )
+        .await
+        .expect("encolar outbox");
+
+        // Los 3 jobs, en orden de inserción.
+        let jobs: Vec<crate::database::models::SyncQueueJob> =
+            sqlx::query_as("SELECT * FROM sync_queue WHERE meeting_id = ? ORDER BY id ASC")
+                .bind(meeting_id)
+                .fetch_all(&pool)
+                .await
+                .expect("leer jobs");
+
+        assert_eq!(jobs.len(), 3, "deben encolarse exactamente 3 jobs");
+        assert_eq!(jobs[0].job_type, "save_conversation");
+        assert_eq!(jobs[1].job_type, "save_transcript_segments");
+        assert_eq!(jobs[2].job_type, "finalize_conversation");
+
+        // Cadena de dependencias 1 ← 2 ← 3 (el worker compuerta por `depends_on` completado).
+        assert_eq!(jobs[0].depends_on, None);
+        assert_eq!(jobs[1].depends_on, Some(jobs[0].id));
+        assert_eq!(jobs[2].depends_on, Some(jobs[1].id));
+
+        let job1: serde_json::Value = serde_json::from_str(&jobs[0].payload).unwrap();
+        let job2: serde_json::Value = serde_json::from_str(&jobs[1].payload).unwrap();
+        let job3: serde_json::Value = serde_json::from_str(&jobs[2].payload).unwrap();
+
+        // ---- Job 1: save_conversation ----
+        assert_eq!(
+            keys(&job1),
+            expected_keys(&[
+                "user_id",
+                "title",
+                "started_at",
+                "finished_at",
+                "transcript_text",
+                "source",
+                "language",
+                "words_count",
+                "duration_seconds",
+                "idempotency_key",
+            ]),
+            "las keys de save_conversation deben espejar el frontend 1:1"
+        );
+        assert_eq!(job1["user_id"], "user-test");
+        assert_eq!(job1["title"], "Segmento de prueba");
+        assert_eq!(job1["source"], "maity_desktop");
+        assert_eq!(job1["language"], "es"); // fallback: transcript_settings vacío
+        // transcript_text ORDENADO cronológicamente (user@1.0 antes que interlocutor@5.0).
+        assert_eq!(
+            job1["transcript_text"],
+            "Usuario: hola mundo\nInterlocutor: que tal"
+        );
+        assert_eq!(job1["words_count"], 4); // "hola mundo" (2) + "que tal" (2)
+        assert_eq!(job1["duration_seconds"], 8); // round(max_end = 7.5)
+        assert!(!job1["idempotency_key"].as_str().unwrap().is_empty());
+        assert!(job1["started_at"].is_string());
+        assert!(job1["finished_at"].is_string());
+
+        // ---- Job 2: save_transcript_segments ----
+        assert_eq!(job2["user_id"], "user-test");
+        let segs = job2["segments"].as_array().unwrap();
+        assert_eq!(segs.len(), 2);
+        assert_eq!(
+            keys(&segs[0]),
+            expected_keys(&[
+                "segment_index",
+                "text",
+                "speaker",
+                "speaker_id",
+                "is_user",
+                "start_time",
+                "end_time",
+            ]),
+            "las keys de cada segmento deben espejar el frontend 1:1"
+        );
+        // Primero tras el sort = user@1.0
+        assert_eq!(segs[0]["segment_index"], 1);
+        assert_eq!(segs[0]["text"], "hola mundo");
+        assert_eq!(segs[0]["speaker"], "user");
+        assert_eq!(segs[0]["speaker_id"], 0);
+        assert_eq!(segs[0]["is_user"], true);
+        assert_eq!(segs[0]["start_time"], 1.0);
+        assert_eq!(segs[0]["end_time"], 3.0);
+        // Segundo = interlocutor@5.0
+        assert_eq!(segs[1]["segment_index"], 2);
+        assert_eq!(segs[1]["speaker"], "interlocutor");
+        assert_eq!(segs[1]["speaker_id"], 1);
+        assert_eq!(segs[1]["is_user"], false);
+
+        // ---- Job 3: finalize_conversation ----
+        assert_eq!(
+            keys(&job3),
+            expected_keys(&["duration_seconds", "recording_mode"]),
+            "las keys de finalize_conversation deben espejar el frontend 1:1"
+        );
+        assert_eq!(job3["duration_seconds"], 8);
+        assert_eq!(job3["recording_mode"], "conversation");
+
+        // ---- Idempotencia: el key viajó en el payload Y se persistió en meetings ----
+        let persisted: (Option<String>,) =
+            sqlx::query_as("SELECT cloud_idempotency_key FROM meetings WHERE id = ?")
+                .bind(meeting_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            persisted.0.as_deref(),
+            job1["idempotency_key"].as_str(),
+            "el idempotency_key del payload debe ser el persistido en meetings"
+        );
+        // Resolver de nuevo devuelve el MISMO key (cross-retry-stable).
+        let again =
+            crate::database::repositories::meeting::MeetingsRepository::get_or_create_idempotency_key(
+                &pool, meeting_id,
+            )
+            .await
+            .unwrap();
+        assert_eq!(Some(again.as_str()), job1["idempotency_key"].as_str());
+    }
+
+    #[tokio::test]
+    async fn enqueue_cloud_sync_jobs_propagates_presentation_mode() {
+        let pool = setup_pool().await;
+        let meeting_id = "mid-presentation";
+        insert_meeting(&pool, meeting_id).await;
+
+        let raws = fixture_segments();
+        enqueue_cloud_sync_jobs(&pool, meeting_id, "Ponencia", &raws, "user-test", "presentation")
+            .await
+            .expect("encolar outbox");
+
+        let finalize: (String,) = sqlx::query_as(
+            "SELECT payload FROM sync_queue WHERE meeting_id = ? AND job_type = 'finalize_conversation'",
+        )
+        .bind(meeting_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let payload: serde_json::Value = serde_json::from_str(&finalize.0).unwrap();
+        assert_eq!(
+            payload["recording_mode"], "presentation",
+            "recording_mode debe viajar tal cual al finalize cloud (no penalizar al ponente)"
+        );
+    }
 }

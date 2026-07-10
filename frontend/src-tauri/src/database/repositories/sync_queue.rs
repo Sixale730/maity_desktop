@@ -6,15 +6,25 @@ pub struct SyncQueueRepository;
 impl SyncQueueRepository {
     /// Enqueue a new sync job tagged with user_id, returns its id.
     /// `user_id` is required (privacy isolation between accounts).
-    pub async fn enqueue(
-        pool: &SqlitePool,
+    ///
+    /// Genérico sobre `Executor` para poder encolar tanto contra un `&SqlitePool`
+    /// (uso normal) como contra una `&mut Transaction` (encolado atómico de un grafo
+    /// de jobs — ver `scheduled_recording::service::enqueue_cloud_sync_jobs`). Así el
+    /// worker nunca observa un outbox a medias (p.ej. `save_conversation` sin sus
+    /// `save_transcript_segments`). `&SqlitePool` y `&mut SqliteConnection` implementan
+    /// `Executor`, así que los callers existentes que pasan `&pool` no cambian.
+    pub async fn enqueue<'e, E>(
+        executor: E,
         job_type: &str,
         meeting_id: &str,
         payload: &str,
         max_attempts: i64,
         depends_on: Option<i64>,
         user_id: &str,
-    ) -> Result<i64, SqlxError> {
+    ) -> Result<i64, SqlxError>
+    where
+        E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+    {
         let result = sqlx::query(
             "INSERT INTO sync_queue (job_type, meeting_id, payload, max_attempts, depends_on, user_id)
              VALUES (?, ?, ?, ?, ?, ?)",
@@ -25,7 +35,7 @@ impl SyncQueueRepository {
         .bind(max_attempts)
         .bind(depends_on)
         .bind(user_id)
-        .execute(pool)
+        .execute(executor)
         .await?;
 
         Ok(result.last_insert_rowid())
