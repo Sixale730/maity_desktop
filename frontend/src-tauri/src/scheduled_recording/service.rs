@@ -665,9 +665,25 @@ async fn rotate_scheduled<R: Runtime>(
     let closing_name = render_segment_name(settings, owned_since);
 
     // 2. Detener el segmento actual (finaliza audio.mp4 + transcripts.json en el folder).
-    if let Err(e) = stop_current_recording(app).await {
-        error!("[scheduled] rotación: stop_recording falló: {}", e);
-        // El segmento parcial queda en disco; seguimos intentando re-arrancar abajo.
+    match stop_current_recording(app).await {
+        Ok(true) => {}
+        Ok(false) => {
+            // Race: otro actor (usuario) ganó el StopGate justo en la frontera de hora. Su
+            // path hace el post-procesado completo (guardado + navegación); la intención
+            // del usuario gana: NO finalize (leería un transcripts.json que el otro path
+            // aún está drenando y duplicaría la reunión), NO re-arranque. Mismo estado que
+            // el paro manual dentro de ventana: re-armar a la siguiente hora.
+            info!("[scheduled] rotación: otro actor detuvo primero; su path guarda");
+            shared.owned.store(false, Ordering::SeqCst);
+            *shared.owned_since.write().await = None;
+            *shared.grace_deadline.write().await = None;
+            *shared.rearm_at.write().await = Some(schedule::next_hour_boundary(now));
+            return SchedulerPhase::Armed;
+        }
+        Err(e) => {
+            error!("[scheduled] rotación: stop_recording falló: {}", e);
+            // El segmento parcial queda en disco; seguimos intentando re-arrancar abajo.
+        }
     }
 
     // 3. Guardado LOCAL headless del segmento cerrado (no depende del buffer del frontend).
