@@ -9,7 +9,8 @@ use chrono::{Datelike, Duration, NaiveDateTime, NaiveTime, Timelike, Weekday};
 use super::settings::{ScheduledRecordingSettings, ScheduleWindow};
 
 /// Convierte "HH:MM" a minutos desde medianoche (0..=1439). `None` si es inválido.
-fn parse_hm(s: &str) -> Option<u32> {
+/// `pub(super)`: settings.rs lo usa para derivar `auto_close_time` del fin de ventana.
+pub(super) fn parse_hm(s: &str) -> Option<u32> {
     let mut parts = s.split(':');
     let h: u32 = parts.next()?.trim().parse().ok()?;
     let m: u32 = parts.next()?.trim().parse().ok()?;

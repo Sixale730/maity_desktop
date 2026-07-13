@@ -60,6 +60,7 @@ export function ScheduledRecordingSettings() {
   const [respectManual, setRespectManual] = useState(true)
   const [autoCloseEnabled, setAutoCloseEnabled] = useState(false)
   const [autoCloseTime, setAutoCloseTime] = useState('18:00')
+  const [hourlyRotation, setHourlyRotation] = useState(true)
 
   useEffect(() => {
     if (!settings) return
@@ -69,6 +70,7 @@ export function ScheduledRecordingSettings() {
     setRespectManual(settings.respect_manual_recording)
     setAutoCloseEnabled(settings.auto_close_enabled)
     setAutoCloseTime(settings.auto_close_time || '18:00')
+    setHourlyRotation(settings.hourly_rotation_enabled ?? true)
   }, [settings])
 
   const toggleDay = (day: number) => {
@@ -112,6 +114,7 @@ export function ScheduledRecordingSettings() {
         configured_by_user: true,
         auto_close_enabled: autoCloseEnabled,
         auto_close_time: autoCloseTime,
+        hourly_rotation_enabled: hourlyRotation,
       })
       toast.success('Horario de jornada guardado')
       await reload()
@@ -275,6 +278,18 @@ export function ScheduledRecordingSettings() {
                 </p>
               </>
             )}
+          </div>
+
+          {/* Rotación por hora (ON por defecto desde 0.2.52). */}
+          <div className="flex items-center justify-between p-3 border border-border rounded-lg">
+            <div>
+              <p className="font-medium text-foreground">Guardar un segmento por hora</p>
+              <p className="text-sm text-muted-foreground">
+                Cada hora en punto, Maity guarda lo grabado y sigue en un segmento nuevo
+                (los nombres llevan la hora, ej. «Jornada 2026-07-13 10:00»).
+              </p>
+            </div>
+            <Switch checked={hourlyRotation} onCheckedChange={setHourlyRotation} />
           </div>
 
           {/* Opciones */}

@@ -73,15 +73,16 @@ export function RecordingPostProcessingProvider({ children }: { children: React.
     };
   }, []); // Sin dependencias - solo se ejecuta una vez al montar
 
-  // Rotación por hora (Incremento 4): al cerrar un segmento y arrancar el siguiente, Rust ya
-  // guardó el segmento cerrado en local Y encoló sus 3 jobs de sync cloud (Transactional
+  // Rotación por hora (Incremento 4) y cierre headless de jornada (gap #54): en ambos, Rust
+  // ya guardó el segmento cerrado en local Y encoló sus 3 jobs de sync cloud (Transactional
   // Outbox — ver `scheduled_recording/service.rs::finalize_segment_native`). Aquí SOLO
   // reseteamos el buffer de transcripción — SIN navegar, SIN llamar a enqueueCloudSync — para
-  // que (a) la UI del nuevo segmento arranque limpia y (b) el stop final NO re-guarde todos
-  // los segmentos acumulados como una reunión duplicada. Encolar aquí también crearía jobs
-  // duplicados apuntando al mismo meeting_id.
+  // que (a) la UI del nuevo segmento arranque limpia y (b) un stop manual posterior NO
+  // re-guarde los segmentos acumulados como una reunión duplicada. Encolar aquí también
+  // crearía jobs duplicados apuntando al mismo meeting_id.
   useEffect(() => {
     let unlistenRotate: (() => void) | undefined;
+    let unlistenClosed: (() => void) | undefined;
 
     const setupRotateListener = async () => {
       try {
@@ -90,6 +91,19 @@ export function RecordingPostProcessingProvider({ children }: { children: React.
           (event) => {
             logger.debug('[RecordingPostProcessing] Segmento rotado, reseteando buffer:', event.payload);
             clearTranscriptsRef.current();
+          }
+        );
+        unlistenClosed = await listen<{ meetingId: string | null; meetingName: string }>(
+          TauriEvent.SCHEDULED_JORNADA_CLOSED,
+          (event) => {
+            logger.debug('[RecordingPostProcessing] Jornada cerrada headless, reseteando buffer:', event.payload);
+            clearTranscriptsRef.current();
+            // Higiene: el `recording-stopped` del stop nativo pobló estas keys; limpiarlas
+            // evita que un futuro stop manual herede metadata (folder/nombre/duración) de
+            // la jornada ya guardada por Rust.
+            sessionStorage.removeItem('last_recording_folder_path');
+            sessionStorage.removeItem('last_recording_meeting_name');
+            sessionStorage.removeItem('last_recording_duration_seconds');
           }
         );
       } catch (error) {
@@ -102,6 +116,9 @@ export function RecordingPostProcessingProvider({ children }: { children: React.
     return () => {
       if (unlistenRotate) {
         unlistenRotate();
+      }
+      if (unlistenClosed) {
+        unlistenClosed();
       }
     };
   }, []); // Solo se monta una vez

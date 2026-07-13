@@ -340,50 +340,47 @@ async fn evaluate_tick<R: Runtime>(
     let is_rec = crate::audio::recording_commands::is_recording_active_fn();
     let owned = shared.owned.load(Ordering::SeqCst);
 
-    // --- Cierre por hora fija (opt-in, Incremento 3). Aplica a NUESTRA grabación esté o no en
-    // ventana, porque depende de un instante ABSOLUTO (no del borde de la ventana). Reutiliza el
-    // periodo de gracia: si a la hora de cierre sigue una reunión abierta, espera hasta el margen.
+    // --- Cierre por hora fija (Incremento 3; headless-safe desde el gap #54). Aplica a NUESTRA
+    // grabación esté o no en ventana, porque depende de un instante ABSOLUTO (no del borde de la
+    // ventana). Reutiliza el periodo de gracia: si a la hora de cierre sigue una reunión abierta,
+    // espera hasta el margen. La mutación de estado del scheduler vive DENTRO de
+    // `close_scheduled` (todos sus paths de salida limpian ownership/grace y setean rearm).
     if owned && is_rec && settings.auto_close_enabled {
-        let owned_since = *shared.owned_since.read().await;
-        if let Some(close_at) =
-            owned_since.and_then(|since| schedule::auto_close_at(since, &settings.auto_close_time))
-        {
-            if now >= close_at {
-                let deadline = {
-                    let mut guard = shared.grace_deadline.write().await;
-                    if guard.is_none() {
-                        *guard =
-                            Some(close_at + Duration::minutes(settings.grace_period_minutes as i64));
-                    }
-                    guard.expect("grace_deadline just set")
-                };
-                let still_active =
-                    settings.grace_period_minutes > 0 && process_monitor.is_meeting_active();
+        if let Some(since) = *shared.owned_since.read().await {
+            if let Some(close_at) = schedule::auto_close_at(since, &settings.auto_close_time) {
+                if now >= close_at {
+                    let deadline = {
+                        let mut guard = shared.grace_deadline.write().await;
+                        if guard.is_none() {
+                            *guard =
+                                Some(close_at + Duration::minutes(settings.grace_period_minutes as i64));
+                        }
+                        guard.expect("grace_deadline just set")
+                    };
+                    let still_active =
+                        settings.grace_period_minutes > 0 && process_monitor.is_meeting_active();
 
-                if now >= deadline || !still_active {
-                    info!(
-                        "[scheduled] cierre por hora fija {} (past_deadline={}, still_active={})",
-                        settings.auto_close_time,
-                        now >= deadline,
-                        still_active
-                    );
-                    stop_scheduled(app).await;
-                    shared.owned.store(false, Ordering::SeqCst);
-                    *shared.owned_since.write().await = None;
-                    *shared.grace_deadline.write().await = None;
-                    // Suprimir el re-arranque por el resto del día (no re-grabar tras el cierre).
-                    *shared.rearm_at.write().await = Some(start_of_next_day(now));
-                    return (SchedulerPhase::Idle, None);
+                    if now >= deadline || !still_active {
+                        info!(
+                            "[scheduled] cierre por hora fija {} (past_deadline={}, still_active={})",
+                            settings.auto_close_time,
+                            now >= deadline,
+                            still_active
+                        );
+                        let phase = close_scheduled(app, shared, settings, since, now).await;
+                        return (phase, None);
+                    }
+                    return (SchedulerPhase::Grace, None);
                 }
-                return (SchedulerPhase::Grace, None);
             }
         }
     }
 
-    // --- Rotación por hora (Incremento 4, opt-in). Como el cierre por hora fija, actúa sobre
-    // NUESTRA grabación por un instante ABSOLUTO, pero SOLO dentro de la ventana: en overtime
-    // el cierre lo maneja `auto_close`. Deriva la frontera de `owned_since`, así que no añade
-    // estado nuevo y es robusto a sleep/suspend (un salto de horas dispara UNA sola rotación).
+    // --- Rotación por hora (Incremento 4; ON por defecto desde 0.2.52, apagable en Settings).
+    // Como el cierre por hora fija, actúa sobre NUESTRA grabación por un instante ABSOLUTO,
+    // pero SOLO dentro de la ventana: en overtime el cierre lo maneja `auto_close`. Deriva la
+    // frontera de `owned_since`, así que no añade estado nuevo y es robusto a sleep/suspend
+    // (un salto de horas dispara UNA sola rotación).
     if owned && is_rec && settings.hourly_rotation_enabled {
         if let Some(since) = *shared.owned_since.read().await {
             if schedule::should_rotate(since, now, active.is_some(), settings.hourly_rotation_enabled) {
@@ -528,9 +525,12 @@ fn render_segment_name(settings: &ScheduledRecordingSettings, ts: NaiveDateTime)
     }
 }
 
-/// Detiene la grabación de jornada (ruta nativa). Devuelve el resultado del `stop_recording`.
-/// El `save_path` es ignorado por `stop_recording` (`_args`), pero se construye por compatibilidad.
-async fn stop_current_recording<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
+/// Detiene la grabación de jornada (ruta nativa). Devuelve `true` si ESTE caller adquirió
+/// el StopGate, `false` si otro actor ya estaba deteniendo/detuvo (stop idempotente) — los
+/// flujos de rotación/cierre usan ese bool para NO duplicar el guardado ni pisar la
+/// intención del usuario. El `save_path` es ignorado por `stop_recording_reporting`
+/// (`_args`), pero se construye por compatibilidad.
+async fn stop_current_recording<R: Runtime>(app: &AppHandle<R>) -> Result<bool, String> {
     let save_path = app
         .path()
         .app_data_dir()
@@ -545,36 +545,104 @@ async fn stop_current_recording<R: Runtime>(app: &AppHandle<R>) -> Result<(), St
         })
         .unwrap_or_else(|| "scheduled-recording.wav".to_string());
 
-    crate::audio::recording_commands::stop_recording(
+    crate::audio::recording_commands::stop_recording_reporting(
         app.clone(),
         crate::audio::recording_commands::RecordingArgs { save_path },
     )
     .await
 }
 
-/// Detiene la grabación de jornada y dispara el post-procesado del frontend (como el tray).
-/// Usado por el cierre por hora fija / fin de día: emite `recording-stop-complete` para que el
-/// frontend guarde local + sync + navegue.
+/// Cierre por hora fija / fin de día (gap #54): una rotación SIN re-arranque. Guarda el
+/// último segmento de la jornada headless (local + outbox cloud vía
+/// `finalize_segment_native`) sin depender del webview: el buffer de React no es durable
+/// para una sesión de 8h (un crash del webview + recarga lo vacía aunque la ventana esté
+/// visible) y con la ventana al tray el guardado legacy dependía de un webview
+/// oculto/throttled.
 ///
-/// TODO(headless-safe auto_close): si el usuario cerró la ventana al tray antes de las 18:00,
-/// este path pierde el ÚLTIMO segmento (nada local, nada nube). El fix pareado a
-/// `finalize_segment_native` no es plug-in: la ruta del frontend (`storageService.saveMeeting` →
-/// `api_save_transcript` con `early_meeting_id`) y la ruta headless de Rust (`save_transcript`
-/// generando UUID nuevo) usan meeting_ids distintos, así que llamar a ambas duplica la reunión.
-/// La solución limpia requiere que Rust conozca el `early_meeting_id` de la grabación activa
-/// (persistirlo en `AppState` al iniciar), y coordinar con el frontend un flag "ya lo guardé"
-/// en el payload del evento. Fuera de scope de este fix (que ataca la rotación); dejar aquí
-/// solo emite el evento como siempre.
-async fn stop_scheduled<R: Runtime>(app: &AppHandle<R>) {
+/// Exclusión mutua ESTRUCTURAL con el guardado del frontend: emite
+/// `SCHEDULED_JORNADA_CLOSED` (limpiar buffer, sin navegar) XOR `RECORDING_STOP_COMPLETE`
+/// (fallback best-effort SOLO cuando el finalize headless no persistió NADA, para que un
+/// webview vivo intente el guardado legacy). Nunca ambos: la ruta del frontend genera su
+/// propio meeting_id (`early_meeting_id`/UUID), así que un doble guardado duplicaría la
+/// reunión — la razón por la que el viejo `stop_scheduled` no podía simplemente sumarle
+/// un guardado nativo. Deja el scheduler en reposo con supresión del re-arranque por el
+/// resto del día.
+async fn close_scheduled<R: Runtime>(
+    app: &AppHandle<R>,
+    shared: &SchedulerShared,
+    settings: &ScheduledRecordingSettings,
+    owned_since: NaiveDateTime,
+    now: NaiveDateTime,
+) -> SchedulerPhase {
+    // 1. Capturar el folder ANTES del stop (`stop_recording` hace `take()` del manager) y
+    //    re-render determinista del nombre con el que arrancó el segmento que cerramos.
+    let folder = crate::audio::recording_commands::get_meeting_folder_path()
+        .await
+        .ok()
+        .flatten();
+    let closing_name = render_segment_name(settings, owned_since);
+
+    // 2. Detener el segmento. `Ok(false)` = otro actor (usuario) ganó el StopGate en la
+    //    carrera: su path hace el post-procesado completo (guardado + navegación), así que
+    //    aquí NO se finaliza (duplicaría la reunión) ni se notifica — solo soltar ownership
+    //    y suprimir el re-arranque del día (el cierre ocurrió de facto).
     match stop_current_recording(app).await {
-        Ok(()) => {
-            // Igual que el tray: el frontend hace el guardado local + sync cloud.
+        Ok(false) => {
+            info!("[scheduled] cierre: otro actor detuvo primero; su path hace el guardado");
+            shared.owned.store(false, Ordering::SeqCst);
+            *shared.owned_since.write().await = None;
+            *shared.grace_deadline.write().await = None;
+            *shared.rearm_at.write().await = Some(start_of_next_day(now));
+            return SchedulerPhase::Idle;
+        }
+        Ok(true) => {}
+        Err(e) => {
+            // Best-effort: el Drop del StopGate garantiza fase Idle y transcripts.json
+            // puede existir en disco; intentar el finalize de todos modos.
+            error!("[scheduled] cierre: stop_recording falló: {}", e);
+        }
+    }
+
+    // 3. Guardado LOCAL headless + outbox cloud (mismo camino que la rotación).
+    let meeting_id = match folder.as_deref() {
+        Some(f) => finalize_segment_native(app, f, &closing_name).await,
+        None => {
+            warn!("[scheduled] cierre: sin folder del segmento; no se guarda a DB");
+            None
+        }
+    };
+
+    // 4. Emisión EXCLUYENTE (ver doc-comment). Con `Some`, el frontend solo limpia su
+    //    buffer (nunca emitir ADEMÁS el fallback: `clearTranscripts` vaciaría el buffer
+    //    antes del flush de `handleRecordingStop` y mataría el guardado legacy). Con
+    //    `None` (nada persistido), fallback al flujo legacy completo del webview — que
+    //    además notifica por su cuenta, por eso aquí no se duplica el aviso.
+    match &meeting_id {
+        Some(mid) => {
+            if let Err(e) = app.emit(
+                events::SCHEDULED_JORNADA_CLOSED,
+                serde_json::json!({ "meetingId": mid, "meetingName": closing_name }),
+            ) {
+                warn!("[scheduled] no se pudo emitir scheduled-jornada-closed: {}", e);
+            }
+            notify_jornada_saved(app, &closing_name).await;
+        }
+        None => {
+            error!(
+                "[scheduled] cierre sin persistencia headless; fallback a webview (si está vivo)"
+            );
             if let Err(e) = app.emit(events::RECORDING_STOP_COMPLETE, true) {
                 warn!("[scheduled] no se pudo emitir recording-stop-complete: {}", e);
             }
         }
-        Err(e) => error!("[scheduled] stop_recording falló: {}", e),
     }
+
+    // 5. Reposo + supresión del re-arranque por el resto del día.
+    shared.owned.store(false, Ordering::SeqCst);
+    *shared.owned_since.write().await = None;
+    *shared.grace_deadline.write().await = None;
+    *shared.rearm_at.write().await = Some(start_of_next_day(now));
+    SchedulerPhase::Idle
 }
 
 /// Rota el segmento por hora (Incremento 4): cierra el segmento actual y arranca uno nuevo, SIN
@@ -598,9 +666,25 @@ async fn rotate_scheduled<R: Runtime>(
     let closing_name = render_segment_name(settings, owned_since);
 
     // 2. Detener el segmento actual (finaliza audio.mp4 + transcripts.json en el folder).
-    if let Err(e) = stop_current_recording(app).await {
-        error!("[scheduled] rotación: stop_recording falló: {}", e);
-        // El segmento parcial queda en disco; seguimos intentando re-arrancar abajo.
+    match stop_current_recording(app).await {
+        Ok(true) => {}
+        Ok(false) => {
+            // Race: otro actor (usuario) ganó el StopGate justo en la frontera de hora. Su
+            // path hace el post-procesado completo (guardado + navegación); la intención
+            // del usuario gana: NO finalize (leería un transcripts.json que el otro path
+            // aún está drenando y duplicaría la reunión), NO re-arranque. Mismo estado que
+            // el paro manual dentro de ventana: re-armar a la siguiente hora.
+            info!("[scheduled] rotación: otro actor detuvo primero; su path guarda");
+            shared.owned.store(false, Ordering::SeqCst);
+            *shared.owned_since.write().await = None;
+            *shared.grace_deadline.write().await = None;
+            *shared.rearm_at.write().await = Some(schedule::next_hour_boundary(now));
+            return SchedulerPhase::Armed;
+        }
+        Err(e) => {
+            error!("[scheduled] rotación: stop_recording falló: {}", e);
+            // El segmento parcial queda en disco; seguimos intentando re-arrancar abajo.
+        }
     }
 
     // 3. Guardado LOCAL headless del segmento cerrado (no depende del buffer del frontend).
@@ -981,6 +1065,28 @@ async fn notify_started<R: Runtime>(app: &AppHandle<R>) {
     .await
     {
         warn!("[scheduled] notificación falló: {}", e);
+    }
+}
+
+/// Notificación nativa best-effort al cerrar la jornada headless. Sin click-action: el
+/// emisor de Rust ignora `actions` (system.rs solo hace .title/.body/.show), a diferencia
+/// del path del webview. Tipo `RecordingStopped` a propósito: queda gated por la
+/// preferencia "notificar al detener" del usuario (además de consent/DND).
+async fn notify_jornada_saved<R: Runtime>(app: &AppHandle<R>, meeting_name: &str) {
+    let notif_state = app.state::<crate::NotificationManagerState<R>>();
+    let guard = notif_state.read().await;
+    match guard.as_ref() {
+        Some(manager) => {
+            let notification = crate::notifications::types::Notification::new(
+                "Jornada guardada",
+                format!("«{}» se guardó localmente y se está sincronizando.", meeting_name),
+                crate::notifications::types::NotificationType::RecordingStopped,
+            );
+            if let Err(e) = manager.show_notification(notification).await {
+                warn!("[scheduled] notificación de cierre falló: {}", e);
+            }
+        }
+        None => warn!("[scheduled] NotificationManager no inicializado; sin aviso de cierre"),
     }
 }
 

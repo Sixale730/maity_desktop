@@ -27,10 +27,14 @@ export interface ScheduledRecordingSettings {
   meeting_name_template: string
   /** True una vez que el usuario atendió el gate de activación o configuró desde Settings. */
   configured_by_user: boolean
-  /** Extra opt-in: cerrar la última grabación a `auto_close_time`. Si false, no se cierra sola. */
+  /** Cerrar la última grabación a `auto_close_time` (ON por defecto desde 0.2.52). */
   auto_close_enabled: boolean
   /** "HH:MM" 24h, hora local; hora de cierre cuando `auto_close_enabled` está activo. */
   auto_close_time: string
+  /** Trocear la jornada en un segmento por hora en punto (ON por defecto desde 0.2.52). */
+  hourly_rotation_enabled: boolean
+  /** Versión del esquema del JSON persistido (migraciones one-shot en Rust). No editar. */
+  settings_schema_version: number
 }
 
 export type SchedulerPhase =
