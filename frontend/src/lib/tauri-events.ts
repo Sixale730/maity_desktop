@@ -86,6 +86,8 @@ export const TauriEvent = {
   SCHEDULED_RECORDING_SKIPPED: 'scheduled-recording-skipped',
   // Rotación por hora (Incremento 4): resetear buffer + encolar sync SIN navegar.
   SCHEDULED_SEGMENT_ROTATED: 'scheduled-segment-rotated',
+  // Cierre por hora fija headless (gap #54): Rust ya guardó; solo limpiar buffer.
+  SCHEDULED_JORNADA_CLOSED: 'scheduled-jornada-closed',
 
   // ── Modelos: Whisper (nombres genéricos legacy) + config ─────────────────
   MODEL_LOADING_STARTED: 'model-loading-started',

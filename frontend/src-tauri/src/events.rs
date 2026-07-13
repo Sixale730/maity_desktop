@@ -88,6 +88,11 @@ pub const SCHEDULED_RECORDING_SKIPPED: &str = "scheduled-recording-skipped";
 /// resetear su buffer de transcripción y encolar la sync del segmento cerrado, SIN
 /// navegar (a diferencia de `recording-stop-complete`). Payload: `{ meetingId, meetingName }`.
 pub const SCHEDULED_SEGMENT_ROTATED: &str = "scheduled-segment-rotated";
+/// Emitido tras el cierre por hora fija headless-safe (gap #54): Rust ya guardó el último
+/// segmento (local + outbox cloud). El frontend SOLO limpia su buffer, sin navegar. Se
+/// emite XOR con `recording-stop-complete` (fallback cuando el finalize headless no
+/// persistió nada). Payload: `{ meetingId, meetingName }`.
+pub const SCHEDULED_JORNADA_CLOSED: &str = "scheduled-jornada-closed";
 
 // ── Modelos: Whisper (nombres genéricos legacy) + config ────────────────────
 pub const MODEL_LOADING_STARTED: &str = "model-loading-started";
