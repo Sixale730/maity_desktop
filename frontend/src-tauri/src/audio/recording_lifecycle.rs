@@ -198,8 +198,20 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
 /// Stop recording with optimized graceful shutdown ensuring NO transcript chunks are lost
 pub async fn stop_recording<R: Runtime>(
     app: AppHandle<R>,
-    _args: super::recording_commands::RecordingArgs,
+    args: super::recording_commands::RecordingArgs,
 ) -> Result<(), String> {
+    stop_recording_reporting(app, args).await.map(|_| ())
+}
+
+/// Variante que reporta si ESTE caller adquirió el StopGate (`true`) o si otro actor ya
+/// estaba deteniendo/detuvo (`false`, stop idempotente). Los callers que encadenan
+/// side-effects post-stop (finalize headless del scheduler en rotación/cierre de jornada)
+/// DEBEN usar esta variante: con `false`, el actor concurrente ya disparó su propio
+/// post-procesado y duplicar el guardado crearía una reunión repetida.
+pub async fn stop_recording_reporting<R: Runtime>(
+    app: AppHandle<R>,
+    _args: super::recording_commands::RecordingArgs,
+) -> Result<bool, String> {
     info!(
         "🛑 Starting optimized recording shutdown - ensuring ALL transcript chunks are preserved"
     );
@@ -215,7 +227,7 @@ pub async fn stop_recording<R: Runtime>(
         Ok(gate) => gate,
         Err(observed) => {
             info!("Recording was not active (fase: {:?})", observed);
-            return Ok(());
+            return Ok(false);
         }
     };
     info!("🔍 Fase Stopping adquirida — la sesión ya no está activa hacia afuera");
@@ -449,7 +461,7 @@ pub async fn stop_recording<R: Runtime>(
     crate::tray::update_tray_menu(&app);
 
     info!("🎉 Recording stopped successfully with ZERO transcript chunks lost");
-    Ok(())
+    Ok(true)
 }
 
 // ============================================================================
