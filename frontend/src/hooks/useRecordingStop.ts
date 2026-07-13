@@ -19,6 +19,57 @@ import type { Transcript } from '@/types';
 
 type SummaryStatus = 'idle' | 'processing' | 'summarizing' | 'regenerating' | 'completed' | 'error';
 
+/**
+ * Overlay full-screen "Guardando tu reunión…" mostrado justo antes del hard
+ * navigate post-stop. El browser conserva el ultimo frame del documento viejo
+ * hasta el primer paint del nuevo, asi que este overlay cubre todo el teardown
+ * y empalma visualmente con el SplashScreen (mismo fondo negro + logo
+ * centrado) — la transicion se ve intencional en vez de un flashazo.
+ *
+ * DOM plano (no React): evita interaccion con unmounts durante la navegacion.
+ * Estilos via CSSOM (el.style.x = ...) porque la CSP de Tauri bloquea los
+ * atributos style="" parseados del HTML pero NO la manipulacion CSSOM en
+ * runtime. No requiere cleanup: el hard navigate destruye el documento.
+ */
+function showSavingOverlay(): void {
+  try {
+    const overlay = document.createElement('div');
+    Object.assign(overlay.style, {
+      position: 'fixed',
+      inset: '0',
+      zIndex: '2147483647',
+      background: '#000',
+      display: 'flex',
+      flexDirection: 'column',
+      alignItems: 'center',
+      justifyContent: 'center',
+      gap: '20px',
+    });
+
+    const logo = document.createElement('img');
+    logo.src = 'icon_128x128.png';
+    logo.alt = 'Maity';
+    logo.width = 56;
+    logo.height = 56;
+    logo.style.opacity = '0.9';
+
+    const text = document.createElement('p');
+    text.textContent = 'Guardando tu reunión…';
+    Object.assign(text.style, {
+      color: '#a1a1aa',
+      fontSize: '14px',
+      margin: '0',
+      fontFamily: 'inherit',
+    });
+
+    overlay.appendChild(logo);
+    overlay.appendChild(text);
+    document.body.appendChild(overlay);
+  } catch {
+    // Cosmetico: si el DOM no esta disponible, la navegacion procede igual.
+  }
+}
+
 interface UseRecordingStopReturn {
   handleRecordingStop: (callApi: boolean) => Promise<void>;
   isStopping: boolean;
@@ -311,6 +362,11 @@ export function useRecordingStop(
           // Las llamadas refetchMeetings(), setCurrentMeeting(), clearTranscripts() y
           // setStatus(IDLE) NO se hacen aqui porque el reload las hace innecesarias:
           // la pagina destino reconstruye estado al montar.
+          //
+          // El overlay se muestra AQUI (despues del enqueue, sin paths de error
+          // restantes) para cubrir el teardown del documento viejo y empalmar
+          // con el SplashScreen del nuevo.
+          showSavingOverlay();
           window.location.href = `/conversations?localId=${meetingId}&source=recording`;
 
         } catch (saveError) {

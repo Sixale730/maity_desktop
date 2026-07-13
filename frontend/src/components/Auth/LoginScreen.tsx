@@ -211,7 +211,7 @@ export function LoginScreen() {
         {/* Logo / Brand */}
         <div className="flex flex-col items-center space-y-4">
           <div className="w-20 h-20 rounded-2xl bg-gradient-to-br from-[#ff0050]/10 to-[#485df4]/10 dark:from-[#ff0050]/20 dark:to-[#485df4]/20 flex items-center justify-center shadow-lg">
-            <img src="icon_128x128.png" alt="Maity" className="w-14 h-14" />
+            <img src="icon_128x128.png" alt="Maity" width={56} height={56} className="w-14 h-14" />
           </div>
           <div className="text-center space-y-2">
             <h1 className="text-3xl font-semibold text-[#000000] dark:text-white">

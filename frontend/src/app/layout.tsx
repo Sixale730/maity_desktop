@@ -76,28 +76,32 @@ const inter = Inter({
 
 /**
  * SplashScreen: minimal loading screen with logo + spinner.
- * Uses inline styles so it renders instantly without waiting for CSS/fonts.
+ *
+ * CRITICO — NO dimensionar esto con style="" inline: este es el HTML
+ * pre-renderizado (SSG) que pinta PRIMERO en cada hard-reload. Tauri inyecta
+ * un nonce a los <style> del HTML buildeado y lo agrega a la CSP; por spec de
+ * CSP, la presencia de un nonce en style-src hace que 'unsafe-inline' se
+ * IGNORE, asi que WebView2 bloquea todos los atributos style="" del primer
+ * paint. Con el <svg> sin tamaño, explotaba al 100% del ancho (flashazo de
+ * anillo morado gigante al terminar una grabacion). Por eso los tamaños van
+ * como ATRIBUTOS HTML/SVG (inmunes a CSP) y el layout como clases Tailwind
+ * (el CSS externo viene de 'self' y es render-blocking → aplica al primer
+ * paint). Colores/opacidades del spinner: atributos SVG, tambien inmunes.
  */
 function SplashScreen() {
   return (
-    <>
-    <style dangerouslySetInnerHTML={{ __html: '@keyframes spin{to{transform:rotate(360deg)}}' }} />
-    <div style={{
-      display: 'flex',
-      flexDirection: 'column',
-      alignItems: 'center',
-      justifyContent: 'center',
-      height: '100vh',
-      backgroundColor: '#000',
-      gap: '20px',
-    }}>
+    <div className="flex h-screen flex-col items-center justify-center gap-5 bg-black">
       <img
         src="icon_128x128.png"
         alt="Maity"
-        style={{ width: 56, height: 56, opacity: 0.9 }}
+        width={56}
+        height={56}
+        className="opacity-90"
       />
       <svg
-        style={{ width: 24, height: 24, animation: 'spin 1s linear infinite' }}
+        width={24}
+        height={24}
+        className="animate-spin"
         xmlns="http://www.w3.org/2000/svg"
         fill="none"
         viewBox="0 0 24 24"
@@ -106,7 +110,6 @@ function SplashScreen() {
         <path opacity="0.75" fill="#a78bfa" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
       </svg>
     </div>
-    </>
   )
 }
 
@@ -215,7 +218,7 @@ function AuthGate({ children }: { children: React.ReactNode }) {
       <div className="flex flex-col items-center justify-center h-screen bg-background gap-6">
         {/* Logo Maity */}
         <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-[#ff0050]/10 to-[#485df4]/10 dark:from-[#ff0050]/20 dark:to-[#485df4]/20 flex items-center justify-center shadow-lg">
-          <img src="icon_128x128.png" alt="Maity" className="w-12 h-12" />
+          <img src="icon_128x128.png" alt="Maity" width={48} height={48} className="w-12 h-12" />
         </div>
 
         {showError ? (
@@ -241,7 +244,7 @@ function AuthGate({ children }: { children: React.ReactNode }) {
         ) : (
           <>
             {/* Spinner */}
-            <svg className="animate-spin h-6 w-6 text-violet-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+            <svg width={24} height={24} className="animate-spin h-6 w-6 text-violet-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
               <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
               <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
             </svg>
