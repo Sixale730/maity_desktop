@@ -55,13 +55,25 @@ pub struct ScheduledRecordingSettings {
     #[serde(default = "default_auto_close_time")]
     pub auto_close_time: String,
 
-    /// Opt-in (Incremento 4): si está activo, la grabación de jornada se trocea en un
-    /// segmento por hora (alineado al reloj). Al cruzar la hora en punto dentro de la
-    /// ventana, el scheduler detiene el segmento actual (guarda local + nube) y arranca
-    /// uno nuevo. Fuera de ventana NO rota — el cierre lo maneja `auto_close`. Default OFF.
-    #[serde(default)]
+    /// Si está activo, la grabación de jornada se trocea en un segmento por hora
+    /// (alineado al reloj). Al cruzar la hora en punto dentro de la ventana, el scheduler
+    /// detiene el segmento actual (guarda local + nube) y arranca uno nuevo. Fuera de
+    /// ventana NO rota — el cierre lo maneja `auto_close`. Default ON desde 0.2.52
+    /// (decisión de producto); apagable desde Settings → Jornada.
+    #[serde(default = "default_hourly_rotation_enabled")]
     pub hourly_rotation_enabled: bool,
+
+    /// Versión del esquema del JSON persistido, para migraciones one-shot en
+    /// `parse_and_normalize`. 0 = pre-0.2.52 (la key no existía); 1 = actual. Necesaria
+    /// porque `save_settings` serializa el struct completo: un 0.2.51 que guardó settings
+    /// dejó `hourly_rotation_enabled: false` EXPLÍCITO sin que fuera elección del usuario
+    /// (no había UI) — la versión distingue ese false del elegido con el switch de 0.2.52.
+    #[serde(default)]
+    pub settings_schema_version: u32,
 }
+
+/// Versión actual del esquema de settings (ver `settings_schema_version`).
+const SETTINGS_SCHEMA_VERSION: u32 = 1;
 
 /// Default de `auto_close_time` para deserialización de JSONs sin el campo.
 fn default_auto_close_time() -> String {
@@ -71,6 +83,13 @@ fn default_auto_close_time() -> String {
 /// Default de `auto_close_enabled` (Incremento 4): la jornada se cierra a las 18:00 por
 /// defecto. Aplica también a JSONs persistidos que no traen el campo todavía.
 fn default_auto_close_enabled() -> bool {
+    true
+}
+
+/// Default de `hourly_rotation_enabled` (0.2.52): la jornada se trocea por hora por
+/// defecto. Los JSONs 0.2.51 con `false` explícito los migra `parse_and_normalize`
+/// (vía `settings_schema_version`), no este default.
+fn default_hourly_rotation_enabled() -> bool {
     true
 }
 
@@ -106,7 +125,8 @@ impl Default for ScheduledRecordingSettings {
             configured_by_user: false,
             auto_close_enabled: default_auto_close_enabled(), // Incremento 4: cierra 18:00 por defecto
             auto_close_time: default_auto_close_time(),
-            hourly_rotation_enabled: false, // opt-in: por defecto NO trocea por hora
+            hourly_rotation_enabled: default_hourly_rotation_enabled(), // 0.2.52: trocea por hora por defecto
+            settings_schema_version: SETTINGS_SCHEMA_VERSION,
         }
     }
 }
@@ -153,6 +173,14 @@ fn parse_and_normalize(content: &str) -> Result<ScheduledRecordingSettings> {
     if !had_auto_close_time {
         settings.auto_close_time = derive_auto_close_time(&settings.windows);
     }
+    // Migración one-shot v0→v1 (0.2.52): en JSONs pre-0.2.52 un
+    // `hourly_rotation_enabled: false` fue escrito por save_settings, nunca elegido por
+    // el usuario (no había UI) — se fuerza el nuevo default ON. Un `false` con version 1
+    // sí vino del switch de Settings y se respeta. Sticky en el próximo save.
+    if settings.settings_schema_version == 0 {
+        settings.hourly_rotation_enabled = true;
+        settings.settings_schema_version = SETTINGS_SCHEMA_VERSION;
+    }
     Ok(settings)
 }
 
@@ -196,18 +224,20 @@ mod tests {
     }
 
     #[test]
-    fn test_default_cierra_18_y_no_rota() {
-        // Incremento 4: la jornada se cierra a las 18:00 por defecto; el troceo por hora es opt-in.
+    fn test_default_cierra_18_y_rota_por_hora() {
+        // 0.2.52: la jornada se cierra a las 18:00 Y se trocea por hora, ambos por defecto.
         let s = ScheduledRecordingSettings::default();
         assert!(s.auto_close_enabled, "auto_close debe estar ON por defecto (cerrar 18:00)");
         assert_eq!(s.auto_close_time, "18:00");
-        assert!(!s.hourly_rotation_enabled, "rotación horaria debe ser opt-in (OFF por defecto)");
+        assert!(s.hourly_rotation_enabled, "rotación horaria ON por defecto (0.2.52)");
+        assert_eq!(s.settings_schema_version, 1);
     }
 
     #[test]
     fn test_json_viejo_sin_campos_adopta_cierre_18() {
-        // Un JSON persistido antes del Incremento 4 (sin auto_close_enabled ni hourly_rotation_enabled)
-        // debe deserializar cerrando a las 18:00 (serde default fn) y sin rotación.
+        // Un JSON persistido antes del Incremento 4 (sin auto_close_enabled ni
+        // hourly_rotation_enabled) debe deserializar cerrando a las 18:00 y con rotación
+        // (serde default fns puras — sin pasar por parse_and_normalize).
         let json = r#"{
             "enabled": true,
             "windows": [{"days_of_week":[1,2,3,4,5],"start_time":"09:00","end_time":"18:00"}],
@@ -221,7 +251,49 @@ mod tests {
         let s: ScheduledRecordingSettings = serde_json::from_str(json).unwrap();
         assert!(s.auto_close_enabled, "JSON viejo debe adoptar el cierre por hora fija");
         assert_eq!(s.auto_close_time, "18:00");
-        assert!(!s.hourly_rotation_enabled);
+        assert!(s.hourly_rotation_enabled, "JSON viejo sin la key adopta rotación ON");
+    }
+
+    #[test]
+    fn test_normalize_migra_rotacion_false_de_v0_a_on() {
+        // Un 0.2.51 que guardó settings dejó `hourly_rotation_enabled: false` explícito
+        // sin que fuera elección del usuario (no había UI) → la migración v0→v1 lo
+        // fuerza al nuevo default ON.
+        let json = r#"{
+            "enabled": true,
+            "windows": [{"days_of_week":[1],"start_time":"09:00","end_time":"18:00"}],
+            "grace_period_minutes": 30,
+            "respect_manual_recording": true,
+            "catch_up_on_start": true,
+            "check_interval_seconds": 30,
+            "notify_on_start": true,
+            "meeting_name_template": "Jornada {date}",
+            "auto_close_time": "18:00",
+            "hourly_rotation_enabled": false
+        }"#;
+        let s = parse_and_normalize(json).unwrap();
+        assert!(s.hourly_rotation_enabled, "false escrito por 0.2.51 migra a ON");
+        assert_eq!(s.settings_schema_version, 1, "la migración deja la versión actual");
+    }
+
+    #[test]
+    fn test_normalize_respeta_rotacion_off_de_v1() {
+        // Un false guardado por 0.2.52 (switch de Settings) lleva version 1 y se respeta.
+        let json = r#"{
+            "enabled": true,
+            "windows": [{"days_of_week":[1],"start_time":"09:00","end_time":"18:00"}],
+            "grace_period_minutes": 30,
+            "respect_manual_recording": true,
+            "catch_up_on_start": true,
+            "check_interval_seconds": 30,
+            "notify_on_start": true,
+            "meeting_name_template": "Jornada {date}",
+            "auto_close_time": "18:00",
+            "hourly_rotation_enabled": false,
+            "settings_schema_version": 1
+        }"#;
+        let s = parse_and_normalize(json).unwrap();
+        assert!(!s.hourly_rotation_enabled, "el OFF elegido con el switch se respeta");
     }
 
     /// JSON mínimo estilo pre-0.2.52 (sin `auto_close_time`) con la ventana indicada.

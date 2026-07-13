@@ -376,10 +376,11 @@ async fn evaluate_tick<R: Runtime>(
         }
     }
 
-    // --- Rotación por hora (Incremento 4, opt-in). Como el cierre por hora fija, actúa sobre
-    // NUESTRA grabación por un instante ABSOLUTO, pero SOLO dentro de la ventana: en overtime
-    // el cierre lo maneja `auto_close`. Deriva la frontera de `owned_since`, así que no añade
-    // estado nuevo y es robusto a sleep/suspend (un salto de horas dispara UNA sola rotación).
+    // --- Rotación por hora (Incremento 4; ON por defecto desde 0.2.52, apagable en Settings).
+    // Como el cierre por hora fija, actúa sobre NUESTRA grabación por un instante ABSOLUTO,
+    // pero SOLO dentro de la ventana: en overtime el cierre lo maneja `auto_close`. Deriva la
+    // frontera de `owned_since`, así que no añade estado nuevo y es robusto a sleep/suspend
+    // (un salto de horas dispara UNA sola rotación).
     if owned && is_rec && settings.hourly_rotation_enabled {
         if let Some(since) = *shared.owned_since.read().await {
             if schedule::should_rotate(since, now, active.is_some(), settings.hourly_rotation_enabled) {
