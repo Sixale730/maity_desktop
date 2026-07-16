@@ -62,9 +62,10 @@ El exe queda en **`C:\maity_desktop\target\debug\maity-desktop.exe`** (¡el `tar
 ### 4. Stagear el payload
 
 Copiar a un folder de staging (junto al manifest):
-- `maity-desktop.exe`, `app_lib.dll`, `ffmpeg.exe`, `ffplay.exe`, `ffprobe.exe`, `llama-helper.exe` (todos de `target/debug/`)
-- `Package.appxmanifest`, `Assets/`, `templates/` (de `frontend/src-tauri/templates/`)
-- **NO** hace falta `WebView2Loader.dll` (Tauri 2 lo enlaza estático).
+- `maity-desktop.exe` + `llama-helper.exe` → de `target/release/` (o `target/debug/`).
+- `ffmpeg.exe` + `ffprobe.exe` → **de `target/debug/`** (⚠️ el build release con `--no-bundle` NO copia ffmpeg al output; se necesitan para guardar grabaciones — encode PCM→AAC/MP4).
+- `Package.appxmanifest`, `Assets/`, `templates/` (de `frontend/src-tauri/templates/`).
+- **NO** hace falta `app_lib.dll` (el exe enlaza el lib estático) ni `WebView2Loader.dll` (Tauri 2 lo enlaza estático).
 
 ### 5. Probar local — validar audio (opcional pero recomendado)
 
