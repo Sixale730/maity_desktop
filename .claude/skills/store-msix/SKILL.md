@@ -86,16 +86,42 @@ winapp package "<staging>" --manifest "<staging>\Package.appxmanifest" --generat
 ```
 Genera `Sixale.Maity_<version>_x64.msix`. El cert de dev es solo para instalar local; **NO firmar con Certum** — Microsoft firma el MSIX al subirlo a la Store.
 
-### 7. Subir a la Store
+### 7. Subir a la Store (Partner Center — walkthrough con respuestas para Maity)
 
-En Partner Center → producto **Maity** → submission en draft:
-1. **Packages** → subir el `.msix`.
-2. **Pricing and availability** (gratis / mercados).
-3. **Properties** → categoría + **política de privacidad** (OBLIGATORIA porque graba audio).
-4. **Age ratings** (cuestionario).
-5. **Store listings** (descripción + capturas).
-6. Justificar la capability **`runFullTrust`** donde lo pida.
-7. **Submit for certification** (Microsoft escanea malware + revisa).
+Tipo de producto: **MSIX/PWA app** (NO "EXE or MSI app", NO Add-ons). El `.msix` va en la sección **Packages** del submission, no en Add-ons.
+
+Completar TODAS las secciones (todas en verde para poder Submit):
+
+**Packages** → subir el `.msix`, esperar validación verde.
+
+**Pricing and availability:**
+- Markets: **All worldwide markets** (Recommended) + "available in any future market" ✅.
+- Visibility: **Public audience** + **discoverable in the Microsoft Store**.
+- Base/Retail price: **$0 = Free** (el warning "must configure a price" se quita al poner 0 + Save).
+- Free trial: No.
+
+**Properties:**
+- Category: **Productivity**.
+- **Privacy policy URL: `https://www.maity.cloud/privacidad`** (OBLIGATORIA — la app graba audio). Website `https://www.maity.cloud`, Support `https://www.maity.cloud/soporte`.
+- ⚠️ **Display mode: DESMARCAR "PC" y "HoloLens"** — Maity NO es Windows Mixed Reality/VR. Si quedan marcados, sale error rojo pidiendo hardware de MR immersive headset. Desmarcados = error resuelto.
+- Product declarations: **marcar "generative AI features"** (Maity genera resúmenes con IA); **desmarcar** "record and broadcast clips of this game" (no es juego; de todos modos es inerte fuera de categoría Games); el resto opcional.
+- System requirements: **Microphone** marcado; MR headset/controllers desmarcados; memoria/DirectX/video/CPU/GPU son opcionales.
+
+**Age ratings (IARC):**
+- App Type: **"All Other App Types"** (NO Game, NO Social/Communication — Maity es herramienta de productividad, no conecta personas).
+- Contenido: todo **No** (violencia, sexo, lenguaje, drogas, apuestas, ubicación, compras). User Content Sharing: No. Downloaded App: No.
+- **Online Content: Yes** — Maity genera "generated AI content" (es uno de los ejemplos de la pregunta); consistente con la declaración de genAI. No sube la clasificación.
+- Resultado: **3+ / Everyone**.
+
+**Store listings:**
+- El paquete declara `en-us` (del `<Resource Language="en-us"/>` del manifest), así que **English (US)** aparece como idioma del paquete y hay que completar esa listing.
+- Para agregar español: botón **"Manage additional languages"** → **Spanish (Mexico)**. (NO se agrega en la lista "Languages supported in packages", que es fija según el manifest.) Si se quiere español como idioma del paquete, cambiar el manifest a `<Resource Language="es-MX"/>` y regenerar el `.msix`.
+- Cada listing: nombre, descripción corta/larga, **mínimo 1 captura** de la app.
+
+**Restricted capabilities (runFullTrust):** Microsoft exige justificar. Límite **~500 caracteres**. Texto probado que funciona:
+> Maity is a Win32 desktop app (Rust/Tauri) packaged as MSIX. It needs runFullTrust for native features unavailable in the AppContainer sandbox: WASAPI audio capture (mic + system loopback) to record meetings; on-device speech-to-text via native libraries (whisper.cpp, ONNX Runtime); running FFmpeg to encode audio; and a local LLM for on-device summaries. All processing runs locally for privacy.
+
+**Submission notification audience:** dejar default. Finalmente: **Submit for certification** (Microsoft escanea malware + revisa; runFullTrust se aprueba con la justificación de arriba).
 
 ## Gotchas (aprendidos 2026-07-16)
 
