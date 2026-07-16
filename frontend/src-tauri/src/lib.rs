@@ -950,34 +950,37 @@ pub fn run() {
                         return;
                     }
 
-                    // Resolver modelo configurado en DB; fallback a default.
-                    let coach_model = if let Some(state) =
-                        app_for_sidecar.try_state::<crate::state::AppState>()
+                    // Resolver el modelo efectivo con el mismo resolver tier-aware que
+                    // usa live_feedback::start — así el warmup precarga EXACTAMENTE el
+                    // modelo que el coach usará al grabar. Antes leía la DB directo
+                    // (default 4b) y en tier Low podía calentar 4b mientras el coach
+                    // resolvía 1b: dos modelos residentes en una máquina de 8 GB.
+                    let configured = crate::recording_pipeline::get_active_live_feedback_config(
+                        &app_for_sidecar,
+                    )
+                    .await
+                    .map(|c| c.model);
+                    let coach_model = match crate::coach::llama_engine::resolve_effective_tips_model(
+                        &app_for_sidecar,
+                        configured.as_deref(),
+                    )
+                    .await
                     {
-                        let pool = state.db_manager.pool();
-                        sqlx::query_scalar::<_, String>(
-                            "SELECT tips_model_id FROM coach_settings WHERE id = '1'",
-                        )
-                        .fetch_optional(pool)
-                        .await
-                        .ok()
-                        .flatten()
-                        .unwrap_or_else(|| "gemma3-4b-q4".to_string())
-                    } else {
-                        "gemma3-4b-q4".to_string()
+                        crate::coach::llama_engine::TipsResolution::Use(m) => m,
+                        crate::coach::llama_engine::TipsResolution::Unavailable { preferred } => {
+                            log::info!(
+                                "Sidecar warmup skipped — modelo '{}' no descargado todavía",
+                                preferred
+                            );
+                            // En tier Low baja el 1B en background para que la próxima
+                            // grabación tenga tips (no-op fuera de tier Low).
+                            crate::coach::setup::ensure_low_tier_tips_model(&app_for_sidecar)
+                                .await;
+                            return;
+                        }
                     };
 
                     let builtin_id = crate::coach::llama_engine::map_to_builtin_id(&coach_model);
-
-                    // Verificar que el modelo está descargado antes de warmup.
-                    if !crate::coach::llama_engine::is_model_installed(&app_for_sidecar, &coach_model)
-                    {
-                        log::info!(
-                            "Sidecar warmup skipped — modelo '{}' no descargado todavía",
-                            coach_model
-                        );
-                        return;
-                    }
 
                     log::info!(
                         "🦙 Sidecar warmup: cargando '{}' (builtin={}) en RAM/VRAM...",

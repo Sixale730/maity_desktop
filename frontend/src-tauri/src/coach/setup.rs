@@ -10,7 +10,7 @@ use serde::Serialize;
 use std::io::Write as IoWrite;
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager, Runtime};
-use tracing::info;
+use tracing::{info, warn};
 
 static HTTP_CLIENT: Lazy<Client> = Lazy::new(Client::new);
 
@@ -243,4 +243,46 @@ async fn do_download_gguf<R: Runtime>(
 #[tauri::command]
 pub fn cancel_gguf_download(model_id: String) {
     CANCELLED_DOWNLOADS.lock().unwrap().insert(model_id);
+}
+
+// ─── Auto-descarga del modelo 1B para tier Low ────────────────────────────────
+
+/// Garantiza en background el modelo ligero de tips para hardware tier Low.
+/// Idempotente y single-flight: sale sin hacer nada si el hardware no es tier
+/// Low, si el 1B ya está en disco o si ya hay una descarga en curso (la
+/// descarga interrumpida se reanuda por Range desde el .tmp). La llaman el
+/// warmup del arranque (lib.rs) y `live_feedback::start` cuando la resolución
+/// quedó sin modelo; la sesión en curso NO hace hot-swap — la siguiente
+/// grabación resuelve al 1B ya instalado.
+pub async fn ensure_low_tier_tips_model<R: Runtime>(app: &AppHandle<R>) {
+    let model_id = llama_engine::LOW_TIER_TIPS_MODEL;
+
+    let tier = crate::audio::HardwareProfile::detect().performance_tier.clone();
+    if tier != crate::audio::PerformanceTier::Low {
+        return;
+    }
+    if llama_engine::is_model_installed(app, model_id) {
+        return;
+    }
+    if ACTIVE_DOWNLOADS
+        .lock()
+        .map(|a| a.contains(model_id))
+        .unwrap_or(true)
+    {
+        return;
+    }
+
+    info!(
+        "⬇️ Coach tier Low: descargando {} en background para habilitar tips",
+        model_id
+    );
+    match download_gguf_model_file(app, model_id).await {
+        Ok(()) => info!(
+            "✅ Coach tier Low: modelo 1B listo — el coach lo usará en la próxima grabación"
+        ),
+        Err(e) => warn!(
+            "Coach tier Low: descarga del 1B falló (se reanudará en el próximo arranque/grabación): {}",
+            e
+        ),
+    }
 }

@@ -82,6 +82,18 @@ impl HardwareProfile {
 
     /// Detect GPU acceleration capabilities
     fn detect_gpu() -> (bool, GpuType) {
+        // Override manual para pruebas (parejo con MEMORY_GB): permite simular
+        // tier Low en máquinas dev con GPU real. Ej: GPU_TYPE=none MEMORY_GB=8.
+        if let Ok(forced) = std::env::var("GPU_TYPE") {
+            match forced.to_ascii_lowercase().as_str() {
+                "none" | "cpu" => return (false, GpuType::None),
+                "cuda" => return (true, GpuType::Cuda),
+                "vulkan" => return (true, GpuType::Vulkan),
+                "metal" => return (true, GpuType::Metal),
+                _ => {}
+            }
+        }
+
         // Check for Metal (Apple Silicon)
         #[cfg(target_os = "macos")]
         {

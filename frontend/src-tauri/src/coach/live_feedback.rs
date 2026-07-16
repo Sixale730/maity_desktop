@@ -72,6 +72,14 @@ fn epoch_ms() -> u64 {
 static PRESENTATION_MODE: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
+// Tips-LLM habilitados para la sesión actual. Lo fija `start()` según la
+// resolución tier-aware del modelo: si ningún candidato está instalado (tier
+// Low sin el 1B en disco), los tips vía LLM se apagan pero los heurísticos,
+// métricas y gauge siguen vivos. `call_ollama_and_emit` lo consulta como
+// primer gate (mismo patrón de skip que el circuit breaker).
+static LLM_TIPS_ENABLED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(true);
+
 /// Fija el modo de la grabación (true = presentación/ponente). Lo llama el comando de
 /// inicio (valor inicial) y `coach_set_presentation_mode` (cambio en vivo desde el
 /// toggle de la vista de grabación). El coach lo lee dinámicamente cada tick, así que
@@ -502,73 +510,32 @@ pub async fn start<R: Runtime + 'static>(app: AppHandle<R>) -> Result<(), String
     // por summary::summary_engine. No hay HTTP, lo deja solo para logging compatible.
     let endpoint = "builtin-ai-sidecar".to_string();
 
-    // Resolver el modelo efectivo: el configurado si está descargado, sino auto-detect.
-    // Prioridad: Gemma 4B (default actual) → Gemma 1B → otros instalados.
-    let model = {
-        use crate::coach::model_registry;
-        use crate::state::AppState;
-        use tauri::Manager as _;
-
-        let from_db = if let Some(state) = app.try_state::<AppState>() {
-            let pool = state.db_manager.pool();
-            sqlx::query_scalar::<_, String>(
-                "SELECT tips_model_id FROM coach_settings WHERE id = '1'",
-            )
-            .fetch_optional(pool)
-            .await
-            .ok()
-            .flatten()
-        } else {
-            None
-        };
-
-        // Tier-aware (jul-2026): en hardware tier Low el 4b bajo carga no produce
-        // tips (timeouts de 30s cargando/generando → antes, death spiral del
-        // sidecar). Ahí el tradeoff de §4.1 se invierte: un tip de 1B con ~33% de
-        // JSON malformado (mitigado por el parse-retry x2) supera a CERO tips.
-        // En Medium+ se mantiene §4.1: 4b primero. La elección explícita del
-        // usuario (DB) siempre gana.
-        let tier = crate::audio::HardwareProfile::detect().performance_tier.clone();
-        let low_tier_pref: Option<String> = if tier == crate::audio::PerformanceTier::Low {
-            info!("Coach: hardware tier Low — priorizando modelo 1B si está instalado");
-            Some("gemma3-1b-q8".to_string())
-        } else {
-            None
-        };
-
-        let candidates: Vec<String> = std::iter::empty::<String>()
-            .chain(from_db.into_iter())
-            .chain(low_tier_pref.into_iter())
-            .chain(std::iter::once(configured_model.clone()))
-            // §4.1 Eliminar 1b de candidatos (en Medium+): unificamos a 4b (% JSON malformado ~33% -> ~10%).
-            .chain(["gemma3-4b-q4", "qwen25-3b-q4"].iter().map(|s| s.to_string()))
-            .collect();
-
-        let installed = candidates
-            .iter()
-            .find(|id| {
-                model_registry::get_model(id).is_some()
-                    && llama_engine::is_model_installed(&app, id)
-                    && !llama_engine::map_to_builtin_id(id).is_empty()
-            })
-            .cloned()
-            .unwrap_or_else(|| DEFAULT_TIPS_MODEL.to_string());
-
-        let model_path = llama_engine::model_file_path(&app, &installed);
-        let model_ok = model_path.as_ref().map(|p| p.exists()).unwrap_or(false);
-        info!(
-            "🔍 Coach model '{}': {:?} (exists={})",
-            installed, model_path, model_ok
-        );
-
-        if !model_ok {
-            warn!(
-                "Coach: modelo '{}' no instalado — tips deshabilitados",
-                installed
-            );
+    // Resolver el modelo efectivo (tier-aware, compartido con el warmup de lib.rs
+    // vía `llama_engine::resolve_effective_tips_model`). En tier Low sin elección
+    // explícita el único candidato es el 1B: si no está en disco, los tips-LLM se
+    // apagan esta sesión y se dispara su descarga en background — nunca se cae a
+    // 4b en Low (timeouts de 30s del sidecar, logs de usuario 2026-07-10).
+    let model = match llama_engine::resolve_effective_tips_model(&app, Some(&configured_model))
+        .await
+    {
+        llama_engine::TipsResolution::Use(m) => {
+            LLM_TIPS_ENABLED.store(true, Ordering::Relaxed);
+            info!("🔍 Coach model resuelto: '{}'", m);
+            m
         }
-
-        installed
+        llama_engine::TipsResolution::Unavailable { preferred } => {
+            LLM_TIPS_ENABLED.store(false, Ordering::Relaxed);
+            warn!(
+                "Coach: modelo '{}' no instalado — tips LLM deshabilitados esta sesión (heurísticos y gauge siguen activos)",
+                preferred
+            );
+            // No-op fuera de tier Low; en Low baja el 1B para la próxima sesión.
+            let app_dl = app.clone();
+            tokio::spawn(async move {
+                crate::coach::setup::ensure_low_tier_tips_model(&app_dl).await;
+            });
+            preferred
+        }
     };
     let window_secs = cfg.as_ref().map(|c| c.context_window_secs).unwrap_or(180);
     // §5.6 Default 15s (antes 45s). El nudge loop evalua talk_ratio/monologo/preguntas y
@@ -1097,6 +1064,16 @@ async fn call_ollama_and_emit<R: Runtime>(
     _endpoint: &str,
     cancel: CancellationToken,
 ) {
+    // Gate de sesión: sin modelo utilizable en disco (p.ej. tier Low esperando
+    // la descarga del 1B) no se llama al LLM. Liberar el rate-limit para que
+    // los tips heurísticos mantengan su cadencia, igual que hace el breaker.
+    if !LLM_TIPS_ENABLED.load(Ordering::Relaxed) {
+        if let Ok(mut st) = state.lock() {
+            st.last_tip_at = None;
+        }
+        return;
+    }
+
     let minute = session_secs / 60;
     // Modo Ponente: encuadrar los tips del LLM como WEBINAR/PRESENTACIÓN (pacing +
     // engagement) en vez de auto-detectar. Así el coach sugiere ritmo/claridad para un
