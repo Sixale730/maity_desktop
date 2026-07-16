@@ -21,8 +21,14 @@ pub fn download_url(model: &GgufModelDef) -> String {
 }
 
 // NOTA: Los modelos aquí listados deben ser públicos en HuggingFace (sin gate de licencia).
-// Qwen2.5 (Alibaba, Apache 2.0) y Gemma 3 vía bartowski son accesibles sin autenticación.
-// Gemma 2 (Google) requería aceptar licencia → 401. Gemma 3 en repos bartowski → 200 OK.
+// Qwen2.5 (Alibaba, Apache 2.0) y Gemma 3 vía bartowski/ggml-org son accesibles sin autenticación.
+// Gemma 2 (Google) requería aceptar licencia → 401.
+// OJO filename: los repos bartowski de Gemma 3 prefijan el archivo con "google_"
+// (ver gemma3-12b-q4). Los 1b/4b usan repos ggml-org, cuyo archivo NO lleva prefijo
+// y coincide con el filename del registry del summary engine — así `model_file_path`
+// encuentra el mismo .gguf tanto si lo bajó el onboarding (models/summary/) como el
+// coach (models/llm/). Con bartowski + filename sin prefijo la descarga daba 404
+// (detectado 2026-07-16 probando la auto-descarga del 1B en tier Low).
 pub const MODELS: &[GgufModelDef] = &[
     GgufModelDef {
         id: "qwen25-3b-q4",
@@ -57,7 +63,7 @@ pub const MODELS: &[GgufModelDef] = &[
     GgufModelDef {
         id: "gemma3-1b-q8",
         name: "Gemma 3 1B (ultra-rápido)",
-        hf_repo: "bartowski/google_gemma-3-1b-it-GGUF",
+        hf_repo: "ggml-org/gemma-3-1b-it-GGUF",
         filename: "gemma-3-1b-it-Q8_0.gguf",
         size_gb: 1.0,
         ram_gb: 2.0,
@@ -67,7 +73,7 @@ pub const MODELS: &[GgufModelDef] = &[
     GgufModelDef {
         id: "gemma3-4b-q4",
         name: "Gemma 3 4B (balanceado)",
-        hf_repo: "bartowski/google_gemma-3-4b-it-GGUF",
+        hf_repo: "ggml-org/gemma-3-4b-it-GGUF",
         filename: "gemma-3-4b-it-Q4_K_M.gguf",
         size_gb: 2.7,
         ram_gb: 5.0,
