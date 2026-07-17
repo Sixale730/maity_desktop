@@ -282,14 +282,72 @@ pub fn is_hallucination(text: &str, language: Option<&str>) -> bool {
             const ENGLISH_SHORT_FILLERS: &[&str] = &[
                 "yeah", "yes", "ok", "okay", "uh", "um", "hmm", "mhm", "mm",
                 "huh", "uhhuh", "right", "well", "so", "oh", "ah", "eh", "aha",
+                "thanks",
             ];
             if ENGLISH_SHORT_FILLERS.contains(&normalized.as_str()) {
                 return true;
             }
         }
+
+        // Fillers multi-token exactos que el limite de 12 chars dejaba pasar
+        // ("Thank you." llego 10+ veces al transcript en la auditoria jul-2026).
+        const ENGLISH_MULTI_FILLERS: &[&str] = &[
+            "thank you", "thank you very much", "thanks a lot", "see you", "bye bye",
+        ];
+        if ENGLISH_MULTI_FILLERS.contains(&normalized.as_str()) {
+            return true;
+        }
+
+        // Frases cortas mayormente inglesas: Parakeet v3 autodetecta idioma por chunk
+        // y sobre espanol ambiguo decodifica frases EN completas ("I think that's it.").
+        if looks_english_phrase(&normalized) {
+            return true;
+        }
     }
 
     false
+}
+
+/// Heurística de dominancia léxica inglesa para frases CORTAS cuando el target es español.
+///
+/// Descarta solo si: <= 8 tokens, >= 2 function-words EN y CERO marcadores ES.
+/// Salvaguarda spanglish: cualquier palabra funcional española salva la frase
+/// ("It's muy important", "el feature está ready" se conservan). Frases largas se
+/// conservan siempre: a mayor longitud, mayor riesgo de descartar contenido real.
+fn looks_english_phrase(normalized: &str) -> bool {
+    const EN_FUNCTION_WORDS: &[&str] = &[
+        "the", "and", "is", "are", "was", "were", "that", "this", "these", "those",
+        "you", "your", "i", "it", "its", "of", "to", "in", "on", "for", "with",
+        "think", "dont", "don't", "im", "i'm", "we", "they", "he", "she", "my",
+        "me", "but", "what", "when", "where", "how", "why", "have", "has", "had",
+        "there", "be", "been", "not", "do", "does", "did", "can", "will", "would",
+        "just", "know", "thats", "that's", "it's", "thank", "very", "much", "good",
+    ];
+    const ES_MARKERS: &[&str] = &[
+        "el", "la", "los", "las", "de", "del", "que", "y", "o", "en", "es", "son",
+        "un", "una", "unos", "unas", "por", "para", "con", "sin", "no", "sí", "si",
+        "está", "esta", "están", "estan", "como", "cómo", "pero", "más", "mas",
+        "muy", "ya", "lo", "le", "les", "se", "mi", "tu", "su", "nos", "hay",
+        "fue", "ser", "estar", "bien", "bueno", "gracias", "hola", "vale",
+        "entonces", "pues", "también", "tambien", "aquí", "aqui", "ahora", "hoy",
+        "mañana", "manana", "tengo", "vamos", "hacer", "puedo", "quiero",
+    ];
+
+    let tokens: Vec<&str> = normalized.split_whitespace().collect();
+    if tokens.len() < 2 || tokens.len() > 8 {
+        return false;
+    }
+
+    let mut en_hits = 0usize;
+    for tok in &tokens {
+        if ES_MARKERS.contains(tok) {
+            return false;
+        }
+        if EN_FUNCTION_WORDS.contains(tok) {
+            en_hits += 1;
+        }
+    }
+    en_hits >= 2
 }
 
 /// Correcciones de errores frecuentes de Parakeet/Canary en español.
@@ -523,5 +581,41 @@ mod tests {
     fn test_fix_duplicated_fillers() {
         assert_eq!(enhance("bueno bueno vamos a ver", "es"), "Bueno vamos a ver");
         assert_eq!(enhance("entonces entonces qué hacemos", "es"), "Entonces qué hacemos");
+    }
+
+    #[test]
+    fn descarta_fillers_multi_token_ingleses() {
+        // "Thank you." pasaba el filtro en v0.2.51 y v0.2.52 (auditoria jul-2026).
+        assert!(is_hallucination("Thank you.", Some("es-419")));
+        assert!(is_hallucination("Thank you very much.", None));
+        assert!(is_hallucination("Thanks.", Some("es-419")));
+        assert!(is_hallucination("See you.", Some("es-419")));
+    }
+
+    #[test]
+    fn descarta_frases_cortas_mayormente_inglesas() {
+        // Frases EN completas emitidas al transcript en la auditoria jul-2026.
+        assert!(is_hallucination("I think that's it.", Some("es-419")));
+        assert!(is_hallucination("Your part of the game.", Some("es-419")));
+        assert!(is_hallucination("I don't know the space.", None));
+        assert!(is_hallucination("When the contenido", Some("es-419")));
+        assert!(is_hallucination("Yeah, this is it.", Some("es-419")));
+    }
+
+    #[test]
+    fn conserva_spanglish_y_espanol_legitimo() {
+        // Cualquier marcador ES salva la frase (salvaguarda spanglish).
+        assert!(!is_hallucination("It's muy important.", Some("es-419")));
+        assert!(!is_hallucination("ok, el deploy está listo", Some("es-419")));
+        assert!(!is_hallucination("el feature está ready", Some("es-419")));
+        assert!(!is_hallucination("Tengo los boletos", Some("es-419")));
+        assert!(!is_hallucination("Yeah, mañana would be.", Some("es-419")));
+        // Frases largas se conservan aunque sean inglesas (riesgo de contenido real).
+        assert!(!is_hallucination(
+            "I think we should review the quarterly numbers together tomorrow morning",
+            Some("es-419")
+        ));
+        // Con target ingles el filtro EN no aplica.
+        assert!(!is_hallucination("I think that's it.", Some("en-US")));
     }
 }
