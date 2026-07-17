@@ -548,7 +548,16 @@ pub fn start_transcription_task<R: Runtime>(
         // esperaba más (chunks de 8s en Ultra) que HW débil (3s en Low).
         // Replica QW-4 audit del repo de referencia: prioridad latencia percibida.
         let hw_profile = crate::audio::HardwareProfile::detect();
-        let (min_dur, max_dur, flush_timeout) = (0.5_f64, 2.0_f64, 300_u64);
+        // Parakeet v3 autodetecta idioma POR CHUNK: con ~2s de audio el LID confunde
+        // espanol con ingles (auditoria jul-2026: 16-44% de chunks EN). Chunks de ~4-6s
+        // le dan contexto suficiente y ademas reducen inferencias/min (menos overhead).
+        // El flush por pausa (>=400ms) mantiene la latencia percibida en dialogo normal;
+        // solo el habla continua espera ~4s por su texto. Whisper/Moonshine conservan
+        // el tuning corto original (no dependen de LID por chunk).
+        let (min_dur, max_dur, flush_timeout) = match &transcription_engine {
+            TranscriptionEngine::Parakeet(_) => (4.0_f64, 6.0_f64, 400_u64),
+            _ => (0.5_f64, 2.0_f64, 300_u64),
+        };
         info!("[WORKER] ChunkAccumulator real-time: min={:.1}s, max={:.1}s, flush={}ms (tier={:?} – informativo)",
                  min_dur, max_dur, flush_timeout, hw_profile.performance_tier);
         let mut mic_accumulator = ChunkAccumulator::new(min_dur, max_dur, flush_timeout);
