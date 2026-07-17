@@ -96,6 +96,12 @@ pub enum SchedulerCommand {
 }
 
 /// Estado que comparten el servicio y su loop de fondo.
+///
+/// CONTRATO DE LOCKS: jamás sostener un guard de estos `RwLock` a través de un `.await`
+/// (tokio es write-preferring: un `write()` posterior del MISMO task se auto-deadlockea).
+/// Leer con snapshot en statement propio (`let v = *lock.read().await;`) antes de llamar
+/// helpers async que escriben el mismo lock. Cuidado especial con `if let`: el scrutinee
+/// mantiene el guard vivo todo el bloque en edition 2021.
 #[derive(Clone)]
 struct SchedulerShared {
     settings: Arc<RwLock<ScheduledRecordingSettings>>,
@@ -346,7 +352,11 @@ async fn evaluate_tick<R: Runtime>(
     // espera hasta el margen. La mutación de estado del scheduler vive DENTRO de
     // `close_scheduled` (todos sus paths de salida limpian ownership/grace y setean rearm).
     if owned && is_rec && settings.auto_close_enabled {
-        if let Some(since) = *shared.owned_since.read().await {
+        // Snapshot en statement propio: el guard se suelta al terminar el `let`. Con
+        // `if let Some(x) = *lock.read().await` el guard vive todo el bloque (edition 2021)
+        // y `close_scheduled` escribe este mismo RwLock → self-deadlock permanente del loop.
+        let owned_since_snapshot = *shared.owned_since.read().await;
+        if let Some(since) = owned_since_snapshot {
             if let Some(close_at) = schedule::auto_close_at(since, &settings.auto_close_time) {
                 if now >= close_at {
                     let deadline = {
@@ -382,7 +392,11 @@ async fn evaluate_tick<R: Runtime>(
     // frontera de `owned_since`, así que no añade estado nuevo y es robusto a sleep/suspend
     // (un salto de horas dispara UNA sola rotación).
     if owned && is_rec && settings.hourly_rotation_enabled {
-        if let Some(since) = *shared.owned_since.read().await {
+        // Mismo patrón que auto_close: snapshot y soltar el guard ANTES del await de
+        // `rotate_scheduled`, que escribe `owned_since` (deadlock que congeló la rotación
+        // tras el primer disparo en 0.2.52 — auditoría jul-2026).
+        let owned_since_snapshot = *shared.owned_since.read().await;
+        if let Some(since) = owned_since_snapshot {
             if schedule::should_rotate(since, now, active.is_some(), settings.hourly_rotation_enabled) {
                 info!(
                     "[scheduled] rotación por hora: cerrando segmento (arranque {}) @ {}",
