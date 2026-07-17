@@ -52,6 +52,9 @@ pub mod onboarding;
 pub mod openrouter;
 pub mod parakeet_engine;
 pub mod moonshine_engine;
+// Canary (NVIDIA NeMo, 2.69% WER es, idioma forzable): autorado en feb-2026 pero
+// jamás compilado dentro del binario hasta ahora. Expuesto dev-only vía settings.
+pub mod canary_engine;
 pub mod recording_pipeline;
 pub mod state;
 pub mod summary;
@@ -1127,6 +1130,18 @@ pub fn run() {
             moonshine_engine::commands::moonshine_cancel_download,
             moonshine_engine::commands::moonshine_delete_corrupted_model,
             moonshine_engine::commands::open_moonshine_models_folder,
+            // Canary engine commands (dev-only en UI; ver ConfigContext)
+            canary_engine::commands::canary_init,
+            canary_engine::commands::canary_get_available_models,
+            canary_engine::commands::canary_load_model,
+            canary_engine::commands::canary_get_current_model,
+            canary_engine::commands::canary_is_model_loaded,
+            canary_engine::commands::canary_unload_model,
+            canary_engine::commands::canary_validate_model_ready,
+            canary_engine::commands::canary_transcribe_audio,
+            canary_engine::commands::canary_download_model,
+            canary_engine::commands::canary_cancel_download,
+            canary_engine::commands::canary_delete_model,
             // Parallel processing commands
             whisper_engine::parallel_commands::initialize_parallel_processor,
             whisper_engine::parallel_commands::start_parallel_processing,

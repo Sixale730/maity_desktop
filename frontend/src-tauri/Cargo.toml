@@ -140,6 +140,7 @@ sysinfo = "0.32"
 
 lazy_static = { version = "1.4.0" }
 realfft = "3.4.0"
+rustfft = "6.2"  # FFT complejo del preprocessor de Canary (log-mel); realfft ya lo trae transitivo
 regex = "1.11.0"
 ndarray = "0.16"
 bytes = { version = "1.9.0", features = ["serde"] }

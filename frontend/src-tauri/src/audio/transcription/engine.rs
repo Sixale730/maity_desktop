@@ -184,7 +184,7 @@ pub async fn preload_transcription_engine<R: Runtime>(app: AppHandle<R>) {
     };
 
     match config.provider.as_str() {
-        "parakeet" | "localWhisper" | "moonshine" => {
+        "parakeet" | "localWhisper" | "moonshine" | "canary" => {
             info!("🔥 Preloading STT model (provider: {})", config.provider);
             let start = std::time::Instant::now();
             match validate_transcription_model_ready(&app).await {
@@ -340,6 +340,26 @@ pub async fn validate_transcription_model_ready<R: Runtime>(app: &AppHandle<R>) 
                 }
             }
         }
+        "canary" => {
+            info!("🐤 Validating Canary model...");
+            if let Err(init_error) = crate::canary_engine::commands::canary_init().await {
+                warn!("❌ Failed to initialize Canary engine: {}", init_error);
+                return Err(format!(
+                    "Failed to initialize Canary speech recognition: {}",
+                    init_error
+                ));
+            }
+            match crate::canary_engine::commands::canary_validate_model_ready_with_config(app).await {
+                Ok(model_name) => {
+                    info!("✅ Canary model validation successful: {} is ready", model_name);
+                    Ok(())
+                }
+                Err(e) => {
+                    warn!("❌ Canary model validation failed: {}", e);
+                    Err(e)
+                }
+            }
+        }
         "moonshine" => {
             info!("🌙 Validating Moonshine model...");
             // Ensure moonshine engine is initialized first
@@ -455,6 +475,36 @@ pub async fn get_or_init_transcription_engine<R: Runtime>(
                 }
                 None => {
                     Err("Parakeet engine not initialized. This should not happen after validation.".to_string())
+                }
+            }
+        }
+        "canary" => {
+            info!("🐤 Initializing Canary transcription engine");
+
+            let engine = {
+                let guard = crate::canary_engine::commands::CANARY_ENGINE
+                    .lock()
+                    .map_err(|e| format!("Canary engine mutex poisoned: {}", e))?;
+                guard.as_ref().cloned()
+            };
+
+            match engine {
+                Some(engine) => {
+                    if engine.is_model_loaded().await {
+                        let model_name = engine.get_current_model().await
+                            .unwrap_or_else(|| "unknown".to_string());
+                        info!("✅ Canary model '{}' already loaded", model_name);
+                        // Vía trait TranscriptionProvider: el worker le pasa language
+                        // (Canary SÍ acepta idioma forzado: es/en/de/fr).
+                        Ok(TranscriptionEngine::Provider(std::sync::Arc::new(
+                            crate::audio::transcription::canary_provider::CanaryProvider::new(engine),
+                        )))
+                    } else {
+                        Err("Canary engine initialized but no model loaded. This should not happen after validation.".to_string())
+                    }
+                }
+                None => {
+                    Err("Canary engine not initialized. This should not happen after validation.".to_string())
                 }
             }
         }

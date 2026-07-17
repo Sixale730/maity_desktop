@@ -212,7 +212,7 @@ pub async fn canary_validate_model_ready_with_config<R: Runtime>(
         }
 
         // Check user's configured model
-        let model_to_load = match crate::api::api::api_get_transcript_config(
+        let model_to_load = match crate::api::api_get_transcript_config(
             app.clone(),
             app.state(),
             None,

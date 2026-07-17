@@ -5,6 +5,7 @@
 pub mod provider;
 pub mod whisper_provider;
 pub mod parakeet_provider;
+pub mod canary_provider;   // Canary (NeMo) via trait TranscriptionProvider
 pub mod deepgram_provider;  // Deepgram cloud transcription
 pub mod deepgram_commands;  // Tauri commands for Deepgram cloud proxy tokens
 pub mod engine;
@@ -17,6 +18,7 @@ pub mod onnx_providers;       // Helper para seleccion de execution provider (GP
 pub use provider::{TranscriptionError, TranscriptionProvider, TranscriptResult};
 pub use whisper_provider::WhisperProvider;
 pub use parakeet_provider::ParakeetProvider;
+pub use canary_provider::CanaryProvider;
 pub use deepgram_provider::{DeepgramRealtimeTranscriber, DeepgramConfig};
 pub use deepgram_commands::{
     set_deepgram_proxy_config,
