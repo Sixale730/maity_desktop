@@ -57,7 +57,25 @@ fn handle_menu_event<R: Runtime>(app: &AppHandle<R>, item_id: &str) {
             }
         }
         "check_updates" => check_updates_handler(app),
-        "quit" => app.exit(0),
+        "quit" => {
+            // Graceful shutdown: detener y guardar la grabación activa (jornada o manual)
+            // antes de salir. Sin esto, salir con grabación viva deja solo checkpoints
+            // huérfanos (pérdida de la reunión hasta el próximo recovery manual).
+            let app_clone = app.clone();
+            tauri::async_runtime::spawn(async move {
+                set_tray_state(&app_clone, RecordingState::Stopping);
+                if tokio::time::timeout(
+                    std::time::Duration::from_secs(60),
+                    crate::graceful_shutdown_before_exit(&app_clone),
+                )
+                .await
+                .is_err()
+                {
+                    log::warn!("Graceful stop desde tray quit excedió 60s; saliendo igual");
+                }
+                app_clone.exit(0);
+            });
+        }
         _ => {}
     }
 }

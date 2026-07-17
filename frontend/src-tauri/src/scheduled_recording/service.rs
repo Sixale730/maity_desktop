@@ -244,6 +244,25 @@ impl ScheduledRecordingService {
         }
         Ok(())
     }
+
+    /// Cierra y persiste el segmento de jornada que poseemos ANTES de que la app salga.
+    /// Reusa `close_scheduled` (stop + finalize a SQLite + sync jobs), que es idempotente
+    /// frente al scheduler vía StopGate. Devuelve `true` si había segmento propio.
+    pub async fn close_owned_segment_for_exit<R: Runtime>(&self, app: &AppHandle<R>) -> bool {
+        if !self.shared.owned.load(Ordering::SeqCst) {
+            return false;
+        }
+        // Snapshot (contrato de locks de SchedulerShared): jamás guard vivo cruzando el await.
+        let owned_since_snapshot = *self.shared.owned_since.read().await;
+        let Some(since) = owned_since_snapshot else {
+            return false;
+        };
+        let settings = self.shared.settings.read().await.clone();
+        let now = Local::now().naive_local();
+        info!("[scheduled] salida de la app con jornada activa: cerrando y guardando segmento");
+        close_scheduled(app, &self.shared, &settings, since, now).await;
+        true
+    }
 }
 
 impl Default for ScheduledRecordingService {

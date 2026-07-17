@@ -1406,6 +1406,19 @@ pub fn run() {
             if let tauri::RunEvent::Exit = event {
                 log::info!("Application exiting, cleaning up resources...");
                 tauri::async_runtime::block_on(async {
+                    // Backstop de graceful shutdown: si la salida no vino del tray "quit"
+                    // (que ya detiene y guarda), intentar stop+save aquí con presupuesto
+                    // acotado. Si expira, los checkpoints de 30s siguen siendo el respaldo.
+                    if tokio::time::timeout(
+                        std::time::Duration::from_secs(30),
+                        graceful_shutdown_before_exit(_app_handle),
+                    )
+                    .await
+                    .is_err()
+                    {
+                        log::warn!("Graceful stop en exit excedió 30s; checkpoints quedan como respaldo");
+                    }
+
                     // Clean up database connection and checkpoint WAL
                     if let Some(app_state) = _app_handle.try_state::<state::AppState>() {
                         log::info!("Starting database cleanup...");
@@ -1428,4 +1441,40 @@ pub fn run() {
                 log::info!("Application cleanup complete");
             }
         });
+}
+
+/// Detiene y guarda la grabación activa antes de salir de la app (graceful shutdown).
+///
+/// Prioridad: (1) segmento de jornada propio del scheduler → cierre con persistencia
+/// nativa a SQLite (`finalize_segment_native`); (2) grabación manual → stop estándar
+/// (flush + merge de checkpoints + transcripts.json en disco). Idempotente vía StopGate:
+/// si otro actor ya detuvo, ambos caminos son no-op.
+pub async fn graceful_shutdown_before_exit<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    if !is_recording().await {
+        return;
+    }
+
+    if let Some(state) = app.try_state::<scheduled_recording::commands::ScheduledRecordingState>() {
+        let service = state.read().await;
+        if service.close_owned_segment_for_exit(app).await {
+            log::info!("Segmento de jornada cerrado y guardado antes de salir");
+            return;
+        }
+    }
+
+    log::info!("Salida con grabación manual activa: deteniendo y guardando antes de exit");
+    let save_path = app
+        .path()
+        .app_data_dir()
+        .ok()
+        .map(|dir| dir.join("exit-recording.wav").to_string_lossy().to_string())
+        .unwrap_or_else(|| "exit-recording.wav".to_string());
+    if let Err(e) = audio::recording_commands::stop_recording_reporting(
+        app.clone(),
+        audio::recording_commands::RecordingArgs { save_path },
+    )
+    .await
+    {
+        log::error!("Stop de grabación en exit falló: {}", e);
+    }
 }
