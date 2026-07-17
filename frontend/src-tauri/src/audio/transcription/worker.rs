@@ -25,6 +25,13 @@ pub static SPEECH_DETECTED_EMITTED: AtomicBool = AtomicBool::new(false);
 /// When set to true, workers stop processing and the task completes early.
 static CANCEL_PENDING: AtomicBool = AtomicBool::new(false);
 
+// Contadores de sesión de descartes (auditoría jul-2026): cuantifican en logs exportados
+// cuánto casi-silencio/alucinación se filtró y cuántas inferencias salieron vacías —
+// sin esto, medir el "inglés residual" o el texto perdido requiere adivinar por pairing.
+pub static SESSION_DISCARDED_LOW_ENERGY: AtomicU64 = AtomicU64::new(0);
+pub static SESSION_DISCARDED_HALLUCINATION: AtomicU64 = AtomicU64::new(0);
+pub static SESSION_EMPTY_RESULTS: AtomicU64 = AtomicU64::new(0);
+
 /// Check if cancellation has been requested
 pub fn is_cancellation_requested() -> bool {
     CANCEL_PENDING.load(Ordering::SeqCst)
@@ -46,8 +53,21 @@ pub fn reset_speech_detected_flag() {
 pub fn reset_session_counters() {
     SEQUENCE_COUNTER.store(0, Ordering::SeqCst);
     CANCEL_PENDING.store(false, Ordering::SeqCst);
+    SESSION_DISCARDED_LOW_ENERGY.store(0, Ordering::SeqCst);
+    SESSION_DISCARDED_HALLUCINATION.store(0, Ordering::SeqCst);
+    SESSION_EMPTY_RESULTS.store(0, Ordering::SeqCst);
     reset_speech_detected_flag();
     info!("Session counters reset: SEQUENCE_COUNTER=0, SPEECH_DETECTED=false, CANCEL_PENDING=false");
+}
+
+/// Resumen de descartes de la sesión (para el log periódico y el cierre de sesión).
+fn discard_summary() -> String {
+    format!(
+        "descartes sesión: low_energy={}, hallucination={}, vacíos={}",
+        SESSION_DISCARDED_LOW_ENERGY.load(Ordering::SeqCst),
+        SESSION_DISCARDED_HALLUCINATION.load(Ordering::SeqCst),
+        SESSION_EMPTY_RESULTS.load(Ordering::SeqCst)
+    )
 }
 
 /// Accumulates small VAD segments into larger chunks before sending to transcription engine.
@@ -327,6 +347,7 @@ pub fn start_transcription_task<R: Runtime>(
                                         &transcript,
                                         crate::get_language_preference_internal().as_deref(),
                                     ) {
+                                        SESSION_DISCARDED_HALLUCINATION.fetch_add(1, Ordering::SeqCst);
                                         info!("🚫 Worker {} descarta hallucination: '{}'", worker_id, transcript);
                                         String::new()
                                     } else {
@@ -462,6 +483,9 @@ pub fn start_transcription_task<R: Runtime>(
                                     queued,
                                     (completed as f64 / queued.max(1) as f64 * 100.0)
                                 );
+                            }
+                            if completed % 100 == 0 {
+                                info!("Worker {}: {}", worker_id, discard_summary());
                             }
 
                             // Emit progress event for frontend
@@ -911,13 +935,17 @@ async fn transcribe_chunk_with_provider<R: Runtime>(
 
     // Calculate energy and gate noise-only chunks BEFORE hitting transcription provider.
     // Cierra la promesa del comentario en vad.rs:64-65 ("gate adicional via RMS en el pipeline").
-    // Threshold derivado del analisis: chunks force-cut por ruido tienen energy < 1e-4
-    // (RMS ~0.01); voz real, incluso baja, supera ampliamente este umbral.
-    const NOISE_ENERGY_THRESHOLD: f32 = 1e-4;
+    // Umbral 2.5e-4 (auditoria jul-2026, logs de produccion): los chunks que producian
+    // fillers EN alucinados ("Yeah./Okay.") tienen mediana de energy 5.1e-4..6.8e-4 y la
+    // voz procesada p25=5.8e-4 — hay solapamiento, asi que este gate solo corta la cola
+    // inferior (~p5-p10, ruido casi puro); el resto lo atrapa el filtro lexico de
+    // spanish_postprocess. Con 1e-4 pasaba el 39-57% de casi-silencio al motor.
+    const NOISE_ENERGY_THRESHOLD: f32 = 2.5e-4;
     let energy: f32 =
         speech_samples.iter().map(|&x| x * x).sum::<f32>() / speech_samples.len() as f32;
 
     if energy < NOISE_ENERGY_THRESHOLD {
+        SESSION_DISCARDED_LOW_ENERGY.fetch_add(1, Ordering::SeqCst);
         info!(
             "🚫 Chunk {} descartado por bajo nivel (energy={:.6} < {:.6}, samples={})",
             chunk.chunk_id,
@@ -983,6 +1011,10 @@ async fn transcribe_chunk_with_provider<R: Runtime>(
                 Ok(text) => {
                     let cleaned_text = text.trim().to_string();
                     if cleaned_text.is_empty() {
+                        // Antes retornaba sin rastro: cientos de chunks "sin complete" en los
+                        // logs parecian backlog/perdida (auditoria jul-2026). Log + contador.
+                        SESSION_EMPTY_RESULTS.fetch_add(1, Ordering::SeqCst);
+                        info!("Parakeet chunk {} sin texto (resultado vacío)", chunk.chunk_id);
                         return Ok((String::new(), None, false));
                     }
 
