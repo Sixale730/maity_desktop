@@ -375,7 +375,7 @@ pub async fn evaluate_meeting<R: Runtime>(
     let json_str = extract_json(&raw).ok_or_else(|| {
         format!(
             "El modelo no devolvió JSON válido: {}",
-            &raw[..raw.len().min(300)]
+            crate::coach::live_feedback::safe_truncate(&raw, 300)
         )
     })?;
 

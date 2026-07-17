@@ -641,8 +641,23 @@ impl SidecarManager {
                         );
                         continue;
                     }
-                    // Helper legacy sin ids: entregar tal cual (semántica anterior)
-                    None => return Ok(trimmed.to_string()),
+                    None => {
+                        // Un pong sin id entregado a un caller de Generate rompe su
+                        // parser (visto en logs 07-14: '{"type":"pong"}' como respuesta
+                        // de tip). Con helper moderno confirmado, un pong sin id solo
+                        // puede ser ruido: descartarlo. Con helper legacy se conserva
+                        // la semántica anterior (su ping espera este pong tal cual).
+                        let is_pong =
+                            value.get("type").and_then(|t| t.as_str()) == Some("pong");
+                        if is_pong && self.ids_confirmed.load(Ordering::SeqCst) {
+                            log::warn!(
+                                "Descartando pong sin id — ruido para el request en espera (id={})",
+                                expected_id
+                            );
+                            continue;
+                        }
+                        return Ok(trimmed.to_string());
+                    }
                 },
                 // Línea no-JSON: entregar tal cual; el caller reporta el parse error
                 Err(_) => return Ok(trimmed.to_string()),

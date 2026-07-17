@@ -62,6 +62,20 @@ fn epoch_ms() -> u64 {
         .unwrap_or(0)
 }
 
+/// Truncado seguro por char boundary para previews de texto LLM en logs.
+/// `&s[..n]` panickea si `n` cae a mitad de un char multibyte — gemma emite
+/// comillas tipográficas (”) y ese panic mataba el tick del coach (logs 07-10).
+pub(crate) fn safe_truncate(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
 // Modo Ponente: la grabación activa es una presentación/ponencia (el usuario habla
 // casi todo el tiempo: webinar, clase, pitch). El comando Tauri de inicio de grabación
 // fija este flag ANTES de llamar a `start()` (sincrónicamente, antes del primer await),
@@ -1185,7 +1199,7 @@ async fn call_ollama_and_emit<R: Runtime>(
                     pct,
                     attempt,
                     MAX_PARSE_ATTEMPTS,
-                    &raw[..raw.len().min(120)]
+                    safe_truncate(&raw, 120)
                 );
                 last_raw = Some(raw);
             }
