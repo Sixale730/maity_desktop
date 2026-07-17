@@ -325,6 +325,30 @@ async function callEndpoint(params: {
   // simplemente lo omita.
   const clientTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone
 
+  // Watchdog del stream: sin esto, un stream estancado (sleep del laptop, Wi-Fi
+  // caído a mitad de respuesta) dejaba la promesa colgada PARA SIEMPRE —
+  // isPending nunca se liberaba y el composer quedaba bloqueado sin error
+  // visible (auditoría jul-2026). Tres niveles: conexión (primer byte de
+  // headers), inactividad (entre bytes del stream — el primer token del LLM
+  // puede tardar, por eso se resetea con CUALQUIER byte), y tope total.
+  const CONNECT_TIMEOUT_MS = 15_000
+  const INACTIVITY_TIMEOUT_MS = 45_000
+  const TOTAL_TIMEOUT_MS = 180_000
+
+  const controller = new AbortController()
+  let abortPhase: 'conexión' | 'inactividad' | 'tiempo total' | null = null
+  const abortWith = (phase: typeof abortPhase) => {
+    abortPhase = phase
+    controller.abort()
+  }
+  let inactivityTimer = setTimeout(() => abortWith('conexión'), CONNECT_TIMEOUT_MS)
+  const totalTimer = setTimeout(() => abortWith('tiempo total'), TOTAL_TIMEOUT_MS)
+  const resetInactivity = () => {
+    clearTimeout(inactivityTimer)
+    inactivityTimer = setTimeout(() => abortWith('inactividad'), INACTIVITY_TIMEOUT_MS)
+  }
+
+  try {
   const res = await fetch(MAITY_CHAT_ENDPOINT, {
     method: 'POST',
     headers: {
@@ -332,6 +356,7 @@ async function callEndpoint(params: {
       Authorization: `Bearer ${token}`,
       Accept: 'text/event-stream',
     },
+    signal: controller.signal,
     body: JSON.stringify({
       thread_id: threadId,
       messages: history,
@@ -343,6 +368,7 @@ async function callEndpoint(params: {
       ...(clientTimezone ? { client_timezone: clientTimezone } : {}),
     }),
   })
+  resetInactivity() // headers recibidos: pasamos de timeout de conexión a watchdog de stream
 
   if (res.status === 401 || res.status === 403) {
     logger.warn('[chat] api/maity-chat auth rejected', { status: res.status })
@@ -376,6 +402,7 @@ async function callEndpoint(params: {
   // antes de tiempo para siempre agotar el reader (evita leaks).
   for (;;) {
     const { value, done: streamDone } = await reader.read()
+    resetInactivity() // CUALQUIER byte (o el cierre) resetea el watchdog
     if (streamDone) break
     buffer += decoder.decode(value, { stream: true })
 
@@ -421,6 +448,18 @@ async function callEndpoint(params: {
     proposedMemories: done.proposed_memories ?? [],
     threadTitle: done.thread_title,
     idempotencyKey,
+  }
+  } catch (err) {
+    if (abortPhase) {
+      logger.warn('[chat] api/maity-chat abortado por watchdog', { phase: abortPhase })
+      throw new Error(
+        `La respuesta tardó demasiado (${abortPhase}). Revisa tu conexión e intenta de nuevo.`,
+      )
+    }
+    throw err
+  } finally {
+    clearTimeout(inactivityTimer)
+    clearTimeout(totalTimer)
   }
 }
 
