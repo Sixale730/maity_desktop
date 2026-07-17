@@ -644,8 +644,11 @@ pub fn start_transcription_task<R: Runtime>(
         ) -> bool {
             let duration = accumulated.data.len() as f64 / accumulated.sample_rate as f64;
             let queued = chunks_queued.fetch_add(1, Ordering::SeqCst) + 1;
+            // OJO: "despachados en sesión" es un ACUMULADO (nunca decrementa), no la
+            // profundidad de cola — leerlo como backlog descarriló el diagnóstico de lag
+            // de la auditoría jul-2026. La profundidad real vive en el bloque de métricas.
             info!(
-                "📥 Dispatching accumulated chunk {} ({:.1}s, {:?}) to workers (total queued: {})",
+                "📥 Dispatching accumulated chunk {} ({:.1}s, {:?}) to workers (despachados en sesión: {})",
                 accumulated.chunk_id, duration, accumulated.device_type, queued
             );
 
@@ -752,7 +755,7 @@ pub fn start_transcription_task<R: Runtime>(
                     } else {
                         // Streaming provider: dispatch directly without accumulation
                         let queued = chunks_queued.fetch_add(1, Ordering::SeqCst) + 1;
-                        info!("📥 Dispatching chunk {} to streaming worker (total queued: {})", chunk.chunk_id, queued);
+                        info!("📥 Dispatching chunk {} to streaming worker (despachados en sesión: {})", chunk.chunk_id, queued);
                         match work_sender.try_send(chunk) {
                             Ok(()) => {}
                             Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
@@ -796,10 +799,15 @@ pub fn start_transcription_task<R: Runtime>(
             let current_dropped = chunks_dropped.load(Ordering::Relaxed);
             let pending = current_queued.saturating_sub(current_completed);
 
-            if pending > backpressure_threshold && pending % 100 == 0 {
+            // Umbral útil: 120 chunks (~4-8 min de audio según min_dur). El umbral
+            // previo (1500) jamás disparó en producción pese a backlogs reales de
+            // 100-170 chunks / 8.5 min de atraso (auditoría jul-2026).
+            const PENDING_WARN_THRESHOLD: u64 = 120;
+            if pending >= PENDING_WARN_THRESHOLD && pending % 60 == 0 {
                 warn!(
-                    "Transcription queue depth high: {} pending chunks",
-                    pending
+                    "Transcripción atrasada: {} chunks pendientes (~{:.0}s de audio)",
+                    pending,
+                    pending as f64 * min_dur
                 );
             }
 
