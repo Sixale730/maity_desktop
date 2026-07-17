@@ -109,3 +109,6 @@ frontend/.claude/
 
 # Code-signing certs + Tauri updater private key (never commit)
 /signing/
+
+# Graphify knowledge-graph output (large, regenerated locally)
+graphify-out/
