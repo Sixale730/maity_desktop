@@ -43,6 +43,17 @@ const ENGINE_BREAKER_THRESHOLD: u64 = 5;
 /// Reciclos error-triggered por sesion antes de rendirse y avisar al usuario.
 const ENGINE_BREAKER_MAX_RECYCLES: u64 = 2;
 
+/// Atraso estimado de la transcripción en segundos (pending × duración de chunk),
+/// publicado por el dispatcher cada ~3s. Lo consume el coach para CEDER sus ticks
+/// LLM bajo contención (auditoría jul-2026: las generaciones de gemma-4b coinciden
+/// exactas con ráfagas de 26-51s por chunk — la transcripción es el producto core).
+pub static TRANSCRIPTION_LAG_SECONDS: AtomicU64 = AtomicU64::new(0);
+
+/// Lectura del atraso estimado actual (0 fuera de sesión o sin backlog).
+pub fn transcription_lag_seconds() -> u64 {
+    TRANSCRIPTION_LAG_SECONDS.load(Ordering::Relaxed)
+}
+
 /// Check if cancellation has been requested
 pub fn is_cancellation_requested() -> bool {
     CANCEL_PENDING.load(Ordering::SeqCst)
@@ -70,6 +81,7 @@ pub fn reset_session_counters() {
     CONSEC_ENGINE_FAILURES.store(0, Ordering::SeqCst);
     ERROR_RECYCLES_TRIGGERED.store(0, Ordering::SeqCst);
     PERSISTENT_ENGINE_ERROR_EMITTED.store(false, Ordering::SeqCst);
+    TRANSCRIPTION_LAG_SECONDS.store(0, Ordering::SeqCst);
     reset_speech_detected_flag();
     info!("Session counters reset: SEQUENCE_COUNTER=0, SPEECH_DETECTED=false, CANCEL_PENDING=false");
 }
@@ -811,6 +823,7 @@ pub fn start_transcription_task<R: Runtime>(
             if last_lag_emit.elapsed() >= lag_emit_interval {
                 // With accumulation, each queued chunk is ~min_dur seconds of audio
                 let lag_seconds = pending as f64 * min_dur;
+                TRANSCRIPTION_LAG_SECONDS.store(lag_seconds as u64, Ordering::Relaxed);
                 let chunks_per_second = if current_completed > 0 {
                     current_completed as f64 / last_lag_emit.elapsed().as_secs_f64().max(1.0)
                 } else {

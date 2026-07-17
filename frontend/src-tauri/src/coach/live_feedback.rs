@@ -1107,6 +1107,24 @@ async fn call_ollama_and_emit<R: Runtime>(
         return;
     }
 
+    // Ceder bajo contención: si la transcripción va atrasada, el tick LLM se salta.
+    // La generación de gemma compite por GPU/CPU con el worker de transcripción
+    // (auditoría jul-2026: ráfagas de 26-51s por chunk exactamente durante
+    // generaciones del sidecar). La transcripción es el producto core; los tips
+    // heurísticos siguen activos y el LLM reintenta en el próximo tick.
+    const TRANSCRIPTION_LAG_YIELD_SECS: u64 = 30;
+    let lag = crate::audio::transcription::worker::transcription_lag_seconds();
+    if lag >= TRANSCRIPTION_LAG_YIELD_SECS {
+        info!(
+            "Coach: transcripción atrasada {}s (≥{}s) — tick LLM cedido para liberar GPU/CPU",
+            lag, TRANSCRIPTION_LAG_YIELD_SECS
+        );
+        if let Ok(mut st) = state.lock() {
+            st.last_tip_at = None;
+        }
+        return;
+    }
+
     let builtin_model = llama_engine::map_to_builtin_id(model).to_string();
     info!(
         "🦙 Coach calling sidecar: model={} (builtin={}), prompt_len={} chars",
