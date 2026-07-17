@@ -1,5 +1,10 @@
 import { supabase } from '@/lib/supabase'
 import { logger } from '@/lib/logger'
+// fileLogger: diagnósticos del envío al log de archivo exportable. La auditoría
+// jul-2026 encontró CERO líneas de chat en los logs exportados — imposible
+// distinguir "nadie usó el chat" de "falló N veces". Solo eventos de diagnóstico,
+// nunca contenido de mensajes (PII).
+import { fileLogger } from '@/lib/fileLogger'
 import type {
   ChatThread,
   ChatMessage,
@@ -314,6 +319,7 @@ async function callEndpoint(params: {
   onDelta?: (delta: string) => void
 }): Promise<AssistantReply> {
   const { threadId, history, approvedMemories, idempotencyKey, lens, attachments, onDelta } = params
+  const t0 = Date.now()
 
   const { data: { session } } = await supabase.auth.getSession()
   const token = session?.access_token
@@ -371,23 +377,23 @@ async function callEndpoint(params: {
   resetInactivity() // headers recibidos: pasamos de timeout de conexión a watchdog de stream
 
   if (res.status === 401 || res.status === 403) {
-    logger.warn('[chat] api/maity-chat auth rejected', { status: res.status })
+    void fileLogger.warn('chat', 'api/maity-chat auth rejected', { status: res.status })
     throw new Error('Tu sesión expiró. Vuelve a iniciar sesión.')
   }
   if (res.status === 402) {
     // Quota del plan excedida (assertQuota 'maity_chat', Free 50/día). Distinto
     // del 429 (rate limit): aquí el usuario llegó al tope diario de su plan.
-    logger.warn('[chat] api/maity-chat quota exceeded (plan limit)')
+    void fileLogger.warn('chat', 'api/maity-chat quota exceeded (plan limit)')
     throw new Error(
       'Alcanzaste tu límite de mensajes del plan Free de hoy. Vuelve mañana o mejora tu plan para seguir conversando.',
     )
   }
   if (res.status === 429) {
-    logger.warn('[chat] api/maity-chat rate limited')
+    void fileLogger.warn('chat', 'api/maity-chat rate limited')
     throw new Error('Demasiados mensajes seguidos. Espera un momento antes de intentar de nuevo.')
   }
   if (!res.ok || !res.body) {
-    logger.warn('[chat] api/maity-chat non-OK response', { status: res.status })
+    void fileLogger.warn('chat', 'api/maity-chat non-OK response', { status: res.status })
     throw new Error('No se pudo contactar al asistente. Intenta de nuevo.')
   }
 
@@ -437,12 +443,16 @@ async function callEndpoint(params: {
   }
 
   if (serverError) {
-    logger.warn('[chat] api/maity-chat stream error', { serverError })
+    void fileLogger.warn('chat', 'api/maity-chat stream error', { serverError })
     throw new Error('No se pudo completar la respuesta. Intenta de nuevo.')
   }
   if (!done || !done.content) {
+    void fileLogger.warn('chat', 'api/maity-chat respuesta vacía', {
+      durationMs: Date.now() - t0,
+    })
     throw new Error('Respuesta vacía del asistente.')
   }
+  void fileLogger.info('chat', 'send ok', { durationMs: Date.now() - t0 })
   return {
     content: done.content,
     proposedMemories: done.proposed_memories ?? [],
@@ -451,11 +461,18 @@ async function callEndpoint(params: {
   }
   } catch (err) {
     if (abortPhase) {
-      logger.warn('[chat] api/maity-chat abortado por watchdog', { phase: abortPhase })
+      void fileLogger.warn('chat', 'api/maity-chat abortado por watchdog', {
+        phase: abortPhase,
+        durationMs: Date.now() - t0,
+      })
       throw new Error(
         `La respuesta tardó demasiado (${abortPhase}). Revisa tu conexión e intenta de nuevo.`,
       )
     }
+    void fileLogger.error('chat', 'api/maity-chat send failed', {
+      error: err instanceof Error ? err.message : String(err),
+      durationMs: Date.now() - t0,
+    })
     throw err
   } finally {
     clearTimeout(inactivityTimer)
