@@ -29,7 +29,7 @@ export function RecordingPostProcessingProvider({ children }: { children: React.
   } = useRecordingStop(setIsRecordingDisabled);
 
   // Reset del buffer de transcripción en cada rotación por hora (Incremento 4).
-  const { clearTranscripts } = useTranscripts();
+  const { clearTranscripts, markMeetingAsSaved } = useTranscripts();
 
   // Mantener ref estable al callback para evitar re-subscripciones innecesarias
   const handleRecordingStopRef = useRef(handleRecordingStop);
@@ -41,6 +41,14 @@ export function RecordingPostProcessingProvider({ children }: { children: React.
   const clearTranscriptsRef = useRef(clearTranscripts);
   useEffect(() => {
     clearTranscriptsRef.current = clearTranscripts;
+  });
+
+  // Ref estable a markMeetingAsSaved: al rotar/cerrar jornada, Rust YA guardó el segmento
+  // a SQLite (meetingId non-null) — marcarlo en IndexedDB evita que aparezca como
+  // "grabación por recuperar" falsa en el próximo arranque.
+  const markMeetingAsSavedRef = useRef(markMeetingAsSaved);
+  useEffect(() => {
+    markMeetingAsSavedRef.current = markMeetingAsSaved;
   });
 
   useEffect(() => {
@@ -88,15 +96,23 @@ export function RecordingPostProcessingProvider({ children }: { children: React.
       try {
         unlistenRotate = await listen<{ meetingId: string | null; meetingName: string }>(
           TauriEvent.SCHEDULED_SEGMENT_ROTATED,
-          (event) => {
+          async (event) => {
             logger.debug('[RecordingPostProcessing] Segmento rotado, reseteando buffer:', event.payload);
+            // meetingId null = finalize falló en Rust → NO marcar: el diálogo de
+            // recovery queda como red de seguridad para ese segmento.
+            if (event.payload.meetingId) {
+              await markMeetingAsSavedRef.current();
+            }
             clearTranscriptsRef.current();
           }
         );
         unlistenClosed = await listen<{ meetingId: string | null; meetingName: string }>(
           TauriEvent.SCHEDULED_JORNADA_CLOSED,
-          (event) => {
+          async (event) => {
             logger.debug('[RecordingPostProcessing] Jornada cerrada headless, reseteando buffer:', event.payload);
+            if (event.payload.meetingId) {
+              await markMeetingAsSavedRef.current();
+            }
             clearTranscriptsRef.current();
             // Higiene: el `recording-stopped` del stop nativo pobló estas keys; limpiarlas
             // evita que un futuro stop manual herede metadata (folder/nombre/duración) de

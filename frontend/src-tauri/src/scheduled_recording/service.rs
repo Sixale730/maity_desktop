@@ -791,8 +791,17 @@ async fn finalize_segment_native<R: Runtime>(
         }
     };
 
-    let parsed: serde_json::Value = serde_json::from_str(&content).ok()?;
-    let raw_segments = parsed.get("segments").and_then(|v| v.as_array())?;
+    let parsed: serde_json::Value = match serde_json::from_str(&content) {
+        Ok(v) => v,
+        Err(e) => {
+            warn!("[scheduled] transcripts.json inválido; segmento queda local-only: {}", e);
+            return None;
+        }
+    };
+    let Some(raw_segments) = parsed.get("segments").and_then(|v| v.as_array()) else {
+        warn!("[scheduled] transcripts.json sin clave 'segments'; segmento queda local-only");
+        return None;
+    };
     if raw_segments.is_empty() {
         info!("[scheduled] segmento sin transcripts; no se guarda a DB");
         return None;
@@ -850,7 +859,12 @@ async fn finalize_segment_native<R: Runtime>(
                 return None;
             }
         };
-        let user_id = state.current_user_id().await?; // sin usuario => no se guarda (privacidad)
+        let Some(user_id) = state.current_user_id().await else {
+            // Sin usuario => no se guarda (privacidad). Antes era un `?` silencioso: la
+            // auditoria jul-2026 encontro 2 de 5 rotaciones sin rastro de por que no guardaron.
+            warn!("[scheduled] sin usuario logueado; segmento queda local-only (audio en disco, sin SQLite)");
+            return None;
+        };
         (user_id, state.db_manager.pool().clone()) // SqlitePool es Arc: clonar es barato
     };
 
