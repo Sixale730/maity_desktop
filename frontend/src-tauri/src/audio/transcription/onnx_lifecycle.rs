@@ -131,6 +131,53 @@ impl OnnxSessionLifecycle {
         });
     }
 
+    /// Recicla la sesión AHORA, disparado por ERRORES (no por conteo de inferencias).
+    ///
+    /// Para breakers del worker: N fallos consecutivos de inferencia sugieren sesión
+    /// ONNX corrupta (auditoría jul-2026: 369 ORT errors seguidos = 80 min sin texto,
+    /// sin recuperación). Mismas garantías que `maybe_recycle` — single-flight y
+    /// anti-storm vía `min_gap` — pero sin exigir el threshold.
+    ///
+    /// Devuelve `true` si el recycle se disparó; `false` si lo bloqueó el `min_gap`
+    /// o hay otro disparo marcándose en este instante.
+    pub fn recycle_now<F, Fut>(&self, recycle_fn: F) -> bool
+    where
+        F: FnOnce() -> Fut + Send + 'static,
+        Fut: Future<Output = Result<()>> + Send + 'static,
+    {
+        {
+            let Ok(mut guard) = self.last_recycle.try_lock() else {
+                return false; // otro caller está marcando un recycle: tratarlo como en vuelo
+            };
+            if let Some(last) = *guard {
+                if last.elapsed() < self.min_gap {
+                    return false;
+                }
+            }
+            *guard = Some(Instant::now());
+        }
+        self.inference_count.store(0, Ordering::Release);
+
+        let label = self.label;
+        tokio::spawn(async move {
+            log::warn!("ONNX session recycle ({}) por errores consecutivos — recargando sesión", label);
+            let started = Instant::now();
+            match recycle_fn().await {
+                Ok(()) => log::info!(
+                    "ONNX session recycle ({}) error-triggered completado en {:?}",
+                    label,
+                    started.elapsed()
+                ),
+                Err(e) => log::warn!(
+                    "ONNX session recycle ({}) error-triggered falló: {} — sesión previa retenida",
+                    label,
+                    e
+                ),
+            }
+        });
+        true
+    }
+
     /// Devuelve el conteo actual sin modificarlo. Útil para tests y diagnóstico.
     #[cfg(test)]
     pub fn current_count(&self) -> u64 {

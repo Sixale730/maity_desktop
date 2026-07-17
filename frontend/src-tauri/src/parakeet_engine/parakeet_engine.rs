@@ -531,59 +531,82 @@ impl ParakeetEngine {
         let current_model_name = self.current_model_name.clone();
         let available_models = self.available_models.clone();
 
-        self.lifecycle.maybe_recycle(move || async move {
-            // Snapshot del nombre del modelo ANTES del reload lento. Si el usuario
-            // cambia de modelo durante el reload, el swap se aborta.
-            let model_name = match current_model_name.read().await.clone() {
-                Some(n) => n,
-                None => return Ok(()), // user descargó modelo; nada que reciclar
-            };
-
-            // Lookup info del modelo (path + quantization) sin tomar locks de model.
-            let model_info = {
-                let guard = available_models.read().await;
-                guard.get(&model_name).cloned()
-            };
-            let model_info = match model_info {
-                Some(mi) => mi,
-                None => {
-                    return Err(anyhow!(
-                        "Recycle aborted: model {} no longer in available_models",
-                        model_name
-                    ));
-                }
-            };
-            let quantized = matches!(model_info.quantization, QuantizationType::Int8);
-
-            // SLOW: cargar ParakeetModel en variable LOCAL. Sin lock de current_model.
-            // Si esto falla, el modelo viejo queda intacto.
-            let new_model = ParakeetModel::new(&model_info.path, quantized)
-                .map_err(|e| anyhow!("Recycle reload failed for {}: {}", model_name, e))?;
-
-            // ATOMIC SWAP: re-leer current_model_name. Si el usuario cambió de
-            // modelo durante el reload, abortar (descartar new_model).
-            let name_guard = current_model_name.read().await;
-            if name_guard.as_deref() != Some(&model_name) {
-                log::info!(
-                    "Parakeet recycle aborted: model changed during reload \
-                     (was {}, now {:?})",
-                    model_name,
-                    *name_guard
-                );
-                return Ok(());
-            }
-            drop(name_guard);
-
-            // Swap: reemplazar current_model con el nuevo. El viejo Drop libera
-            // su memoria nativa.
-            let mut model_guard = current_model.write().await;
-            *model_guard = Some(new_model);
-            drop(model_guard);
-
-            Ok(())
+        self.lifecycle.maybe_recycle(move || {
+            Self::recycle_reload(current_model, current_model_name, available_models)
         });
 
         Ok(result_text)
+    }
+
+    /// Fuerza un reload de la sesión ONNX AHORA (breaker de errores del worker:
+    /// N fallos de inferencia consecutivos sugieren sesión corrupta). Devuelve
+    /// `true` si el reload se disparó (false = bloqueado por anti-storm).
+    pub fn force_recycle(&self) -> bool {
+        let current_model = self.current_model.clone();
+        let current_model_name = self.current_model_name.clone();
+        let available_models = self.available_models.clone();
+        self.lifecycle.recycle_now(move || {
+            Self::recycle_reload(current_model, current_model_name, available_models)
+        })
+    }
+
+    /// Reload de sesión compartido por el recycle periódico y el error-triggered:
+    /// carga el modelo a variable LOCAL y hace swap atómico solo si el usuario no
+    /// cambió de modelo durante la carga. Si falla, la sesión previa queda intacta.
+    async fn recycle_reload(
+        current_model: Arc<RwLock<Option<ParakeetModel>>>,
+        current_model_name: Arc<RwLock<Option<String>>>,
+        available_models: Arc<RwLock<HashMap<String, ModelInfo>>>,
+    ) -> Result<()> {
+        // Snapshot del nombre del modelo ANTES del reload lento. Si el usuario
+        // cambia de modelo durante el reload, el swap se aborta.
+        let model_name = match current_model_name.read().await.clone() {
+            Some(n) => n,
+            None => return Ok(()), // user descargó modelo; nada que reciclar
+        };
+
+        // Lookup info del modelo (path + quantization) sin tomar locks de model.
+        let model_info = {
+            let guard = available_models.read().await;
+            guard.get(&model_name).cloned()
+        };
+        let model_info = match model_info {
+            Some(mi) => mi,
+            None => {
+                return Err(anyhow!(
+                    "Recycle aborted: model {} no longer in available_models",
+                    model_name
+                ));
+            }
+        };
+        let quantized = matches!(model_info.quantization, QuantizationType::Int8);
+
+        // SLOW: cargar ParakeetModel en variable LOCAL. Sin lock de current_model.
+        // Si esto falla, el modelo viejo queda intacto.
+        let new_model = ParakeetModel::new(&model_info.path, quantized)
+            .map_err(|e| anyhow!("Recycle reload failed for {}: {}", model_name, e))?;
+
+        // ATOMIC SWAP: re-leer current_model_name. Si el usuario cambió de
+        // modelo durante el reload, abortar (descartar new_model).
+        let name_guard = current_model_name.read().await;
+        if name_guard.as_deref() != Some(&model_name) {
+            log::info!(
+                "Parakeet recycle aborted: model changed during reload \
+                 (was {}, now {:?})",
+                model_name,
+                *name_guard
+            );
+            return Ok(());
+        }
+        drop(name_guard);
+
+        // Swap: reemplazar current_model con el nuevo. El viejo Drop libera
+        // su memoria nativa.
+        let mut model_guard = current_model.write().await;
+        *model_guard = Some(new_model);
+        drop(model_guard);
+
+        Ok(())
     }
 
     /// Get the models directory path

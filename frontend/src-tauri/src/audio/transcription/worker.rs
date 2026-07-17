@@ -32,6 +32,17 @@ pub static SESSION_DISCARDED_LOW_ENERGY: AtomicU64 = AtomicU64::new(0);
 pub static SESSION_DISCARDED_HALLUCINATION: AtomicU64 = AtomicU64::new(0);
 pub static SESSION_EMPTY_RESULTS: AtomicU64 = AtomicU64::new(0);
 
+// Breaker de motor (auditoria jul-2026: 369 ORT errors consecutivos = 80 min sin texto,
+// sin recuperacion). Fallos consecutivos de inferencia -> reinicio de sesion ONNX.
+static CONSEC_ENGINE_FAILURES: AtomicU64 = AtomicU64::new(0);
+static ERROR_RECYCLES_TRIGGERED: AtomicU64 = AtomicU64::new(0);
+static PERSISTENT_ENGINE_ERROR_EMITTED: AtomicBool = AtomicBool::new(false);
+/// Fallos consecutivos que disparan el reinicio de sesion (patron circuit breaker,
+/// espejo del breaker del coach en live_feedback.rs).
+const ENGINE_BREAKER_THRESHOLD: u64 = 5;
+/// Reciclos error-triggered por sesion antes de rendirse y avisar al usuario.
+const ENGINE_BREAKER_MAX_RECYCLES: u64 = 2;
+
 /// Check if cancellation has been requested
 pub fn is_cancellation_requested() -> bool {
     CANCEL_PENDING.load(Ordering::SeqCst)
@@ -56,6 +67,9 @@ pub fn reset_session_counters() {
     SESSION_DISCARDED_LOW_ENERGY.store(0, Ordering::SeqCst);
     SESSION_DISCARDED_HALLUCINATION.store(0, Ordering::SeqCst);
     SESSION_EMPTY_RESULTS.store(0, Ordering::SeqCst);
+    CONSEC_ENGINE_FAILURES.store(0, Ordering::SeqCst);
+    ERROR_RECYCLES_TRIGGERED.store(0, Ordering::SeqCst);
+    PERSISTENT_ENGINE_ERROR_EMITTED.store(false, Ordering::SeqCst);
     reset_speech_detected_flag();
     info!("Session counters reset: SEQUENCE_COUNTER=0, SPEECH_DETECTED=false, CANCEL_PENDING=false");
 }
@@ -338,6 +352,8 @@ pub fn start_transcription_task<R: Runtime>(
                             .await
                             {
                                 Ok((transcript, confidence_opt, is_partial)) => {
+                                    // Inferencia exitosa: el breaker de motor se resetea.
+                                    CONSEC_ENGINE_FAILURES.store(0, Ordering::SeqCst);
                                     // Post-procesado heuristico ES: descarta hallucinations clasicas
                                     // de Parakeet/Canary y aplica capitalizacion + tildes interrogativas
                                     // + anti-stutter. Idempotente y barato.
@@ -464,6 +480,40 @@ pub fn start_transcription_task<R: Runtime>(
                                         _ => {
                                             warn!("Worker {}: Transcription failed: {}", worker_id, e);
                                             let _ = app_clone.emit(events::TRANSCRIPTION_WARNING, e.to_string());
+
+                                            // Breaker de motor: N fallos consecutivos => sesion ONNX
+                                            // probablemente corrupta -> reinicio en background.
+                                            let fails = CONSEC_ENGINE_FAILURES.fetch_add(1, Ordering::SeqCst) + 1;
+                                            if fails >= ENGINE_BREAKER_THRESHOLD {
+                                                if let TranscriptionEngine::Parakeet(parakeet) = &engine_clone {
+                                                    let recycles = ERROR_RECYCLES_TRIGGERED.load(Ordering::SeqCst);
+                                                    if recycles < ENGINE_BREAKER_MAX_RECYCLES {
+                                                        if parakeet.force_recycle() {
+                                                            ERROR_RECYCLES_TRIGGERED.fetch_add(1, Ordering::SeqCst);
+                                                            CONSEC_ENGINE_FAILURES.store(0, Ordering::SeqCst);
+                                                            error!(
+                                                                "Worker {}: breaker de motor ABIERTO ({} fallos consecutivos) — reiniciando sesión ONNX (reciclo {}/{})",
+                                                                worker_id, fails, recycles + 1, ENGINE_BREAKER_MAX_RECYCLES
+                                                            );
+                                                        }
+                                                    } else if !PERSISTENT_ENGINE_ERROR_EMITTED.swap(true, Ordering::SeqCst) {
+                                                        // Ya reiniciamos la sesion 2 veces y sigue fallando:
+                                                        // avisar UNA vez al usuario en vez de fallar en silencio.
+                                                        error!(
+                                                            "Worker {}: motor sigue fallando tras {} reinicios de sesión — notificando al usuario",
+                                                            worker_id, ENGINE_BREAKER_MAX_RECYCLES
+                                                        );
+                                                        let _ = app_clone.emit(
+                                                            events::TRANSCRIPTION_ERROR,
+                                                            &serde_json::json!({
+                                                                "error": "engine_persistent_failure",
+                                                                "userMessage": "La transcripción está fallando repetidamente. El audio se sigue grabando; reinicia la app para restablecer la transcripción.",
+                                                                "actionable": true
+                                                            }),
+                                                        );
+                                                    }
+                                                }
+                                            }
                                         }
                                     }
                                 }
