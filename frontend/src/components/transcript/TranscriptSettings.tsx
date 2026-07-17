@@ -9,6 +9,8 @@ import { ModelManager } from '@/components/models/WhisperModelManager';
 import { ParakeetModelManager } from '@/components/models/ParakeetModelManager';
 import { MoonshineModelManager } from '@/components/models/MoonshineModelManager';
 import { toast } from 'sonner';
+import { useUserRole } from '@/hooks/useUserRole';
+import { CanaryAPI } from '@/lib/canary';
 import type { TranscriptModelProps } from '@/types/transcript';
 
 export type { TranscriptModelProps };
@@ -20,6 +22,9 @@ export interface TranscriptSettingsProps {
 }
 
 export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelConfig, onModelSelect }: TranscriptSettingsProps) {
+    // Canary es dev-only: evaluación A/B contra Parakeet antes de decidir default.
+    const { isAdmin } = useUserRole();
+    const [canaryBusy, setCanaryBusy] = useState<boolean>(false);
     const [apiKey, setApiKey] = useState<string | null>(transcriptModelConfig.apiKey || null);
     const [showApiKey, setShowApiKey] = useState<boolean>(false);
     const [isApiKeyLocked, setIsApiKeyLocked] = useState<boolean>(true);
@@ -95,6 +100,7 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
         localWhisper: [selectedWhisperModel],
         parakeet: [selectedParakeetModel],
         moonshine: [selectedMoonshineModel],
+        canary: ['canary-1b-flash-int8'],
         deepgram: ['nova-3', 'nova-2', 'nova-2-phonecall', 'nova-2-meeting'],
         elevenLabs: ['eleven_multilingual_v2'],
         groq: ['llama-3.3-70b-versatile'],
@@ -144,6 +150,34 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
         }
     };
 
+    const handleCanaryDownload = async () => {
+        setCanaryBusy(true);
+        try {
+            await CanaryAPI.init();
+            await CanaryAPI.downloadModel('canary-1b-flash-int8');
+            toast.success('Descarga de Canary completada o en curso', {
+                description: 'Usa "Verificar estado" para confirmar que el modelo está listo.',
+            });
+        } catch (err) {
+            toast.error('No se pudo descargar el modelo Canary', { description: String(err) });
+        } finally {
+            setCanaryBusy(false);
+        }
+    };
+
+    const handleCanaryVerify = async () => {
+        setCanaryBusy(true);
+        try {
+            await CanaryAPI.init();
+            const model = await CanaryAPI.validateModelReady();
+            toast.success('Canary listo para transcribir', { description: model });
+        } catch (err) {
+            toast.error('Canary no está listo', { description: String(err) });
+        } finally {
+            setCanaryBusy(false);
+        }
+    };
+
     const handleMoonshineModelSelect = (modelName: string) => {
         setSelectedMoonshineModel(modelName);
         if (transcriptModelConfig.provider === 'moonshine') {
@@ -189,6 +223,9 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
                                     <SelectItem value="parakeet">⚡ Parakeet (Local - Tiempo Real)</SelectItem>
                                     <SelectItem value="moonshine">🌙 Moonshine (Local - Ultra Rápido)</SelectItem>
                                     <SelectItem value="localWhisper">🏠 Whisper Local (Alta Precisión)</SelectItem>
+                                    {isAdmin && (
+                                        <SelectItem value="canary">🐦 Canary (Dev - Mejor Español)</SelectItem>
+                                    )}
                                 </SelectContent>
                             </Select>
 
@@ -284,6 +321,25 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
                         </div>
                     )}
 
+                    {transcriptModelConfig.provider === 'canary' && isAdmin && (
+                        <div className="mt-4 rounded-md border border-dashed border-[#485df4]/40 p-3 space-y-2">
+                            <p className="text-sm font-medium text-[#3a3a3c] dark:text-gray-200">
+                                🐦 Canary Flash (dev-only) — mejor español medido, idioma forzado a es
+                            </p>
+                            <p className="text-xs text-[#6b6b6e] dark:text-gray-400">
+                                Modelo canary-1b-flash-int8 (~1GB). Descárgalo una vez, verifica el estado y
+                                graba normal para el A/B contra Parakeet. Los usuarios regulares no ven esta opción.
+                            </p>
+                            <div className="flex gap-2">
+                                <Button size="sm" variant="outline" disabled={canaryBusy} onClick={handleCanaryDownload}>
+                                    {canaryBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Descargar modelo'}
+                                </Button>
+                                <Button size="sm" variant="outline" disabled={canaryBusy} onClick={handleCanaryVerify}>
+                                    Verificar estado
+                                </Button>
+                            </div>
+                        </div>
+                    )}
 
                     {requiresApiKey && (
                         <div>
