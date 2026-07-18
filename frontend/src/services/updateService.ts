@@ -6,6 +6,7 @@
  */
 
 import { check, Update } from '@tauri-apps/plugin-updater';
+import { invoke } from '@tauri-apps/api/core';
 import { logger } from '@/lib/logger';
 import { fileLogger } from '@/lib/fileLogger';
 import { relaunch } from '@tauri-apps/plugin-process';
@@ -34,6 +35,32 @@ export class UpdateService {
   private updateCheckInProgress = false;
   private lastCheckTime: number | null = null;
   private readonly CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
+  private storeCheckPromise: Promise<boolean> | null = null;
+
+  /**
+   * true cuando la app corre bajo identidad de paquete MSIX (instalada desde
+   * la Microsoft Store). Ahí las actualizaciones las gestiona la Store: si el
+   * updater de GitHub corriera, instalaría el setup.exe NSIS como una segunda
+   * copia Win32 en paralelo a la de la Store (runFullTrust lo permite).
+   */
+  async isManagedByStore(): Promise<boolean> {
+    if (this.storeCheckPromise === null) {
+      // Wrapper async: convierte un throw síncrono de invoke() (p. ej. fuera
+      // de Tauri) en rechazo de promesa que cae al catch de abajo.
+      this.storeCheckPromise = (async () =>
+        invoke<boolean>('is_running_under_package_identity'))();
+    }
+    try {
+      return await this.storeCheckPromise;
+    } catch (error) {
+      // Fail-open a instalación clásica (comportamiento actual), pero sin
+      // cachear el fallo: un error transitorio de IPC no debe fijar la
+      // respuesta por el resto de la sesión.
+      this.storeCheckPromise = null;
+      logger.warn('[updateService] Package identity check failed — asumo instalación clásica', error);
+      return false;
+    }
+  }
 
   /**
    * Check for available updates
@@ -41,6 +68,17 @@ export class UpdateService {
    * @returns Promise with update information
    */
   async checkForUpdates(force = false): Promise<UpdateInfo> {
+    // Instalación Microsoft Store: la Store gestiona las actualizaciones.
+    // Aplica también a checks forzados (tray/About) — no hay nada que hacer aquí.
+    if (await this.isManagedByStore()) {
+      logger.info('[updateService] Skipping check — instalación Microsoft Store (MSIX), la Store gestiona updates');
+      void fileLogger.info('updater_service', 'skip-store-managed', { force });
+      return {
+        available: false,
+        currentVersion: await getVersion(),
+      };
+    }
+
     // Prevent concurrent update checks
     if (this.updateCheckInProgress) {
       throw new Error('Update check already in progress');

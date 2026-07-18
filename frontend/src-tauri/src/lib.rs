@@ -1414,6 +1414,8 @@ pub fn run() {
             // System settings commands
             #[cfg(target_os = "macos")]
             utils::open_system_settings,
+            // Deteccion de instalacion Microsoft Store (MSIX) — gatea el auto-updater
+            utils::is_running_under_package_identity,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

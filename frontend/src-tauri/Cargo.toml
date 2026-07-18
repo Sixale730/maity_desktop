@@ -212,6 +212,7 @@ windows = { version = "0.58", features = [
     "Win32_Devices_Properties",
     "Win32_System_Threading",   # Para eventos de sincronización
     "Win32_Security",           # Para CreateEventW
+    "Win32_Storage_Packaging_Appx",  # GetCurrentPackageFullName (detección MSIX/Store)
     "implement",                # Para implementar interfaces COM
 ] }
 

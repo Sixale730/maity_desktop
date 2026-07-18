@@ -9,6 +9,10 @@ vi.mock('@tauri-apps/api/app', () => ({
   getVersion: vi.fn(),
 }));
 
+vi.mock('@tauri-apps/api/core', () => ({
+  invoke: vi.fn(),
+}));
+
 vi.mock('@tauri-apps/plugin-process', () => ({
   relaunch: vi.fn(async () => undefined),
 }));
@@ -32,12 +36,14 @@ vi.mock('@/lib/fileLogger', () => ({
 
 import { check } from '@tauri-apps/plugin-updater';
 import { getVersion } from '@tauri-apps/api/app';
+import { invoke } from '@tauri-apps/api/core';
 import { logger } from '@/lib/logger';
 import { fileLogger } from '@/lib/fileLogger';
 import { UpdateService } from './updateService';
 
 const checkMock = vi.mocked(check);
 const getVersionMock = vi.mocked(getVersion);
+const invokeMock = vi.mocked(invoke);
 const loggerMock = vi.mocked(logger);
 const fileLoggerMock = vi.mocked(fileLogger);
 
@@ -55,6 +61,9 @@ describe('UpdateService — logging visible y resultados', () => {
     fileLoggerMock.warn.mockClear();
     fileLoggerMock.error.mockClear();
     getVersionMock.mockResolvedValue('0.2.35');
+    // Default: instalación clásica (NSIS) — sin identidad de paquete MSIX
+    invokeMock.mockReset();
+    invokeMock.mockResolvedValue(false);
   });
 
   it('loguea info al iniciar y al encontrar update disponible', async () => {
@@ -116,6 +125,36 @@ describe('UpdateService — logging visible y resultados', () => {
       'check-failed',
       expect.objectContaining({ message: 'IPC bridge not ready' }),
     );
+  });
+
+  it('salta el check bajo MSIX (Microsoft Store gestiona las updates), incluso con force', async () => {
+    // Contrato del gate de Store: si el updater de GitHub corriera dentro del
+    // MSIX, descargaría el setup.exe NSIS y lo instalaría como segunda copia
+    // Win32 en paralelo (runFullTrust lo permite) — además de violar la
+    // política de la Store de actualizar solo por su canal.
+    invokeMock.mockResolvedValue(true);
+
+    const result = await service.checkForUpdates(true);
+
+    expect(invokeMock).toHaveBeenCalledWith('is_running_under_package_identity');
+    expect(checkMock).not.toHaveBeenCalled();
+    expect(result).toEqual({ available: false, currentVersion: '0.2.35' });
+    expect(fileLoggerMock.info).toHaveBeenCalledWith(
+      'updater_service',
+      'skip-store-managed',
+      expect.objectContaining({ force: true }),
+    );
+  });
+
+  it('fail-open: si la detección de package identity falla, el check procede (instalación clásica)', async () => {
+    invokeMock.mockRejectedValue(new Error('IPC not ready'));
+    checkMock.mockResolvedValue({ available: false });
+
+    const result = await service.checkForUpdates(true);
+
+    expect(checkMock).toHaveBeenCalled();
+    expect(result.available).toBe(false);
+    expect(loggerMock.warn).toHaveBeenCalled();
   });
 
   it('loguea info cuando se salta por wasCheckedRecently', async () => {

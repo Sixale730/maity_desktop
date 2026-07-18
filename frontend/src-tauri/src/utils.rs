@@ -6,6 +6,30 @@ pub fn format_timestamp(seconds: f64) -> String {
     format!("{:02}:{:02}:{:02}", hours, minutes, secs)
 }
 
+/// Detecta si el proceso corre bajo identidad de paquete MSIX (instalado
+/// desde la Microsoft Store o registrado con winapp/Add-AppxPackage).
+/// Bajo MSIX las actualizaciones las gestiona la Store: el auto-updater de
+/// GitHub instalaría una segunda copia Win32 en paralelo a la de la Store.
+#[tauri::command]
+pub fn is_running_under_package_identity() -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        use windows::core::PWSTR;
+        use windows::Win32::Foundation::ERROR_INSUFFICIENT_BUFFER;
+        use windows::Win32::Storage::Packaging::Appx::GetCurrentPackageFullName;
+
+        let mut length: u32 = 0;
+        // Con buffer nulo: proceso empaquetado → ERROR_INSUFFICIENT_BUFFER (122);
+        // proceso sin identidad de paquete → APPMODEL_ERROR_NO_PACKAGE (15700).
+        let rc = unsafe { GetCurrentPackageFullName(&mut length, PWSTR::null()) };
+        rc == ERROR_INSUFFICIENT_BUFFER
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        false
+    }
+}
+
 /// Opens macOS System Settings to a specific privacy preference pane
 #[cfg(target_os = "macos")]
 #[tauri::command]
