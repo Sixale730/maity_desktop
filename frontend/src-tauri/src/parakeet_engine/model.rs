@@ -109,9 +109,15 @@ impl ParakeetModel {
         // Arena desactivada (disable_arena=true): Parakeet recibe chunks de tamaño
         // variable (14k-78k samples) y la BFCArena acumula buffers sin liberar
         // (Microsoft issue #11627). El helper aplica memory_pattern(false) acorde.
-        // El preprocessor mel (nemo128) es chico: lo dejamos en CPU para evitar el
-        // ida/vuelta CPU<->GPU; encoder/decoder_joint usan GPU si esta disponible.
-        let prefer_gpu = model_name != "nemo128";
+        //
+        // CPU para TODAS las sesiones (encoder/decoder incluidos) desde el A/B del
+        // 2026-07-20 (docs/AB_PARAKEET_EP_2026-07-20.md): DirectML corría el int8 a
+        // RTF ~0.95 (p50 1.81s/chunk) vs CPU RTF ~0.39 (p50 0.78s). Al borde del
+        // tiempo real, DirectML producía espirales de lag + drops por backpressure
+        // (auditoría jul-2026, causa #2), sin ganancia de precisión medible sobre
+        // audio idéntico. Además libera la VRAM que Parakeet-DirectML le peleaba al
+        // coach (gemma) en GPUs de 4GB. Moonshine/Canary conservan GPU.
+        let prefer_gpu = false;
 
         let session = crate::audio::transcription::onnx_providers::build_session(
             &model_dir.as_ref().join(&model_filename),
