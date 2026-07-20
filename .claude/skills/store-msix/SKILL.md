@@ -200,6 +200,8 @@ Un usuario puede terminar con NSIS **y** Store a la vez → dos entradas en el m
 
 ## Gotchas (aprendidos 2026-07-16)
 
+- **⚠️ `winapp run` NO registra el staging tal cual** (descubierto 2026-07-20): construye una subcarpeta `<staging>\AppX\` con SOLO lo que el manifest declara (exe + `Assets\` + pri) y **descarta el payload suelto** (ffmpeg.exe, ffprobe.exe, llama-helper.exe, templates\). Síntoma: la app corre y transcribe, pero `recording_saver` truena en cada chunk con `Failed to spawn FFmpeg process: os error 2` (miles de errores) y el coach no arranca (sidecar ausente). **Fix: DESPUÉS de `winapp run`, copiar esos 4 elementos dentro de `<staging>\AppX\`** — funciona en caliente con la app corriendo (CreateProcess busca primero en el dir del exe; el incremental saver retiene el PCM en RAM y drena el backlog al aparecer ffmpeg, sin pérdida de audio). Verificar en logs (`%LOCALAPPDATA%\Maity\logs\`) que los `Saved checkpoint N` fluyan cada 30s sin errores.
+
 - **NO hay redirección de AppData bajo MSIX** (verificado 2026-07-20) — la doc vieja del Desktop Bridge dice que sí; para `Windows.FullTrustApplication` **ya no aplica**. No diseñes migraciones de datos asumiendo aislamiento. Ver sección de convivencia de canales.
 - **`tauri build`, no `cargo build`** — cargo build debug → webview busca `localhost:3118`.
 - **`target` en la raíz del workspace** (`C:\maity_desktop\target`), no en `src-tauri/`.
