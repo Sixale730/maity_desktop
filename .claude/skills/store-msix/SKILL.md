@@ -1,6 +1,6 @@
 ---
 name: store-msix
-description: Empaquetar Maity Desktop como MSIX y publicarlo en la Microsoft Store para quitar el warning de SmartScreen en Windows (empresa MX). Úsalo cuando el usuario quiera generar el .msix, probarlo localmente, o continuar el proceso de publicación en Partner Center.
+description: Empaquetar Maity Desktop como MSIX y publicarlo en la Microsoft Store para quitar el warning de SmartScreen en Windows (empresa MX). Úsalo cuando el usuario quiera generar el .msix, probarlo localmente, continuar el proceso en Partner Center, o resolver dudas de convivencia entre los dos canales de distribución (Store vs GitHub Releases): firma, updates, datos compartidos, doble instalación.
 ---
 
 # Publicar Maity en la Microsoft Store (MSIX)
@@ -43,9 +43,20 @@ Si hay que regenerarlo: `winapp init frontend --use-defaults --setup-sdks none -
 - `<Application ... Executable="maity-desktop.exe" EntryPoint="Windows.FullTrustApplication">`.
 - Capabilities: `<rescap:Capability Name="runFullTrust" />` + `<DeviceCapability Name="microphone" />`.
 
-### 2. Iconos reales (⚠️ PENDIENTE — hoy son placeholder)
+### 2. Iconos reales (✅ HECHO — en `frontend/Assets/`)
 
-`winapp init` genera iconos genéricos en `frontend/Assets/`. Reemplazarlos con el icono real de Maity (base en `frontend/src-tauri/icons/`). Se necesitan los logos escalados que referencia el manifest: `StoreLogo.png`, `MedTile.png` (Square150x150), `AppList.png` (Square44x44), `WideTile.png`.
+`winapp init` genera iconos genéricos. Ya se reemplazaron con los reales de Maity, copiados de `frontend/src-tauri/icons/`:
+
+| Destino en `frontend/Assets/` | Origen en `src-tauri/icons/` |
+|---|---|
+| `StoreLogo.png` | `StoreLogo.png` |
+| `MedTile.png` | `Square150x150Logo.png` |
+| `MedTile.scale-200.png` | `Square310x310Logo.png` |
+| `AppList.png` | `Square44x44Logo.png` |
+| `AppList.scale-200.png` | `Square89x89Logo.png` |
+| `AppList.targetsize-24_altform-unplated.png` | `Square30x30Logo.png` |
+
+⚠️ Si se vuelve a correr `winapp init`, los sobrescribe con placeholders → re-copiar.
 
 ### 3. Compilar con frontend EMBEBIDO (CRÍTICO)
 
@@ -123,8 +134,73 @@ Completar TODAS las secciones (todas en verde para poder Submit):
 
 **Submission notification audience:** dejar default. Finalmente: **Submit for certification** (Microsoft escanea malware + revisa; runFullTrust se aprueba con la justificación de arriba).
 
+✅ **PUBLICADO** — Maity está live en la Store desde jul-2026.
+
+## Después de publicar: convivencia de los dos canales
+
+Maity se distribuye por **dos canales en paralelo** desde un mismo código fuente:
+
+| Canal | Artefacto | Firma | SmartScreen | Updates |
+|---|---|---|---|---|
+| Microsoft Store | `.msix` | **Microsoft** (re-firma al subir) | ✅ Ninguno | Las gestiona la Store |
+| GitHub Releases | `.exe` NSIS | Certum/SimplySign | ⚠️ Sí (hasta ganar reputación) | Tauri updater (minisign) |
+
+### No se puede auto-hospedar el MSIX
+
+Microsoft **no te devuelve** el paquete firmado — esa versión vive solo dentro del canal de la Store. El `.msix` local (generado con `--generate-cert`) usa un **cert autofirmado de dev**: instala en tu máquina, pero Windows lo rechaza en cualquier otra.
+
+Firmarlo con Certum tampoco sirve: (a) un `.msix` bajado del navegador arrastra Mark of the Web → vuelve el SmartScreen, y (b) `Identity/Publisher` debe coincidir EXACTO con el subject del cert que firma, y `CN=C88867C5-...` es el que **asignó Microsoft** → cambiarlo crea **otra identidad de paquete** = app distinta = instalación duplicada.
+
+**Desde maity.cloud, enlazar a la Store:**
+```
+Página de producto:  https://apps.microsoft.com/detail/9NTKJ5X6230F
+Deep link (Windows): ms-windows-store://pdp/?ProductId=9NTKJ5X6230F
+CLI:                 winget install 9NTKJ5X6230F --source msstore
+```
+
+### ✅ Los dos canales COMPARTEN los datos (VERIFICADO 2026-07-20)
+
+**No hay redirección de AppData.** Se comprobó registrando el MSIX con `winapp run` y observando dónde caían las escrituras:
+
+- `%APPDATA%\com.maity.ai\meeting_minutes.sqlite-shm` y `onboarding-status.json` → **escritos por la instancia MSIX**
+- `%LOCALAPPDATA%\Packages\Sixale.Maity_q5b9hqhck1xz0\` → la carpeta se crea, pero **queda sin datos de Maity**
+
+La redirección de AppData era comportamiento del **Desktop Bridge viejo (Win10 1607–1809)**; Microsoft la eliminó para apps `Windows.FullTrustApplication`. Implicaciones:
+
+- ✅ Migrar de descarga directa → Store **conserva** DB, modelos Whisper (~1.5 GB) y config. **NO hace falta escribir un importador de datos.**
+- ⚠️ Pero ambos canales golpean la MISMA SQLite → ver reglas abajo.
+
+### Reglas que impone el DB compartido
+
+1. **Las migraciones deben ser ADITIVAS** mientras convivan los canales. La Store va días atrás (certificación), así que un release de GitHub puede migrar la DB hacia adelante y la versión vieja de la Store la abrirá "desde el futuro". Agregar tablas/columnas: OK. Renombrar o dropear algo que la versión vieja lee: **rompe**.
+2. El crash `SQLx VersionMissing` ya está cubierto por `set_ignore_missing(true)` en `database/manager.rs` (v0.2.51) — pero eso NO te salva de un DROP.
+
+### Auto-updater gateado (ya implementado)
+
+Bajo MSIX el updater de GitHub instalaría una **segunda copia Win32** en paralelo a la de la Store. Gateado con:
+
+- `src-tauri/src/utils.rs` → `is_running_under_package_identity()`. Usa `GetCurrentPackageFullName` con buffer nulo: `ERROR_INSUFFICIENT_BUFFER` (122) = proceso empaquetado; `APPMODEL_ERROR_NO_PACKAGE` (15700) = no.
+- `src/services/updateService.ts` → invoca el comando y salta el check si es MSIX (cubierto en `updateService.test.ts`).
+
+### Riesgo abierto: doble instalación
+
+Un usuario puede terminar con NSIS **y** Store a la vez → dos entradas en el menú inicio, dos autostart, contención del micrófono y del sync queue sobre la misma DB.
+
+- **Mitigación primaria (sin código):** en maity.cloud el botón principal apunta a la Store; el `.exe` de GitHub queda como link secundario ("instalación offline / empresas"). Si casi nadie instala ambas, el problema no existe.
+- **Mitigación en código (solo si hace falta):** al arrancar, detectar la instalación rival y ofrecer desinstalarla — bajo MSIX buscar `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\{...Maity}`; bajo NSIS buscar `%PROGRAMFILES%\WindowsApps\Sixale.Maity_*`.
+- **⚠️ SIN VERIFICAR:** si el lock de single-instance de Tauri cruza el límite de identidad de paquete. Si NO cruza, ambas instancias corren simultáneas. Para probarlo hace falta una máquina con el NSIS instalado + el MSIX registrado (la de dev del 2026-07-20 no tenía NSIS).
+
+### Certum/SimplySign: qué pasa si se deja caducar
+
+- La **Store no se ve afectada** (firma Microsoft).
+- Los binarios **ya publicados siguen confiables**: `src-tauri/scripts/sign-windows.ps1` firma con **sello de tiempo RFC 3161** (`/tr http://time.certum.pl /td SHA256`), y el timestamp congela la validez más allá del vencimiento del certificado.
+- Solo los **builds nuevos** de descarga directa quedarían sin firmar → vuelve el SmartScreen.
+- El **updater NO se rompe**: el `.sig` usa la llave **minisign de Tauri** (`TAURI_SIGNING_PRIVATE_KEY` / `pubkey` en `tauri.conf.json`), totalmente independiente de Certum.
+- Los usuarios de descarga directa **NO migran solos** a la Store (identidad de paquete distinta) → mantener ambos canales hasta que la base se haya movido.
+
 ## Gotchas (aprendidos 2026-07-16)
 
+- **NO hay redirección de AppData bajo MSIX** (verificado 2026-07-20) — la doc vieja del Desktop Bridge dice que sí; para `Windows.FullTrustApplication` **ya no aplica**. No diseñes migraciones de datos asumiendo aislamiento. Ver sección de convivencia de canales.
 - **`tauri build`, no `cargo build`** — cargo build debug → webview busca `localhost:3118`.
 - **`target` en la raíz del workspace** (`C:\maity_desktop\target`), no en `src-tauri/`.
 - `winapp init` deja **iconos placeholder** → reemplazar por el de Maity.
