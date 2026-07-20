@@ -22,6 +22,11 @@ pub struct SpeechSegment {
     pub start_timestamp_ms: f64,
     pub end_timestamp_ms: f64,
     pub confidence: f32,
+    /// `true` si el segmento cerró por silencio (SpeechEnd natural de Silero o
+    /// flush de fin de stream); `false` si fue force-cut a los 2s con la voz
+    /// continuando. Viaja en `AudioChunk.ended_by_silence` hasta el
+    /// ChunkAccumulator del worker (habla continua → acumular 4-6s).
+    pub ended_by_silence: bool,
 }
 
 /// Processes audio in 30ms chunks but returns complete speech segments
@@ -232,6 +237,7 @@ impl ContinuousVadProcessor {
                 start_timestamp_ms: start_ms,
                 end_timestamp_ms: end_ms,
                 confidence: 0.8, // Estimated confidence for forced end
+                ended_by_silence: true, // fin de stream = fin de utterance
             };
 
             self.speech_segments.push_back(segment);
@@ -342,6 +348,7 @@ impl ContinuousVadProcessor {
                             start_timestamp_ms: effective_start_ms,
                             end_timestamp_ms: derived_end_ms,
                             confidence: 0.9, // VAD confidence
+                            ended_by_silence: true, // SpeechEnd natural de Silero
                         };
 
                         debug!("VAD: Completed speech segment: {:.1}ms duration, {} samples",
@@ -380,6 +387,7 @@ impl ContinuousVadProcessor {
                     start_timestamp_ms: start_ms,
                     end_timestamp_ms: end_ms,
                     confidence: 0.85, // segmento force-cut (ligeramente menor que natural 0.9)
+                    ended_by_silence: false, // la voz continúa: corte por tope de 2s
                 };
 
                 debug!(
@@ -542,6 +550,7 @@ mod tests {
             start_timestamp_ms: 100.0,
             end_timestamp_ms: 200.0,
             confidence: 0.9,
+            ended_by_silence: true,
         };
         assert_eq!(segment.samples.len(), 3);
         assert!((segment.end_timestamp_ms - segment.start_timestamp_ms - 100.0).abs() < 0.001);
@@ -634,6 +643,13 @@ mod tests {
             segment.samples.len(),
             32_500,
             "force-cut debe emitir TODOS los samples acumulados, no truncarlos"
+        );
+
+        // 4b. El force-cut marca ended_by_silence=false: la voz continúa y el
+        //     ChunkAccumulator debe seguir acumulando hacia 4-6s, no flushear.
+        assert!(
+            !segment.ended_by_silence,
+            "force-cut debe marcar ended_by_silence=false (habla continua)"
         );
 
         // 5. Estado post force-cut:

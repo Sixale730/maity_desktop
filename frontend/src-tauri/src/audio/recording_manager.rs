@@ -631,6 +631,7 @@ impl RecordingManager {
             timestamp: 0.0,
             chunk_id: u64::MAX - 100,
             device_type: RecDT::Microphone,
+            ended_by_silence: true, // señal de device-switch: no aplica
         };
         match self.state.send_audio_chunk(flush_chunk) {
             Ok(_) => info!("📤 Sent device-switch flush signal to pipeline"),

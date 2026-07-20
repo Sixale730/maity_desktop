@@ -116,6 +116,9 @@ struct ChunkAccumulator {
     last_add_time: std::time::Instant,
     /// Flush timeout: if no new audio arrives within this duration, flush what we have
     flush_timeout: std::time::Duration,
+    /// Flag del último sub-chunk agregado: `true` = el VAD cerró por silencio.
+    /// Se propaga al chunk fusionado que sale del accumulator.
+    last_ended_by_silence: bool,
 }
 
 impl ChunkAccumulator {
@@ -130,6 +133,7 @@ impl ChunkAccumulator {
             max_duration_secs: max_duration,
             last_add_time: std::time::Instant::now(),
             flush_timeout: std::time::Duration::from_millis(flush_timeout_ms),
+            last_ended_by_silence: true,
         }
     }
 
@@ -143,10 +147,19 @@ impl ChunkAccumulator {
 
         self.buffer.extend_from_slice(&chunk.data);
         self.last_add_time = std::time::Instant::now();
+        self.last_ended_by_silence = chunk.ended_by_silence;
 
         let duration = self.buffer.len() as f64 / self.sample_rate as f64;
 
-        if duration >= self.max_duration_secs || duration >= self.min_duration_secs {
+        // Flush cuando: alcanzamos el objetivo (min), tope duro (max), o el VAD
+        // marcó fin de utterance por silencio (no viene más audio de esta frase
+        // — esperar solo agrega latencia). El piso de 0.5s en el caso silencio
+        // evita despachar fragmentos diminutos a Parakeet: se retienen y se
+        // fusionan con la siguiente utterance (mismo criterio que check_timeout).
+        if duration >= self.max_duration_secs
+            || duration >= self.min_duration_secs
+            || (chunk.ended_by_silence && duration >= 0.5)
+        {
             return self.flush();
         }
 
@@ -179,7 +192,9 @@ impl ChunkAccumulator {
             timestamp: self.first_timestamp,
             chunk_id,
             device_type: self.device_type,
+            ended_by_silence: self.last_ended_by_silence,
         };
+        self.last_ended_by_silence = true;
 
         Some(flushed)
     }
@@ -613,11 +628,17 @@ pub fn start_transcription_task<R: Runtime>(
         // Parakeet v3 autodetecta idioma POR CHUNK: con ~2s de audio el LID confunde
         // espanol con ingles (auditoria jul-2026: 16-44% de chunks EN). Chunks de ~4-6s
         // le dan contexto suficiente y ademas reducen inferencias/min (menos overhead).
-        // El flush por pausa (>=400ms) mantiene la latencia percibida en dialogo normal;
-        // solo el habla continua espera ~4s por su texto. Whisper/Moonshine conservan
-        // el tuning corto original (no dependen de LID por chunk).
+        //
+        // El fin de utterance lo marca el flag `ended_by_silence` del VAD (flush
+        // inmediato en pausas reales, 0ms de latencia extra). El flush_timeout es
+        // SOLO red de seguridad y DEBE superar la cadencia de llegada de las
+        // ventanas force-cut de 2s del VAD (~2s de reloj en habla continua): con
+        // 400ms el timeout ganaba siempre la carrera y el accumulator despachaba
+        // 2.0s eternamente — el tuning 4-6s quedo inerte en la 0.2.53 original
+        // (ver docs/AB_PARAKEET_EP_2026-07-20.md §Pendiente). Whisper/Moonshine
+        // conservan el tuning corto original (no dependen de LID por chunk).
         let (min_dur, max_dur, flush_timeout) = match &transcription_engine {
-            TranscriptionEngine::Parakeet(_) => (4.0_f64, 6.0_f64, 400_u64),
+            TranscriptionEngine::Parakeet(_) => (4.0_f64, 6.0_f64, 2500_u64),
             _ => (0.5_f64, 2.0_f64, 300_u64),
         };
         info!("[WORKER] ChunkAccumulator real-time: min={:.1}s, max={:.1}s, flush={}ms (tier={:?} – informativo)",

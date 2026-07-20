@@ -644,6 +644,7 @@ impl AudioCapture {
             timestamp,
             chunk_id,
             device_type: self.device_type.clone(),
+            ended_by_silence: true, // pre-VAD: neutro (el flag real lo pone el VAD)
         };
 
         // NOTE: Raw audio is NOT sent to recording saver to prevent echo
@@ -942,6 +943,7 @@ impl AudioPipeline {
                                                     chunk_audio_duration,
                                                     segment.samples.len(),
                                                 ),
+                                                ended_by_silence: segment.ended_by_silence,
                                                 data: segment.samples,
                                                 chunk_id: self.chunk_id_counter,
                                                 device_type: DeviceType::Microphone,  // STRUCTURAL: always mic
@@ -988,6 +990,7 @@ impl AudioPipeline {
                                                         chunk_audio_duration,
                                                         segment.samples.len(),
                                                     ),
+                                                    ended_by_silence: segment.ended_by_silence,
                                                     data: segment.samples,
                                                     chunk_id: self.chunk_id_counter,
                                                     device_type: DeviceType::System,
@@ -1032,6 +1035,7 @@ impl AudioPipeline {
                                                     chunk_audio_duration,
                                                     segment.samples.len(),
                                                 ),
+                                                ended_by_silence: segment.ended_by_silence,
                                                 data: segment.samples,
                                                 chunk_id: self.chunk_id_counter,
                                                 device_type: DeviceType::System,  // STRUCTURAL: always system
@@ -1085,6 +1089,7 @@ impl AudioPipeline {
                                     timestamp: chunk_timestamp,
                                     chunk_id: self.chunk_id_counter,
                                     device_type: DeviceType::Mixed,
+                                    ended_by_silence: true, // grabación Mixed: no aplica
                                 };
                                 let _ = sender.send(recording_chunk);
                             }
@@ -1158,6 +1163,7 @@ impl AudioPipeline {
                         let transcription_chunk = AudioChunk {
                             sample_rate: 16000,
                             timestamp: (now_wallclock - seg_dur_sec).max(0.0),
+                            ended_by_silence: segment.ended_by_silence,
                             data: segment.samples,
                             chunk_id: self.chunk_id_counter,
                             device_type: DeviceType::Microphone,
@@ -1190,6 +1196,7 @@ impl AudioPipeline {
                         let transcription_chunk = AudioChunk {
                             sample_rate: 16000,
                             timestamp: (now_wallclock - seg_dur_sec).max(0.0),
+                            ended_by_silence: segment.ended_by_silence,
                             data: segment.samples,
                             chunk_id: self.chunk_id_counter,
                             device_type: DeviceType::System,
@@ -1321,6 +1328,7 @@ impl AudioPipelineManager {
                 timestamp: 0.0,
                 chunk_id: u64::MAX, // Special ID to indicate flush
                 device_type: super::recording_state::DeviceType::Microphone,
+                ended_by_silence: true, // señal de flush: no aplica
             };
 
             if let Err(e) = sender.send(flush_chunk) {
@@ -1341,6 +1349,7 @@ impl AudioPipelineManager {
                         timestamp: 0.0,
                         chunk_id: u64::MAX - (i as u64),
                         device_type: super::recording_state::DeviceType::Microphone,
+                        ended_by_silence: true, // señal de flush: no aplica
                     };
                     let _ = sender.send(additional_flush);
                 }

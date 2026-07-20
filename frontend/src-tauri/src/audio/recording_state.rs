@@ -23,6 +23,13 @@ pub struct AudioChunk {
     pub timestamp: f64,
     pub chunk_id: u64,
     pub device_type: DeviceType,
+    /// `true` si el VAD cerró este segmento por silencio (fin natural de la
+    /// utterance); `false` si fue force-cut a los 2s con la voz continuando.
+    /// El ChunkAccumulator del worker usa esto para decidir flush inmediato
+    /// (fin de frase) vs seguir acumulando hasta 4-6s (habla continua) — ver
+    /// docs/AB_PARAKEET_EP_2026-07-20.md §Pendiente. En chunks que no vienen
+    /// del VAD (grabación Mixed, señales de flush) va en `true` (neutro).
+    pub ended_by_silence: bool,
 }
 
 /// Processed audio chunk (post-VAD) for recording

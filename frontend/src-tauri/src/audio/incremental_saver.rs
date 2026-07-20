@@ -450,6 +450,7 @@ mod tests {
                 timestamp: i as f64 * 0.5,
                 chunk_id: i,
                 device_type: DeviceType::Mixed,
+                ended_by_silence: true,
             };
             saver.add_chunk(chunk).unwrap();
         }
