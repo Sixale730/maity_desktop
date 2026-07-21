@@ -1,27 +1,147 @@
 /**
- * Stub de `@maity/shared` — el package monorepo que la web usa. El desktop no
+ * Barrel de `@maity/shared` — el package monorepo que la web usa. El desktop no
  * lo tiene, así que re-exportamos los símbolos que los componentes del web
  * importan desde aquí.
  *
  * Vía path alias en tsconfig: `"@maity/shared": ["./src/shared/maity-shared.ts"]`.
+ *
+ * REGLA: re-exports EXPLÍCITOS (no export *) para evitar colisiones de nombres.
  */
 'use client'
 
-import { useMemo } from 'react'
 import { supabase } from '@/lib/supabase'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { BillingService } from './maity-shared/domain/billing/billing.service'
+import { buildHandoffUrl, openExternalUrl } from '@/lib/planLinks'
+import type { CheckoutInput, EffectivePlan } from './maity-shared/domain/billing/billing.types'
 
 // Asume que el desktop tiene su propio cliente supabase en `@/lib/supabase`.
 export { supabase }
 
+// ============================================================
+// Auth service
+// ============================================================
+export { AuthService } from './maity-shared/domain/auth/auth.service'
+export type {
+  UserRole,
+  UserPhase,
+  UserStatus,
+  PostLoginOptions,
+  PostLoginResult,
+} from './maity-shared/domain/auth/auth.types'
+
+// ============================================================
+// Organizations / invite code
+// ============================================================
+export { InviteCodeService } from './maity-shared/domain/organizations/invite-code.service'
+export { useRedeemInviteCode } from './maity-shared/domain/organizations/hooks/useRedeemInviteCode'
+
+// ============================================================
+// Avatar service + types + hooks
+// ============================================================
+export { AvatarService } from './maity-shared/domain/avatar/avatar.service'
+export {
+  DEFAULT_AVATAR_CONFIG,
+  SKIN_COLORS,
+  HAIR_COLORS,
+  OUTFIT_PRESETS,
+  PRESET_CHARACTERS,
+  CHARACTER_SOURCES,
+  ACCESSORY_OPTIONS,
+  AVATAR_SIZE_CONFIG,
+} from './maity-shared/domain/avatar/avatar.types'
+export type {
+  AvatarConfiguration,
+  AvatarSize,
+  CharacterPreset,
+  CharacterSource,
+  HeadType,
+  BodyType,
+  OutfitPreset,
+  AccessoryCode,
+  UpdateAvatarInput,
+} from './maity-shared/domain/avatar/avatar.types'
+export { useAvatarWithDefault } from './maity-shared/domain/avatar/hooks/useAvatar'
+export type { AttachmentPoint } from './maity-shared/domain/avatar/attachment-points'
+export { getAttachmentPoints } from './maity-shared/domain/avatar/attachment-points'
+export type { ItemCode, ItemCategory } from './maity-shared/domain/avatar/items.types'
+export { ITEM_CATEGORIES, getItemsByCategory } from './maity-shared/domain/avatar/items.types'
+
+// ============================================================
+// Registration types + service
+// ============================================================
+export {
+  LikertQuestions,
+  ChoiceQuestions,
+  ConsentQuestion,
+  PersonalInfoQuestions,
+  CompetencyColors,
+  getAllFormSteps,
+} from './maity-shared/domain/registration/registration.types'
+export { CompetencyArea } from './maity-shared/domain/registration/registration.types'
+export type {
+  LikertValue,
+  LikertQuestion,
+  ChoiceQuestion,
+  ConsentQuestion as ConsentQuestionType,
+  FormStep,
+  FormStepType,
+  RegistrationFormData,
+  FormResponse,
+} from './maity-shared/domain/registration/registration.types'
+export { RegistrationFormService } from './maity-shared/domain/registration/registration.service'
+
+// ============================================================
+// Billing service + types
+// ============================================================
+export { BillingService } from './maity-shared/domain/billing/billing.service'
+export type {
+  EffectivePlan,
+  QuotaCheckResult,
+  QuotaStatus,
+  CheckoutInput,
+} from './maity-shared/domain/billing/billing.types'
+
 /**
- * Stub de `useAvatarWithDefault` — la web devuelve un objeto config de voxel
- * avatar. El desktop no usa voxel avatars, así que devolvemos un objeto
- * estable que LazyVoxelAvatar ignora.
+ * useMyEffectivePlan — React Query hook sobre BillingService.getMyEffectivePlan
  */
-export function useAvatarWithDefault(_userId?: string) {
-  const avatar = useMemo(() => ({}), [])
-  return { avatar }
+export function useMyEffectivePlan() {
+  return useQuery<EffectivePlan | null>({
+    queryKey: ['billing', 'my-plan'],
+    queryFn: () => BillingService.getMyEffectivePlan(),
+    staleTime: 60 * 1000,
+  })
 }
+
+/**
+ * useCreateCheckoutSession — versión desktop.
+ * Ignora apiUrl (parámetro vacío desde env.ts); en su lugar construye la URL
+ * de handoff a maity.cloud con los tokens de sesión actuales.
+ * Devuelve { url } igual que la versión web para que PlanSelection.tsx
+ * funcione sin cambios (excepto el único patch documentado).
+ */
+export function useCreateCheckoutSession(_apiUrl: string) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (_input: CheckoutInput) => {
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!session) throw new Error('Sin sesión activa — inicia sesión para continuar')
+      const url = buildHandoffUrl(session, '/billing/plans?checkout=pro')
+      return { url, session_id: '' }
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['billing', 'my-plan'] })
+    },
+  })
+}
+
+// ============================================================
+// Utilities
+// ============================================================
+export { cn } from './maity-shared/utils/cn'
+
+// Re-export openExternalUrl para que PlanSelection pueda usarlo vía patch
+export { openExternalUrl }
 
 /**
  * Stub mínimo de `PDFService` — la web usa esto para exportar el chat como PDF.
