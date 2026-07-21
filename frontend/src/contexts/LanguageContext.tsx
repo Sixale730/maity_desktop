@@ -248,6 +248,9 @@ const STRINGS: Record<string, string> = {
   'chat.starter_decision_seed': 'Necesito decidir si ',
   'chat.starter_rehearsal_seed': 'Quiero ensayar cómo ',
   'chat.starter_reflection_seed': 'Quiero procesar ',
+
+  // === Registro / onboarding ===
+  'registration.finish_preview': 'Vista previa de tu perfil',
 }
 
 function interpolate(s: string, params?: Record<string, string | number>): string {

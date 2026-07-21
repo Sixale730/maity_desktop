@@ -26,6 +26,8 @@ export interface UserProfile {
 
 interface UserContextValue {
   userProfile: UserProfile | null
+  loading: boolean
+  refreshUser: () => void
 }
 
 /**
@@ -58,8 +60,12 @@ function toUserProfile(u: MaityUser | null): UserProfile | null {
 }
 
 export function useUser(): UserContextValue {
-  const { maityUser } = useAuth()
-  return { userProfile: toUserProfile(maityUser) }
+  const { maityUser, isLoading, retryFetchMaityUser } = useAuth()
+  return {
+    userProfile: toUserProfile(maityUser),
+    loading: isLoading,
+    refreshUser: retryFetchMaityUser,
+  }
 }
 
 // Si algún componente lo necesita como provider explícito, este es no-op:
