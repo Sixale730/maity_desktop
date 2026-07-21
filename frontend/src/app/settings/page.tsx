@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useLayoutEffect, useRef, useMemo } from 'react';
-import { ArrowLeft, Settings2, Mic, Database as DatabaseIcon, SparkleIcon, LayoutDashboard } from 'lucide-react';
+import { ArrowLeft, Settings2, Mic, Database as DatabaseIcon, SparkleIcon, LayoutDashboard, CreditCard } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { invoke } from '@tauri-apps/api/core';
 import { motion } from 'framer-motion';
@@ -10,6 +10,7 @@ import type { TranscriptModelProps } from '@/types/transcript';
 import { RecordingSettings } from '@/components/recording/RecordingSettings';
 import { ScheduledRecordingSettings } from '@/components/scheduled-recording/ScheduledRecordingSettings';
 import { PreferenceSettings } from '@/components/settings/PreferenceSettings';
+import { MyPlanSettings } from '@/components/settings/MyPlanSettings';
 import { SummaryModelSettings } from '@/components/models/SummaryModelSettings';
 import { PipelineSelector } from '@/components/coach/PipelineSelector';
 import { useConfig } from '@/contexts/ConfigContext';
@@ -21,6 +22,7 @@ import { logger } from '@/lib/logger';
 const TABS = [
   { value: 'general', label: 'General', icon: Settings2 },
   { value: 'recording', label: 'Grabaciones', icon: Mic },
+  { value: 'plan', label: 'Mi plan', icon: CreditCard },
   { value: 'Transcriptionmodels', label: 'Transcripción', icon: DatabaseIcon },
   { value: 'summaryModels', label: 'Resumen', icon: SparkleIcon },
   { value: 'pipeline', label: 'Pipeline', icon: SparkleIcon }
@@ -32,7 +34,7 @@ export default function SettingsPage() {
   const { isAdmin } = useUserRole();
 
   const visibleTabs = useMemo(() =>
-    isAdmin ? TABS : TABS.filter(t => t.value === 'general' || t.value === 'recording'),
+    isAdmin ? TABS : TABS.filter(t => t.value === 'general' || t.value === 'recording' || t.value === 'plan'),
     [isAdmin]
   );
 
@@ -60,6 +62,15 @@ export default function SettingsPage() {
     };
     loadTranscriptConfig();
   }, [setTranscriptModelConfig]);
+
+  // Deep-link ?tab=plan (usado por el PlanIndicator del sidebar). Se lee de
+  // window.location en mount para no requerir Suspense de useSearchParams.
+  useEffect(() => {
+    const tab = new URLSearchParams(window.location.search).get('tab');
+    if (tab && TABS.some(t => t.value === tab)) {
+      setActiveTab(tab);
+    }
+  }, []);
 
   // Reset activeTab if it's not in visibleTabs
   useEffect(() => {
@@ -152,6 +163,9 @@ export default function SettingsPage() {
 
             <TabsContent value="general">
               <PreferenceSettings />
+            </TabsContent>
+            <TabsContent value="plan">
+              <MyPlanSettings />
             </TabsContent>
             <TabsContent value="recording">
               <div className="space-y-10">
