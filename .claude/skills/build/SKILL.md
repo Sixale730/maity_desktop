@@ -153,13 +153,21 @@ Aplicar bump semver a la version actual:
 - `minor`: incrementar Y, resetear Z a 0
 - `major`: incrementar X, resetear Y y Z a 0
 
-### Paso 4: Actualizar version en 3 archivos
+### Paso 4: Actualizar version en 4 archivos
 
 Usar Edit tool para actualizar la version en:
 
 1. **`frontend/src-tauri/tauri.conf.json`**: Cambiar `"version": "OLD"` → `"version": "NEW"`
 2. **`frontend/package.json`**: Cambiar `"version": "OLD"` → `"version": "NEW"`
 3. **`frontend/src-tauri/Cargo.toml`**: Cambiar `version = "OLD"` → `version = "NEW"`
+4. **`frontend/Package.appxmanifest`** (manifest MSIX de la Microsoft Store): Cambiar `Version="OLD.0"` → `Version="NEW.0"`
+
+**Sobre el archivo 4 (MSIX) — leer antes de editarlo:**
+
+- **Formato de 4 partes.** MSIX exige `X.Y.Z.R`; el semver de Tauri tiene 3. Sufijar siempre `.0` (0.2.53 → `Version="0.2.53.0"`). El 4º componente se reserva para re-submissions a la Store con el mismo codigo (raro); el bump normal solo mueve X.Y.Z.
+- **⚠️ NO buscar por `Version="` a secas.** El manifest tiene DOS matches: `Identity/@Version` (~linea 17, el que hay que cambiar) y `TargetDeviceFamily` (~linea 26) con `MinVersion="10.0.18362.0" MaxVersionTested="10.0.26200.0"` — ambos contienen `Version=` como substring. Tocar esos rompe la compatibilidad declarada del paquete. **Anclar el Edit al string completo de la version vieja** (`Version="0.2.52.0"`), que es unico en el archivo.
+- **Por que importa aunque este release no vaya a la Store:** la Store rechaza cualquier `.msix` cuya version no sea ESTRICTAMENTE mayor que la ya publicada. Si el manifest se queda atras, el error aparece hasta el momento de subir el paquete en Partner Center — tarde y fuera de contexto. Mantenerlo sincronizado en cada bump cuesta un Edit.
+- El paquete MSIX se genera aparte con la skill `/store-msix` (pipeline independiente: `tauri build --no-bundle` → staging → `winapp package`). Este paso 4 **solo** mantiene la version sincronizada; NO genera ni sube el `.msix`.
 
 ### Paso 5: Cargar credenciales de firma
 
@@ -295,10 +303,10 @@ A diferencia de Windows (donde `tauri-auto.js` regenera la firma despues de la f
 
 ### Paso 9: Commit
 
-Crear commit con los 3 archivos de version actualizados:
+Crear commit con los 4 archivos de version actualizados:
 
 ```bash
-cd "<repo>" && git add frontend/src-tauri/tauri.conf.json frontend/package.json frontend/src-tauri/Cargo.toml
+cd "<repo>" && git add frontend/src-tauri/tauri.conf.json frontend/package.json frontend/src-tauri/Cargo.toml frontend/Package.appxmanifest
 ```
 
 ```bash

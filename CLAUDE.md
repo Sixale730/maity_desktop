@@ -21,7 +21,12 @@ Este archivo proporciona orientacion a Claude Code al trabajar con este reposito
 ## Skills (Slash Commands)
 
 ### `/build [patch|minor|major]`
-Build firmado de produccion con bump automatico de version semver. Lee signing keys de `frontend/.env`, actualiza la version en 3 archivos (`tauri.conf.json`, `package.json`, `Cargo.toml`), y ejecuta `pnpm run tauri:build` con las credenciales de firma. Definicion: `.claude/skills/build/SKILL.md`
+Build firmado de produccion con bump automatico de version semver. Lee signing keys de `frontend/.env`, actualiza la version en 4 archivos (`tauri.conf.json`, `package.json`, `Cargo.toml` y `Package.appxmanifest` — este ultimo en formato MSIX de 4 partes `X.Y.Z.0`), y ejecuta `pnpm run tauri:build` con las credenciales de firma. Definicion: `.claude/skills/build/SKILL.md`
+
+### `/store-msix`
+Empaqueta y publica Maity en la Microsoft Store (canal paralelo a GitHub Releases, sin SmartScreen). Pipeline **independiente** del build normal: `tauri build --no-bundle` → staging del payload → `winapp package` → Partner Center. No usa Certum ni el updater de Tauri (Microsoft re-firma el `.msix`; el updater se auto-desactiva bajo identidad de paquete). Definicion: `.claude/skills/store-msix/SKILL.md`
+
+> **Consecuencia de los dos canales:** ambos escriben la MISMA SQLite en `%APPDATA%\com.maity.ai` (no hay redireccion de AppData bajo MSIX). Como la Store va dias atras por certificacion, **las migraciones deben ser ADITIVAS** mientras convivan: agregar tablas/columnas OK; un `DROP` o `RENAME` de algo que lee la version vieja rompe a los usuarios de Store. El build de verificacion NO detecta esto — compila verde.
 
 ## Comandos Esenciales de Desarrollo
 
