@@ -12,7 +12,8 @@ interface AnalysisStatusBannerProps {
  * the rest of the page already shows the analysis itself in those cases.
  */
 export function AnalysisStatusBanner({ phase, onRetry }: AnalysisStatusBannerProps) {
-  if (phase === 'idle' || phase === 'completed' || phase === 'skipped') return null;
+  // quota_skipped también silencioso: la card del detalle lleva el mensaje y el CTA.
+  if (phase === 'idle' || phase === 'completed' || phase === 'skipped' || phase === 'quota_skipped') return null;
 
   if (phase === 'polling') {
     return (

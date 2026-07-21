@@ -7,6 +7,7 @@ export type AnalysisPhase =
   | 'completed'
   | 'failed'
   | 'skipped'
+  | 'quota_skipped'
   | 'stalled';
 
 /**
@@ -49,6 +50,9 @@ export function derivePhase(conv: OmiConversation, nowMs: number = Date.now()): 
   // Backend-assigned terminal states (only after data check).
   if (status === 'completed') return 'completed';
   if (status === 'skipped') return 'skipped';
+  // Cuota del plan agotada: terminal. Sin esta rama la fila caería al fallback
+  // por edad → 'stalled' → auto-retries + watchdog reload en loop.
+  if (status === 'quota_skipped') return 'quota_skipped';
   if (status === 'failed') return 'failed';
 
   // status='processing' with heartbeat: updated_at is the liveness signal.
@@ -78,5 +82,10 @@ export function derivePhase(conv: OmiConversation, nowMs: number = Date.now()): 
 
 /** Convenience: terminal phases never transition again on their own. */
 export function isTerminalPhase(phase: AnalysisPhase): boolean {
-  return phase === 'completed' || phase === 'failed' || phase === 'skipped';
+  return (
+    phase === 'completed' ||
+    phase === 'failed' ||
+    phase === 'skipped' ||
+    phase === 'quota_skipped'
+  );
 }

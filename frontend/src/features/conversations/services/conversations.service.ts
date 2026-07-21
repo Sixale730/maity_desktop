@@ -535,7 +535,7 @@ export interface OmiConversation {
   communication_feedback_v4: CommunicationFeedbackV4 | AnalysisSkipped | null;
   meeting_minutes_data: AnyMeetingMinutesData | null;
   /** Explicit analysis status field — source of truth for polling */
-  analysis_status?: 'pending' | 'processing' | 'completed' | 'failed' | 'skipped' | null;
+  analysis_status?: 'pending' | 'processing' | 'completed' | 'failed' | 'skipped' | 'quota_skipped' | null;
   /** Last DB write timestamp. Backend writes a heartbeat every 30s during async analysis,
    *  so when status='processing' this acts as a liveness signal: stale updated_at = stuck. */
   updated_at?: string | null;

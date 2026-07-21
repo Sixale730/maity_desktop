@@ -534,6 +534,27 @@ export function ConversationDetail({ conversation: initialConversation, onClose,
             </div>
               );
             })()
+          ) : phase === 'quota_skipped' ? (
+            /* Cuota del plan agotada: la minuta existe, solo falta el análisis V4.
+             * Sin botón Reintentar — re-disparar solo volvería a rechazarse. */
+            <Card>
+              <CardContent className="p-12 text-center">
+                <Sparkles className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
+                <h3 className="text-lg font-medium mb-2 text-foreground">Análisis no incluido hoy en tu plan</h3>
+                <p className="text-muted-foreground">
+                  Alcanzaste tu límite diario de análisis. La minuta de esta reunión está
+                  disponible en su pestaña — el análisis detallado vuelve mañana o con Maity Pro.
+                </p>
+                <Button
+                  className="mt-4"
+                  onClick={() => {
+                    void invoke('open_external_url', { url: PRICING_URL });
+                  }}
+                >
+                  Ver planes
+                </Button>
+              </CardContent>
+            </Card>
           ) : analysisSkipped ? (
             /* Analysis was skipped due to insufficient data */
             <Card>
