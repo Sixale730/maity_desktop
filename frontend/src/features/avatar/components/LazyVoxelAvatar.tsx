@@ -1,60 +1,50 @@
 /**
- * Shim de `@/features/avatar/components/LazyVoxelAvatar`. El desktop no tiene
- * el sistema de voxel avatars. Renderizamos un círculo con iniciales — usado
- * por SidebarFooterV5 para el botón del usuario en el footer del sidebar.
+ * LazyVoxelAvatar Component
  *
- * Va en `src/features/avatar/components/LazyVoxelAvatar.tsx`.
+ * Lazy-loaded wrapper for VoxelAvatar that defers Three.js loading.
+ * Use this in layout components (sidebar, navigation) to keep
+ * vendor-3d (~904 KB) out of the critical rendering path.
  */
-'use client'
 
-import { useUser } from '@/contexts/UserContext'
+import { lazy, Suspense } from 'react';
+import type { AvatarConfiguration, AvatarSize } from '@maity/shared';
+
+const VoxelAvatar = lazy(() =>
+  import('./VoxelAvatar').then((m) => ({ default: m.VoxelAvatar }))
+);
+
+const SIZE_MAP: Record<AvatarSize, number> = {
+  xs: 32,
+  sm: 48,
+  md: 80,
+  lg: 150,
+  xl: 300,
+};
 
 interface LazyVoxelAvatarProps {
-  config?: unknown   // ignorado — el desktop no maneja config de voxel
-  size?: 'xs' | 'sm' | 'md' | 'lg'
-  className?: string
+  config: Partial<AvatarConfiguration>;
+  size?: AvatarSize;
+  className?: string;
+  enableRotation?: boolean;
+  autoRotate?: boolean;
+  enableZoom?: boolean;
+  showPedestal?: boolean;
+  animate?: boolean;
 }
 
-const SIZE_PX: Record<NonNullable<LazyVoxelAvatarProps['size']>, number> = {
-  xs: 24,
-  sm: 32,
-  md: 40,
-  lg: 56,
-}
+export function LazyVoxelAvatar({ size = 'md', className = '', ...props }: LazyVoxelAvatarProps) {
+  const dim = SIZE_MAP[size];
 
-function getInitials(name?: string, email?: string): string {
-  if (name) {
-    const parts = name.trim().split(/\s+/)
-    if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase()
-    if (parts[0]) return parts[0].slice(0, 2).toUpperCase()
-  }
-  if (email) return email.slice(0, 2).toUpperCase()
-  return '··'
-}
-
-export function LazyVoxelAvatar({ size = 'sm', className }: LazyVoxelAvatarProps) {
-  const { userProfile } = useUser()
-  const px = SIZE_PX[size]
-  const initials = getInitials(userProfile?.name, userProfile?.email)
   return (
-    <div
-      className={className}
-      style={{
-        width: px,
-        height: px,
-        borderRadius: 6,
-        background: 'linear-gradient(135deg,#485df4,#ff0050)',
-        color: '#fff',
-        display: 'grid',
-        placeItems: 'center',
-        fontSize: Math.round(px * 0.38),
-        fontWeight: 600,
-        flexShrink: 0,
-      }}
+    <Suspense
+      fallback={
+        <div
+          className={`bg-muted rounded-lg animate-pulse ${className}`}
+          style={{ width: dim, height: dim }}
+        />
+      }
     >
-      {initials}
-    </div>
-  )
+      <VoxelAvatar size={size} className={className} {...props} />
+    </Suspense>
+  );
 }
-
-export default LazyVoxelAvatar
