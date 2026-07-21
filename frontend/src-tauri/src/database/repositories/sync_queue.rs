@@ -124,6 +124,35 @@ impl SyncQueueRepository {
         Ok(result.rows_affected() > 0)
     }
 
+    /// Defer an in-progress job back to 'pending' with a future next_retry_at,
+    /// WITHOUT incrementing attempt_count. Used when the cloud rejects by plan
+    /// quota (error `quota:`): it is not a failure, the job must simply wait
+    /// until the next quota period. next_retry_at must be SQLite format
+    /// 'YYYY-MM-DD HH:MM:SS' (UTC) — get_ready_jobs compares strings against
+    /// datetime('now'), so ISO-8601 with 'T' would sort after same-day times.
+    pub async fn defer_job(
+        pool: &SqlitePool,
+        id: i64,
+        next_retry_at: &str,
+        last_error: &str,
+    ) -> Result<bool, SqlxError> {
+        let result = sqlx::query(
+            "UPDATE sync_queue SET
+               status = 'pending',
+               next_retry_at = ?,
+               last_error = ?,
+               updated_at = datetime('now')
+             WHERE id = ? AND status = 'in_progress'",
+        )
+        .bind(next_retry_at)
+        .bind(last_error)
+        .bind(id)
+        .execute(pool)
+        .await?;
+
+        Ok(result.rows_affected() > 0)
+    }
+
     /// Get sync status summary for a specific meeting
     pub async fn get_meeting_sync_status(
         pool: &SqlitePool,
@@ -460,6 +489,68 @@ mod tests {
         assert_eq!(job.attempt_count, 2);
         assert_eq!(job.status, "failed");
         assert_eq!(job.next_retry_at, None);
+    }
+
+    #[tokio::test]
+    async fn defer_job_returns_to_pending_without_attempt_increment() {
+        let pool = setup_pool().await;
+        let id = SyncQueueRepository::enqueue(&pool, "finalize_conversation", "m1", "{}", 3, None, TEST_USER)
+            .await
+            .unwrap();
+        SyncQueueRepository::claim_job(&pool, id).await.unwrap();
+
+        let deferred = SyncQueueRepository::defer_job(&pool, id, "2027-01-01 00:00:00", "quota:{}")
+            .await
+            .unwrap();
+        assert!(deferred);
+
+        let job = SyncQueueRepository::get_job_by_id(&pool, id).await.unwrap().unwrap();
+        assert_eq!(job.status, "pending");
+        assert_eq!(job.attempt_count, 0);
+        assert_eq!(job.next_retry_at.as_deref(), Some("2027-01-01 00:00:00"));
+        assert_eq!(job.last_error.as_deref(), Some("quota:{}"));
+    }
+
+    #[tokio::test]
+    async fn defer_job_only_applies_to_in_progress() {
+        let pool = setup_pool().await;
+        let id = SyncQueueRepository::enqueue(&pool, "finalize_conversation", "m1", "{}", 3, None, TEST_USER)
+            .await
+            .unwrap();
+
+        // Job sigue 'pending' (nunca claimed) → defer no aplica
+        let deferred = SyncQueueRepository::defer_job(&pool, id, "2027-01-01 00:00:00", "quota:{}")
+            .await
+            .unwrap();
+        assert!(!deferred);
+
+        let job = SyncQueueRepository::get_job_by_id(&pool, id).await.unwrap().unwrap();
+        assert_eq!(job.status, "pending");
+        assert_eq!(job.next_retry_at, None);
+    }
+
+    #[tokio::test]
+    async fn deferred_job_excluded_from_ready_until_retry_time() {
+        let pool = setup_pool().await;
+        let id = SyncQueueRepository::enqueue(&pool, "finalize_conversation", "m1", "{}", 3, None, TEST_USER)
+            .await
+            .unwrap();
+
+        SyncQueueRepository::claim_job(&pool, id).await.unwrap();
+        SyncQueueRepository::defer_job(&pool, id, "2099-01-01 00:00:00", "quota:{}")
+            .await
+            .unwrap();
+        let jobs = SyncQueueRepository::get_ready_jobs(&pool, 10, TEST_USER).await.unwrap();
+        assert!(jobs.is_empty());
+
+        // Con fecha pasada, el job despierta solo
+        SyncQueueRepository::claim_job(&pool, id).await.unwrap();
+        SyncQueueRepository::defer_job(&pool, id, "2020-01-01 00:00:00", "quota:{}")
+            .await
+            .unwrap();
+        let jobs = SyncQueueRepository::get_ready_jobs(&pool, 10, TEST_USER).await.unwrap();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].id, id);
     }
 
     #[tokio::test]

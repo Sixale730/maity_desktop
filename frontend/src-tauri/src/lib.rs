@@ -1303,6 +1303,7 @@ pub fn run() {
             database::sync_queue_commands::sync_queue_claim_job,
             database::sync_queue_commands::sync_queue_complete_job,
             database::sync_queue_commands::sync_queue_fail_job,
+            database::sync_queue_commands::sync_queue_defer_job,
             database::sync_queue_commands::sync_queue_get_meeting_status,
             database::sync_queue_commands::sync_queue_get_all_statuses,
             database::sync_queue_commands::sync_queue_reset_stale,

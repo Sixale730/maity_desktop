@@ -105,6 +105,30 @@ pub async fn sync_queue_fail_job<R: Runtime>(
         })
 }
 
+/// Defer an in-progress job back to 'pending' with a future retry time,
+/// without burning an attempt. Used for plan-quota rejections (quota:).
+#[tauri::command]
+pub async fn sync_queue_defer_job<R: Runtime>(
+    _app: AppHandle<R>,
+    state: tauri::State<'_, AppState>,
+    id: i64,
+    next_retry_at: String,
+    error_msg: Option<String>,
+) -> Result<bool, String> {
+    let pool = state.db_manager.pool();
+    SyncQueueRepository::defer_job(
+        pool,
+        id,
+        &next_retry_at,
+        error_msg.as_deref().unwrap_or("quota deferred"),
+    )
+    .await
+    .map_err(|e| {
+        error!("Failed to defer sync job {}: {}", id, e);
+        e.to_string()
+    })
+}
+
 #[tauri::command]
 pub async fn sync_queue_get_meeting_status<R: Runtime>(
     _app: AppHandle<R>,

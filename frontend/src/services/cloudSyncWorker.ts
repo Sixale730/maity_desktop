@@ -14,6 +14,13 @@ import {
   saveTranscriptSegments,
 } from '@/features/conversations/services/conversations.service';
 import { supabase } from '@/lib/supabase';
+import {
+  isQuotaBlocked,
+  markQuotaBlocked,
+  nextQuotaRetrySqlite,
+  parseQuotaError,
+  toSqliteUtc,
+} from '@/lib/quotaErrors';
 
 interface SyncQueueJob {
   id: number;
@@ -195,11 +202,16 @@ class CloudSyncWorkerImpl {
       '@/features/conversations/services/conversations.service'
     );
     for (const conv of stuck) {
+      // Una conversación bloqueada por cuota no está "stuck": reintentarla
+      // solo vuelve a pegar la cuota. Se salta hasta el siguiente período.
+      if (isQuotaBlocked(conv.id)) continue;
       try {
         await reanalyzeConversation(conv.id, '', 'es');
         logPoll('stuck_watcher_reanalyze_dispatched', { id: conv.id });
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
+        const quota = parseQuotaError(msg);
+        if (quota) markQuotaBlocked(conv.id, quota.period);
         logPoll('stuck_watcher_reanalyze_failed', { id: conv.id, error: msg });
         console.warn(`[CloudSyncWorker] Stuck retry failed for ${conv.id}:`, e);
       }
@@ -238,6 +250,35 @@ class CloudSyncWorkerImpl {
       }));
     } catch (e) {
       const errorMsg = e instanceof Error ? e.message : String(e);
+
+      // Rechazo por cuota del plan: NO es un fallo transitorio. Diferir el job
+      // al siguiente período de cuota sin quemar attempts (fn defer_job).
+      const quota = parseQuotaError(errorMsg);
+      if (quota) {
+        const retryAt = nextQuotaRetrySqlite(quota.period);
+        logPoll('sync_job_quota_deferred', {
+          jobId: job.id,
+          jobType: job.job_type,
+          meetingId: job.meeting_id,
+          period: quota.period ?? 'unknown',
+          retryAt,
+        });
+        logger.info(
+          `[CloudSyncWorker] Job ${job.id} (${job.job_type}) deferred by plan quota until ${retryAt}`
+        );
+        await invoke('sync_queue_defer_job', {
+          id: job.id,
+          nextRetryAt: retryAt,
+          errorMsg,
+        }).catch((err) =>
+          console.error(`[CloudSyncWorker] Failed to defer job ${job.id}:`, err)
+        );
+        window.dispatchEvent(new CustomEvent('sync-status-changed', {
+          detail: { meetingId: job.meeting_id, jobType: job.job_type, status: 'retrying' },
+        }));
+        return;
+      }
+
       const nextAttempt = job.attempt_count + 1;
       const nextRetryAt = this.calculateNextRetry(nextAttempt);
 
@@ -406,13 +447,15 @@ class CloudSyncWorkerImpl {
     }
   }
 
-  /** Calculate next_retry_at ISO string with exponential backoff + jitter */
+  /** Calculate next_retry_at with exponential backoff + jitter, in SQLite
+   *  format 'YYYY-MM-DD HH:MM:SS' UTC. get_ready_jobs compara strings contra
+   *  datetime('now') (separador espacio): un ISO con 'T' ordena después de
+   *  cualquier hora del mismo día y el retry dormiría hasta el día siguiente. */
   private calculateNextRetry(attemptNumber: number): string {
     const baseDelay = Math.min(1000 * Math.pow(2, attemptNumber - 1), 300000); // cap at 5 min
     const jitter = baseDelay * (0.3 * Math.random()); // 0-30% jitter
     const delayMs = baseDelay + jitter;
-    const retryAt = new Date(Date.now() + delayMs);
-    return retryAt.toISOString();
+    return toSqliteUtc(new Date(Date.now() + delayMs));
   }
 }
 

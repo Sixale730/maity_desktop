@@ -23,6 +23,8 @@ import {
 } from '../services/conversations.service';
 import { useConversationLive } from '../hooks/useConversationLive';
 import { derivePhase } from '../utils/derivePhase';
+import { invoke } from '@tauri-apps/api/core';
+import { markQuotaBlocked, parseQuotaError, PRICING_URL } from '@/lib/quotaErrors';
 import { AnalysisStatusBanner } from './AnalysisStatusBanner';
 import { SessionFeedbackModal } from '@/components/recording/SessionFeedbackModal';
 import { TranscriptSection } from './analysis';
@@ -202,7 +204,24 @@ export function ConversationDetail({ conversation: initialConversation, onClose,
       } else {
         queryClient.invalidateQueries({ queryKey: ['omi-conversation', conversationId] });
       }
-      toast.error('Error al analizar', { description: error.message });
+      // Rechazo por cuota del plan: mensaje amigable + CTA, sin tono de error.
+      const quota = parseQuotaError(error.message);
+      if (quota) {
+        markQuotaBlocked(conversationId, quota.period);
+        toast('Análisis no disponible en tu plan', {
+          description: quota.message,
+          action: {
+            label: 'Ver planes',
+            onClick: () => {
+              void invoke('open_external_url', { url: PRICING_URL });
+            },
+          },
+        });
+        return;
+      }
+      toast.error('Error al analizar', {
+        description: error.message.replace(/^[a-z_]+:/i, ''),
+      });
     },
   });
 

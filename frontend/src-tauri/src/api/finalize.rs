@@ -23,6 +23,24 @@ pub struct FinalizeResponse {
     pub error: Option<String>,
 }
 
+/// Body de error del ApiError de Vercel. Parseado defensivamente: todos los
+/// campos son opcionales porque el shape no está garantizado.
+#[derive(Debug, Deserialize)]
+struct ApiErrorBody {
+    #[allow(dead_code)]
+    error: Option<String>,
+    code: Option<String>,
+    details: Option<QuotaDetails>,
+}
+
+#[derive(Debug, Deserialize)]
+struct QuotaDetails {
+    feature: Option<String>,
+    used: Option<i64>,
+    limit: Option<i64>,
+    period: Option<String>,
+}
+
 /// Request body for the consolidated conversations endpoint
 #[derive(Debug, Serialize)]
 struct FinalizeRequest {
@@ -94,7 +112,33 @@ pub async fn finalize_conversation_cloud(
     }
 
     if status == reqwest::StatusCode::FORBIDDEN {
-        warn!("Got 403 from conversations-finalize - user is not the owner");
+        // Un 403 puede ser ownership O cuota del plan (assertQuota → QUOTA_EXCEEDED).
+        // Leemos el body para distinguir; si no parsea, conservamos el caso ownership.
+        let body = response.text().await.unwrap_or_default();
+        let parsed: Option<ApiErrorBody> = serde_json::from_str(&body).ok();
+
+        if let Some(err_body) = parsed {
+            if err_body.code.as_deref() == Some("QUOTA_EXCEEDED") {
+                let details = err_body.details;
+                let payload = serde_json::json!({
+                    "message": "Alcanzaste el límite de análisis de tu plan. La minuta se genera igual.",
+                    "feature": details.as_ref().and_then(|d| d.feature.clone()),
+                    "used": details.as_ref().and_then(|d| d.used),
+                    "limit": details.as_ref().and_then(|d| d.limit),
+                    "period": details.as_ref().and_then(|d| d.period.clone()),
+                });
+                warn!(
+                    "Got 403 QUOTA_EXCEEDED from conversations-finalize for {}: {}",
+                    conversation_id, payload
+                );
+                return Err(format!("quota:{}", payload));
+            }
+        }
+
+        warn!(
+            "Got 403 from conversations-finalize - user is not the owner ({})",
+            body
+        );
         return Err("auth:No tienes permiso para analizar esta conversación.".to_string());
     }
 

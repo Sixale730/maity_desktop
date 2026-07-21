@@ -7,6 +7,7 @@ import { logPoll } from '@/lib/diagnostics';
 import { getOmiConversation, reanalyzeConversation } from '../services/conversations.service';
 import type { OmiConversation } from '../services/conversations.service';
 import { derivePhase, isTerminalPhase, type AnalysisPhase } from '../utils/derivePhase';
+import { isQuotaBlocked, markQuotaBlocked, parseQuotaError } from '@/lib/quotaErrors';
 
 const FAILED_AUTO_RETRY_DELAY_MS = 60_000;
 const POLL_INTERVAL_MS = 3_000;
@@ -156,11 +157,14 @@ export function useConversationLive(
   useEffect(() => {
     if (!enabled || stuckRescueFiredRef.current) return;
     if (phase !== 'stalled') return;
+    if (isQuotaBlocked(conversationId)) return; // sin cuota: reintentar solo vuelve a fallar
     stuckRescueFiredRef.current = true;
     logPoll('stalled_auto_retry_dispatch', { conversationId });
     logger.info(`[useConversationLive] Stalled detected for ${conversationId}, dispatching auto-retry`);
     reanalyzeConversation(conversationId, '', 'es').catch((err) => {
       const msg = err instanceof Error ? err.message : String(err);
+      const quota = parseQuotaError(msg);
+      if (quota) markQuotaBlocked(conversationId, quota.period);
       logPoll('stalled_auto_retry_failed', { conversationId, error: msg });
       logger.warn(`[useConversationLive] Stalled auto-retry failed: ${msg}`);
     });
@@ -173,12 +177,15 @@ export function useConversationLive(
   useEffect(() => {
     if (!enabled || failedRetryFiredRef.current) return;
     if (phase !== 'failed') return;
+    if (isQuotaBlocked(conversationId)) return; // sin cuota: reintentar solo vuelve a fallar
     const timer = setTimeout(() => {
       failedRetryFiredRef.current = true;
       logPoll('failed_auto_retry_dispatch', { conversationId });
       logger.info(`[useConversationLive] Auto-retry after failed for ${conversationId}`);
       reanalyzeConversation(conversationId, '', 'es').catch((err) => {
         const msg = err instanceof Error ? err.message : String(err);
+        const quota = parseQuotaError(msg);
+        if (quota) markQuotaBlocked(conversationId, quota.period);
         logPoll('failed_auto_retry_failed', { conversationId, error: msg });
         logger.warn(`[useConversationLive] Failed auto-retry failed: ${msg}`);
       });
