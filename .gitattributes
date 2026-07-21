@@ -1,10 +1,3 @@
-# Force LF line endings on SQL migration files.
-# sqlx::migrate! computes sha384 over file bytes, so CRLF/LF mismatches
-# between machines (Windows core.autocrlf=true) cause checksum validation
-# failures and silently break DB initialization → AppState never managed
-# → state() panics on commands like start_recording. See v0.2.38 → v0.2.39 hotfix.
-frontend/src-tauri/migrations/*.sql text eol=lf
-
 # Defensive: normalize other text formats too
 *.sql        text eol=lf
 *.toml       text eol=lf
@@ -22,6 +15,17 @@ frontend/src-tauri/migrations/*.sql text eol=lf
 *.cmd        text eol=crlf
 *.bat        text eol=crlf
 *.ps1        text eol=crlf
+
+# Migraciones sqlx: BYTES CONGELADOS — git no debe tocarlas JAMAS.
+# sqlx::migrate! calcula sha384 sobre los bytes y lo compara contra la
+# _sqlx_migrations de cada usuario. Los bytes canonicos son los que embebio
+# el release que aplico cada migracion (mezcla historica: 16 CRLF + resto LF,
+# pinneada en los .sha384). Cualquier conversion de line endings (checkout,
+# renormalize, autocrlf) produce binarios que rompen el arranque de usuarios
+# existentes ("previously applied but has been modified") — incidentes
+# v0.2.38 y 2026-07-21. Esta linea va DESPUES de *.sql para ganar precedencia.
+frontend/src-tauri/migrations/*.sql -text
+frontend/src-tauri/migrations/*.sql.sha384 -text
 
 # Binary files — never normalize
 *.png        binary

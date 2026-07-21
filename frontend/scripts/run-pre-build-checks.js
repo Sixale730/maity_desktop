@@ -87,3 +87,20 @@ if (eventsResult.status !== 0) {
 }
 
 console.log('[pre-build] OK: tauri-events lint passed');
+
+console.log('[pre-build] Running migrations LF/checksum check...');
+const migrationsResult = spawnSync(process.execPath, [path.join(__dirname, 'verify-migrations-lf.js')], {
+    stdio: 'inherit',
+    shell: false,
+});
+
+if (migrationsResult.status !== 0) {
+    console.error('');
+    console.error('[pre-build] FAIL: migrations check failed.');
+    console.error('  Migraciones con CRLF o checksum alterado producen binarios que rompen');
+    console.error('  la SQLite de usuarios existentes ("previously applied but has been modified").');
+    console.error('  Escape hatch: pnpm run tauri:build:debug:skip-checks');
+    process.exit(1);
+}
+
+console.log('[pre-build] OK: migrations check passed');
