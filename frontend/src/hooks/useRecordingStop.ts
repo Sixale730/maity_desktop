@@ -15,6 +15,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { supabase } from '@/lib/supabase';
 import { logger } from '@/lib/logger';
 import { logPoll } from '@/lib/diagnostics';
+import { ANALYSIS_FEATURE } from '@/hooks/usePlanStatus';
 import type { Transcript } from '@/types';
 
 type SummaryStatus = 'idle' | 'processing' | 'summarizing' | 'regenerating' | 'completed' | 'error';
@@ -579,6 +580,26 @@ export function useRecordingStop(
       }, 'success');
 
       toast.info('Sincronizando con la nube...', { duration: 3000 });
+
+      // Aviso informativo de cuota (fire-and-forget, DESPUÉS de encolar — el
+      // finalize siempre se encola porque la minuta depende de él). No se
+      // await-ea: hay un hard navigate inmediato que mata este contexto JS, así
+      // que el resultado se deja en sessionStorage y lo muestra /conversations.
+      void supabase
+        .schema('public')
+        .rpc('fn_check_quota', { p_feature_code: ANALYSIS_FEATURE })
+        .then(({ data }) => {
+          const row = Array.isArray(data) ? data[0] : data;
+          if (row && row.can_use === false) {
+            sessionStorage.setItem(
+              'maity_quota_notice',
+              JSON.stringify({ meetingId, at: Date.now() })
+            );
+          }
+        })
+        .then(undefined, () => {
+          /* informativo: sin red o sin RPC, no hay aviso y no pasa nada */
+        });
     } catch (err) {
       // Enqueue failure is non-fatal — local save already succeeded
       console.warn('[RecordingStop] Failed to enqueue cloud sync:', err);

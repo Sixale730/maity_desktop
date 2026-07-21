@@ -7,6 +7,7 @@ import { Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { ConversationsList, ConversationDetail, OmiConversation, getOmiConversation, getLocalMeetingDetail } from '@/features/conversations';
 import { logPoll } from '@/lib/diagnostics';
+import { PRICING_URL } from '@/lib/quotaErrors';
 
 function ConversationsContent() {
   const searchParams = useSearchParams();
@@ -163,6 +164,31 @@ function ConversationsContent() {
       clearInterval(interval);
     };
   }, [selectedConversation?.id, selectedConversation?.source, router]);
+
+  // Aviso de cuota dejado por useRecordingStop antes del hard navigate: el
+  // toast no puede vivir en el contexto JS que murió, así que se relee aquí.
+  useEffect(() => {
+    let raw: string | null = null;
+    try {
+      raw = sessionStorage.getItem('maity_quota_notice');
+    } catch { /* sessionStorage no disponible */ }
+    if (!raw) return;
+    try {
+      sessionStorage.removeItem('maity_quota_notice');
+      const notice = JSON.parse(raw) as { at?: number };
+      if (typeof notice.at !== 'number' || Date.now() - notice.at > 5 * 60_000) return;
+      toast('Esta grabación no incluirá análisis detallado', {
+        description: 'Alcanzaste tu límite de análisis del plan; la minuta se generará normalmente.',
+        duration: 8000,
+        action: {
+          label: 'Ver planes',
+          onClick: () => {
+            void invoke('open_external_url', { url: PRICING_URL });
+          },
+        },
+      });
+    } catch { /* notice corrupto — ignorar */ }
+  }, []);
 
   const handleClose = () => {
     setSelectedConversation(null);

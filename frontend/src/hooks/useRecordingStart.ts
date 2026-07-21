@@ -1,5 +1,13 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { useQueryClient } from '@tanstack/react-query';
+import { useAuth } from '@/contexts/AuthContext';
+import {
+  PRESENTER_MODE_FEATURE,
+  QUOTA_STATUS_QUERY_KEY,
+  isFeatureEnabled,
+  type QuotaStatus,
+} from '@/hooks/usePlanStatus';
 import { useTranscripts } from '@/contexts/TranscriptContext';
 import { useSidebar } from '@/components/Sidebar/SidebarProvider';
 import { useConfig } from '@/contexts/ConfigContext';
@@ -51,6 +59,8 @@ export function useRecordingStart(
   const { setIsMeetingActive } = useSidebar();
   const { selectedDevices, transcriptModelConfig, recordingMode } = useConfig();
   const { setStatus } = useRecordingState();
+  const queryClient = useQueryClient();
+  const { maityUser } = useAuth();
 
   // Generate meeting title with timestamp
   const generateMeetingTitle = useCallback(() => {
@@ -240,22 +250,41 @@ export function useRecordingStart(
     const meetingId = `meeting-${crypto.randomUUID()}`;
     recordingLogService.setMeetingId(meetingId);
     sessionStorage.setItem('early_meeting_id', meetingId);
-    // Modo Ponente: persistir el modo de ESTA sesión para que el stop (que persiste el
+    // Modo Ponente: gating por plan. El valor persistido en localStorage puede ser
+    // 'presentation' de una sesión con plan superior — si el plan actual no lo
+    // permite, se graba en modo conversación (sin tocar la preferencia guardada:
+    // revive sola al volver a Pro). Se lee del cache de queryClient (no un hook)
+    // para no suscribir el path de arranque; cache frío → fail-open.
+    const quotaCache = queryClient.getQueryData<QuotaStatus | null>([
+      QUOTA_STATUS_QUERY_KEY,
+      maityUser?.id,
+    ]);
+    const effectiveMode =
+      recordingMode === 'presentation' && !isFeatureEnabled(quotaCache, PRESENTER_MODE_FEATURE)
+        ? 'conversation'
+        : recordingMode;
+    if (effectiveMode !== recordingMode) {
+      logger.info('[RecordingStart] Modo ponente no disponible en el plan; grabando en modo conversación');
+      toast.info('Modo ponente no disponible en tu plan', {
+        description: 'Esta grabación se hará en modo conversación.',
+      });
+    }
+    // Persistir el modo de ESTA sesión para que el stop (que persiste el
     // meeting y dispara el sync a la nube) lo lea. sessionStorage espeja el patrón de
     // 'early_meeting_id' y sobrevive navegación durante la grabación.
-    sessionStorage.setItem('active_recording_mode', recordingMode);
-    recordingLogService.log('meeting_id_generated', { meeting_id: meetingId, recording_mode: recordingMode }, 'success');
+    sessionStorage.setItem('active_recording_mode', effectiveMode);
+    recordingLogService.log('meeting_id_generated', { meeting_id: meetingId, recording_mode: effectiveMode }, 'success');
 
     // Set STARTING status before initiating backend recording
     setStatus(RecordingStatus.STARTING, 'Initializing recording...');
 
     // Start the actual backend recording
-    logger.debug(`Starting backend recording (trigger=${trigger}, mode=${recordingMode}) with meeting:`, title);
+    logger.debug(`Starting backend recording (trigger=${trigger}, mode=${effectiveMode}) with meeting:`, title);
     await recordingService.startRecordingWithDevices(
       selectedDevices?.micDevice || null,
       selectedDevices?.systemDevice || null,
       title,
-      recordingMode
+      effectiveMode
     );
     logger.debug('Backend recording started successfully');
 
@@ -277,7 +306,7 @@ export function useRecordingStart(
         body: `Reunión: ${title}`,
       })
     ).catch(() => {});
-  }, [generateMeetingTitle, selectedDevices, transcriptModelConfig, recordingMode, setStatus, setMeetingTitle, setIsRecording, clearTranscripts, setIsMeetingActive]);
+  }, [generateMeetingTitle, selectedDevices, transcriptModelConfig, recordingMode, setStatus, setMeetingTitle, setIsRecording, clearTranscripts, setIsMeetingActive, queryClient, maityUser?.id]);
 
   /**
    * Handle transcription not ready — show appropriate toast/modal.
