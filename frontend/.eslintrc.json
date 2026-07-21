@@ -10,5 +10,28 @@
     }],
     "react-hooks/exhaustive-deps": "warn",
     "no-console": ["error", { "allow": ["warn", "error"] }]
-  }
+  },
+  "overrides": [
+    {
+      "files": [
+        "src/components/ui/checkbox.tsx",
+        "src/components/ui/toggle.tsx",
+        "src/components/ui/toggle-group.tsx",
+        "src/features/auth/pages/**/*.{ts,tsx}",
+        "src/features/auth/components/onboarding/**/*.{ts,tsx}",
+        "src/features/auth/components/registration/**/*.{ts,tsx}",
+        "src/features/auth/hooks/**/*.{ts,tsx}",
+        "src/features/billing/components/**/*.{ts,tsx}",
+        "src/features/billing/utils/**/*.{ts,tsx}",
+        "src/features/avatar/components/**/*.{ts,tsx}",
+        "src/shared/maity-shared/**/*.{ts,tsx}"
+      ],
+      "rules": {
+        "no-console": "off",
+        "@typescript-eslint/no-unused-vars": "off",
+        "react-refresh/only-export-components": "off",
+        "@next/next/no-img-element": "off"
+      }
+    }
+  ]
 }

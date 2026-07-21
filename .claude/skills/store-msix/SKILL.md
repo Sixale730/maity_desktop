@@ -58,14 +58,28 @@ Si hay que regenerarlo: `winapp init frontend --use-defaults --setup-sdks none -
 
 ⚠️ Si se vuelve a correr `winapp init`, los sobrescribe con placeholders → re-copiar.
 
+### 2.5 Pre-flight: migraciones byte-idénticas a sus pins (CRÍTICO — incidente 2026-07-21)
+
+`tauri build --no-bundle` directo **NO corre** los pre-build checks de `tauri:build:debug` — validar SIEMPRE antes de compilar:
+
+```powershell
+node frontend/scripts/verify-migrations-lf.js   # debe salir OK / exit 0
+```
+
+**La verdad canónica de cada migración son sus BYTES pinneados en el `.sha384`** (los que embebió el release que la aplicó en las DB de los usuarios) — NO es "todo LF": históricamente es una MEZCLA (las 16 primeras CRLF, las posteriores LF). Reglas:
+- **NUNCA normalizar line endings de migraciones** (ni a LF ni a CRLF) — cambia los bytes → el binario arranca en usuarios existentes con **"migration N was previously applied but has been modified"**. Eso NO es corrupción de DB: el paquete es el que está mal; **no restablecer la base** del usuario.
+- `.gitattributes` las marca `-text` (bytes congelados, git no las convierte). No quitar esa línea.
+- Migración nueva → generar su pin con `scripts/migrations-regen-checksums.sh` y commitear `.sql` + `.sha384` juntos. Jamás regenerar el pin de una migración ya aplicada.
+- `pnpm run tauri:build:store` (frontend) encadena esta verificación + `tauri build --no-bundle` — usar ese comando en lugar del build crudo.
+
 ### 3. Compilar con frontend EMBEBIDO (CRÍTICO)
 
 **Usar `tauri build`, NO `cargo build` crudo.** Un `cargo build` debug apunta el webview a `localhost:3118` (dev server) → pantalla de error. `tauri build` embebe el frontend. `--no-bundle` salta los instaladores NSIS/MSI y la firma Certum (no la necesitamos para MSIX).
 
 ```powershell
 $env:LIBCLANG_PATH='C:\Program Files\LLVM\bin'
-pnpm -C frontend exec tauri build --debug --no-bundle     # prueba
-# pnpm -C frontend exec tauri build --no-bundle           # producción (release)
+pnpm -C frontend run tauri:build:store    # verify-migrations + tauri build --no-bundle (release)
+# variante debug para pruebas: pnpm -C frontend exec tauri build --debug --no-bundle (correr verify-migrations a mano antes)
 ```
 
 El exe queda en **`C:\maity_desktop\target\debug\maity-desktop.exe`** (¡el `target` está en la RAÍZ del workspace, no en `src-tauri/`!). Nombre del exe = `maity-desktop.exe` (nombre del paquete Cargo).
@@ -78,12 +92,12 @@ Copiar a un folder de staging (junto al manifest):
 - `Package.appxmanifest`, `Assets/`, `templates/` (de `frontend/src-tauri/templates/`).
 - **NO** hace falta `app_lib.dll` (el exe enlaza el lib estático) ni `WebView2Loader.dll` (Tauri 2 lo enlaza estático).
 
-### 5. Probar local — validar audio (opcional pero recomendado)
+### 5. Iterar rápido con `winapp run` (opcional — loop de desarrollo)
 
 ```powershell
 winapp run "<staging>" --detach --exe maity-desktop.exe
 ```
-Registra identidad de paquete y lanza Maity. Probar: iniciar grabación, aceptar permiso de mic, poner audio sonando, confirmar que graba **mic + audio del sistema**, detener. Limpiar después:
+Registra identidad de paquete desde archivos sueltos y lanza Maity — **sin validar firma, cero certificados** (por eso esta ruta no pide nada). Útil para iterar: recompilar → copiar exe al staging → `winapp run` otra vez. Recordar el gotcha del `AppX\` (ver Gotchas). Limpiar después:
 ```powershell
 taskkill /F /IM maity-desktop.exe
 Get-AppxPackage -Name Sixale.Maity | Remove-AppxPackage
@@ -93,9 +107,32 @@ Get-AppxPackage -Name Sixale.Maity | Remove-AppxPackage
 ### 6. Generar el MSIX real
 
 ```powershell
+# Primera vez (o si no existe el pfx): genera cert de dev nuevo
 winapp package "<staging>" --manifest "<staging>\Package.appxmanifest" --generate-cert
+# Corridas siguientes: REUSAR el pfx para no re-confiar el cert en cada iteración
+winapp package "<staging>" --manifest "<staging>\Package.appxmanifest" --cert C:\maity_desktop\Sixale.Maity_cert.pfx --cert-password password
 ```
-Genera `Sixale.Maity_<version>_x64.msix`. El cert de dev es solo para instalar local; **NO firmar con Certum** — Microsoft firma el MSIX al subirlo a la Store.
+Genera `Sixale.Maity_<version>_x64.msix` en la raíz del repo. El cert de dev es solo para instalar local; **NO firmar con Certum** — Microsoft firma el MSIX al subirlo a la Store.
+
+⚠️ `--generate-cert` crea un cert NUEVO cada corrida (habría que re-confiarlo cada vez) y deja **`Sixale.Maity_cert.pfx`** en la raíz del repo (llave privada; password por defecto de winapp: `password`). Por eso: generarlo UNA vez, confiar su `.cer` una vez (§6.5) y de ahí en adelante empaquetar con `--cert`. **NO abrir el pfx para instalar el cert** (usar el `.cer` exportado), **NO commitearlo**. `/msix_staging/` y `*.msix` ya están en `.gitignore`.
+
+### 6.5 Probar el MSIX instalándolo (OBLIGATORIO antes de subir a la Store)
+
+**Flujo estándar desde 2026-07-21:** todo `.msix` se prueba instalado localmente ANTES de subirse a Partner Center. A diferencia de `winapp run`, el doble clic al `.msix` **sí valida la firma** → hay que confiar el cert de dev UNA vez (síntoma si falta: instalador con "Editor: Desconocido", botón Instalar deshabilitado y error `0x800B010A`).
+
+1. **Extraer el cert público del propio `.msix`** (sin contraseña, a diferencia del .pfx):
+   ```powershell
+   $sig = Get-AuthenticodeSignature '<repo>\Sixale.Maity_<version>_x64.msix'
+   [System.IO.File]::WriteAllBytes('<staging>\maity-dev.cer', $sig.SignerCertificate.Export('Cert'))
+   ```
+2. **Confiarlo** (una vez por certificado; requiere admin — lo hace el USUARIO, no el agente: es un cambio de confianza de la máquina):
+   - GUI: doble clic al `.cer` → Instalar certificado… → **Equipo local** → almacén **Personas de confianza** (Trusted People).
+   - O en PowerShell elevado: `Import-Certificate -FilePath <staging>\maity-dev.cer -CertStoreLocation Cert:\LocalMachine\TrustedPeople`
+   - ⚠️ Si `winapp package` regenera el cert en una corrida futura, hay que re-confiar el `.cer` nuevo.
+3. **Cerrar cualquier instancia de Maity corriendo** (single-instance + SQLite compartida) y doble clic al `.msix` → Instalar.
+   - ⚠️ **Reinstalar la MISMA versión falla** (Windows rechaza un paquete con versión idéntica a la instalada pero contenido distinto). Al iterar sin bump de versión: `Get-AppxPackage -Name Sixale.Maity | Remove-AppxPackage` ANTES de instalar el `.msix` regenerado (los datos sobreviven — viven en `%APPDATA%\com.maity.ai`, fuera del paquete).
+4. **Smoke test instalado**: arranca desde el menú inicio, login, grabar (mic + sistema), guardar, onboarding si aplica. Esta prueba es fiel al canal Store salvo por la firma (la de la Store es de Microsoft — el usuario final nunca ve el diálogo de certificado).
+5. **Limpieza** al terminar: `Get-AppxPackage -Name Sixale.Maity | Remove-AppxPackage`; opcionalmente quitar el cert en `certlm.msc` → Personas de confianza; borrar el `.pfx`.
 
 ### 7. Subir a la Store (Partner Center — walkthrough con respuestas para Maity)
 

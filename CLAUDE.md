@@ -308,6 +308,53 @@ Los modelos se cargan una vez y se cachean. Cambiar modelos requiere reinicio de
 | `/notes` | `app/notes/page.tsx` | Notas extraidas de conversaciones |
 | `/tasks` | `app/tasks/page.tsx` | Tareas extraidas de conversaciones |
 | `/settings` | `app/settings/page.tsx` | Configuracion de la app |
+| `/registration` | `app/registration/page.tsx` | Onboarding de registro (avatar 3D + cuestionario 17 pasos) — solo usuarios con `registration_form_completed=false` |
+| `/billing/plans` | `app/billing/plans/page.tsx` | Seleccion de plan (Free/Pro/Enterprise) — checkout Pro abre navegador externo via handoff |
+
+### Gate de Registro (`useRegistrationGate` + `AppContent` en `layout.tsx`)
+
+Orden de ramas en `AppContent` para cuentas nuevas:
+1. Onboarding tecnico (**Welcome** + Permissions macOS) — la pantalla de bienvenida (`WelcomeStep`, "Bienvenido a Maity", con logo) es la ÚNICA con arranque de modelos. Su botón **"Comenzar y descargar"** arranca Parakeet **+** Gemma en background vía `startBackgroundDownloads(true)` y **avanza al instante** (Windows → registro; macOS → permisos, la descarga sigue en background). NO bloquea. Muestra el total dinámico (~1.6 GB Windows / ~3 GB macOS). (La antigua pantalla "Tu IA personal"/`ModelDownloadStep` fue eliminada.)
+2. Splash hasta que `modelGateActive` resuelve (`null` → comprobando; luego siempre `false`)
+3. Splash (`registrationLoading`)
+4. Rama de registro: `/registration` (17 pasos) con `OnboardingDownloadWidget` en la esquina reportando progreso de las descargas en background
+5. Scheduled setup gate
+6. Main app — el `OnboardingDownloadWidget` sigue mostrando el progreso hasta que ambos modelos terminan; el usuario ya puede navegar.
+
+**NO hay `ModelDownloadGate`, `ModelDownloadStep` ("Tu IA personal") ni pantalla de espera bloqueante** — todo se arranca en `WelcomeStep` y corre en background.
+
+Para cuentas existentes (`get_onboarding_status.completed===true`): saltan el onboarding técnico. Si les falta el modelo, `BackgroundDownloadStarter` arranca la descarga en background (sin pantalla) y entran directo al dashboard con el widget.
+- `BackgroundDownloadStarter` (`components/Onboarding/BackgroundDownloadStarter.tsx`, renderiza null, montado dentro de `OnboardingProvider`): si `completed && !(parakeetDownloaded && summaryModelDownloaded)` y no es ruta especial (`/coach-float`, `/recording-widget`, `/device-picker`) → `startBackgroundDownloads(true)` (idempotente por los guards internos). Es la red de seguridad que reemplaza al `ModelDownloadGate` eliminado.
+- Si `my_status()` devuelve `registration_form_completed===false` → redirige a `/registration`
+- `/registration` y `/billing/plans` excluyen el Sidebar; sus pages proveen su propio scroll (`h-screen overflow-y-auto` + wrapper `min-h-full`) porque `globals.css` fija `body { overflow: hidden }`
+- Al completar el form, la web invalida `['user','status']` → el gate se levanta solo
+- **`OnboardingAccountBadge`** (`components/Onboarding/OnboardingAccountBadge.tsx`, `fixed top-4 right-4 z-[60]`): como el Sidebar no se monta durante el onboarding, replica el indicador de cuenta + cerrar sesión (`useAuth().signOut`). Es un **icono redondo (avatar)**; al hacer clic despliega un menú (nombre/email/botón "Cerrar sesión"); cierra al hacer clic fuera. Se monta en las ramas de onboarding: técnico (`OnboardingFlow`), registro (`/registration`), scheduled setup, y en la rama main cuando `isRegistrationRoute` (`/billing/plans`). `z-[60]` sobre overlays; top-right para no chocar con `OnboardingDownloadWidget` (bottom-right).
+
+### Descargas de Modelos (`WelcomeStep` + `BackgroundDownloadStarter` + `OnboardingContext` + `OnboardingDownloadWidget`)
+
+- **Arranque en un solo lugar, no-bloqueante:**
+  - **Cuentas nuevas**: `WelcomeStep` ("Bienvenido a Maity", paso 1 del onboarding técnico, con logo). Su botón "Comenzar y descargar" → `startBackgroundDownloads(true)` + (Windows) `completeOnboarding()` / (macOS) `goNext()` a permisos. Avanza al instante. Muestra el total con tamaño **dinámico por plataforma**: Parakeet ~600 MB + Gemma (`gemma3:1b` ~1 GB en Windows/RAM<16GB, `gemma3:4b` ~2.4 GB en macOS>16GB) → total ~1.6 GB / ~3 GB.
+  - **Cuentas existentes sin modelo**: `BackgroundDownloadStarter` arranca la descarga en background al montar (sin pantalla).
+- `OnboardingContext.startBackgroundDownloads(includeGemma)` — arranca Parakeet y opcionalmente Gemma con guards completos (idempotente):
+  - Parakeet: `parakeet_init` → `parakeet_has_available_models` (skip si true) → `parakeet_get_available_models` para detectar `Downloading` (skip) y `Corrupted` (borrar con `parakeet_delete_corrupted_model` primero) → `parakeet_download_model` con `parakeet-tdt-0.6b-v3-int8`
+  - Gemma (tras 3s delay para priorizar ancho de banda): `builtin_ai_is_model_ready` (skip si ready) → `builtin_ai_get_model_info` (skip si `status.type === 'downloading'`) → `builtin_ai_download_model` (`selectedSummaryModel`, recomendado por `builtin_ai_get_recommended_model`)
+  - Setea `isBackgroundDownloading=true` → el widget aparece.
+- **UNA sola UI de progreso de descarga**: `OnboardingDownloadWidget` (`bottom-4 right-4 z-50`), montado en la rama de registro Y en el main app. Por defecto es una **bolita redonda** con anillo de progreso (% combinado); al hacer clic se **expande al modal** completo (filas Parakeet/Gemma) y se minimiza con la X. Solo se muestra cuando hay actividad. **`DownloadProgressToastProvider` fue eliminado** del layout (antes duplicaba: toasts arriba + widget abajo).
+
+### Video de instrucciones (CSP)
+
+- El paso de instrucciones del registro (`features/auth/components/registration/RegistrationInstructions.tsx`) embebe un **iframe de YouTube**. Requiere `frame-src`/`child-src` con `https://www.youtube.com` en la CSP de `frontend/src-tauri/tauri.conf.json`; sin eso WebView2 lo bloquea en el build empaquetado (en `pnpm dev` no se nota).
+
+### Resumen built-in (Gemma) — requisitos
+
+- El resumen con IA local usa el sidecar `llama-helper.exe` (`externalBin: ["binaries/llama-helper"]` en `tauri.conf.json`; fuente en `C:\maity_desktop\llama-helper\`, `cargo build --release -p llama-helper`). Debe existir el binario REAL en `frontend/src-tauri/binaries/llama-helper-x86_64-pc-windows-msvc.exe` (y en `msix_staging/llama-helper.exe` para el MSIX) — un stub de 0 bytes hace fallar el `spawn`. Además el modelo Gemma debe estar descargado (`gemma3:1b`/`gemma3:4b` según plataforma).
+
+### Handoff de Pagos
+
+- El desktop no tiene Stripe directamente; al elegir Pro, `useCreateCheckoutSession` construye la URL `https://www.maity.cloud/auth/handoff#access_token=...&next=/billing/plans?checkout=pro`
+- `openExternalUrl` (via `lib/planLinks.ts`) abre el navegador externo del SO via `invoke('open_external_url')`
+- Prerequisito: la web debe desplegar `/auth/handoff` (issue Sixale730/maity#133)
+- Enterprise/anual → `/agenda` interceptado en router-compat (sin patch adicional)
 
 ### Context Providers (9, en `layout.tsx`)
 
