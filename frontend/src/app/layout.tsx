@@ -1,7 +1,7 @@
 'use client'
 
 import './globals.css'
-import { usePathname } from 'next/navigation'
+import { usePathname, useRouter } from 'next/navigation'
 import { Source_Sans_3, Inter } from 'next/font/google'
 import { GeistSans } from 'geist/font/sans'
 import Sidebar from '@/components/Sidebar'
@@ -18,7 +18,6 @@ import { TranscriptProvider } from '@/contexts/TranscriptContext'
 import { ConfigProvider } from '@/contexts/ConfigContext'
 import { OnboardingProvider } from '@/contexts/OnboardingContext'
 import { OnboardingFlow } from '@/components/Onboarding'
-import { DownloadProgressToastProvider } from '@/components/shared/DownloadProgressToast'
 import { UpdateCheckProvider } from '@/components/updates/UpdateCheckProvider'
 import { RecordingPostProcessingProvider } from '@/contexts/RecordingPostProcessingProvider'
 import { ErrorBoundary } from '@/components/shared/ErrorBoundary'
@@ -32,7 +31,10 @@ import { RecordingWidgetFAB } from '@/components/shared/RecordingWidgetFAB'
 import { RecordingWidgetListener } from '@/components/RecordingWidgetListener'
 import { AuthProvider, useAuth } from '@/contexts/AuthContext'
 import { ParakeetAutoDownloadProvider } from '@/contexts/ParakeetAutoDownloadContext'
-import { ModelDownloadGate } from '@/components/ModelDownloadGate'
+import { useRegistrationGate } from '@/hooks/useRegistrationGate'
+import { OnboardingDownloadWidget } from '@/components/Onboarding/OnboardingDownloadWidget'
+import { OnboardingAccountBadge } from '@/components/Onboarding/OnboardingAccountBadge'
+import { BackgroundDownloadStarter } from '@/components/Onboarding/BackgroundDownloadStarter'
 import { LoginScreen } from '@/components/Auth'
 import { CloudSyncInitializer } from '@/components/CloudSyncInitializer'
 import { GlobalConversationNotifier } from '@/components/GlobalConversationNotifier'
@@ -260,6 +262,18 @@ function AuthGate({ children }: { children: React.ReactNode }) {
 }
 
 /**
+ * Redirige a /registration si el usuario no ha completado el formulario.
+ * Componente separado para poder usar useRouter dentro de un Suspense boundary.
+ */
+function RegistrationRedirect() {
+  const router = useRouter()
+  useEffect(() => {
+    router.replace('/registration')
+  }, [router])
+  return <SplashScreen />
+}
+
+/**
  * AppContent: the main app shell (onboarding check, sidebar, etc.)
  * Rendered only when the user is authenticated.
  */
@@ -269,21 +283,28 @@ function AppContent({ children }: { children: React.ReactNode }) {
   const [modelGateActive, setModelGateActive] = useState<boolean | null>(null)
   const [showScheduledSetup, setShowScheduledSetup] = useState(false)
   const hasEmittedOpenRef = useRef(false)
+  const pathname = usePathname()
 
-  // Check whether the local STT model is downloaded. The gate is shown only
-  // after onboarding completes, so the user always sees this prompt before
-  // being able to use the app — never receives a silent "model still
-  // downloading" error from the recording pipeline.
+  // Gate de registro: solo aplica cuando el onboarding técnico ya completó
+  // y el modelo aún no bloqueó (es decir, showOnboarding===false y modelGateActive===false o 0)
+  const { registrationFormCompleted, isLoading: registrationLoading } = useRegistrationGate()
+
+  const isRegistrationRoute = pathname === '/registration' || pathname?.startsWith('/billing/plans')
+  const isSpecialRoute =
+    pathname === '/coach-float' || pathname === '/recording-widget' || pathname === '/device-picker'
+
+  // Inicializa el motor Parakeet y resuelve el splash. YA NO hay gate de modelo:
+  // si a una cuenta existente le falta el modelo, `BackgroundDownloadStarter` arranca
+  // la descarga en background (con el widget flotante), sin pantalla de consentimiento.
+  // `modelGateActive` queda solo como flag de splash inicial (null = comprobando,
+  // false = resuelto); nunca true.
   const checkModelAvailability = async () => {
     try {
       await invoke('parakeet_init')
-      const hasModel = await invoke<boolean>('parakeet_has_available_models')
-      setModelGateActive(!hasModel)
-      logger.debug('[Layout] Parakeet model availability:', hasModel)
     } catch (error) {
-      console.error('[Layout] Failed to check Parakeet model availability:', error)
-      setModelGateActive(true)
+      console.error('[Layout] Failed to init Parakeet engine:', error)
     }
+    setModelGateActive(false)
   }
 
   // Telemetry: emit nav.page_view to platform_logs on every Next.js route change
@@ -424,14 +445,12 @@ function AppContent({ children }: { children: React.ReactNode }) {
   }, [modelGateActive, showOnboarding])
 
   const handleOnboardingComplete = () => {
-    logger.debug('[Layout] Onboarding completed, checking model availability')
+    logger.debug('[Layout] Onboarding completed, entering app')
     setShowOnboarding(false)
     setOnboardingCompleted(true)
-    void checkModelAvailability()
-  }
-
-  const handleModelGateComplete = () => {
-    logger.debug('[Layout] Model gate completed, showing main app')
+    // El paso de bienvenida (WelcomeStep) ya arrancó ambas descargas en
+    // background. No hay gate de modelo: pasa directo al registro/dashboard con el
+    // widget flotante mostrando el progreso.
     setModelGateActive(false)
   }
 
@@ -445,8 +464,9 @@ function AppContent({ children }: { children: React.ReactNode }) {
               <SidebarProvider>
                 <TooltipProvider>
                   <RecordingPostProcessingProvider>
-                    {/* Download progress toast provider - listens for background downloads */}
-                    <DownloadProgressToastProvider />
+                    {/* Progreso de descarga de modelos: ÚNICA superficie = OnboardingDownloadWidget
+                        (bolita colapsable). Se eliminó DownloadProgressToastProvider para no
+                        duplicar UI (antes salían toasts arriba + widget abajo a la vez). */}
 
                     {/* Meeting detection dialog - listens for meeting-detected events */}
                     <MeetingDetectionDialog />
@@ -464,30 +484,81 @@ function AppContent({ children }: { children: React.ReactNode }) {
                         montado desde el primer paint, sin importar la ruta. */}
                     <RecordingWidgetListener />
 
-                    {/* Show onboarding, model gate, or main app */}
+                    {/* Arranca las descargas de modelos en background para cuentas existentes
+                        a las que les falte el modelo (sin pantalla de consentimiento). Para
+                        cuentas nuevas, WelcomeStep ("Bienvenido a Maity") ya las arrancó. */}
+                    <BackgroundDownloadStarter />
+
+                    {/* Show onboarding or main app.
+                        ORDEN DE RAMAS:
+                        1. onboarding técnico — la pantalla de bienvenida (WelcomeStep) es la
+                           ÚNICA con arranque de modelos. Su botón "Comenzar y descargar" baja
+                           Parakeet + Gemma en background (startBackgroundDownloads) y avanza al
+                           instante. NO bloquea. (ModelDownloadGate y ModelDownloadStep eliminados.)
+                        2. splash (modelGateActive aún null — comprobando)
+                        3. splash (registrationLoading)
+                        4. onboarding de registro (/registration) con OnboardingDownloadWidget
+                           (progreso de las descargas en la esquina)
+                        5. scheduled setup gate
+                        6. main app — el OnboardingDownloadWidget sigue mostrando el progreso
+                           hasta que ambos modelos terminan; el usuario ya puede navegar.
+
+                        NO hay pantalla de consentimiento de modelos separada ni pantalla de espera
+                        bloqueante: las descargas corren en background y el widget muestra el progreso.
+
+                        TODAS las ramas de onboarding (1, 4, 5 y /billing/plans de la 6) montan
+                        <OnboardingAccountBadge /> (fixed top-4 right-4 z-[60]): muestra la cuenta
+                        activa y permite cerrar sesión, ya que el Sidebar no está montado. */}
                     {showOnboarding ? (
-                      <OnboardingFlow onComplete={handleOnboardingComplete} />
-                    ) : modelGateActive ? (
-                      <ModelDownloadGate onComplete={handleModelGateComplete} />
+                      <>
+                        <OnboardingFlow onComplete={handleOnboardingComplete} />
+                        <OnboardingAccountBadge />
+                      </>
                     ) : modelGateActive === null ? (
                       <SplashScreen />
+                    ) : registrationLoading && !isSpecialRoute && !isRegistrationRoute ? (
+                      // Breve splash mientras se carga el estado de registro
+                      <SplashScreen />
+                    ) : registrationFormCompleted === false && !isSpecialRoute ? (
+                      // Onboarding de registro: las descargas corren en background
+                      // mientras el usuario completa el formulario de 17 pasos.
+                      // OnboardingDownloadWidget muestra el progreso en la esquina.
+                      <>
+                        {!isRegistrationRoute && (
+                          // Redirigir sin tocar Sidebar; el gate se aplica vía efecto
+                          <RegistrationRedirect />
+                        )}
+                        {isRegistrationRoute && <>{children}</>}
+                        {/* Widget flotante: acompaña el onboarding de registro */}
+                        <OnboardingDownloadWidget />
+                        {/* Badge de cuenta activa + cerrar sesión (no hay Sidebar aquí) */}
+                        <OnboardingAccountBadge />
+                      </>
                     ) : showScheduledSetup ? (
-                      <ScheduledRecordingSetupGate
-                        onDone={() => setShowScheduledSetup(false)}
-                      />
+                      <>
+                        <ScheduledRecordingSetupGate
+                          onDone={() => setShowScheduledSetup(false)}
+                        />
+                        <OnboardingAccountBadge />
+                      </>
                     ) : (
                       <div className="flex flex-col h-screen">
                         {/* Offline indicator at the top */}
                         <OfflineIndicator />
                         <div className="flex flex-1 overflow-hidden">
-                          <Sidebar />
+                          {!isRegistrationRoute && <Sidebar />}
                           <MainContent>{children}</MainContent>
                         </div>
+                        {/* Widget de descargas — montado en el main app;
+                            se auto-oculta cuando no hay actividad o ambos modelos listos */}
+                        <OnboardingDownloadWidget />
                         {/* FAB para reabrir el widget flotante si el usuario lo cerró.
                             Sólo se renderiza cuando la ventana 'recording-widget' está
                             cerrada — el propio componente lo decide y se mantiene en
                             null en otro caso. */}
-                        <RecordingWidgetFAB />
+                        {!isRegistrationRoute && <RecordingWidgetFAB />}
+                        {/* En rutas sin Sidebar (/billing/plans) mostrar el badge de cuenta */}
+                        {isRegistrationRoute && <OnboardingAccountBadge />}
                       </div>
                     )}
                   </RecordingPostProcessingProvider>

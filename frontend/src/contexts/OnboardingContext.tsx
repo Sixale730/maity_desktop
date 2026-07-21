@@ -432,31 +432,90 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
     }
   };
 
-  // Start background downloads for models (parallel - Parakeet first, then Gemma immediately)
+  // Start background downloads for models (parallel - Parakeet first, then Gemma after 3s)
+  // Guards: init → check existing → skip if already available/downloading → delete corrupted → download
   const startBackgroundDownloads = async (includeGemma: boolean) => {
     logger.debug('[OnboardingContext] Starting background downloads, includeGemma:', includeGemma);
     setIsBackgroundDownloading(true);
 
-    try {
-      // Start Parakeet download first (speech recognition - always required)
-      if (!parakeetDownloaded) {
-        logger.debug('[OnboardingContext] Starting Parakeet download');
+    // --- Parakeet ---
+    const startParakeet = async () => {
+      try {
+        await invoke('parakeet_init');
+
+        const hasModels = await invoke<boolean>('parakeet_has_available_models');
+        if (hasModels) {
+          logger.debug('[OnboardingContext] Parakeet ya disponible, skip download');
+          return;
+        }
+
+        const models = await invoke<Array<{ name?: string; status?: string | Record<string, unknown> }>>('parakeet_get_available_models');
+
+        const alreadyDownloading = models.some((m) => {
+          if (!m.status) return false;
+          if (typeof m.status === 'object') return 'Downloading' in m.status;
+          return m.status === 'Downloading';
+        });
+        if (alreadyDownloading) {
+          logger.debug('[OnboardingContext] Parakeet ya descargando, skip');
+          return;
+        }
+
+        const corrupted = models.find((m) => {
+          if (m.name !== PARAKEET_MODEL) return false;
+          if (!m.status) return false;
+          if (typeof m.status === 'object') return 'Corrupted' in m.status;
+          return m.status === 'Corrupted';
+        });
+        if (corrupted) {
+          logger.debug('[OnboardingContext] Modelo Parakeet corrupto, borrando antes de re-descargar');
+          await invoke('parakeet_delete_corrupted_model', { modelName: PARAKEET_MODEL });
+        }
+
+        logger.debug('[OnboardingContext] Iniciando descarga de Parakeet:', PARAKEET_MODEL);
         invoke('parakeet_download_model', { modelName: PARAKEET_MODEL })
           .catch(err => console.error('[OnboardingContext] Parakeet download failed:', err));
+      } catch (err) {
+        console.error('[OnboardingContext] startParakeet error:', err);
       }
+    };
 
-      // Start Gemma download after a delay to prioritize Parakeet bandwidth
-      if (includeGemma && !summaryModelDownloaded) {
-        setTimeout(() => {
-          logger.debug('[OnboardingContext] Starting Gemma download (delayed to prioritize Parakeet)');
-          invoke('builtin_ai_download_model', { modelName: selectedSummaryModel || 'gemma3:4b' })
-            .catch(err => console.error('[OnboardingContext] Gemma download failed:', err));
-        }, 3000); // 3 second delay to give Parakeet priority
+    // --- Gemma / builtin-ai ---
+    const startGemma = async () => {
+      const gemmaModel = selectedSummaryModel || 'gemma3:4b';
+      try {
+        const isReady = await invoke<boolean>('builtin_ai_is_model_ready', {
+          modelName: gemmaModel,
+          refresh: false,
+        });
+        if (isReady) {
+          logger.debug('[OnboardingContext] Gemma ya disponible, skip download');
+          return;
+        }
+
+        const modelInfo = await invoke<{ status: { type: string } } | null>(
+          'builtin_ai_get_model_info',
+          { modelName: gemmaModel }
+        );
+        if (modelInfo?.status?.type === 'downloading') {
+          logger.debug('[OnboardingContext] Gemma ya descargando, skip');
+          return;
+        }
+
+        logger.debug('[OnboardingContext] Iniciando descarga de Gemma:', gemmaModel);
+        invoke('builtin_ai_download_model', { modelName: gemmaModel })
+          .catch(err => console.error('[OnboardingContext] Gemma download failed:', err));
+      } catch (err) {
+        console.error('[OnboardingContext] startGemma error:', err);
       }
-    } catch (error) {
-      console.error('[OnboardingContext] Failed to start background downloads:', error);
-      setIsBackgroundDownloading(false);
-      throw error;
+    };
+
+    // Parakeet primero; Gemma con 3s de delay para priorizar ancho de banda
+    void startParakeet();
+    if (includeGemma) {
+      setTimeout(() => {
+        void startGemma();
+      }, 3000);
     }
   };
 

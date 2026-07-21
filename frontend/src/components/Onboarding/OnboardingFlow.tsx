@@ -3,7 +3,6 @@ import { useOnboarding } from '@/contexts/OnboardingContext';
 import {
   WelcomeStep,
   PermissionsStep,
-  ModelDownloadStep,
 } from './steps';
 
 interface OnboardingFlowProps {
@@ -20,16 +19,17 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
     }
   }, [completed, onComplete]);
 
-  // 3-Step Onboarding Flow:
-  // Step 1: Welcome - Introduce Maity features
-  // Step 2: Permissions - Request mic + system audio (macOS only; Windows skips to step 3)
-  // Step 3: Model Download - Download Gemma 3 1B (tips) + 4B (analysis)
+  // Onboarding Flow (una sola pantalla de arranque de descargas):
+  // Step 1: Welcome ("Bienvenido a Maity") - logo + features; su botón "Comenzar y descargar"
+  //   arranca Parakeet + Gemma en background (startBackgroundDownloads) y avanza sin bloquear.
+  //   En Windows va directo al registro; en macOS pasa por permisos (paso 2) mientras descarga.
+  // Step 2: Permissions - Request mic + system audio (solo macOS).
+  // (La antigua pantalla "Tu IA personal"/ModelDownloadStep fue eliminada: es una sola.)
 
   return (
     <div className="onboarding-flow">
       {currentStep === 1 && <WelcomeStep />}
       {currentStep === 2 && <PermissionsStep />}
-      {currentStep === 3 && <ModelDownloadStep />}
     </div>
   );
 }

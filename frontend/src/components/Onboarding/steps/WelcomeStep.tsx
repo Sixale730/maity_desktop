@@ -1,11 +1,19 @@
 import React, { useEffect, useState } from 'react';
-import { ShieldCheck, Mic, Sparkles } from 'lucide-react';
+import { ShieldCheck, Mic, Sparkles, Download } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { OnboardingContainer } from '../OnboardingContainer';
 import { useOnboarding } from '@/contexts/OnboardingContext';
 
+// Tamaños aproximados de los modelos (MB). El de análisis (Gemma) depende de la
+// plataforma: gemma3:1b (~1 GB) en Windows/RAM<16GB, gemma3:4b (~2.4 GB) en macOS>16GB.
+const GEMMA_SIZE_MB: Record<string, number> = {
+  'gemma3:1b': 1019,
+  'gemma3:4b': 2374,
+};
+const PARAKEET_SIZE_MB = 600;
+
 export function WelcomeStep() {
-  const { goNext, goToStep } = useOnboarding();
+  const { goNext, completeOnboarding, startBackgroundDownloads, selectedSummaryModel } = useOnboarding();
   const [isMac, setIsMac] = useState(false);
 
   useEffect(() => {
@@ -20,11 +28,17 @@ export function WelcomeStep() {
     checkPlatform();
   }, []);
 
+  const gemmaSizeMb = GEMMA_SIZE_MB[selectedSummaryModel] ?? GEMMA_SIZE_MB['gemma3:4b'];
+  const totalGb = ((PARAKEET_SIZE_MB + gemmaSizeMb) / 1024).toFixed(1);
+
+  // Único punto de arranque de descargas: con este botón empieza a descargar
+  // (Parakeet + Gemma en background) y avanza. En macOS pasa antes por permisos.
   const handleStart = () => {
+    void startBackgroundDownloads(true);
     if (isMac) {
-      goNext();       // macOS → paso 2 (Permisos)
+      goNext();               // macOS → paso 2 (Permisos); la descarga sigue en background
     } else {
-      goToStep(3);    // Windows → salta permisos, va directo a descarga de modelos
+      void completeOnboarding(); // Windows → directo al registro
     }
   };
 
@@ -50,12 +64,18 @@ export function WelcomeStep() {
       step={1}
       hideProgress={true}
     >
-      <div className="flex flex-col items-center space-y-10">
-        {/* Divider */}
-        <div className="w-16 h-px bg-[#b0b0b3] dark:bg-gray-600" />
+      <div className="flex flex-col items-center space-y-8">
+        {/* Logo */}
+        <img
+          src="icon_128x128.png"
+          alt="Maity"
+          width={80}
+          height={80}
+          className="w-20 h-20 rounded-2xl shadow-sm"
+        />
 
         {/* Features Card */}
-        <div className="w-full max-w-md bg-white dark:bg-gray-800/50 rounded-lg border border-[#e7e7e9] dark:border-gray-700 shadow-sm p-6 space-y-4">
+        <div className="w-full max-w-md mx-auto bg-white dark:bg-gray-800/50 rounded-lg border border-[#e7e7e9] dark:border-gray-700 shadow-sm p-6 space-y-4">
           {features.map((feature, index) => {
             const Icon = feature.icon;
             return (
@@ -71,13 +91,20 @@ export function WelcomeStep() {
           })}
         </div>
 
-        {/* CTA Section */}
-        <div className="w-full max-w-xs">
+        {/* Nota de descarga de modelos */}
+        <p className="text-xs text-[#6a6a6d] dark:text-gray-400 text-center max-w-md mx-auto">
+          Al comenzar se descargan los modelos locales (voz + análisis, ~{totalGb} GB, solo la
+          primera vez). Puedes continuar con tu registro mientras se descargan en segundo plano.
+        </p>
+
+        {/* CTA */}
+        <div className="w-full max-w-xs mx-auto">
           <Button
             onClick={handleStart}
             className="w-full h-11 bg-[#1bea9a] hover:bg-[#17d48b] text-gray-900 font-medium"
           >
-            Comenzar
+            <Download className="w-4 h-4 mr-2" />
+            Comenzar y descargar
           </Button>
         </div>
       </div>
