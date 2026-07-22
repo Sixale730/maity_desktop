@@ -277,9 +277,9 @@ export default function Home() {
     {(hasMicrophone || isRecording) &&
       status !== RecordingStatus.PROCESSING_TRANSCRIPTS &&
       status !== RecordingStatus.SAVING && (
-        <div className="fixed bottom-0 left-0 right-0 z-50 pb-12 pt-4 bg-gradient-to-t from-[#0a0a1a] via-[#0a0a1a]/95 to-transparent">
+        <div className="fixed bottom-0 left-0 right-0 z-30 pb-12 pt-4 bg-gradient-to-t from-[#0a0a1a] via-[#0a0a1a]/95 to-transparent pointer-events-none">
           <div
-            className="flex flex-col items-center pl-8 transition-[margin] duration-300"
+            className="flex flex-col items-center pl-8 transition-[margin] duration-300 pointer-events-auto"
             style={{
               marginLeft: sidebarCollapsed ? '4rem' : '16rem'
             }}
@@ -319,9 +319,9 @@ export default function Home() {
     {!hasMicrophone && !isRecording && !isCheckingPermissions &&
       status !== RecordingStatus.PROCESSING_TRANSCRIPTS &&
       status !== RecordingStatus.SAVING && (
-        <div className="fixed bottom-0 left-0 right-0 z-50 pb-12 pt-4 bg-gradient-to-t from-[#0a0a1a] via-[#0a0a1a]/95 to-transparent">
+        <div className="fixed bottom-0 left-0 right-0 z-30 pb-12 pt-4 bg-gradient-to-t from-[#0a0a1a] via-[#0a0a1a]/95 to-transparent pointer-events-none">
           <div
-            className="flex justify-center pl-8 transition-[margin] duration-300"
+            className="flex justify-center pl-8 transition-[margin] duration-300 pointer-events-auto"
             style={{
               marginLeft: sidebarCollapsed ? '4rem' : '16rem'
             }}

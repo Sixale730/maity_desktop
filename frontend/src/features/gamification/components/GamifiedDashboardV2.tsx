@@ -1,7 +1,7 @@
 'use client';
 
 import { useMemo } from 'react';
-import { useRouter } from 'next/navigation';
+import { useRouter, usePathname } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { useGamifiedDashboardDataV2 } from '../hooks/useGamifiedDashboardDataV2';
 import { useProgressChartsData } from '../hooks/useProgressChartsData';
@@ -107,8 +107,21 @@ const LetterAvatar = ({ name }: { name: string }) => {
 
 export function GamifiedDashboardV2() {
   const router = useRouter();
+  const pathname = usePathname();
   const { maityUser } = useAuth();
   const data = useGamifiedDashboardDataV2();
+
+  // Arranca la grabación reutilizando el puente que ya usa el Sidebar:
+  // en la home despacha el evento directo; desde otra ruta setea el flag
+  // autoStartRecording y navega a la home (consumido en useRecordingStart).
+  const handleStartRecording = () => {
+    if (pathname === '/') {
+      window.dispatchEvent(new CustomEvent('start-recording-from-sidebar'));
+    } else {
+      sessionStorage.setItem('autoStartRecording', 'true');
+      router.push('/');
+    }
+  };
   const { radarData, sessionHistory } = useProgressChartsData(data.conversations);
   const { radarData: selfAssessmentData } = useFormResponsesRadar();
 
@@ -305,7 +318,7 @@ export function GamifiedDashboardV2() {
                 Tu progreso de comunicación aparecerá aquí cuando analices tu primera grabación.
               </p>
               <button
-                onClick={() => router.push('/')}
+                onClick={handleStartRecording}
                 className="bg-gradient-to-r from-[#ff0050] to-[#485df4] hover:opacity-90 text-white font-bold px-6 py-3 rounded-xl shadow-lg shadow-pink-500/30 hover:-translate-y-0.5 transition-all flex items-center gap-2"
               >
                 <Sparkles size={18} /> Empezar a grabar
@@ -348,7 +361,7 @@ export function GamifiedDashboardV2() {
                 Graba 1 conversación más para desbloquear tu gráfica de tendencia.
               </p>
               <button
-                onClick={() => router.push('/')}
+                onClick={handleStartRecording}
                 className="bg-gradient-to-r from-[#ff0050] to-[#485df4] hover:opacity-90 text-white font-bold px-6 py-3 rounded-xl shadow-lg shadow-pink-500/30 hover:-translate-y-0.5 transition-all flex items-center gap-2"
               >
                 <Sparkles size={18} /> Grabar otra

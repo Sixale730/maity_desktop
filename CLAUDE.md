@@ -523,6 +523,20 @@ El componente `GamifiedDashboardV2.tsx` y el Card de "Mision Actual" tienen regl
 
 **Si necesitas cambiar el split 50/50 dentro del Card,** modificar AMBOS lados con anchos consistentes (ej. `w-[55%]` + `w-[45%]`) sin breakpoints. Probar con DPI 125% y 150% en Windows antes de mergear.
 
+**Botones "Empezar a grabar" / "Grabar otra" (estados vacíos del dashboard):** NO usar `router.push('/')` — el dashboard se renderiza EN la home (`app/page.tsx`), así que navegar a `/` es un no-op y el botón "no hace nada". Deben reutilizar el puente de grabación del Sidebar (`handleStartRecording` en `GamifiedDashboardV2.tsx`): si `pathname === '/'` → `window.dispatchEvent(new CustomEvent('start-recording-from-sidebar'))` (escuchado en `useRecordingStart.ts`); si no → `sessionStorage.setItem('autoStartRecording','true')` + `router.push('/')` (consumido al montar la home). Es el MISMO mecanismo que el botón "Iniciar Grabación" del Sidebar (`SidebarProvider.tsx` → `handleRecordingToggle`).
+
+### Overlay flotante de grabación (píldora inferior) — stacking vs. Sidebar
+
+La píldora de grabación y el banner "no se detectó micrófono" (`app/page.tsx`) viven en un contenedor `fixed bottom-0 left-0 right-0` de ancho completo con gradiente decorativo `bg-gradient-to-t from-[#0a0a1a] ...`. Reglas para que NO tape el Sidebar:
+- El contenedor externo va en **`z-30`** (por debajo del Sidebar `z-40`, que es opaco `bg-background`) → el Sidebar se pinta encima en su región y sus botones inferiores ("Configuración", "Acerca de", versión) quedan visibles y clicables. NO subirlo a `z-50` (regresión: la sombra tapa el menú lateral).
+- El contenedor externo lleva **`pointer-events-none`** (el gradiente es decorativo) y el wrapper interior interactivo lleva **`pointer-events-auto`** → solo la píldora/banner reciben clics, el gradiente nunca bloquea al Sidebar ni al contenido del dashboard.
+- La píldora interior se desplaza con `marginLeft` (`4rem`/`16rem` según `sidebarCollapsed`) para quedar en el área de contenido; sus dropdowns (`InlineDeviceSelector`, `z-[60]`) abren hacia arriba sin solaparse con el Sidebar.
+
+### Header del Sidebar
+
+- **Logo (`components/shared/Logo.tsx`):** rama no-colapsada muestra `/logo-collapsed.png` (28×28) + wordmark "Maity" con `text-foreground` (respeta la paleta del tema). NO usar la vieja píldora con `bg-[#f0f2fe]`/`dark:bg-blue-900/30` (fondo azul que no combina). Sigue siendo `DialogTrigger` → abre "Acerca de".
+- **Búsqueda eliminada:** el input "Buscar contenido de reunión" fue removido de `Sidebar/index.tsx`. La infraestructura de búsqueda subyacente (`searchQuery`, `filteredSidebarItems`, `filteredConversations`, `searchResults`) permanece pero queda **inerte** (`searchQuery` siempre `''` → filtros devuelven la lista base). Si se reintroduce la búsqueda, volver a cablear un input a `setSearchQuery` + `searchTranscripts` (comando Tauri `api_search_transcripts`).
+
 ## Depuracion
 
 ```bash

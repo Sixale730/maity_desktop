@@ -19,9 +19,10 @@ const Logo = React.forwardRef<HTMLButtonElement, LogoProps>(({ isCollapsed }, re
         </DialogTrigger>
       ) : (
         <DialogTrigger asChild>
-          <span className="text-lg text-center border rounded-full bg-[#f0f2fe] dark:bg-blue-900/30 border-white font-semibold text-[#3a3a3c] dark:text-gray-200 mb-2 block items-center cursor-pointer hover:opacity-80 transition-opacity">
-            <span>Maity</span>
-          </span>
+          <button ref={ref} className="flex items-center gap-2 mb-2 cursor-pointer bg-transparent border-none p-0 hover:opacity-80 transition-opacity">
+            <Image src="/logo-collapsed.png" alt="Maity" width={28} height={28} />
+            <span className="text-lg font-semibold text-foreground">Maity</span>
+          </button>
         </DialogTrigger>
       )}
       <DialogContent>
