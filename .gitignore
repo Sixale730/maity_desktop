@@ -115,5 +115,6 @@ graphify-out/
 
 # Staging temporal para empaquetar MSIX (skill store-msix)
 /msix_staging/
+frontend/msix_staging/
 *.msix
 Sixale.Maity_cert.pfx
