@@ -30,11 +30,26 @@ pub struct MeetingDetectorSettings {
     /// How often to check for meetings (in seconds)
     pub check_interval_seconds: u32,
 
+    /// Minutos que deben pasar antes de volver a notificar la MISMA app, aunque
+    /// vuelva a detectarse un flanco de subida. Evita el spam por reaperturas.
+    ///
+    /// `#[serde(default)]` es OBLIGATORIO: `load_settings` deserializa un JSON que
+    /// ya puede existir en disco de versiones anteriores. Sin el default, el parse
+    /// fallaría y `initialize()` (que usa `.unwrap_or_default()`) resetearía
+    /// silenciosamente TODAS las preferencias del usuario.
+    #[serde(default = "default_cooldown_minutes")]
+    pub notify_cooldown_minutes: u32,
+
     /// Whether to remember user's choice for each app
     pub remember_choices: bool,
 
     /// User's choices for each app (auto-record, ignore, always ask)
     pub app_choices: Vec<AppChoice>,
+}
+
+/// Default del cooldown de notificación por app (minutos).
+fn default_cooldown_minutes() -> u32 {
+    30
 }
 
 /// Which meeting apps to monitor
@@ -76,6 +91,7 @@ impl Default for MeetingDetectorSettings {
             show_detection_notification: true,
             monitored_apps: MonitoredApps::default(),
             check_interval_seconds: 5,
+            notify_cooldown_minutes: default_cooldown_minutes(),
             remember_choices: true,
             app_choices: Vec::new(),
         }
@@ -210,5 +226,48 @@ mod tests {
             settings.get_app_action(&MeetingApp::MicrosoftTeams),
             AppAction::AlwaysAsk
         );
+    }
+
+    #[test]
+    fn test_ignore_always_persists_as_choice() {
+        // "Ignorar siempre" (Fase 4) escribe un AppChoice de Ignore que
+        // get_app_action debe respetar en detecciones futuras.
+        let mut settings = MeetingDetectorSettings::default();
+        settings.set_app_action(MeetingApp::Zoom, AppAction::Ignore);
+        assert_eq!(settings.get_app_action(&MeetingApp::Zoom), AppAction::Ignore);
+    }
+
+    #[test]
+    fn test_default_cooldown_minutes() {
+        assert_eq!(MeetingDetectorSettings::default().notify_cooldown_minutes, 30);
+    }
+
+    #[test]
+    fn test_deserialize_legacy_settings_without_cooldown() {
+        // JSON de una versión anterior SIN notify_cooldown_minutes: debe
+        // deserializar OK (default 30) y conservar el resto de campos, no fallar.
+        // Si fallara, initialize() resetearía todas las preferencias del usuario.
+        let legacy = r#"{
+            "enabled": false,
+            "auto_record": true,
+            "auto_record_delay_seconds": 5,
+            "show_detection_notification": true,
+            "monitored_apps": {
+                "zoom": true, "microsoft_teams": false, "google_meet": true,
+                "webex": true, "slack": false, "discord": false, "skype": true
+            },
+            "check_interval_seconds": 10,
+            "remember_choices": true,
+            "app_choices": []
+        }"#;
+
+        let settings: MeetingDetectorSettings =
+            serde_json::from_str(legacy).expect("legacy settings must deserialize");
+
+        assert_eq!(settings.notify_cooldown_minutes, 30); // default aplicado
+        assert!(!settings.enabled);                       // resto conservado
+        assert!(settings.auto_record);
+        assert_eq!(settings.check_interval_seconds, 10);
+        assert!(!settings.monitored_apps.microsoft_teams);
     }
 }

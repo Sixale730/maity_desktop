@@ -109,6 +109,10 @@ pub async fn respond_to_meeting_detection(
     pid: u32,
     action: String,
     meeting_name: Option<String>,
+    // La app detectada; el frontend la reenvía tal cual (MeetingApp deriva
+    // Serialize/Deserialize, así que round-trip sin conversión). Necesaria para
+    // persistir "ignorar/auto-grabar siempre" contra la app correcta.
+    app: Option<MeetingApp>,
     state: State<'_, MeetingDetectorState>,
 ) -> Result<(), String> {
     info!("User response to meeting detection: pid={}, action={}", pid, action);
@@ -120,8 +124,19 @@ pub async fn respond_to_meeting_detection(
             }
         }
         "ignore" => UserResponseAction::Ignore,
-        "ignore_always" => UserResponseAction::IgnoreAlways,
-        "auto_record_always" => UserResponseAction::AutoRecordAlways,
+        // Las variantes "always" necesitan la app para persistir la elección. Si
+        // por lo que sea no llegó, degradamos a la acción de una sola vez en vez
+        // de fallar (mejor ignorar esta reunión que romper el flujo del usuario).
+        "ignore_always" => match app {
+            Some(app) => UserResponseAction::IgnoreAlways { app },
+            None => UserResponseAction::Ignore,
+        },
+        "auto_record_always" => match app {
+            Some(app) => UserResponseAction::AutoRecordAlways { app },
+            None => UserResponseAction::StartRecording {
+                meeting_name: meeting_name.unwrap_or_else(|| "Meeting".to_string()),
+            },
+        },
         _ => return Err(format!("Unknown action: {}", action)),
     };
 

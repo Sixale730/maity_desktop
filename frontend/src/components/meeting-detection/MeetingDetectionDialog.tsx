@@ -111,7 +111,20 @@ export function MeetingDetectionDialog() {
         const { meeting, action } = event.payload
         logger.debug('[MeetingDetection] Detected:', meeting, 'Action:', action)
 
-        const busyStatuses = [RecordingStatus.STOPPING, RecordingStatus.PROCESSING_TRANSCRIPTS, RecordingStatus.SAVING]
+        // Suprimir el diálogo en CUALQUIER fase de una sesión de grabación. Rust ya
+        // tiene su propio gate (recording_phase != Idle), pero esta lista cubre los
+        // estados UI-only que Rust no conoce (PROCESSING_TRANSCRIPTS/SAVING): la
+        // máquina de Rust vuelve a Idle en cuanto para la captura, mientras el
+        // frontend sigue procesando/guardando. Lista EXPLÍCITA, no `!== IDLE`: si el
+        // estado quedara atascado en COMPLETED/ERROR, `!== IDLE` mataría el detector
+        // para siempre.
+        const busyStatuses = [
+          RecordingStatus.STARTING,
+          RecordingStatus.RECORDING,
+          RecordingStatus.STOPPING,
+          RecordingStatus.PROCESSING_TRANSCRIPTS,
+          RecordingStatus.SAVING,
+        ]
         if (isRecordingRef.current || busyStatuses.includes(statusRef.current)) {
           logger.debug('[MeetingDetection] Recording active or stopping, suppressing detection')
           return
@@ -194,6 +207,7 @@ export function MeetingDetectionDialog() {
         pid: currentMeeting.pid,
         action: rememberChoice ? 'auto_record_always' : 'start_recording',
         meetingName: meetingName,
+        app: currentMeeting.app, // necesaria para persistir "auto_record_always"
       })
 
       // Wait for recording to actually start
@@ -224,6 +238,7 @@ export function MeetingDetectionDialog() {
         pid: currentMeeting.pid,
         action: rememberChoice ? 'ignore_always' : 'ignore',
         meetingName: null,
+        app: currentMeeting.app, // necesaria para persistir "ignore_always"
       })
 
       setIsOpen(false)

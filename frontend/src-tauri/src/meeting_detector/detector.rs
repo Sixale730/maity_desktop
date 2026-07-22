@@ -9,8 +9,9 @@ use tauri::{AppHandle, Emitter, Runtime};
 use log::{info, error, debug};
 use anyhow::Result;
 
-use super::process_monitor::{ProcessMonitor, DetectedMeeting};
+use super::process_monitor::{ProcessMonitor, DetectedMeeting, MeetingApp};
 use super::settings::{MeetingDetectorSettings, AppAction, load_settings, save_settings};
+use crate::audio::recording_phase::{current_phase, RecordingPhase};
 use crate::events;
 
 /// Events emitted by the meeting detector
@@ -45,10 +46,10 @@ pub enum UserResponseAction {
     StartRecording { meeting_name: String },
     /// Ignore this meeting
     Ignore,
-    /// Ignore and remember for this app
-    IgnoreAlways,
-    /// Auto-record and remember for this app
-    AutoRecordAlways,
+    /// Ignore and remember for this app (persiste AppAction::Ignore).
+    IgnoreAlways { app: MeetingApp },
+    /// Auto-record and remember for this app (persiste AppAction::AutoRecord).
+    AutoRecordAlways { app: MeetingApp },
 }
 
 /// The meeting detector service
@@ -195,8 +196,19 @@ async fn run_detector_loop<R: Runtime>(
                     continue;
                 }
 
-                // Detect new meetings
-                let detected = process_monitor.write().await.detect_meetings();
+                // Gate de grabación: si hay una sesión en curso (o arrancando/parando),
+                // NO detectar. Es un `continue` ANTES de detectar a propósito: si
+                // detectáramos y descartáramos, la app quedaría marcada como "presente"
+                // y al terminar de grabar esa reunión nunca volvería a avisar.
+                if current_phase() != RecordingPhase::Idle {
+                    continue;
+                }
+
+                // Detect new meetings (flanco de subida por app + cooldown)
+                let detected = process_monitor
+                    .write()
+                    .await
+                    .detect_meetings(current_settings.notify_cooldown_minutes);
 
                 for meeting in detected {
                     // Check if this app is being monitored
@@ -288,7 +300,7 @@ fn emit_meeting_detected<R: Runtime>(
 /// Handle user's response to a meeting detection
 async fn handle_user_response<R: Runtime>(
     app_handle: &AppHandle<R>,
-    _settings: &Arc<RwLock<MeetingDetectorSettings>>,
+    settings: &Arc<RwLock<MeetingDetectorSettings>>,
     process_monitor: &Arc<RwLock<ProcessMonitor>>,
     pid: u32,
     action: UserResponseAction,
@@ -306,14 +318,33 @@ async fn handle_user_response<R: Runtime>(
             info!("User chose to ignore meeting");
             process_monitor.write().await.ignore_pid(pid);
         }
-        UserResponseAction::IgnoreAlways => {
-            info!("User chose to always ignore this app");
-            // Would need the app info to set this properly
+        UserResponseAction::IgnoreAlways { app } => {
+            info!("User chose to always ignore {}", app.display_name());
             process_monitor.write().await.ignore_pid(pid);
+            persist_app_action(app_handle, settings, app, AppAction::Ignore).await;
         }
-        UserResponseAction::AutoRecordAlways => {
-            info!("User chose to always auto-record this app");
-            // Would need the app info to set this properly
+        UserResponseAction::AutoRecordAlways { app } => {
+            info!("User chose to always auto-record {}", app.display_name());
+            persist_app_action(app_handle, settings, app, AppAction::AutoRecord).await;
         }
+    }
+}
+
+/// Persiste la elección del usuario para una app (`Ignorar siempre` /
+/// `Auto-grabar siempre`) tanto en memoria como en disco, de modo que las
+/// detecciones futuras la respeten vía `get_app_action`.
+async fn persist_app_action<R: Runtime>(
+    app_handle: &AppHandle<R>,
+    settings: &Arc<RwLock<MeetingDetectorSettings>>,
+    app: MeetingApp,
+    action: AppAction,
+) {
+    let updated = {
+        let mut guard = settings.write().await;
+        guard.set_app_action(app, action);
+        guard.clone()
+    };
+    if let Err(e) = save_settings(app_handle, &updated).await {
+        error!("Failed to persist meeting app choice: {}", e);
     }
 }

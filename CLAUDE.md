@@ -628,6 +628,40 @@ Detecta Zoom, Teams y Google Meet en ejecucion. Puede auto-iniciar grabacion.
 | `meeting_detector/commands.rs` | Comandos Tauri |
 | `components/meeting-detection/` | UI de dialogo y settings |
 
+### Criterio de deteccion (rediseño anti-falsos-positivos, jul-2026)
+
+El detector historicamente arrojaba un diálogo falso al dia sin abrir nada. Causa:
+detectaba **procesos abiertos**, no reuniones, con reglas laxas. Reglas actuales:
+
+1. **Match EXACTO del nombre de ejecutable** (`match_main_app` en `process_monitor.rs`),
+   nunca `contains()`. Antes `"zoom"` suelto disparaba con `ZoomIt`, `"teams"` con
+   `TeamsUpdate`, `"skype"` con `SkypeBackgroundHost`. **NO reintroducir subcadenas
+   genericas** en `get_process_patterns()`.
+2. **Dedup por app + flanco de subida**: se notifica UNA vez cuando la app pasa de
+   ausente a presente, no una vez por PID. Antes cada worker que Teams/Zoom reciclaba
+   en background nacia con un PID nuevo → deteccion nueva → falso diario.
+   `ProcessMonitor` mantiene `apps_present` (tick anterior) + `last_notified` (cooldown).
+3. **Cooldown por app**: `settings.notify_cooldown_minutes` (default 30). No re-notifica
+   la misma app hasta que expira, aunque vuelva a haber flanco de subida.
+4. **Gate de grabacion**: el loop del detector (`detector.rs`) hace `continue` si
+   `audio::recording_phase::current_phase() != Idle`, ANTES de detectar (si detectara y
+   descartara, la app quedaria marcada "presente" y no volveria a avisar tras grabar). El
+   frontend (`MeetingDetectionDialog.tsx`) complementa suprimiendo tambien los estados
+   UI-only que Rust no conoce (PROCESSING_TRANSCRIPTS/SAVING) con lista EXPLICITA, no `!== IDLE`.
+5. **"Ignorar/Auto-grabar siempre" funcional**: `UserResponseAction::{IgnoreAlways,
+   AutoRecordAlways}` llevan `app: MeetingApp`; `respond_to_meeting_detection` recibe
+   `app: Option<MeetingApp>` del frontend y `handle_user_response` persiste via
+   `set_app_action` + `save_settings`. `get_app_action` consulta `app_choices` primero.
+
+> **Compatibilidad de settings**: `meeting_detector_settings.json` se lee de disco de
+> versiones anteriores. Todo campo NUEVO en `MeetingDetectorSettings` DEBE llevar
+> `#[serde(default = "...")]` — sin el, el parse falla y `initialize()` (que usa
+> `.unwrap_or_default()`) resetea SILENCIOSAMENTE todas las preferencias del usuario.
+
+> **Fuera de alcance (PR futuro)**: señal real de reunion via micro-en-uso
+> (`CapabilityAccessManager` en Windows) y deteccion de Google Meet (hoy los
+> `browser_patterns` son codigo muerto; requiere leer titulos de ventana del navegador).
+
 ## Sistema de Roles (Developer vs Usuario Regular)
 
 - **Developers**: Emails con dominio `@asertio.mx` o `@maity.cloud` -> interfaz completa
