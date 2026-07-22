@@ -12,7 +12,7 @@
         "tauri:dev": "node scripts/tauri-auto.js dev",
         "tauri:build": "node scripts/run-pre-build-checks.js && node scripts/tauri-auto.js build",
         "tauri:build:debug": "node scripts/run-pre-build-checks.js && node scripts/tauri-auto.js build --debug && node scripts/run-post-build-checks.js",
-        "tauri:build:store": "node scripts/verify-migrations-lf.js && tauri build --no-bundle",
+        "tauri:build:store": "node scripts/stage-vcredist.js && node scripts/verify-migrations-lf.js && tauri build --no-bundle",
     "tauri:build:skip-checks": "node scripts/tauri-auto.js build",
         "tauri:build:debug:skip-checks": "node scripts/tauri-auto.js build --debug",
         "tauri:dev:cpu": "tauri dev",

@@ -36,6 +36,24 @@ function resolveBash() {
 
 const BASH = resolveBash();
 
+// Primero de todo: el VC++ Runtime tiene que estar staged ANTES de que el
+// bundler recoja bundle.resources (ver stage-vcredist.js).
+console.log('[pre-build] Staging VC++ Runtime redistributable...');
+const vcredistResult = spawnSync(process.execPath, [path.join(__dirname, 'stage-vcredist.js')], {
+    stdio: 'inherit',
+    shell: false,
+});
+
+if (vcredistResult.status !== 0) {
+    console.error('');
+    console.error('[pre-build] FAIL: no se pudo stagear el VC++ Runtime.');
+    console.error('  Sin msvcp140/vcruntime140 junto al .exe, Maity no arranca en un Windows');
+    console.error('  limpio (crash "MSVCP140.dll was not found" — cert Store 10.2.4.1).');
+    process.exit(1);
+}
+
+console.log('[pre-build] OK: VC++ Runtime staged');
+
 console.log('[pre-build] Running state-access lint...');
 
 const result = spawnSync(BASH, [BASH_LINT_SCRIPT], {

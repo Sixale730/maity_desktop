@@ -89,15 +89,22 @@ El exe queda en **`C:\maity_desktop\target\debug\maity-desktop.exe`** (¡el `tar
 Copiar a un folder de staging (junto al manifest):
 - `maity-desktop.exe` + `llama-helper.exe` → de `target/release/` (o `target/debug/`).
 - `ffmpeg.exe` + `ffprobe.exe` → **de `target/debug/`** (⚠️ el build release con `--no-bundle` NO copia ffmpeg al output; se necesitan para guardar grabaciones — encode PCM→AAC/MP4).
-- `Package.appxmanifest`, `Assets/`, `templates/` (de `frontend/src-tauri/templates/`).
+- **`msvcp140.dll`, `msvcp140_1.dll`, `vcruntime140.dll`, `vcruntime140_1.dll`** → de `frontend/src-tauri/vcredist/` (los deja ahí `scripts/stage-vcredist.js`, que corre dentro de `tauri:build:store`). **OBLIGATORIOS** — sin ellos la app no arranca en un Windows limpio; es lo que rebotó la certificación 10.2.4.1 (ver Gotchas).
+- `Package.appxmanifest` (⚠️ el **fresco** de `frontend/`, no el que quedó en el staging de la corrida anterior: se desfasa en cada bump de versión), `Assets/`, `templates/` (de `frontend/src-tauri/templates/`).
 - **NO** hace falta `app_lib.dll` (el exe enlaza el lib estático) ni `WebView2Loader.dll` (Tauri 2 lo enlaza estático).
+
+Verificar antes de empaquetar que el staging tenga los 4 DLLs y que el manifest sea el de la versión que estás publicando:
+```powershell
+Get-ChildItem <staging>\*.dll | Select-Object Name, Length
+Select-String -Path <staging>\Package.appxmanifest -Pattern 'Version='
+```
 
 ### 5. Iterar rápido con `winapp run` (opcional — loop de desarrollo)
 
 ```powershell
 winapp run "<staging>" --detach --exe maity-desktop.exe
 ```
-Registra identidad de paquete desde archivos sueltos y lanza Maity — **sin validar firma, cero certificados** (por eso esta ruta no pide nada). Útil para iterar: recompilar → copiar exe al staging → `winapp run` otra vez. Recordar el gotcha del `AppX\` (ver Gotchas). Limpiar después:
+Registra identidad de paquete desde archivos sueltos y lanza Maity — **sin validar firma, cero certificados** (por eso esta ruta no pide nada). Útil para iterar: recompilar → copiar exe al staging → `winapp run` otra vez. Recordar el gotcha del `AppX\` (ver Gotchas: hay que re-copiar a mano ffmpeg/ffprobe/llama-helper/templates **y los 4 DLLs del VC++ Runtime**). Limpiar después:
 ```powershell
 taskkill /F /IM maity-desktop.exe
 Get-AppxPackage -Name Sixale.Maity | Remove-AppxPackage
@@ -243,7 +250,18 @@ Un usuario puede terminar con NSIS **y** Store a la vez → dos entradas en el m
 
 ## Gotchas (aprendidos 2026-07-16)
 
-- **⚠️ `winapp run` NO registra el staging tal cual** (descubierto 2026-07-20): construye una subcarpeta `<staging>\AppX\` con SOLO lo que el manifest declara (exe + `Assets\` + pri) y **descarta el payload suelto** (ffmpeg.exe, ffprobe.exe, llama-helper.exe, templates\). Síntoma: la app corre y transcribe, pero `recording_saver` truena en cada chunk con `Failed to spawn FFmpeg process: os error 2` (miles de errores) y el coach no arranca (sidecar ausente). **Fix: DESPUÉS de `winapp run`, copiar esos 4 elementos dentro de `<staging>\AppX\`** — funciona en caliente con la app corriendo (CreateProcess busca primero en el dir del exe; el incremental saver retiene el PCM en RAM y drena el backlog al aparecer ffmpeg, sin pérdida de audio). Verificar en logs (`%LOCALAPPDATA%\Maity\logs\`) que los `Saved checkpoint N` fluyan cada 30s sin errores.
+- **⚠️ El VC++ Runtime debe ir DENTRO del paquete** (incidente de certificación 2026-07-17). El reporte volvió **"Pass with required fix"** con la política **10.2.4.1 Security - Software Dependencies** (*"Undisclosed software: C++"*) y una captura del crash real en la máquina de certificación: `The code execution cannot proceed because MSVCP140.dll was not found`.
+  - **Causa:** el binario es Rust pero enlaza C++ compilado con `/MD` (whisper.cpp, ONNX Runtime, `llama-helper`) → depende de `MSVCP140.dll` / `MSVCP140_1.dll` / `VCRUNTIME140.dll` / `VCRUNTIME140_1.dll`. **En cualquier máquina de desarrollo ese runtime ya está instalado** (lo meten VS, Office, Steam, juegos) — por eso el bug fue invisible durante meses. **La máquina de certificación es un Windows limpio.** El `.exe` NSIS de GitHub Releases tenía exactamente el mismo bug.
+  - **Fix (implementado):** `frontend/scripts/stage-vcredist.js` copia los 4 DLLs del VC Redist del VS Build Tools a `frontend/src-tauri/vcredist/` (gitignored, se regenera en cada build para que la versión coincida con el toolset que compiló). Corre dentro de `run-pre-build-checks.js` y de `tauri:build:store`. Para NSIS/MSI los reparte `frontend/src-tauri/tauri.windows.conf.json` (`bundle.resources` en forma de **mapa**, destino `""` = raíz del resource dir = el dir del `.exe`); para MSIX se copian a mano al staging (§4).
+  - **Se cumple la política eliminando la dependencia, no declarándola** — no hay que tocar la descripción de la Store.
+  - **Regla general:** todo `.dll` del que dependa un binario del paquete tiene que viajar dentro. Las `api-ms-win-crt-*.dll` son la excepción: son la UCRT, parte de Windows 10+ (el manifest exige `MinVersion 10.0.18362`). Para auditar el cierre de dependencias de un payload:
+    ```bash
+    cd <staging>
+    for f in *.exe *.dll; do grep -aoiE '(msvcp|vcruntime|concrt)[a-z0-9_]*\.dll' "$f"; done | sort -u
+    ```
+    Todo lo que salga debe existir en esa carpeta.
+
+- **⚠️ `winapp run` NO registra el staging tal cual** (descubierto 2026-07-20): construye una subcarpeta `<staging>\AppX\` con SOLO lo que el manifest declara (exe + `Assets\` + pri) y **descarta el payload suelto** (ffmpeg.exe, ffprobe.exe, llama-helper.exe, templates\, y los 4 DLLs del VC++ Runtime). Síntoma: la app corre y transcribe, pero `recording_saver` truena en cada chunk con `Failed to spawn FFmpeg process: os error 2` (miles de errores) y el coach no arranca (sidecar ausente). **Fix: DESPUÉS de `winapp run`, copiar esos elementos dentro de `<staging>\AppX\`** — funciona en caliente con la app corriendo (CreateProcess busca primero en el dir del exe; el incremental saver retiene el PCM en RAM y drena el backlog al aparecer ffmpeg, sin pérdida de audio). ⚠️ Los DLLs del VC++ Runtime son la excepción: se cargan al **arrancar** el proceso, así que copiarlos en caliente no sirve — tienen que estar en `AppX\` antes de lanzar. Verificar en logs (`%LOCALAPPDATA%\Maity\logs\`) que los `Saved checkpoint N` fluyan cada 30s sin errores.
 
 - **NO hay redirección de AppData bajo MSIX** (verificado 2026-07-20) — la doc vieja del Desktop Bridge dice que sí; para `Windows.FullTrustApplication` **ya no aplica**. No diseñes migraciones de datos asumiendo aislamiento. Ver sección de convivencia de canales.
 - **`tauri build`, no `cargo build`** — cargo build debug → webview busca `localhost:3118`.
