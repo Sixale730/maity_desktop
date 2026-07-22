@@ -215,6 +215,9 @@ windows = { version = "0.58", features = [
     "Win32_Storage_Packaging_Appx",  # GetCurrentPackageFullName (detección MSIX/Store)
     "implement",                # Para implementar interfaces COM
 ] }
+# Lectura/escritura del registro de Windows para detectar y limpiar la instalación
+# rival (NSIS de descarga directa) cuando Maity corre bajo MSIX/Store. Ver rival_install.rs.
+winreg = "0.52"
 
 # Linux-specific dependencies
 # Default: CPU-only build (no BLAS)

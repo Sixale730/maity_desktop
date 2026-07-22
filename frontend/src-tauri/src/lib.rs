@@ -56,6 +56,7 @@ pub mod moonshine_engine;
 // jamás compilado dentro del binario hasta ahora. Expuesto dev-only vía settings.
 pub mod canary_engine;
 pub mod recording_pipeline;
+pub mod rival_install;
 pub mod state;
 pub mod summary;
 pub mod tray;
@@ -1417,6 +1418,10 @@ pub fn run() {
             utils::open_system_settings,
             // Deteccion de instalacion Microsoft Store (MSIX) — gatea el auto-updater
             utils::is_running_under_package_identity,
+            // Deteccion/remocion de la instalacion rival (NSIS de descarga directa) cuando
+            // Maity corre bajo MSIX/Store — evita la doble instalacion y el error de DB.
+            rival_install::get_rival_install,
+            rival_install::uninstall_rival,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

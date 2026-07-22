@@ -69,15 +69,20 @@ export function PreferenceSettings() {
   // no se debe escribir (riesgo de path inválido) — el toggle se muestra disabled.
   const [autostartEnabled, setAutostartEnabled] = useState<boolean | null>(null);
   const [isProductionBuild, setIsProductionBuild] = useState<boolean>(true);
+  // Bajo MSIX (Microsoft Store) el Run key de tauri-plugin-autostart es el mecanismo
+  // equivocado (competiría con la instalación NSIS) → el toggle se muestra deshabilitado.
+  const [isPackaged, setIsPackaged] = useState<boolean>(false);
   useEffect(() => {
     let cancelled = false;
     Promise.all([
       isAutostartEnabled().catch(() => false),
       invoke<boolean>('is_production_build').catch(() => true),
-    ]).then(([enabled, isProd]) => {
+      invoke<boolean>('is_running_under_package_identity').catch(() => false),
+    ]).then(([enabled, isProd, packaged]) => {
       if (cancelled) return;
       setAutostartEnabled(enabled);
       setIsProductionBuild(isProd);
+      setIsPackaged(packaged);
     });
     return () => { cancelled = true; };
   }, []);
@@ -277,7 +282,12 @@ export function PreferenceSettings() {
               Cuando enciendas tu computadora, Maity arrancará automáticamente en segundo plano
               {' '}— la ventana principal queda minimizada en la barra de tareas y solo aparece
               {' '}el widget flotante de grabación, listo para usar. Igual que Steam o Discord.
-              {!isProductionBuild && (
+              {isPackaged && (
+                <span className="block mt-2 text-amber-500 text-xs">
+                  La versión de Microsoft Store gestiona el arranque con el sistema; esta opción no aplica.
+                </span>
+              )}
+              {!isPackaged && !isProductionBuild && (
                 <span className="block mt-2 text-amber-500 text-xs">
                   Deshabilitado en builds de desarrollo (el path del ejecutable cambiaría con cada compilación).
                 </span>
@@ -285,9 +295,9 @@ export function PreferenceSettings() {
             </p>
           </div>
           <Switch
-            checked={autostartEnabled ?? false}
+            checked={!isPackaged && (autostartEnabled ?? false)}
             onCheckedChange={handleToggleAutostart}
-            disabled={autostartEnabled === null || !isProductionBuild}
+            disabled={autostartEnabled === null || !isProductionBuild || isPackaged}
           />
         </div>
       </div>

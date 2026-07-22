@@ -23,6 +23,7 @@ import { RecordingPostProcessingProvider } from '@/contexts/RecordingPostProcess
 import { ErrorBoundary } from '@/components/shared/ErrorBoundary'
 import { ChunkErrorRecovery } from '@/components/shared/ChunkErrorRecovery'
 import { MeetingDetectionDialog } from '@/components/meeting-detection/MeetingDetectionDialog'
+import { RivalInstallDialog } from '@/components/rival-install/RivalInstallDialog'
 import { ScheduledRecordingIndicator } from '@/components/scheduled-recording/ScheduledRecordingIndicator'
 import { ScheduledRecordingSetupGate } from '@/components/scheduled-recording/ScheduledRecordingSetupGate'
 import { scheduledRecordingService } from '@/services/scheduledRecordingService'
@@ -470,6 +471,11 @@ function AppContent({ children }: { children: React.ReactNode }) {
 
                     {/* Meeting detection dialog - listens for meeting-detected events */}
                     <MeetingDetectionDialog />
+
+                    {/* Aviso de instalación duplicada (Store ⇄ descarga directa): si Maity
+                        corre bajo MSIX y detecta la copia NSIS rival, ofrece quitarla.
+                        Consulta get_rival_install al montar (pull-based); solo Windows. */}
+                    <RivalInstallDialog />
 
                     {/* Listener global de la grabación programada por jornada:
                         traduce los eventos del scheduler Rust (best-effort) en toasts.
