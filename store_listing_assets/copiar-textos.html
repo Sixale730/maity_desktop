@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Maity — Textos de la Store (ES)</title>
+<style>
+:root{--blue:#6C6CF5;--bg:#0f1020;--card:#191a2e;--ink:#eef0f8;--muted:#a6a9c2;--line:#2a2c46}
+*{box-sizing:border-box}
+body{margin:0;font-family:"Segoe UI",system-ui,sans-serif;background:var(--bg);color:var(--ink);padding:30px 16px}
+.wrap{max-width:880px;margin:0 auto}
+h1{font-size:24px;margin:0 0 4px;display:flex;align-items:center;gap:12px}
+.sub{color:var(--muted);margin:0 0 26px;font-size:14px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px 18px 18px;margin-bottom:16px}
+.head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px}
+.head h2{font-size:15px;margin:0;letter-spacing:.2px}
+.hint{color:var(--muted);font-size:12px;font-weight:400}
+pre{white-space:pre-wrap;word-wrap:break-word;margin:0;font:inherit;color:var(--ink);line-height:1.55;font-size:14px}
+.btn{border:0;background:var(--blue);color:#fff;font-weight:600;font-size:13px;font-family:inherit;padding:8px 14px;border-radius:8px;cursor:pointer;white-space:nowrap;transition:.15s}
+.btn:hover{filter:brightness(1.1)}
+.btn.ok{background:#2fbf71}
+.btn.sm{padding:5px 11px;font-size:12px}
+.feat{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:9px 0;border-bottom:1px solid var(--line)}
+.feat:last-child{border-bottom:0}
+.feat span{font-size:14px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1><img src="logos/tile-71x71.png" width="34" height="34" style="border-radius:8px" alt=""> Textos de la Store — Español</h1>
+  <p class="sub">Producto: Maity · Ficha en Español. Copia cada sección con un botón y pégala en Partner Center.</p>
+
+  <div class="card">
+    <div class="head"><h2>Product name</h2><button class="btn" onclick="copyEl('name',this)">Copiar</button></div>
+<pre id="name">Maity</pre>
+  </div>
+
+  <div class="card">
+    <div class="head"><h2>Description</h2><button class="btn" onclick="copyEl('desc',this)">Copiar</button></div>
+<pre id="desc">Maity te ayuda a comunicarte con más claridad, persuasión y empatía, convirtiendo tus conversaciones reales del día a día en retroalimentación que sí puedes aplicar.
+
+Maity analiza cómo te comunicas realmente en el día a día: te muestra tu claridad, estructura, persuasión, empatía y capacidad de adaptación, junto con señales prácticas como las muletillas y qué tan balanceado fue tu tiempo de habla. En lugar de consejos genéricos, recibes coaching específico basado en conversaciones que de verdad tuviste.
+
+Chatea con Maity, tu coach de comunicación y productividad siempre disponible. Prepárate para una reunión difícil, haz lluvia de ideas sobre qué decir, convierte notas sueltas en una presentación lista para exponer, o suelta un documento (PDF, Word o Excel) y deja que lo lea y te lo resuma. Conecta tu calendario y Maity se adelanta con un briefing diario proactivo, y puede generar minutas de reunión claras directamente desde tus conversaciones.
+
+Ya sea que te prepares para una conversación importante, busques crecer en el trabajo o lideres un equipo, Maity te da retroalimentación honesta y un coach de tu lado, todos los días.</pre>
+  </div>
+
+  <div class="card">
+    <div class="head"><h2>What's new in this version</h2><button class="btn" onclick="copyEl('new',this)">Copiar</button></div>
+<pre id="new">- Maity Chat más rápido y confiable, con lectura de documentos y generación de presentaciones
+- Integración con el calendario y briefing diario proactivo
+- Retroalimentación de conversaciones e insights de coaching más claros
+- Mejoras de rendimiento y estabilidad</pre>
+  </div>
+
+  <div class="card">
+    <div class="head"><h2>Product features <span class="hint">(una por línea — botón "Add more")</span></h2><button class="btn" onclick="copyEl('featsAll',this)">Copiar todas</button></div>
+    <div id="feats"></div>
+<pre id="featsAll" style="display:none"></pre>
+  </div>
+</div>
+
+<script>
+const FEATURES=[
+"Convierte tus conversaciones diarias reales en retroalimentación de comunicación",
+"Insights de claridad, estructura, persuasión, empatía y adaptación",
+"Señales prácticas: muletillas y balance de tu tiempo de habla",
+"Coaching específico basado en conversaciones que de verdad tuviste",
+"Maity Chat: tu coach de comunicación y productividad siempre disponible",
+"Prepárate para reuniones difíciles y ensaya qué vas a decir",
+"Convierte notas sueltas en una presentación lista para exponer",
+"Lee y resume documentos (PDF, Word y Excel)",
+"Conecta tu calendario y recibe un briefing diario proactivo",
+"Genera minutas de reunión claras desde tus conversaciones",
+"Transcripción de reuniones en Zoom, Teams y Meet",
+"Retroalimentación honesta y un coach de tu lado, todos los días"
+];
+const cont=document.getElementById('feats');
+FEATURES.forEach(f=>{
+  const row=document.createElement('div'); row.className='feat';
+  const s=document.createElement('span'); s.textContent=f;
+  const b=document.createElement('button'); b.className='btn sm'; b.textContent='Copiar';
+  b.onclick=()=>copyText(f,b);
+  row.append(s,b); cont.append(row);
+});
+document.getElementById('featsAll').textContent=FEATURES.join('\n');
+
+function copyEl(id,btn){ copyText(document.getElementById(id).textContent, btn); }
+async function copyText(text,btn){
+  let ok=false;
+  try{ await navigator.clipboard.writeText(text); ok=true; }catch(e){}
+  if(!ok){
+    const ta=document.createElement('textarea'); ta.value=text;
+    ta.style.position='fixed'; ta.style.top='-1000px'; document.body.appendChild(ta);
+    ta.focus(); ta.select(); try{ ok=document.execCommand('copy'); }catch(_){}
+    document.body.removeChild(ta);
+  }
+  const old=btn.textContent;
+  btn.textContent = ok ? '¡Copiado!' : 'Cópialo manual';
+  btn.classList.toggle('ok',ok);
+  setTimeout(()=>{ btn.textContent=old; btn.classList.remove('ok'); },1500);
+}
+</script>
+</body>
+</html>
