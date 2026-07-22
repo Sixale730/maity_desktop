@@ -701,7 +701,7 @@ detectaba **procesos abiertos**, no reuniones, con reglas laxas. Reglas actuales
 
 - **Manejo de Errores**: Rust usa `anyhow::Result`, frontend usa try-catch con mensajes amigables
 - **Nomenclatura audio**: Siempre "microphone" y "system" (no "input"/"output")
-- **Ramas de Git**: `main` (releases), `fix/*`, `enhance/*`, `feat/*`
+- **Ramas de Git**: se trabaja **directo en `main`**. NO crear ramas (`fix/*`, `enhance/*`, `feat/*`) por iniciativa propia — solo si el usuario lo pide explicitamente. El **push lo decide el usuario**: commit local, nada de `git push` sin que lo pida.
 - **Commits**: Prefijos estandar (`feat:`, `fix:`, `docs:`, `refactor:`, `style:`, `test:`, `chore:`) con descripcion en espanol
 
 ---
