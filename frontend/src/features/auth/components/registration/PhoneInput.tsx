@@ -16,6 +16,21 @@ const COUNTRIES = [
 ] as const;
 
 function FlagImg({ code, size = 20 }: { code: string; size?: number }) {
+  const [failed, setFailed] = useState(false);
+
+  // Fallback: si la bandera no carga (CSP, offline o firewall), mostrar el código del país
+  // en vez del icono de imagen rota.
+  if (failed) {
+    return (
+      <span
+        className="inline-flex items-center justify-center rounded-sm bg-muted text-[10px] font-semibold uppercase text-muted-foreground"
+        style={{ width: size, height: Math.round(size * 0.75) }}
+      >
+        {code}
+      </span>
+    );
+  }
+
   return (
     <img
       src={`https://flagcdn.com/w${size}/${code}.png`}
@@ -24,6 +39,7 @@ function FlagImg({ code, size = 20 }: { code: string; size?: number }) {
       height={Math.round(size * 0.75)}
       className="inline-block rounded-sm object-cover"
       loading="eager"
+      onError={() => setFailed(true)}
     />
   );
 }
