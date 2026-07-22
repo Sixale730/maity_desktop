@@ -1,6 +1,6 @@
 <div align="center" style="border-bottom: none">
     <h1>
-        <img src="docs/Maity-6.png" style="border-radius: 10px;" />
+        <img src="docs/maity-logo.png" width="120" alt="Maity" />
         <br>
         Maity Desktop - Asistente de Reuniones con IA
     </h1>
@@ -66,33 +66,17 @@ Perfecto para profesionales que necesitan documentar sus reuniones de forma rapi
 
 Captura audio del microfono y del sistema simultaneamente. Perfecto para grabar llamadas de Zoom, Teams, Meet, etc.
 
-<p align="center">
-    <img src="docs/audio.png" width="650" style="border-radius: 10px;" alt="Seleccion de dispositivos" />
-</p>
-
 ### 2. Transcripcion en Tiempo Real
 
 Transcribe reuniones usando **Deepgram**, uno de los servicios de transcripcion mas rapidos y precisos. La transcripcion aparece mientras hablas con identificacion de hablantes.
-
-<p align="center">
-    <img src="docs/home.png" width="650" style="border-radius: 10px;" alt="Transcripcion" />
-</p>
 
 ### 3. Resumenes con ChatGPT
 
 Genera resumenes automaticos con **ChatGPT (OpenAI)**. Obtén puntos clave, decisiones tomadas y acciones pendientes de forma automatica.
 
-<p align="center">
-    <img src="docs/summary.png" width="650" style="border-radius: 10px;" alt="Generacion de resumenes" />
-</p>
-
 ### 4. Configuracion Flexible
 
 Personaliza la aplicacion segun tus necesidades: modelos de transcripcion, proveedores de IA, idioma, etc.
-
-<p align="center">
-    <img src="docs/settings.png" width="650" style="border-radius: 10px;" alt="Configuracion" />
-</p>
 
 ---
 
