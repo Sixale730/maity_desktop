@@ -59,6 +59,11 @@ pub fn supervision_counters() -> (u64, u64, u64) {
 
 /// Timeouts consecutivos antes de presumir proceso colgado y reiniciarlo.
 const TIMEOUT_STRIKES_BEFORE_RESTART: u32 = 3;
+/// Piso del timeout efectivo mientras el helper no confirma ids (ventana fría
+/// post-spawn: cargar el GGUF tarda 50-90s en CPU). Un timeout corto de caller
+/// (tip=30s) mataba el proceso a media carga del modelo — logs jul-2026: 84%
+/// de los spawns terminaban en kill, recargando 2.4 GB cada ~38s.
+const COLD_START_TIMEOUT: Duration = Duration::from_secs(120);
 /// Máximo de spawns dentro de `RESTART_WINDOW` antes de entrar en cooldown.
 const MAX_RESTARTS_PER_WINDOW: usize = 3;
 const RESTART_WINDOW: Duration = Duration::from_secs(120);
@@ -121,6 +126,13 @@ pub struct SidecarManager {
 
     /// Si está seteado y en el futuro, los spawns fallan rápido (cooldown).
     cooldown_until: Arc<Mutex<Option<Instant>>>,
+
+    /// Generación de spawn. Los loops health/idle capturan el epoch con el que
+    /// nacieron y salen si cambió: `should_shutdown` vuelve a false en el
+    /// respawn ANTES de que los loops viejos (ticks de 30/60s) lo lean, así que
+    /// cada respawn filtraba un par de loops zombi que se robaban los pong
+    /// entre sí → falso unhealthy → más respawns.
+    spawn_epoch: Arc<AtomicU64>,
 }
 
 /// RAII guard for tracking active requests
@@ -175,6 +187,7 @@ impl SidecarManager {
             spawn_lock: Arc::new(Mutex::new(())),
             restart_history: Arc::new(Mutex::new(Vec::new())),
             cooldown_until: Arc::new(Mutex::new(None)),
+            spawn_epoch: Arc::new(AtomicU64::new(0)),
         })
     }
 
@@ -490,9 +503,10 @@ impl SidecarManager {
         SIDECAR_RESTARTS_TOTAL.fetch_add(1, Ordering::Relaxed);
         log::info!("Sidecar spawned successfully");
 
-        // Start background tasks
-        self.start_health_check_loop();
-        self.start_idle_check_loop();
+        // Start background tasks (el epoch invalida los loops de spawns previos)
+        let epoch = self.spawn_epoch.fetch_add(1, Ordering::SeqCst) + 1;
+        self.start_health_check_loop(epoch);
+        self.start_idle_check_loop(epoch);
 
         // LLM-005: fire-and-forget warmup to pre-load GGUF weights.
         // Runs concurrently with app startup — first real Generate will find the model hot.
@@ -546,8 +560,18 @@ impl SidecarManager {
             stdin.flush().await.context("Failed to flush stdin")?;
         }
 
+        // Ventana fría: mientras el helper no confirme ids (recién spawneado,
+        // el modelo puede seguir cargando y el helper es FIFO), el timeout
+        // efectivo se estira a COLD_START_TIMEOUT para que el primer request
+        // espere la carga en vez de matarla a la mitad.
+        let effective_timeout = if self.ids_confirmed.load(Ordering::SeqCst) {
+            timeout
+        } else {
+            timeout.max(COLD_START_TIMEOUT)
+        };
+
         // Read response from stdout with timeout
-        match tokio::time::timeout(timeout, self.read_matching_response(request_id)).await {
+        match tokio::time::timeout(effective_timeout, self.read_matching_response(request_id)).await {
             Ok(Ok(response)) => {
                 self.update_activity().await;
                 self.consecutive_timeouts.store(0, Ordering::SeqCst);
@@ -564,7 +588,7 @@ impl SidecarManager {
                     log::warn!(
                         "Request {} timed out after {:?} (strike {}/{}) — proceso vivo, respuesta tardía se drenará por id",
                         request_id,
-                        timeout,
+                        effective_timeout,
                         strikes,
                         TIMEOUT_STRIKES_BEFORE_RESTART
                     );
@@ -586,13 +610,13 @@ impl SidecarManager {
                     // sanear el pipe (comportamiento anterior).
                     log::error!(
                         "Request timeout after {:?} con helper legacy (sin ids) — shutting down sidecar",
-                        timeout
+                        effective_timeout
                     );
                     if let Err(shutdown_err) = self.shutdown().await {
                         log::error!("Failed to shutdown sidecar after timeout: {}", shutdown_err);
                     }
                 }
-                Err(anyhow!("Request timed out after {:?}", timeout))
+                Err(anyhow!("Request timed out after {:?}", effective_timeout))
             }
         }
     }
@@ -862,7 +886,7 @@ impl SidecarManager {
     }
 
     /// Start health check loop (runs in background)
-    fn start_health_check_loop(&self) {
+    fn start_health_check_loop(&self, epoch: u64) {
         let manager = self.clone();
 
         tokio::spawn(async move {
@@ -871,6 +895,11 @@ impl SidecarManager {
 
             loop {
                 interval.tick().await;
+
+                if manager.spawn_epoch.load(Ordering::SeqCst) != epoch {
+                    log::debug!("Health check loop: stale epoch, exiting");
+                    break;
+                }
 
                 if manager.should_shutdown.load(Ordering::SeqCst) {
                     log::debug!("Health check loop: shutdown flag set, exiting");
@@ -899,7 +928,7 @@ impl SidecarManager {
     }
 
     /// Start idle check loop (runs in background)
-    fn start_idle_check_loop(&self) {
+    fn start_idle_check_loop(&self, epoch: u64) {
         let manager = self.clone();
 
         tokio::spawn(async move {
@@ -908,6 +937,11 @@ impl SidecarManager {
 
             loop {
                 interval.tick().await;
+
+                if manager.spawn_epoch.load(Ordering::SeqCst) != epoch {
+                    log::debug!("Idle check loop: stale epoch, exiting");
+                    break;
+                }
 
                 if manager.should_shutdown.load(Ordering::SeqCst) {
                     log::debug!("Idle check loop: shutdown flag set, exiting");
