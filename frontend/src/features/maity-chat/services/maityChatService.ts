@@ -377,16 +377,27 @@ async function callEndpoint(params: {
   resetInactivity() // headers recibidos: pasamos de timeout de conexión a watchdog de stream
 
   if (res.status === 401 || res.status === 403) {
+    // El 403 está sobrecargado: auth / thread ajeno (código UNAUTHORIZED) vs
+    // quota del plan agotada (código QUOTA_EXCEEDED — 403, NO 402 como asumía
+    // la rama muerta anterior). Leemos el `error` del body para distinguirlos;
+    // el server filtra `details {feature,used,limit,period}` en prod SOLO para
+    // QUOTA_EXCEEDED, así podemos decir "usaste N de M" en vez de un genérico.
+    const errBody = (await res.json().catch(() => null)) as
+      | { error?: string; details?: { used?: number; limit?: number } }
+      | null
+    if (res.status === 403 && errBody?.error === 'QUOTA_EXCEEDED') {
+      void fileLogger.warn('chat', 'api/maity-chat quota exceeded (plan limit)', {
+        details: errBody?.details,
+      })
+      const { used, limit } = errBody?.details ?? {}
+      const usage =
+        typeof used === 'number' && typeof limit === 'number' ? ` (usaste ${used} de ${limit})` : ''
+      throw new Error(
+        `Alcanzaste tu límite de mensajes del plan Free de hoy${usage}. Vuelve mañana o mejora tu plan para seguir conversando.`,
+      )
+    }
     void fileLogger.warn('chat', 'api/maity-chat auth rejected', { status: res.status })
     throw new Error('Tu sesión expiró. Vuelve a iniciar sesión.')
-  }
-  if (res.status === 402) {
-    // Quota del plan excedida (assertQuota 'maity_chat', Free 50/día). Distinto
-    // del 429 (rate limit): aquí el usuario llegó al tope diario de su plan.
-    void fileLogger.warn('chat', 'api/maity-chat quota exceeded (plan limit)')
-    throw new Error(
-      'Alcanzaste tu límite de mensajes del plan Free de hoy. Vuelve mañana o mejora tu plan para seguir conversando.',
-    )
   }
   if (res.status === 429) {
     void fileLogger.warn('chat', 'api/maity-chat rate limited')
