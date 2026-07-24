@@ -57,6 +57,7 @@ pub mod moonshine_engine;
 pub mod canary_engine;
 pub mod recording_pipeline;
 pub mod rival_install;
+pub mod startup_task;
 pub mod state;
 pub mod summary;
 pub mod tray;
@@ -483,10 +484,23 @@ pub fn run() {
     // `tauri-plugin-autostart` pasa `--autostart` como argumento al registrar el binario en
     // el Run key de Windows / LaunchAgent de macOS / .desktop de Linux. Cuando es true, el
     // listener `app-ready` minimiza la main window en lugar de enfocarla (patrón Steam).
-    let started_at_boot = std::env::args().any(|arg| arg == "--autostart");
+    // El canal Store (MSIX) no usa el Run key: arranca vía el <desktop:StartupTask> del
+    // Package.appxmanifest, que lanza el exe SIN args → se detecta con WinRT.
+    #[allow(unused_mut)]
+    let mut started_at_boot = std::env::args().any(|arg| arg == "--autostart");
+    if started_at_boot {
+        log::info!("STARTED_AT_BOOT=true (detectado --autostart en args)");
+    }
+    #[cfg(target_os = "windows")]
+    if !started_at_boot
+        && utils::is_running_under_package_identity()
+        && startup_task::launched_by_startup_task()
+    {
+        started_at_boot = true;
+        log::info!("STARTED_AT_BOOT=true (activación StartupTask del paquete MSIX)");
+    }
     if started_at_boot {
         STARTED_AT_BOOT.store(true, Ordering::Relaxed);
-        log::info!("STARTED_AT_BOOT=true (detectado --autostart en args)");
     }
 
     tauri::Builder::default()
@@ -1422,6 +1436,12 @@ pub fn run() {
             // Maity corre bajo MSIX/Store — evita la doble instalacion y el error de DB.
             rival_install::get_rival_install,
             rival_install::uninstall_rival,
+            // StartupTask del canal Store/MSIX: estado + toggle del arranque con Windows
+            // (el canal NSIS usa tauri-plugin-autostart; ver startup_task.rs)
+            startup_task::startup_task_get_state,
+            startup_task::startup_task_request_enable,
+            startup_task::startup_task_disable,
+            startup_task::open_startup_settings,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

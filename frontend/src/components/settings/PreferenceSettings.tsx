@@ -6,12 +6,24 @@ import { FolderOpen, LogOut, Palette, Mic, Power } from "lucide-react"
 import { ThemeSelector } from "@/components/settings/ThemeSelector"
 import { invoke } from "@tauri-apps/api/core"
 import { enable as enableAutostart, disable as disableAutostart, isEnabled as isAutostartEnabled } from "@tauri-apps/plugin-autostart"
+import { toast } from "sonner"
 import Analytics from "@/lib/analytics"
 import { useConfig, NotificationSettings } from "@/contexts/ConfigContext"
 import { useAuth } from "@/contexts/AuthContext"
 import { LogExporter } from "@/components/settings/LogExporter"
 import { RecordingLogsViewer } from "@/components/settings/RecordingLogsViewer"
 import { logger } from "@/lib/logger"
+
+// Estados del comando Tauri `startup_task_get_state` (canal Store/MSIX).
+// `unsupported` = sin identidad de paquete (NSIS/dev) o plataforma no-Windows.
+type MsixStartupState =
+  | 'enabled'
+  | 'enabledByPolicy'
+  | 'disabled'
+  | 'disabledByUser'
+  | 'disabledByPolicy'
+  | 'unknown'
+  | 'unsupported';
 
 export function PreferenceSettings() {
   const {
@@ -70,8 +82,12 @@ export function PreferenceSettings() {
   const [autostartEnabled, setAutostartEnabled] = useState<boolean | null>(null);
   const [isProductionBuild, setIsProductionBuild] = useState<boolean>(true);
   // Bajo MSIX (Microsoft Store) el Run key de tauri-plugin-autostart es el mecanismo
-  // equivocado (competiría con la instalación NSIS) → el toggle se muestra deshabilitado.
+  // equivocado (competiría con la instalación NSIS) → el toggle opera el StartupTask
+  // del manifest MSIX vía los comandos startup_task_* (ver src-tauri/src/startup_task.rs).
   const [isPackaged, setIsPackaged] = useState<boolean>(false);
+  // Estado del StartupTask MSIX. `disabledByUser` = el usuario lo apagó desde Task
+  // Manager/Configuración de Windows: la app NO puede reactivarlo, solo abrir Settings.
+  const [msixStartupState, setMsixStartupState] = useState<MsixStartupState | null>(null);
   useEffect(() => {
     let cancelled = false;
     Promise.all([
@@ -83,10 +99,43 @@ export function PreferenceSettings() {
       setAutostartEnabled(enabled);
       setIsProductionBuild(isProd);
       setIsPackaged(packaged);
+      if (packaged) {
+        invoke<MsixStartupState>('startup_task_get_state')
+          .then((state) => { if (!cancelled) setMsixStartupState(state); })
+          .catch((err) => {
+            logger.warn('Failed to read MSIX startup task state:', err);
+            if (!cancelled) setMsixStartupState('unsupported');
+          });
+      }
     });
     return () => { cancelled = true; };
   }, []);
   const handleToggleAutostart = async (next: boolean) => {
+    if (isPackaged) {
+      // Canal Store: StartupTask del manifest MSIX (no el Run key del plugin).
+      try {
+        if (next) {
+          const state = await invoke<MsixStartupState>('startup_task_request_enable');
+          setMsixStartupState(state);
+          if (state === 'disabledByUser') {
+            toast.info('Windows tiene bloqueado el inicio automático de Maity', {
+              description: 'Actívalo en Configuración > Aplicaciones > Inicio.',
+              action: {
+                label: 'Abrir configuración',
+                onClick: () => { invoke('open_startup_settings').catch(() => {}); },
+              },
+            });
+          }
+        } else {
+          await invoke('startup_task_disable');
+          setMsixStartupState('disabled');
+        }
+        await Analytics.track('autostart_toggled', { enabled: next.toString(), channel: 'msix' });
+      } catch (err) {
+        logger.warn('Failed to toggle MSIX startup task:', err);
+      }
+      return;
+    }
     setAutostartEnabled(next);
     try {
       if (next) {
@@ -282,9 +331,22 @@ export function PreferenceSettings() {
               Cuando enciendas tu computadora, Maity arrancará automáticamente en segundo plano
               {' '}— la ventana principal queda minimizada en la barra de tareas y solo aparece
               {' '}el widget flotante de grabación, listo para usar. Igual que Steam o Discord.
-              {isPackaged && (
+              {isPackaged && msixStartupState === 'disabledByUser' && (
                 <span className="block mt-2 text-amber-500 text-xs">
-                  La versión de Microsoft Store gestiona el arranque con el sistema; esta opción no aplica.
+                  Lo desactivaste desde Windows (Task Manager o Configuración); Maity no puede
+                  reactivarlo desde aquí —{' '}
+                  <button
+                    type="button"
+                    className="underline hover:text-amber-400"
+                    onClick={() => { invoke('open_startup_settings').catch(() => {}); }}
+                  >
+                    ábrelo en Configuración de Windows
+                  </button>.
+                </span>
+              )}
+              {isPackaged && (msixStartupState === 'disabledByPolicy' || msixStartupState === 'enabledByPolicy') && (
+                <span className="block mt-2 text-amber-500 text-xs">
+                  El arranque automático está fijado por una directiva del equipo; no se puede cambiar desde aquí.
                 </span>
               )}
               {!isPackaged && !isProductionBuild && (
@@ -295,9 +357,19 @@ export function PreferenceSettings() {
             </p>
           </div>
           <Switch
-            checked={!isPackaged && (autostartEnabled ?? false)}
+            checked={isPackaged
+              ? msixStartupState === 'enabled' || msixStartupState === 'enabledByPolicy'
+              : (autostartEnabled ?? false)}
             onCheckedChange={handleToggleAutostart}
-            disabled={autostartEnabled === null || !isProductionBuild || isPackaged}
+            disabled={isPackaged
+              // `disabledByUser` NO deshabilita el switch: el intento de encender
+              // dispara el toast con el link a Configuración de Windows.
+              ? (msixStartupState === null
+                  || msixStartupState === 'unsupported'
+                  || msixStartupState === 'unknown'
+                  || msixStartupState === 'disabledByPolicy'
+                  || msixStartupState === 'enabledByPolicy')
+              : (autostartEnabled === null || !isProductionBuild)}
           />
         </div>
       </div>

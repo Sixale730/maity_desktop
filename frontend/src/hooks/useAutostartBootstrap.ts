@@ -49,10 +49,12 @@ export function useAutostartBootstrap() {
         // Bajo MSIX (Microsoft Store) NO registramos autostart vía tauri-plugin-autostart:
         // escribiría un segundo HKCU\...\Run\Maity que competiría con el de la instalación
         // NSIS si ambas coexisten (doble arranque al bootear). El arranque de la versión
-        // Store se gestionaría, en su caso, con un <windows.startupTask> en el manifest MSIX.
+        // Store lo gestiona el <desktop:StartupTask TaskId="MaityStartup"> del
+        // Package.appxmanifest (Enabled=true de fábrica, así que tampoco hay nada que
+        // bootstrapear); el toggle de Settings lo administra vía comandos startup_task_*.
         const isPackaged = await invoke<boolean>('is_running_under_package_identity').catch(() => false);
         if (isPackaged) {
-          logger.debug('[AutostartBootstrap] skipping under MSIX (la Store gestiona el arranque)');
+          logger.debug('[AutostartBootstrap] skipping under MSIX (startupTask del manifest gestiona el arranque)');
           return;
         }
 

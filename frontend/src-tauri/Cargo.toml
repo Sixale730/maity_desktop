@@ -214,6 +214,12 @@ windows = { version = "0.58", features = [
     "Win32_Security",           # Para CreateEventW
     "Win32_Storage_Packaging_Appx",  # GetCurrentPackageFullName (detección MSIX/Store)
     "implement",                # Para implementar interfaces COM
+    # StartupTask del canal Store/MSIX (ver startup_task.rs): detección de
+    # activación al boot + toggle de Settings sobre Windows.ApplicationModel.
+    "ApplicationModel",             # StartupTask, StartupTaskState, AppInstance
+    "ApplicationModel_Activation",  # IActivatedEventArgs, ActivationKind
+    "Foundation",                   # IAsyncOperation<T>::get()
+    "Foundation_Collections",       # gating de métodos de AppInstance (IVectorView)
 ] }
 # Lectura/escritura del registro de Windows para detectar y limpiar la instalación
 # rival (NSIS de descarga directa) cuando Maity corre bajo MSIX/Store. Ver rival_install.rs.
