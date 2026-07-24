@@ -151,10 +151,19 @@ impl HardwareProfile {
                 }
             }
             GpuType::Vulkan | GpuType::OpenCL => {
+                // vulkan-1.dll existe en casi cualquier Windows con driver
+                // gráfico moderno, incluidas iGPU cuya "VRAM" es RAM del
+                // sistema COMPARTIDA: detectar Vulkan no implica GPU útil.
+                // Con <12 GB de RAM el tier debe ser Low — de eso dependen el
+                // fallback del coach a gemma-1b (llama_engine) y que Whisper
+                // no duplique pesos en memoria compartida. Antes esta rama
+                // nunca daba Low y las máquinas de 8 GB recibían el 4b.
                 if memory_gb >= 12 && cpu_cores >= 6 {
                     PerformanceTier::High
-                } else {
+                } else if memory_gb >= 12 {
                     PerformanceTier::Medium
+                } else {
+                    PerformanceTier::Low
                 }
             }
             GpuType::None => {
@@ -213,7 +222,13 @@ impl HardwareProfile {
             return AdaptiveWhisperConfig {
                 beam_size: 2,
                 temperature: 0.2,
-                use_gpu: self.has_gpu_acceleration,
+                // En tier Low la "GPU" suele ser una iGPU con memoria
+                // compartida: el backend Vulkan de whisper duplicaría los
+                // pesos en RAM del sistema. La protección Low→CPU del match
+                // de abajo solo compila fuera de Windows, así que se replica
+                // aquí.
+                use_gpu: self.has_gpu_acceleration
+                    && self.performance_tier != PerformanceTier::Low,
                 max_threads: Some(self.cpu_cores.min(8) as usize),
                 chunk_size_preference: ChunkSizePreference::Balanced,
             };
@@ -310,5 +325,19 @@ mod tests {
 
         let high_tier = HardwareProfile::calculate_performance_tier(8, &GpuType::Metal, 16);
         assert_eq!(high_tier, PerformanceTier::Ultra);
+    }
+
+    #[test]
+    fn test_vulkan_con_poca_ram_es_tier_low() {
+        // vulkan-1.dll presente NO implica GPU útil: una laptop de 8 GB con
+        // iGPU debe quedar en Low para que el coach elija gemma-1b.
+        let tier = HardwareProfile::calculate_performance_tier(8, &GpuType::Vulkan, 8);
+        assert_eq!(tier, PerformanceTier::Low);
+
+        // Con RAM suficiente, Vulkan conserva sus tiers históricos.
+        let high = HardwareProfile::calculate_performance_tier(8, &GpuType::Vulkan, 16);
+        assert_eq!(high, PerformanceTier::High);
+        let medium = HardwareProfile::calculate_performance_tier(4, &GpuType::Vulkan, 16);
+        assert_eq!(medium, PerformanceTier::Medium);
     }
 }
