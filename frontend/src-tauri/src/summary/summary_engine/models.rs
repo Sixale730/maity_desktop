@@ -222,6 +222,30 @@ pub const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 300; // 5 minutes
 /// Generation timeout (how long to wait for a response)
 pub const GENERATION_TIMEOUT_SECS: u64 = 900; // 15 minutes
 
+/// n_ctx efectivo acotado por la RAM del equipo. llama.cpp reserva el KV
+/// cache COMPLETO de n_ctx al crear el contexto (~139 KiB/token en gemma-3-4b
+/// → 32768 tokens ≈ 4.3 GiB anónimos, no evictables): en máquinas de 8-16 GB
+/// el n_ctx nominal del registry provoca swap y congela el equipo. Mismo
+/// criterio que el fix de n_ctx del coach (coach/llm_service.rs, 32768→4096).
+/// El chunker de summary/service.rs DEBE usar este mismo valor para que los
+/// prompts quepan en el contexto real.
+pub fn effective_context_size(model_def: &ModelDef) -> u32 {
+    let ram_gb = crate::audio::hardware_detector::HardwareProfile::detect().memory_gb as u64;
+    effective_context_size_for_ram(model_def.context_size, ram_gb)
+}
+
+/// Lógica pura, testeable sin depender del hardware real.
+fn effective_context_size_for_ram(nominal: u32, ram_gb: u64) -> u32 {
+    let cap: u32 = if ram_gb < 16 {
+        8192
+    } else if ram_gb < 32 {
+        16384
+    } else {
+        return nominal;
+    };
+    nominal.min(cap)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -254,5 +278,21 @@ mod tests {
         let names: Vec<String> = summary_models.iter().map(|m| m.name.clone()).collect();
         assert!(!names.contains(&"gemma3:1b".to_string()), "1b (Coach-only) NO debe aparecer en summary tier");
         assert!(names.contains(&"gemma3:4b".to_string()), "4b (Both) debe aparecer en summary tier");
+    }
+
+    #[test]
+    fn effective_context_se_acota_por_ram() {
+        // <16 GB: cap 8192 (KV de 32768 = ~4.3 GiB, inviable en 8 GB)
+        assert_eq!(effective_context_size_for_ram(32768, 8), 8192);
+        assert_eq!(effective_context_size_for_ram(32768, 15), 8192);
+        // 16-31 GB: cap 16384
+        assert_eq!(effective_context_size_for_ram(32768, 16), 16384);
+        assert_eq!(effective_context_size_for_ram(32768, 31), 16384);
+        // >=32 GB: nominal completo
+        assert_eq!(effective_context_size_for_ram(32768, 32), 32768);
+        assert_eq!(effective_context_size_for_ram(32768, 64), 32768);
+        // Un nominal ya chico nunca se agranda
+        assert_eq!(effective_context_size_for_ram(4096, 8), 4096);
+        assert_eq!(effective_context_size_for_ram(4096, 64), 4096);
     }
 }

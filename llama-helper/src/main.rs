@@ -113,10 +113,17 @@ impl ModelState {
     }
 
     fn load_model_if_needed(&mut self, model_path: PathBuf, context_size: u32) -> Result<()> {
+        // El LlamaModel es independiente del contexto: el LlamaContext se crea
+        // por request en generate() usando self.context_size. Recargar el GGUF
+        // entero (2.4 GB de disco→RAM, con doble residencia transitoria)
+        // porque cambió n_ctx era puro desperdicio — coach (4096) y summary
+        // (32768) comparten proceso cuando usan el mismo modelo.
+        self.context_size = context_size;
+
         // Check if model is already loaded
         if let Some(ref loaded_path) = self.model_path {
-            if loaded_path == &model_path && self.context_size == context_size {
-                eprintln!("✓ Model already loaded");
+            if loaded_path == &model_path {
+                eprintln!("✓ Model already loaded (ctx={})", context_size);
                 self.update_activity();
                 return Ok(());
             }
@@ -159,20 +166,24 @@ impl ModelState {
         let start_time = Instant::now();
         let model = self.model.as_ref().context("Model not loaded")?;
 
-        // Calculate thread count (conservative default: max(1, (Cores / 2) + 2))
-        // This ensures the UI thread is never starved
+        // (cores/2) acotado a [1,4]: el helper convive con Parakeet (ONNX,
+        // hasta 4 hilos) y la UI. El viejo (cores/2)+2 daba 4 hilos en un
+        // laptop de 4 núcleos = 100% de la máquina durante cada generación.
         let threads: i32 = std::thread::available_parallelism()
-            .map(|n| {
-                let cores = n.get() as i32;
-                ((cores / 2) + 2).max(1)
-            })
+            .map(|n| ((n.get() as i32) / 2).clamp(1, 4))
             .unwrap_or(2);
+
+        // n_batch controla el compute buffer de llama.cpp (escala ~lineal con
+        // n_batch × vocab, y gemma-3 tiene vocab ~262k): igualarlo a n_ctx
+        // inflaba cientos de MB por generación. 512 es el default de
+        // llama.cpp; el prompt se decodea por bloques de 512 más abajo.
+        const N_BATCH: usize = 512;
 
         let ctx_params = LlamaContextParams::default()
             .with_n_ctx(Some(
                 NonZeroU32::new(self.context_size).context("Invalid ctx size")?,
             ))
-            .with_n_batch(self.context_size)
+            .with_n_batch(N_BATCH as u32)
             .with_n_threads(threads)
             .with_n_threads_batch(threads);
 
@@ -186,22 +197,34 @@ impl ModelState {
 
         eprintln!("📝 Tokenized prompt: {} tokens", tokens_list.len());
 
-        // Use context size for batch capacity to handle long prompts
-        let batch_size = self.context_size as usize;
-        let mut batch = LlamaBatch::new(batch_size, 1);
-
-        let last_index: i32 = (tokens_list.len() - 1) as i32;
-        for (i, token) in (0_i32..).zip(tokens_list.into_iter()) {
-            let is_last = i == last_index;
-            batch
-                .add(token, i, &[0], is_last)
-                .context("Failed to add token to batch")?;
+        if tokens_list.len() >= self.context_size as usize {
+            anyhow::bail!(
+                "Prompt de {} tokens excede n_ctx={} — truncar el contexto antes de llamar",
+                tokens_list.len(),
+                self.context_size
+            );
         }
 
-        ctx.decode(&mut batch).context("llama_decode() failed")?;
+        // Decode del prompt por bloques de N_BATCH; solo el último token del
+        // prompt pide logits (is_last), que es donde muestrea la generación.
+        let mut batch = LlamaBatch::new(N_BATCH, 1);
+        let last_index = tokens_list.len() - 1;
+        let mut fed = 0usize;
+        while fed < tokens_list.len() {
+            batch.clear();
+            let end = (fed + N_BATCH).min(tokens_list.len());
+            for j in fed..end {
+                let is_last = j == last_index;
+                batch
+                    .add(tokens_list[j], j as i32, &[0], is_last)
+                    .context("Failed to add token to batch")?;
+            }
+            ctx.decode(&mut batch).context("llama_decode() failed")?;
+            fed = end;
+        }
         let prompt_time = start_time.elapsed();
 
-        let n_prompt_tokens = batch.n_tokens();
+        let n_prompt_tokens = tokens_list.len() as i32;
         let mut n_cur = n_prompt_tokens;
         let mut decoder = encoding_rs::UTF_8.new_decoder();
         let mut output = String::new();

@@ -1,7 +1,8 @@
 //! `SummaryLlmService` — implementacion de `LlmService` para summaries de reuniones.
 //!
 //! Encapsula la logica de invocar al sidecar para summaries:
-//! - n_ctx: 32768 (de model_def.context_size)
+//! - n_ctx: context_size del modelo ACOTADO por la RAM del equipo
+//!   (models::effective_context_size — el KV de 32768 son ~4.3 GiB en el 4b)
 //! - max_tokens: 4096 (DEFAULT_MAX_TOKENS)
 //! - sampling: model_def.sampling (temp 1.0 default por modelo)
 //! - timeout: 900s (GENERATION_TIMEOUT_SECS)
@@ -37,7 +38,7 @@ impl SummaryLlmService {
     /// `model_def` (n_ctx desde context_size, sampling desde model_def).
     pub fn new(pool: Arc<SidecarPool>, app_data_dir: PathBuf, model_def: ModelDef) -> Self {
         let config = LlmConfig {
-            n_ctx: model_def.context_size,
+            n_ctx: models::effective_context_size(&model_def),
             max_tokens: models::DEFAULT_MAX_TOKENS as u32,
             temperature: model_def.sampling.temperature,
             top_k: model_def.sampling.top_k,

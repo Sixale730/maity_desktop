@@ -226,11 +226,15 @@ impl SummaryService {
 
             match model {
                 Ok(model_def) => {
+                    // n_ctx efectivo acotado por RAM — el MISMO valor que usa
+                    // SummaryLlmService: si el chunker usara el nominal, los
+                    // chunks no cabrían en el contexto real del helper.
+                    let effective = models::effective_context_size(&model_def);
                     // Reserve 300 tokens for prompt overhead
-                    let optimal = model_def.context_size.saturating_sub(300) as usize;
+                    let optimal = effective.saturating_sub(300) as usize;
                     info!(
-                        "✓ Using BuiltInAI context size: {} tokens (chunk size: {})",
-                        model_def.context_size, optimal
+                        "✓ Using BuiltInAI context size: {} tokens (nominal {}, chunk size: {})",
+                        effective, model_def.context_size, optimal
                     );
                     optimal
                 }
