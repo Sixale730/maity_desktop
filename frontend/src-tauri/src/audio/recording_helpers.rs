@@ -393,6 +393,20 @@ pub async fn initialize_recording<R: Runtime>(
         });
     }
 
+    // Si quedó viva una task de la sesión anterior (el stop la abandonó tras su
+    // timeout), abortarla ANTES de spawnear la nueva: reset_session_counters()
+    // pone CANCEL_PENDING=false y la resucitaría, dejando dos workers
+    // compitiendo por CPU sobre el mismo engine con dos colas de chunks.
+    {
+        let mut global_task = TRANSCRIPTION_TASK.lock().map_err(|e| format!("Transcription task lock poisoned: {}", e))?;
+        if let Some(old_task) = global_task.take() {
+            if !old_task.is_finished() {
+                log::warn!("Aborting leftover transcription task from previous session");
+                old_task.abort();
+            }
+        }
+    }
+
     // Start optimized parallel transcription task and store handle
     let task_handle = transcription::start_transcription_task(app.clone(), transcription_receiver);
     {

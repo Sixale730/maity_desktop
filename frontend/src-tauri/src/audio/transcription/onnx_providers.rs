@@ -71,6 +71,10 @@ pub struct SessionPlan {
     pub ep: EpKind,
     pub parallel: bool,
     pub disable_memory_pattern: bool,
+    /// Cota del intra-op thread pool. Sin ella ORT crea un pool del tamano de
+    /// TODOS los cores POR SESION (Parakeet abre 3 sesiones -> ~24-48 hilos
+    /// con spin-wait en un 8-cores, auditoria RAM jul-2026).
+    pub intra_threads: usize,
 }
 
 /// Opciones para construir una sesion ONNX.
@@ -92,13 +96,18 @@ pub struct OnnxSessionOpts<'a> {
 /// Reglas:
 /// - Solo se usa GPU si `prefer_gpu` y NO se forzo CPU.
 /// - Windows -> DirectML, macOS -> CoreML, resto -> CPU.
-/// - DirectML exige ejecucion secuencial (`parallel=false`) y memory pattern off.
+/// - Ejecucion SIEMPRE secuencial: los grafos STT son cadenas encoder->decoder
+///   sin ramas paralelas; ORT_PARALLEL solo agregaba un inter-op pool extra por
+///   sesion. DirectML ademas lo exige.
 /// - Con arena desactivada tambien hay que desactivar memory pattern.
+/// - `intra_threads` = (cores/2) acotado a [2,4]: deja aire al pipeline de
+///   audio, al coach (llama-helper) y a la UI en maquinas de 4-8 cores.
 fn resolve_plan(
     platform: Platform,
     prefer_gpu: bool,
     forced_cpu: bool,
     disable_arena: bool,
+    cpu_cores: usize,
 ) -> SessionPlan {
     let use_gpu = prefer_gpu && !forced_cpu;
 
@@ -116,8 +125,9 @@ fn resolve_plan(
 
     SessionPlan {
         ep,
-        parallel: !directml,
+        parallel: false,
         disable_memory_pattern: disable_arena || directml,
+        intra_threads: (cpu_cores / 2).clamp(2, 4),
     }
 }
 
@@ -162,6 +172,7 @@ pub fn build_session(model_path: &Path, opts: OnnxSessionOpts) -> Result<Session
         opts.prefer_gpu,
         forced_cpu,
         opts.disable_arena,
+        hw.cpu_cores as usize,
     );
 
     let mut providers = Vec::new();
@@ -190,17 +201,19 @@ pub fn build_session(model_path: &Path, opts: OnnxSessionOpts) -> Result<Session
     providers.push(cpu.build());
 
     log::info!(
-        "ONNX[{}] EP solicitado: {} (gpu_detectada={:?}, force_cpu={}, parallel={})",
+        "ONNX[{}] EP solicitado: {} (gpu_detectada={:?}, force_cpu={}, parallel={}, intra_threads={})",
         opts.label,
         plan.ep.name(),
         hw.gpu_type,
         forced_cpu,
         plan.parallel,
+        plan.intra_threads,
     );
 
     let mut builder = Session::builder()?
         .with_optimization_level(GraphOptimizationLevel::Level3)?
-        .with_execution_providers(providers)?;
+        .with_execution_providers(providers)?
+        .with_intra_threads(plan.intra_threads)?;
 
     if plan.disable_memory_pattern {
         // Requerido cuando la arena esta desactivada (shapes dinamicos) y/o con
@@ -222,7 +235,7 @@ mod tests {
     #[test]
     fn windows_con_gpu_usa_directml_secuencial() {
         // Parakeet/Moonshine en Windows: DirectML, secuencial, memory pattern off.
-        let plan = resolve_plan(Platform::Windows, true, false, true);
+        let plan = resolve_plan(Platform::Windows, true, false, true, 8);
         assert_eq!(plan.ep, EpKind::DirectML);
         assert!(!plan.parallel, "DirectML exige ejecucion secuencial");
         assert!(plan.disable_memory_pattern);
@@ -232,27 +245,28 @@ mod tests {
     fn windows_canary_directml_desactiva_memory_pattern_aunque_arena_activa() {
         // Canary mantiene arena (disable_arena=false) pero DirectML obliga a
         // desactivar memory pattern de todas formas.
-        let plan = resolve_plan(Platform::Windows, true, false, false);
+        let plan = resolve_plan(Platform::Windows, true, false, false, 8);
         assert_eq!(plan.ep, EpKind::DirectML);
         assert!(!plan.parallel);
         assert!(plan.disable_memory_pattern, "DirectML fuerza memory pattern off");
     }
 
     #[test]
-    fn macos_con_gpu_usa_coreml_paralelo() {
-        // CoreML no exige modo secuencial: parallel sigue activo.
-        let plan = resolve_plan(Platform::Macos, true, false, true);
+    fn macos_con_gpu_usa_coreml_secuencial() {
+        // Los grafos STT son secuenciales: tambien con CoreML se apaga
+        // ORT_PARALLEL (el inter-op pool extra no aporta y suma hilos).
+        let plan = resolve_plan(Platform::Macos, true, false, true, 8);
         assert_eq!(plan.ep, EpKind::CoreML);
-        assert!(plan.parallel, "CoreML permite ejecucion paralela");
+        assert!(!plan.parallel, "ejecucion secuencial incondicional");
         assert!(plan.disable_memory_pattern, "por disable_arena=true");
     }
 
     #[test]
     fn macos_canary_coreml_respeta_arena_activa() {
         // Canary en mac: CoreML, arena activa -> memory pattern se mantiene (no off).
-        let plan = resolve_plan(Platform::Macos, true, false, false);
+        let plan = resolve_plan(Platform::Macos, true, false, false, 8);
         assert_eq!(plan.ep, EpKind::CoreML);
-        assert!(plan.parallel);
+        assert!(!plan.parallel);
         assert!(!plan.disable_memory_pattern);
     }
 
@@ -261,9 +275,9 @@ mod tests {
     #[test]
     fn force_cpu_anula_gpu_en_cualquier_plataforma() {
         for platform in [Platform::Windows, Platform::Macos, Platform::Other] {
-            let plan = resolve_plan(platform, true, true, true);
+            let plan = resolve_plan(platform, true, true, true, 8);
             assert_eq!(plan.ep, EpKind::Cpu, "forced_cpu debe ganar en {platform:?}");
-            assert!(plan.parallel, "CPU permite paralelo");
+            assert!(!plan.parallel, "ejecucion secuencial incondicional");
             assert!(plan.disable_memory_pattern, "por disable_arena=true");
         }
     }
@@ -271,27 +285,41 @@ mod tests {
     #[test]
     fn prefer_gpu_false_usa_cpu_preprocessor() {
         // El preprocessor mel pasa prefer_gpu=false aun en Windows.
-        let plan = resolve_plan(Platform::Windows, false, false, true);
+        let plan = resolve_plan(Platform::Windows, false, false, true, 8);
         assert_eq!(plan.ep, EpKind::Cpu);
-        assert!(plan.parallel);
+        assert!(!plan.parallel);
         assert!(plan.disable_memory_pattern);
     }
 
     #[test]
     fn linux_siempre_cpu() {
-        let plan = resolve_plan(Platform::Other, true, false, true);
+        let plan = resolve_plan(Platform::Other, true, false, true, 8);
         assert_eq!(plan.ep, EpKind::Cpu);
-        assert!(plan.parallel);
+        assert!(!plan.parallel);
         assert!(plan.disable_memory_pattern);
     }
 
     #[test]
     fn cpu_respeta_disable_arena_false() {
         // Sin GPU y con arena activa: memory pattern NO se desactiva.
-        let plan = resolve_plan(Platform::Other, false, false, false);
+        let plan = resolve_plan(Platform::Other, false, false, false, 8);
         assert_eq!(plan.ep, EpKind::Cpu);
-        assert!(plan.parallel);
+        assert!(!plan.parallel);
         assert!(!plan.disable_memory_pattern);
+    }
+
+    // ---- resolve_plan: cota de intra-op threads ----
+
+    #[test]
+    fn intra_threads_acotado_entre_2_y_4() {
+        // (cores/2).clamp(2,4): piso 2 en maquinas chicas, techo 4 en grandes.
+        for (cores, expected) in [(2usize, 2usize), (4, 2), (6, 3), (8, 4), (16, 4), (20, 4)] {
+            let plan = resolve_plan(Platform::Windows, false, false, true, cores);
+            assert_eq!(
+                plan.intra_threads, expected,
+                "cores={cores} debe dar intra_threads={expected}"
+            );
+        }
     }
 
     // ---- parse_force_cpu ----

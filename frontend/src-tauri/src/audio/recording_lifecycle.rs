@@ -322,8 +322,15 @@ pub async fn stop_recording_reporting<R: Runtime>(
 
         // Adaptive timeout: 2 min max, but stop early if no progress for 15s
         let max_timeout = std::time::Duration::from_secs(120);
+        // A los 60s se pide cancelación cooperativa (el worker drena la cola
+        // rápido); si a los 120s sigue viva se aborta la task: dropear el
+        // JoinHandle NO la termina, y una task huérfana retiene su cola de
+        // chunks (decenas de MB de PCM) y compite por CPU con la siguiente
+        // grabación.
+        let cancel_after = std::time::Duration::from_secs(60);
         let start = std::time::Instant::now();
         let mut task_done = false;
+        let mut cancellation_requested = false;
 
         loop {
             tokio::select! {
@@ -350,6 +357,13 @@ pub async fn stop_recording_reporting<R: Runtime>(
                         }),
                     );
 
+                    // Cancelación cooperativa antes del abort duro
+                    if !cancellation_requested && elapsed >= cancel_after {
+                        warn!("Transcription still running after 60s — requesting cooperative cancellation");
+                        super::transcription::worker::request_cancellation();
+                        cancellation_requested = true;
+                    }
+
                     // Check max timeout (2 minutes)
                     if elapsed >= max_timeout {
                         warn!("Transcription timeout (2 min) reached, continuing shutdown");
@@ -360,10 +374,9 @@ pub async fn stop_recording_reporting<R: Runtime>(
             }
         }
 
-        // If task didn't complete naturally, it's still running — that's OK, 
-        // the worker will finish on its own or respond to cancellation
         if !task_done {
-            info!("Transcription task still running after timeout, proceeding with shutdown");
+            warn!("Transcription task still running after timeout — aborting to free its queue");
+            task_handle.abort();
         }
     } else {
         info!("No transcription task found to wait for");

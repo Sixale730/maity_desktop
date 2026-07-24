@@ -253,10 +253,17 @@ pub fn start_transcription_task<R: Runtime>(
         // Create parallel workers for faster processing while preserving ALL chunks
         const NUM_WORKERS: usize = 1; // Serial processing ensures transcripts emit in chronological order
 
-        // FIX: Bounded channel con backpressure - evita memory leak en conversaciones muy largas
-        // 2000 chunks = ~2 minutos de audio en cola máximo (a 60ms por chunk)
-        // Si se llena, el sender esperará (backpressure) en vez de perder datos
-        let (work_sender, work_receiver) = tokio::sync::mpsc::channel::<AudioChunk>(2000);
+        // Bounded en TIEMPO de audio, no solo en mensajes: cada chunk acumulado
+        // de Parakeet son 4-6s a 16 kHz mono f32 (256-384 KB). Con la capacidad
+        // histórica de 2000 (dimensionada cuando un chunk eran ~60ms) el techo
+        // era 512-768 MB de PCM retenido (auditoría RAM jul-2026). El backlog
+        // real máximo observado en campo fue 169 chunks: la capacidad debe
+        // quedar POR ENCIMA de ese pico con margen (~1.5x), no debajo — 256
+        // chunks ≈ 17-25 min de audio ≈ 96 MB máx, y el drop-oldest queda solo
+        // para el caso genuinamente patológico.
+        const WORK_QUEUE_CAPACITY: usize = 256;
+        let (work_sender, work_receiver) =
+            tokio::sync::mpsc::channel::<AudioChunk>(WORK_QUEUE_CAPACITY);
         let work_receiver = Arc::new(tokio::sync::Mutex::new(work_receiver));
 
         // Track completion: AtomicU64 for chunks queued, completed, and dropped
@@ -649,7 +656,7 @@ pub fn start_transcription_task<R: Runtime>(
         // Lag metrics tracking
         let mut last_lag_emit = std::time::Instant::now();
         let lag_emit_interval = std::time::Duration::from_secs(3);
-        let backpressure_threshold: u64 = 1500; // 75% of 2000 capacity
+        let backpressure_threshold: u64 = 170; // ~2/3 de WORK_QUEUE_CAPACITY (256)
 
         /// Helper: send an accumulated chunk to the worker channel with adaptive backpressure.
         /// Emits `transcription-backpressure` events to the frontend when chunks are dropped
@@ -707,7 +714,9 @@ pub fn start_transcription_task<R: Runtime>(
                     let samples_per_dropped = chunk.data.len();
                     {
                         let mut work_rx = work_receiver.lock().await;
-                        for _ in 0..200 {
+                        // ~10% de la capacidad por evento de Full (misma proporción
+                        // que el 200/2000 histórico)
+                        for _ in 0..15 {
                             match work_rx.try_recv() {
                                 Ok(_old_chunk) => {
                                     drained += 1;
@@ -820,11 +829,11 @@ pub fn start_transcription_task<R: Runtime>(
             let current_dropped = chunks_dropped.load(Ordering::Relaxed);
             let pending = current_queued.saturating_sub(current_completed);
 
-            // Umbral útil: 120 chunks (~4-8 min de audio según min_dur). El umbral
-            // previo (1500) jamás disparó en producción pese a backlogs reales de
-            // 100-170 chunks / 8.5 min de atraso (auditoría jul-2026).
-            const PENDING_WARN_THRESHOLD: u64 = 120;
-            if pending >= PENDING_WARN_THRESHOLD && pending % 60 == 0 {
+            // Umbral útil: 60 chunks (~4-6 min de audio según min_dur), escalado
+            // a la capacidad de 150. El umbral previo (1500) jamás disparó en
+            // producción pese a backlogs reales de 100-170 chunks (jul-2026).
+            const PENDING_WARN_THRESHOLD: u64 = 60;
+            if pending >= PENDING_WARN_THRESHOLD && pending % 30 == 0 {
                 warn!(
                     "Transcripción atrasada: {} chunks pendientes (~{:.0}s de audio)",
                     pending,
@@ -832,18 +841,18 @@ pub fn start_transcription_task<R: Runtime>(
                 );
             }
 
-            // Lag warning watermark: queue between 1000 and 1500 is the
-            // "yellow zone" where drops are imminent but haven't happened yet.
-            // Emit once every ~100 pending chunks to avoid spam.
-            const LAG_WARNING_LOW: u64 = 1000;
+            // Lag warning watermark: cola entre 60 y 100 es la "yellow zone"
+            // donde los drops son inminentes pero aún no ocurren.
+            // Emit cada ~20 chunks pendientes para no spamear.
+            const LAG_WARNING_LOW: u64 = 60;
             if pending >= LAG_WARNING_LOW && pending < backpressure_threshold {
-                if pending % 100 == 0 {
+                if pending % 20 == 0 {
                     let _ = app.emit(
                         events::TRANSCRIPTION_LAG_WARNING,
                         serde_json::json!({
                             "queue_depth": pending,
                             "threshold_drop": backpressure_threshold,
-                            "capacity": 2000u64,
+                            "capacity": WORK_QUEUE_CAPACITY as u64,
                         }),
                     );
                 }
