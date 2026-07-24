@@ -8,6 +8,7 @@ import { logger } from '@/lib/logger'
 import { validatePassword } from '@/lib/password-validation'
 import { TauriEvent } from '@/lib/tauri-events'
 import { PasswordStrengthIndicator } from './PasswordStrengthIndicator'
+import { useAwaitEmailConfirmation } from '@/hooks/useAwaitEmailConfirmation'
 
 type AuthMode = 'signin' | 'signup' | 'reset'
 
@@ -86,6 +87,13 @@ export function LoginScreen() {
   const [showPassword, setShowPassword] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [successMessage, setSuccessMessage] = useState<string | null>(null)
+  // Solo true tras un signup que requiere verificación: gatea el poll cross-device.
+  // NO reusar successMessage (compartido con el banner de reset de contraseña).
+  const [awaitingConfirmation, setAwaitingConfirmation] = useState(false)
+
+  // Sondea signInWithPassword mientras espera la confirmación del correo → la app
+  // entra sola al confirmar desde el celular u otro navegador (issue #58).
+  useAwaitEmailConfirmation({ active: awaitingConfirmation, email, password })
 
   // Reset OAuth spinner when AuthContext reports an error
   useEffect(() => {
@@ -115,6 +123,7 @@ export function LoginScreen() {
     setFullName('')
     setShowPassword(false)
     setSuccessMessage(null)
+    setAwaitingConfirmation(false)
   }
 
   const handleEmailSignIn = async (e: React.FormEvent) => {
@@ -141,7 +150,11 @@ export function LoginScreen() {
     try {
       const result = await signUpWithEmail(trimmedEmail, password, trimmedFullName)
       if (result.needsVerification) {
+        // Fija el email a la forma exacta con la que se registró (trimmed) para que el
+        // poll reuse la misma credencial. Prende el poll cross-device (issue #58).
+        setEmail(trimmedEmail)
         setSuccessMessage(`Te enviamos un correo a ${trimmedEmail}. Confirma tu cuenta para continuar.`)
+        setAwaitingConfirmation(true)
       }
     } catch {
       // Error already mapped to context error state
@@ -248,6 +261,17 @@ export function LoginScreen() {
             {successMessage ? (
               <div className="space-y-4">
                 <div className={successBannerClass}>{successMessage}</div>
+                {awaitingConfirmation && (
+                  <div className="flex flex-col items-center gap-1 rounded-lg bg-[#f5f5f6] dark:bg-gray-800/60 py-3 px-4 text-center">
+                    <div className="flex items-center gap-2 text-sm text-[#4a4a4c] dark:text-gray-300">
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      Verificando automáticamente…
+                    </div>
+                    <p className="text-xs text-[#6a6a6d] dark:text-gray-400">
+                      No cierres esta ventana: te llevaremos adentro en cuanto confirmes tu correo.
+                    </p>
+                  </div>
+                )}
                 <button
                   type="button"
                   onClick={() => switchMode('signin')}
