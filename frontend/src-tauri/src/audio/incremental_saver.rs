@@ -1,4 +1,6 @@
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use anyhow::{Result, anyhow};
 use log::{info, warn, error};
 use super::encode::encode_single_audio;
@@ -18,8 +20,11 @@ struct AudioData {
 /// to minimize memory usage and enable crash recovery
 pub struct IncrementalAudioSaver {
     checkpoint_buffer: Vec<AudioData>,
+    buffered_samples: usize,  // running total of interleaved samples in buffer
     checkpoint_interval_samples: usize,  // 30s at 48kHz = 1,440,000 samples (per channel)
     checkpoint_count: u32,
+    pending_encodes: Arc<AtomicU32>,  // background encodes still in flight
+    encode_errors: Arc<AtomicU32>,
     checkpoints_dir: PathBuf,
     meeting_folder: PathBuf,
     sample_rate: u32,
@@ -45,10 +50,13 @@ impl IncrementalAudioSaver {
 
         Ok(Self {
             checkpoint_buffer: Vec::new(),
+            buffered_samples: 0,
             // 30 seconds worth of samples (accounting for channels)
             // For stereo: 48000 * 30 * 2 = 2,880,000 interleaved samples
             checkpoint_interval_samples: sample_rate as usize * 30 * channels as usize,
             checkpoint_count: 0,
+            pending_encodes: Arc::new(AtomicU32::new(0)),
+            encode_errors: Arc::new(AtomicU32::new(0)),
             checkpoints_dir,
             meeting_folder,
             sample_rate,
@@ -59,63 +67,77 @@ impl IncrementalAudioSaver {
     /// Add an audio chunk to the buffer
     /// Automatically saves a checkpoint when buffer reaches 30 seconds
     pub fn add_chunk(&mut self, chunk: AudioChunk) -> Result<()> {
-        let audio_data = AudioData {
+        self.buffered_samples += chunk.data.len();
+        self.checkpoint_buffer.push(AudioData {
             data: chunk.data,
             // sample_rate: chunk.sample_rate,
-        };
-
-        self.checkpoint_buffer.push(audio_data);
-
-        // Calculate total samples in buffer
-        let total_samples: usize = self.checkpoint_buffer
-            .iter()
-            .map(|c| c.data.len())
-            .sum();
+        });
 
         // Save checkpoint when buffer reaches threshold (30 seconds)
-        if total_samples >= self.checkpoint_interval_samples {
-            self.save_checkpoint()?;
-            self.checkpoint_buffer.clear();
+        if self.buffered_samples >= self.checkpoint_interval_samples {
+            self.spawn_checkpoint_encode();
         }
 
         Ok(())
     }
 
-    /// Save current buffer as a checkpoint file
-    fn save_checkpoint(&mut self) -> Result<()> {
-        // Concatenate all chunks in buffer
-        let audio_data: Vec<f32> = self.checkpoint_buffer
-            .iter()
-            .flat_map(|c| &c.data)
-            .cloned()
-            .collect();
-
-        if audio_data.is_empty() {
+    /// Move the buffered audio into a blocking task that encodes the checkpoint.
+    /// The FFmpeg encode takes 1-4s on loaded machines; running it inline
+    /// blocked a tokio worker (and the saver's AsyncMutex) that long every 30s.
+    /// `finalize()` waits for `pending_encodes` before merging.
+    fn spawn_checkpoint_encode(&mut self) {
+        let chunks = std::mem::take(&mut self.checkpoint_buffer);
+        self.buffered_samples = 0;
+        if chunks.is_empty() {
             warn!("Attempted to save empty checkpoint, skipping");
-            return Ok(());
+            return;
         }
 
-        // Generate checkpoint filename
         let checkpoint_path = self.checkpoints_dir
             .join(format!("audio_chunk_{:03}.mp4", self.checkpoint_count));
-
-        // Encode and save checkpoint (stereo or mono depending on channels)
-        encode_single_audio(
-            bytemuck::cast_slice(&audio_data),
-            self.sample_rate,
-            self.channels,
-            &checkpoint_path
-        )?;
-
-        let duration_seconds = audio_data.len() as f32 / (self.sample_rate as f32 * self.channels as f32);
         self.checkpoint_count += 1;
+        let checkpoint_number = self.checkpoint_count;
 
-        info!("Saved checkpoint {}: {:.2}s of audio ({} samples)",
-              self.checkpoint_count,
-              duration_seconds,
-              audio_data.len());
+        let sample_rate = self.sample_rate;
+        let channels = self.channels;
+        let pending = self.pending_encodes.clone();
+        let errors = self.encode_errors.clone();
+        pending.fetch_add(1, Ordering::SeqCst);
 
-        Ok(())
+        tokio::task::spawn_blocking(move || {
+            // Decrement even if the encode panics
+            struct PendingGuard(Arc<AtomicU32>);
+            impl Drop for PendingGuard {
+                fn drop(&mut self) {
+                    self.0.fetch_sub(1, Ordering::SeqCst);
+                }
+            }
+            let _guard = PendingGuard(pending);
+
+            let total: usize = chunks.iter().map(|c| c.data.len()).sum();
+            let mut audio_data: Vec<f32> = Vec::with_capacity(total);
+            for c in &chunks {
+                audio_data.extend_from_slice(&c.data);
+            }
+
+            match encode_single_audio(
+                bytemuck::cast_slice(&audio_data),
+                sample_rate,
+                channels,
+                &checkpoint_path,
+            ) {
+                Ok(()) => {
+                    let duration_seconds =
+                        audio_data.len() as f32 / (sample_rate as f32 * channels as f32);
+                    info!("Saved checkpoint {}: {:.2}s of audio ({} samples)",
+                          checkpoint_number, duration_seconds, audio_data.len());
+                }
+                Err(e) => {
+                    errors.fetch_add(1, Ordering::SeqCst);
+                    error!("Failed to encode checkpoint {}: {}", checkpoint_number, e);
+                }
+            }
+        });
     }
 
     /// Finalize the recording: save final checkpoint, merge all checkpoints, cleanup
@@ -127,8 +149,23 @@ impl IncrementalAudioSaver {
         // Save final buffer if not empty
         if !self.checkpoint_buffer.is_empty() {
             info!("Saving final checkpoint with remaining {} chunks", self.checkpoint_buffer.len());
-            self.save_checkpoint()?;
-            self.checkpoint_buffer.clear();
+            self.spawn_checkpoint_encode();
+        }
+
+        // Wait for background encodes: their files must exist before the merge
+        let wait_start = std::time::Instant::now();
+        while self.pending_encodes.load(Ordering::SeqCst) > 0 {
+            if wait_start.elapsed() > std::time::Duration::from_secs(300) {
+                return Err(anyhow!(
+                    "Timed out waiting for {} checkpoint encode(s) to finish",
+                    self.pending_encodes.load(Ordering::SeqCst)
+                ));
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        let failed = self.encode_errors.load(Ordering::SeqCst);
+        if failed > 0 {
+            warn!("{} checkpoint(s) failed to encode; merge will skip their files", failed);
         }
 
         if self.checkpoint_count == 0 {
@@ -160,18 +197,26 @@ impl IncrementalAudioSaver {
         let list_file = self.checkpoints_dir.join("concat_list.txt");
         let mut list_content = String::new();
 
+        let mut missing = 0u32;
         for i in 0..self.checkpoint_count {
             let checkpoint_path = self.checkpoints_dir
                 .join(format!("audio_chunk_{:03}.mp4", i));
 
-            // Verify checkpoint exists
+            // A failed background encode leaves a gap; losing 30s beats
+            // failing the whole recording, so skip with a warning.
             if !checkpoint_path.exists() {
-                return Err(anyhow!("Checkpoint file missing: {}", checkpoint_path.display()));
+                warn!("Checkpoint file missing (encode failed?), skipping: {}", checkpoint_path.display());
+                missing += 1;
+                continue;
             }
 
             // Use absolute path for FFmpeg (required for safe mode)
             let abs_path = checkpoint_path.canonicalize()?;
             list_content.push_str(&format!("file '{}'\n", abs_path.display()));
+        }
+
+        if missing == self.checkpoint_count {
+            return Err(anyhow!("All {} checkpoint files are missing", missing));
         }
 
         std::fs::write(&list_file, list_content)?;

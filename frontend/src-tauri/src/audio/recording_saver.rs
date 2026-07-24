@@ -1,10 +1,12 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::Mutex as AsyncMutex;
 use anyhow::Result;
 use log::{info, warn, error};
 use tauri::{AppHandle, Runtime, Emitter};
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 use serde::{Serialize, Deserialize};
 use std::path::PathBuf;
 
@@ -107,6 +109,15 @@ pub struct RecordingSaver {
     transcript_segments: Arc<Mutex<TranscriptStore>>,
     chunk_receiver: Option<mpsc::UnboundedReceiver<AudioChunk>>,
     is_saving: Arc<Mutex<bool>>,
+    transcripts_dirty: Arc<AtomicBool>,
+    transcript_io_lock: Arc<Mutex<()>>,
+    /// Apagado del debounced writer. `stop_and_save` cancela y espera el handle
+    /// ANTES de la escritura final y del `clear()`: tras el join, el único que
+    /// escribe transcripts.json es el propio stop. Sin este orden, el tick
+    /// póstumo del writer podía escribir el store ya vaciado encima del archivo
+    /// final (transcripts.json truncado a 0 segmentos).
+    writer_shutdown: Option<CancellationToken>,
+    writer_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl RecordingSaver {
@@ -119,6 +130,10 @@ impl RecordingSaver {
             transcript_segments: Arc::new(Mutex::new(TranscriptStore::new())),
             chunk_receiver: None,
             is_saving: Arc::new(Mutex::new(false)),
+            transcripts_dirty: Arc::new(AtomicBool::new(false)),
+            transcript_io_lock: Arc::new(Mutex::new(())),
+            writer_shutdown: None,
+            writer_handle: None,
         }
     }
 
@@ -162,12 +177,10 @@ impl RecordingSaver {
             error!("Failed to lock transcript segments for adding segment {}", segment_id);
         }
 
-        // NEW: Save incrementally to disk
-        if let Some(folder) = &self.meeting_folder {
-            if let Err(e) = self.write_transcripts_json(folder) {
-                warn!("Failed to write incremental transcript update: {}", e);
-            }
-        }
+        // No I/O here: this runs under the global RECORDING_MANAGER mutex per
+        // segment, and rewriting the whole transcripts.json each time is O(n²)
+        // over the session. The debounced writer task persists within 10s.
+        self.transcripts_dirty.store(true, Ordering::Relaxed);
     }
 
     /// Legacy method for backward compatibility - converts text to basic segment
@@ -225,6 +238,36 @@ impl RecordingSaver {
             }
         }
 
+        // Set saving flag BEFORE spawning tasks so their first ticks see it
+        if let Ok(mut is_saving) = self.is_saving.lock() {
+            *is_saving = true;
+        }
+
+        // Debounced transcript writer: persists transcripts.json every 10s
+        // while dirty, off the async runtime. stop_and_save lo apaga de forma
+        // DETERMINISTA (cancel + join) antes de su escritura final y del clear;
+        // transcript_io_lock solo serializa escrituras, el orden lo da el join.
+        if let Some(folder) = self.meeting_folder.clone() {
+            // Defensivo: no debería haber un writer previo vivo (el saver es
+            // por-grabación), pero si lo hubiera compartiría store y archivo.
+            if let Some(token) = self.writer_shutdown.take() {
+                token.cancel();
+            }
+            if let Some(handle) = self.writer_handle.take() {
+                handle.abort();
+            }
+            let token = CancellationToken::new();
+            self.writer_handle = Some(spawn_transcript_writer(
+                self.transcript_segments.clone(),
+                self.transcripts_dirty.clone(),
+                self.transcript_io_lock.clone(),
+                folder,
+                token.clone(),
+                std::time::Duration::from_secs(10),
+            ));
+            self.writer_shutdown = Some(token);
+        }
+
         // Start accumulation task
         let is_saving_clone = self.is_saving.clone();
         let incremental_saver_arc = self.incremental_saver.clone();
@@ -265,11 +308,6 @@ impl RecordingSaver {
 
                 info!("Recording saver accumulation task ended");
             });
-        }
-
-        // Set saving flag
-        if let Ok(mut is_saving) = self.is_saving.lock() {
-            *is_saving = true;
         }
 
         sender
@@ -335,58 +373,9 @@ impl RecordingSaver {
         Ok(())
     }
 
-    /// Write transcripts.json to disk (atomic write with temp file and validation)
+    /// Write transcripts.json to disk (atomic write with temp file)
     fn write_transcripts_json(&self, folder: &PathBuf) -> Result<()> {
-        // Clone segments to avoid holding lock during I/O
-        let segments_clone = if let Ok(store) = self.transcript_segments.lock() {
-            store.clone_vec()
-        } else {
-            error!("Failed to lock transcript segments for writing");
-            return Err(anyhow::anyhow!("Failed to lock transcript segments"));
-        };
-
-        info!("Writing {} transcript segments to JSON", segments_clone.len());
-
-        let transcript_path = folder.join("transcripts.json");
-        let temp_path = folder.join(".transcripts.json.tmp");
-
-        // Create JSON structure
-        let json = serde_json::json!({
-            "version": "1.0",
-            "segments": segments_clone,
-            "last_updated": chrono::Utc::now().to_rfc3339(),
-            "total_segments": segments_clone.len()
-        });
-
-        // Serialize to pretty JSON string
-        let json_string = serde_json::to_string_pretty(&json)
-            .map_err(|e| {
-                error!("Failed to serialize transcripts to JSON: {}", e);
-                anyhow::anyhow!("JSON serialization failed: {}", e)
-            })?;
-
-        // Write to temp file with error handling
-        std::fs::write(&temp_path, &json_string)
-            .map_err(|e| {
-                error!("Failed to write transcript temp file to {}: {}", temp_path.display(), e);
-                anyhow::anyhow!("Failed to write temp file: {}", e)
-            })?;
-
-        // Verify temp file was written correctly
-        if !temp_path.exists() {
-            error!("Temp transcript file does not exist after write: {}", temp_path.display());
-            return Err(anyhow::anyhow!("Temp file verification failed"));
-        }
-
-        // Atomic rename
-        std::fs::rename(&temp_path, &transcript_path)
-            .map_err(|e| {
-                error!("Failed to rename transcript file from {} to {}: {}",
-                       temp_path.display(), transcript_path.display(), e);
-                anyhow::anyhow!("Failed to rename transcript file: {}", e)
-            })?;
-
-        info!("✅ Successfully wrote transcripts.json with {} segments", segments_clone.len());
+        write_transcripts_snapshot(&self.transcript_segments, folder, &self.transcript_io_lock)?;
         Ok(())
     }
 
@@ -420,15 +409,47 @@ impl RecordingSaver {
             *is_saving = false;
         }
 
+        // Señalizar el apagado del writer ANTES del sleep: el grace de 200ms
+        // sirve a la vez para los últimos chunks y para que el writer observe
+        // la cancelación.
+        if let Some(token) = self.writer_shutdown.take() {
+            token.cancel();
+        }
+
         // Give time for final chunks
         tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+
+        // Join determinista del writer. A partir de aquí el ÚNICO que escribe
+        // transcripts.json es este método — sin esto, el tick póstumo del writer
+        // (hasta 10s después) escribía el store ya vaciado encima del archivo
+        // final. timeout() consume el handle, por eso el abort_handle previo.
+        if let Some(handle) = self.writer_handle.take() {
+            let abort = handle.abort_handle();
+            match tokio::time::timeout(tokio::time::Duration::from_secs(5), handle).await {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => warn!("Transcript writer terminó con error de join: {}", e),
+                Err(_) => {
+                    warn!("Transcript writer no terminó en 5s; abortando");
+                    abort.abort();
+                }
+            }
+        }
+
+        // Escritura temprana best-effort: garantiza los transcripts en disco
+        // aunque la finalización del audio falle más abajo (early-return de
+        // FFmpeg). La escritura de después de FFmpeg sigue siendo la
+        // autoritativa; esta es idéntica e idempotente (tmp + rename atómico).
+        if let Some(folder) = &self.meeting_folder {
+            if let Err(e) = self.write_transcripts_json(folder) {
+                error!("❌ Early final transcript write failed: {}", e);
+            }
+        }
 
         // Check if incremental saver exists (indicates auto_save was enabled)
         let should_save_audio = self.incremental_saver.is_some();
 
         if !should_save_audio {
             info!("⚠️  No audio saver initialized (auto-save was disabled) - skipping audio finalization");
-            info!("✅ Transcripts and metadata already saved incrementally");
             return Ok(None);
         }
 
@@ -534,5 +555,231 @@ impl RecordingSaver {
 impl Default for RecordingSaver {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Snapshot the transcript store and write transcripts.json atomically.
+/// `io_lock` serializes the shared temp-file write+rename between the
+/// debounced writer task and the synchronous final write in `stop_and_save`.
+fn write_transcripts_snapshot(
+    segments: &Arc<Mutex<TranscriptStore>>,
+    folder: &PathBuf,
+    io_lock: &Arc<Mutex<()>>,
+) -> Result<usize> {
+    let segments_clone = segments
+        .lock()
+        .map_err(|_| anyhow::anyhow!("Failed to lock transcript segments"))?
+        .clone_vec();
+
+    let json = serde_json::json!({
+        "version": "1.0",
+        "segments": segments_clone,
+        "last_updated": chrono::Utc::now().to_rfc3339(),
+        "total_segments": segments_clone.len()
+    });
+    // Compact JSON: the file is machine-read and pretty-printing doubles the bytes
+    let json_string = serde_json::to_string(&json)
+        .map_err(|e| anyhow::anyhow!("JSON serialization failed: {}", e))?;
+
+    let transcript_path = folder.join("transcripts.json");
+    let temp_path = folder.join(".transcripts.json.tmp");
+
+    let _io_guard = io_lock
+        .lock()
+        .map_err(|_| anyhow::anyhow!("Transcript IO lock poisoned"))?;
+
+    std::fs::write(&temp_path, &json_string)
+        .map_err(|e| anyhow::anyhow!("Failed to write temp file {}: {}", temp_path.display(), e))?;
+    std::fs::rename(&temp_path, &transcript_path)
+        .map_err(|e| anyhow::anyhow!("Failed to rename transcript file: {}", e))?;
+
+    Ok(segments_clone.len())
+}
+
+/// Spawnea el debounced transcript writer: escribe transcripts.json cada
+/// `period` mientras `dirty` esté prendido, fuera del hilo async.
+///
+/// Contrato de apagado (patrón de graceful shutdown de tokio-util):
+/// - En cancel: sale SIN escribir. Tras el join, el único escritor del archivo
+///   es `stop_and_save`, que hace su propia escritura final síncrona.
+/// - La cancelación solo se observa al tope del loop, así que el join espera a
+///   que una escritura in-flight termine (no se corta a mitad de un write).
+/// - `spawn_blocking` no es abortable: el guard `is_cancelled()` dentro del
+///   closure evita que un write ya encolado corra después del cancel y pise el
+///   archivo final con un store posiblemente vaciado.
+fn spawn_transcript_writer(
+    segments: Arc<Mutex<TranscriptStore>>,
+    dirty: Arc<AtomicBool>,
+    io_lock: Arc<Mutex<()>>,
+    folder: PathBuf,
+    shutdown: CancellationToken,
+    period: std::time::Duration,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(period);
+        loop {
+            tokio::select! {
+                biased;
+                _ = shutdown.cancelled() => break,
+                _ = interval.tick() => {
+                    if dirty.swap(false, Ordering::Relaxed) {
+                        let segments = segments.clone();
+                        let folder = folder.clone();
+                        let io_lock = io_lock.clone();
+                        let token = shutdown.clone();
+                        let write = tokio::task::spawn_blocking(move || {
+                            if token.is_cancelled() {
+                                return Ok(0);
+                            }
+                            write_transcripts_snapshot(&segments, &folder, &io_lock)
+                        })
+                        .await;
+                        match write {
+                            Ok(Ok(count)) => info!("Debounced transcript write: {} segments", count),
+                            Ok(Err(e)) => warn!("Debounced transcript write failed: {}", e),
+                            Err(e) => warn!("Transcript writer join error: {}", e),
+                        }
+                    }
+                }
+            }
+        }
+        info!("Transcript writer task ended");
+    })
+}
+
+#[cfg(test)]
+mod transcript_writer_tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    fn seg(sequence_id: u64) -> TranscriptSegment {
+        TranscriptSegment {
+            id: format!("seg_{}", sequence_id),
+            text: format!("texto {}", sequence_id),
+            audio_start_time: sequence_id as f64,
+            audio_end_time: sequence_id as f64 + 1.0,
+            duration: 1.0,
+            display_time: "[00:00]".to_string(),
+            confidence: 1.0,
+            sequence_id,
+            source_type: Some("user".to_string()),
+        }
+    }
+
+    fn store_with(n: u64) -> Arc<Mutex<TranscriptStore>> {
+        let store = Arc::new(Mutex::new(TranscriptStore::new()));
+        {
+            let mut guard = store.lock().expect("store lock");
+            for i in 0..n {
+                guard.upsert(seg(i));
+            }
+        }
+        store
+    }
+
+    fn read_total_segments(folder: &std::path::Path) -> usize {
+        let raw = std::fs::read_to_string(folder.join("transcripts.json")).expect("leer json");
+        let json: serde_json::Value = serde_json::from_str(&raw).expect("parsear json");
+        json["total_segments"].as_u64().expect("total_segments") as usize
+    }
+
+    /// REGRESIÓN del truncado post-stop (jul-2026): el tick póstumo del writer
+    /// escribía el store ya vaciado por `stop_and_save` encima del archivo
+    /// final → transcripts.json con 0 segmentos y el segmento de jornada no se
+    /// persistía. La secuencia cancel → join → escritura final → clear debe
+    /// dejar el archivo íntegro sin importar cuántos periodos pasen después.
+    #[tokio::test]
+    async fn el_stop_no_deja_que_un_tick_postumo_trunque_el_archivo() {
+        let dir = tempdir().expect("tempdir");
+        let folder = dir.path().to_path_buf();
+        let store = store_with(3);
+        let dirty = Arc::new(AtomicBool::new(true));
+        let io_lock = Arc::new(Mutex::new(()));
+        let token = CancellationToken::new();
+        let period = std::time::Duration::from_millis(50);
+
+        let handle = spawn_transcript_writer(
+            store.clone(),
+            dirty.clone(),
+            io_lock.clone(),
+            folder.clone(),
+            token.clone(),
+            period,
+        );
+
+        // Deja correr al menos un tick con los 3 segmentos.
+        tokio::time::sleep(period * 3).await;
+
+        // Tail: llega un 4º segmento justo antes del stop.
+        store.lock().expect("store lock").upsert(seg(3));
+        dirty.store(true, Ordering::Relaxed);
+
+        // Secuencia exacta de stop_and_save: cancel → join → write final → clear.
+        token.cancel();
+        handle.await.expect("join del writer");
+        write_transcripts_snapshot(&store, &folder, &io_lock).expect("escritura final");
+        store.lock().expect("store lock").clear();
+
+        // Con el bug, un tick póstumo reescribía el archivo con 0 segmentos.
+        tokio::time::sleep(period * 4).await;
+        assert_eq!(read_total_segments(&folder), 4, "el archivo final no debe truncarse");
+    }
+
+    /// En cancel el writer sale sin escribir: la escritura final es propiedad
+    /// exclusiva del stop.
+    #[tokio::test]
+    async fn cancelado_no_escribe_aunque_este_dirty() {
+        let dir = tempdir().expect("tempdir");
+        let folder = dir.path().to_path_buf();
+        let store = store_with(2);
+        let dirty = Arc::new(AtomicBool::new(true));
+        let io_lock = Arc::new(Mutex::new(()));
+        let token = CancellationToken::new();
+
+        // Cancel ANTES de spawnear: con `biased` el cancel gana al primer tick.
+        token.cancel();
+        let handle = spawn_transcript_writer(
+            store,
+            dirty,
+            io_lock,
+            folder.clone(),
+            token,
+            std::time::Duration::from_millis(20),
+        );
+        handle.await.expect("join del writer");
+
+        assert!(
+            !folder.join("transcripts.json").exists(),
+            "un writer cancelado no debe escribir"
+        );
+    }
+
+    /// Camino feliz: mientras está vivo, persiste al ritmo del periodo y apaga
+    /// el flag dirty.
+    #[tokio::test]
+    async fn escribe_periodicamente_mientras_este_dirty() {
+        let dir = tempdir().expect("tempdir");
+        let folder = dir.path().to_path_buf();
+        let store = store_with(5);
+        let dirty = Arc::new(AtomicBool::new(true));
+        let io_lock = Arc::new(Mutex::new(()));
+        let token = CancellationToken::new();
+        let period = std::time::Duration::from_millis(50);
+
+        let handle = spawn_transcript_writer(
+            store,
+            dirty.clone(),
+            io_lock,
+            folder.clone(),
+            token.clone(),
+            period,
+        );
+
+        tokio::time::sleep(period * 3).await;
+        assert_eq!(read_total_segments(&folder), 5);
+        assert!(!dirty.load(Ordering::Relaxed), "el write debe apagar dirty");
+
+        token.cancel();
+        handle.await.expect("join del writer");
     }
 }
