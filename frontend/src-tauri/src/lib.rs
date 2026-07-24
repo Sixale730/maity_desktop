@@ -175,18 +175,26 @@ async fn start_recording<R: Runtime>(
     }
 }
 
+/// Detiene la grabación desde la UI. Devuelve `bool`: `true` si ESTE caller adquirió el
+/// StopGate e hizo el teardown; `false` si otro actor (scheduler de jornada / otra ventana)
+/// ya estaba deteniendo/detuvo (stop idempotente). El frontend usa ese bool para NO correr
+/// su post-procesado de guardado cuando `false` — de lo contrario duplicaría la reunión
+/// (race inversa del StopGate, issue #56).
 #[tauri::command]
-async fn stop_recording<R: Runtime>(app: AppHandle<R>, args: RecordingArgs) -> Result<(), String> {
+async fn stop_recording<R: Runtime>(app: AppHandle<R>, args: RecordingArgs) -> Result<bool, String> {
     log_info!("Attempting to stop recording...");
 
-    // Check the actual audio recording system state instead of the flag
+    // Check the actual audio recording system state instead of the flag.
+    // Si la fase ya es Stopping (p.ej. el scheduler está drenando), is_recording()==false:
+    // devolvemos Ok(false) para que la UI NO guarde (el otro actor ya lo hace).
     if !audio::recording_commands::is_recording().await {
         log_info!("Recording is already stopped");
-        return Ok(());
+        return Ok(false);
     }
 
-    // Call the actual audio recording system to stop
-    match audio::recording_commands::stop_recording(
+    // Call the actual audio recording system to stop. Usamos la variante *_reporting para
+    // conocer si ganamos el StopGate (`won`) y propagarlo a la UI.
+    match audio::recording_commands::stop_recording_reporting(
         app.clone(),
         audio::recording_commands::RecordingArgs {
             save_path: args.save_path.clone(),
@@ -194,39 +202,45 @@ async fn stop_recording<R: Runtime>(app: AppHandle<R>, args: RecordingArgs) -> R
     )
     .await
     {
-        Ok(_) => {
+        Ok(won) => {
             tray::update_tray_menu(&app);
 
-            // Create the save directory if it doesn't exist
-            if let Some(parent) = std::path::Path::new(&args.save_path).parent() {
-                if !parent.exists() {
-                    log_info!("Creating directory: {:?}", parent);
-                    if let Err(e) = std::fs::create_dir_all(parent) {
-                        let err_msg = format!("Failed to create save directory: {}", e);
-                        log_error!("{}", err_msg);
-                        return Err(err_msg);
+            // Solo el ganador del StopGate anuncia el stop (crea el dir de guardado y muestra
+            // la notificación). Si `won == false` otro actor concurrente ya hizo el teardown.
+            if won {
+                // Create the save directory if it doesn't exist
+                if let Some(parent) = std::path::Path::new(&args.save_path).parent() {
+                    if !parent.exists() {
+                        log_info!("Creating directory: {:?}", parent);
+                        if let Err(e) = std::fs::create_dir_all(parent) {
+                            let err_msg = format!("Failed to create save directory: {}", e);
+                            log_error!("{}", err_msg);
+                            return Err(err_msg);
+                        }
                     }
                 }
-            }
 
-            // Show recording stopped notification through NotificationManager
-            // This respects user's notification preferences
-            let notification_manager_state = app.state::<NotificationManagerState<R>>();
-            if let Err(e) = notifications::commands::show_recording_stopped_notification(
-                &app,
-                &notification_manager_state,
-            )
-            .await
-            {
-                log_error!(
-                    "Failed to show recording stopped notification: {}",
-                    e
-                );
+                // Show recording stopped notification through NotificationManager
+                // This respects user's notification preferences
+                let notification_manager_state = app.state::<NotificationManagerState<R>>();
+                if let Err(e) = notifications::commands::show_recording_stopped_notification(
+                    &app,
+                    &notification_manager_state,
+                )
+                .await
+                {
+                    log_error!(
+                        "Failed to show recording stopped notification: {}",
+                        e
+                    );
+                } else {
+                    log_info!("Successfully showed recording stopped notification");
+                }
             } else {
-                log_info!("Successfully showed recording stopped notification");
+                log_info!("Otro actor ganó el StopGate; UI omitirá el guardado (won=false)");
             }
 
-            Ok(())
+            Ok(won)
         }
         Err(e) => {
             log_error!("Failed to stop audio recording: {}", e);

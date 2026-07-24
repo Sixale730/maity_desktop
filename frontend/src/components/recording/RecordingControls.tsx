@@ -177,18 +177,22 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
       const savePath = `${dataDir}/recording-${timestamp}.wav`;
       logger.debug('Saving recording to:', savePath);
       logger.debug('About to call stop_recording command');
-      const result = await invoke('stop_recording', {
+      // `won` = si ESTE stop adquirió el StopGate. Con `won=false` otro actor (scheduler de
+      // jornada / otra ventana) ya está deteniendo y guardando: pasamos `won` como el flag
+      // `callApi` para que useRecordingStop OMITA el guardado y solo resetee la UI, evitando
+      // la reunión duplicada de la race inversa (issue #56).
+      const won = await invoke<boolean>('stop_recording', {
         args: {
           save_path: savePath
         }
       });
-      logger.debug('stop_recording command completed successfully:', result);
+      logger.debug('stop_recording command completed successfully (won):', won);
       setRecordingPath(savePath);
       // setShowPlayback(true);
       setIsProcessing(false);
       // Track successful transcription
       Analytics.trackTranscriptionSuccess();
-      onRecordingStop(true);
+      onRecordingStop(won);
     } catch (error) {
       console.error('Failed to stop recording:', error);
       if (error instanceof Error) {

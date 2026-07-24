@@ -427,7 +427,10 @@ pub async fn coach_float_stop_recording<R: Runtime>(app: AppHandle<R>) -> Result
     let timestamp = chrono::Local::now().format("%Y-%m-%dT%H-%M-%S").to_string();
     let save_path = data_dir.join(format!("recording-{}.wav", timestamp));
 
-    let stop_result = crate::audio::recording_commands::stop_recording(
+    // Variante *_reporting: `won` = si ESTE stop adquirió el StopGate. El payload del evento es
+    // el flag `callApi`; con `won=false` (otro actor ya detiene/guarda) el frontend omite el
+    // guardado y solo resetea la UI (evita la reunión duplicada de la race inversa, issue #56).
+    let stop_result = crate::audio::recording_commands::stop_recording_reporting(
         app.clone(),
         crate::audio::recording_commands::RecordingArgs {
             save_path: save_path.to_string_lossy().to_string(),
@@ -436,9 +439,9 @@ pub async fn coach_float_stop_recording<R: Runtime>(app: AppHandle<R>) -> Result
     .await;
 
     match stop_result {
-        Ok(_) => {
-            info!("✅ Recording stopped from coach-float");
-            if let Err(e) = app.emit(events::RECORDING_STOP_COMPLETE, true) {
+        Ok(won) => {
+            info!("✅ Recording stopped from coach-float (won={})", won);
+            if let Err(e) = app.emit(events::RECORDING_STOP_COMPLETE, won) {
                 warn!("Coach-float: failed to emit recording-stop-complete: {}", e);
             }
             Ok(())
