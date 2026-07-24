@@ -686,7 +686,7 @@ detectaba **procesos abiertos**, no reuniones, con reglas laxas. Reglas actuales
 ## Sistema de Roles (Developer vs Usuario Regular)
 
 - **Developers**: Emails con dominio `@asertio.mx` o `@maity.cloud` -> interfaz completa
-- **Usuarios regulares**: Interfaz restringida (sin Gamificacion/Conversaciones en sidebar, settings limitados, transcripcion forzada a Deepgram nova-3 es-419)
+- **Usuarios regulares**: Interfaz restringida (sin Gamificacion/Conversaciones en sidebar, settings limitados). NO estan forzados a Deepgram — transcriben con los motores locales igual que los developers.
 - Archivos: `lib/roles.ts`, `hooks/useUserRole.ts`, `Sidebar/index.tsx`, `settings/page.tsx`, `ConfigContext.tsx`
 
 ## Restricciones Importantes
