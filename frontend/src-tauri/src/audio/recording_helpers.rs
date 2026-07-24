@@ -417,6 +417,9 @@ pub async fn initialize_recording<R: Runtime>(
     // Register transcript-update event listener for history persistence
     register_transcript_listener(app);
 
+    // Baseline de memoria al iniciar la sesión (comparar con post-stop-120s)
+    crate::logging::mem_sampler::snapshot_now("recording-start");
+
     Ok(())
 }
 

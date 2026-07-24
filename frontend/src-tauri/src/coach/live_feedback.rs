@@ -514,6 +514,9 @@ pub async fn start<R: Runtime + 'static>(app: AppHandle<R>) -> Result<(), String
     SIDECAR_RESTARTS_AT_START.store(sc_restarts, Ordering::Relaxed);
     SIDECAR_COOLDOWNS_AT_START.store(sc_cooldowns, Ordering::Relaxed);
 
+    // Picos de memoria por sesión (los reporta el session-summary del stop)
+    crate::logging::mem_sampler::reset_session_peaks();
+
     // Leer config del pipeline activo
     let cfg = get_active_live_feedback_config(&app).await;
     let configured_model = cfg
@@ -1035,10 +1038,18 @@ pub fn stop<R: Runtime>(app: &AppHandle<R>) {
         sc_cooldowns.saturating_sub(SIDECAR_COOLDOWNS_AT_START.load(Ordering::Relaxed));
     let breaker_opens = COACH_BREAKER_OPENS.load(Ordering::Relaxed);
 
+    // Picos de memoria de la sesión + contexto de hardware: viajan enteros a
+    // maity.platform_logs vía useCoachMetricsTelemetry (spread del objeto),
+    // así se puede segmentar por versión/RAM/tier sin tocar el frontend.
+    let peaks = crate::logging::mem_sampler::session_peaks();
+    let hw = crate::audio::hardware_detector::HardwareProfile::detect();
+
     info!(
-        "[METRIC] session-summary llm_parse_total={} llm_parse_failed={} ({:.1}%) llm_latency_p95_ms={:?} tips_from_llm={} tips_from_heuristic={} heuristic_pct={:.1}% sidecar_timeouts={} sidecar_restarts={} sidecar_cooldowns={} breaker_opens={}",
+        "[METRIC] session-summary llm_parse_total={} llm_parse_failed={} ({:.1}%) llm_latency_p95_ms={:?} tips_from_llm={} tips_from_heuristic={} heuristic_pct={:.1}% sidecar_timeouts={} sidecar_restarts={} sidecar_cooldowns={} breaker_opens={} mem_app_rss_peak_mb={} mem_llama_rss_peak_mb={} mem_webview_rss_peak_mb={} sys_avail_min_mb={} llama_procs_max={}",
         parse_total, parse_failed, parse_failed_pct, p95_ms, tips_llm, tips_heur, heur_pct,
-        sidecar_timeouts, sidecar_restarts, sidecar_cooldowns, breaker_opens
+        sidecar_timeouts, sidecar_restarts, sidecar_cooldowns, breaker_opens,
+        peaks.app_rss_peak_mb, peaks.llama_rss_peak_mb, peaks.webview_rss_peak_mb,
+        peaks.sys_avail_min_mb, peaks.llama_procs_max
     );
     let _ = app.emit(
         events::COACH_METRICS,
@@ -1055,6 +1066,15 @@ pub fn stop<R: Runtime>(app: &AppHandle<R>) {
                 "sidecar_restarts": sidecar_restarts,
                 "sidecar_cooldowns": sidecar_cooldowns,
                 "breaker_opens": breaker_opens,
+                "mem_app_rss_peak_mb": peaks.app_rss_peak_mb,
+                "mem_llama_rss_peak_mb": peaks.llama_rss_peak_mb,
+                "mem_webview_rss_peak_mb": peaks.webview_rss_peak_mb,
+                "sys_avail_min_mb": peaks.sys_avail_min_mb,
+                "llama_procs_max": peaks.llama_procs_max,
+                "app_version": env!("CARGO_PKG_VERSION"),
+                "total_ram_gb": hw.memory_gb,
+                "cpu_cores": hw.cpu_cores,
+                "tier": format!("{:?}", hw.performance_tier),
             }
         }),
     );

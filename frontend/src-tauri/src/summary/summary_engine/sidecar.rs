@@ -597,6 +597,7 @@ impl SidecarManager {
                             "{} timeouts consecutivos — sidecar presuntamente colgado, reinicio controlado",
                             strikes
                         );
+                        crate::logging::mem_sampler::snapshot_now("sidecar-timeout-strikes");
                         self.consecutive_timeouts.store(0, Ordering::SeqCst);
                         if let Err(e) = self.shutdown().await {
                             log::error!("Failed to shutdown wedged sidecar: {}", e);
@@ -612,6 +613,7 @@ impl SidecarManager {
                         "Request timeout after {:?} con helper legacy (sin ids) — shutting down sidecar",
                         effective_timeout
                     );
+                    crate::logging::mem_sampler::snapshot_now("sidecar-timeout-legacy");
                     if let Err(shutdown_err) = self.shutdown().await {
                         log::error!("Failed to shutdown sidecar after timeout: {}", shutdown_err);
                     }

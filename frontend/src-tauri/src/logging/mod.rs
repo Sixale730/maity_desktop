@@ -5,6 +5,7 @@
 
 pub mod file_logger;
 pub mod commands;
+pub mod mem_sampler;
 
 pub use file_logger::{init_file_logging, get_log_directory};
 pub use commands::*;

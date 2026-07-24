@@ -387,6 +387,16 @@ pub async fn stop_recording_reporting<R: Runtime>(
     // Avoids 2-8s model reload delay on next recording start.
     info!("Transcription model kept loaded in memory for next recording");
 
+    // Evidencia de liberación post-stop: si a los 120s el RSS no volvió al
+    // baseline, hay retención (task huérfana, cola sin drenar, etc.).
+    crate::logging::mem_sampler::snapshot_now("recording-stop");
+    tauri::async_runtime::spawn(async {
+        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+        crate::logging::mem_sampler::snapshot_now("post-stop-60s");
+        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+        crate::logging::mem_sampler::snapshot_now("post-stop-120s");
+    });
+
     // Step 4: Finalize recording state and cleanup resources safely
     let _ = app.emit(
         events::RECORDING_SHUTDOWN_PROGRESS,

@@ -950,6 +950,12 @@ pub fn run() {
                     log::info!("Skipping Summary ModelManager - using cloud provider: {}", summary_provider);
                 }
 
+                // Telemetría de RSS: [METRIC] mem-sample cada 30s al log
+                // rotativo (maity-desktop, llama-helper, WebView2, sistema).
+                // Sin esto, "la memoria no se libera" es indemostrable en campo
+                // (auditoría jul-2026: cero señales de memoria en 60 MB de logs).
+                logging::mem_sampler::start();
+
                 // Preload the configured STT model into RAM so the first
                 // recording feels instant. The `*_init` calls above only
                 // create the engine structs; this actually reads the ONNX

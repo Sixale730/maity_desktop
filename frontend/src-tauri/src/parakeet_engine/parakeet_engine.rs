@@ -581,6 +581,10 @@ impl ParakeetEngine {
         };
         let quantized = matches!(model_info.quantization, QuantizationType::Int8);
 
+        // Durante el reload coexisten sesión vieja + nueva (pico ~2x del
+        // modelo): dejar evidencia de memoria antes de pagar el pico.
+        crate::logging::mem_sampler::snapshot_now("onnx-recycle");
+
         // SLOW: cargar ParakeetModel en variable LOCAL. Sin lock de current_model.
         // Si esto falla, el modelo viejo queda intacto.
         let new_model = ParakeetModel::new(&model_info.path, quantized)

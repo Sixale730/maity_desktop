@@ -839,6 +839,7 @@ pub fn start_transcription_task<R: Runtime>(
                     pending,
                     pending as f64 * min_dur
                 );
+                crate::logging::mem_sampler::snapshot_now("transcription-backlog");
             }
 
             // Lag warning watermark: cola entre 60 y 100 es la "yellow zone"
