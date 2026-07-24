@@ -39,6 +39,9 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
 
   // Full transcript list (never trimmed) — used by useRecordingStop for saving
   const allTranscriptsRef = useRef<Transcript[]>([]);
+  // Set persistente de sequence_ids ya vistos: dedup O(1) por batch. Antes se
+  // reconstruía un Set con TODA la jornada en cada llegada (miles de veces).
+  const seenSequenceIdsRef = useRef<Set<number>>(new Set());
 
   // Refs for transcript management
   // IMPORTANT: transcriptsRef always points to the FULL list (allTranscriptsRef),
@@ -216,28 +219,47 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
         return (a.audio_start_time ?? 0) - (b.audio_start_time ?? 0);
       });
 
-      // Deduplicate against the full list (ref), not just the windowed state
-      const existingSequenceIds = new Set(
-        allTranscriptsRef.current.map(t => t.sequence_id).filter(id => id !== undefined)
-      );
+      // Deduplicate against the persistent Set (O(1) per item)
+      const seen = seenSequenceIdsRef.current;
       const uniqueNew = allNew.filter(t =>
-        t.sequence_id !== undefined && !existingSequenceIds.has(t.sequence_id)
+        t.sequence_id !== undefined && !seen.has(t.sequence_id)
       );
 
       if (uniqueNew.length === 0) return;
 
       logger.debug(`Adding ${uniqueNew.length} unique transcripts out of ${allNew.length} received`);
 
-      // Append to the full list and sort only the new additions into place
-      const fullList = [...allTranscriptsRef.current, ...uniqueNew].sort((a, b) => {
+      for (const t of uniqueNew) {
+        if (t.sequence_id !== undefined) seen.add(t.sequence_id);
+      }
+
+      // Merge lineal sin copiar la lista completa: en streaming los nuevos
+      // llegan casi siempre al final (seq creciente) → push in-place; solo un
+      // arribo fuera de orden paga el merge O(n). El patrón previo
+      // ([...all, ...new].sort()) clonaba y re-ordenaba TODA la jornada en
+      // cada batch — GB de churn de GC en sesiones largas.
+      const cmp = (a: Transcript, b: Transcript) => {
         const seqDiff = (a.sequence_id || 0) - (b.sequence_id || 0);
         if (seqDiff !== 0) return seqDiff;
         return (a.audio_start_time ?? 0) - (b.audio_start_time ?? 0);
-      });
-      allTranscriptsRef.current = fullList;
+      };
+      const full = allTranscriptsRef.current;
+      if (full.length === 0 || cmp(full[full.length - 1], uniqueNew[0]) <= 0) {
+        full.push(...uniqueNew);
+      } else {
+        const merged: Transcript[] = [];
+        let i = 0, j = 0;
+        while (i < full.length && j < uniqueNew.length) {
+          if (cmp(full[i], uniqueNew[j]) <= 0) merged.push(full[i++]);
+          else merged.push(uniqueNew[j++]);
+        }
+        while (i < full.length) merged.push(full[i++]);
+        while (j < uniqueNew.length) merged.push(uniqueNew[j++]);
+        allTranscriptsRef.current = merged;
+      }
 
       // Update display state with only the last DISPLAY_WINDOW_SIZE items
-      setTranscripts(fullList.slice(-DISPLAY_WINDOW_SIZE));
+      setTranscripts(allTranscriptsRef.current.slice(-DISPLAY_WINDOW_SIZE));
     };
 
     // Assign final flush function to ref for external access
@@ -356,6 +378,12 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
           }));
 
           allTranscriptsRef.current = formattedTranscripts;
+          // Reconstruir el Set de dedup para que refleje la lista recargada
+          seenSequenceIdsRef.current = new Set(
+            formattedTranscripts
+              .map(t => t.sequence_id)
+              .filter((id): id is number => id !== undefined)
+          );
           setTranscripts(formattedTranscripts.slice(-DISPLAY_WINDOW_SIZE));
           logger.debug('[Reload Sync] Transcript history synced successfully');
 
@@ -410,13 +438,17 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
 
     logger.debug('Current transcripts count before update:', allTranscriptsRef.current.length);
 
-    // Append to full list and sort
+    // Append to full list and sort (path manual, baja frecuencia — el hot
+    // path del stream usa el merge lineal de processBufferedTranscripts)
     const fullList = [...allTranscriptsRef.current, newTranscript].sort((a, b) => {
       const seqDiff = (a.sequence_id || 0) - (b.sequence_id || 0);
       if (seqDiff !== 0) return seqDiff;
       return (a.audio_start_time ?? 0) - (b.audio_start_time ?? 0);
     });
     allTranscriptsRef.current = fullList;
+    if (newTranscript.sequence_id !== undefined) {
+      seenSequenceIdsRef.current.add(newTranscript.sequence_id);
+    }
 
     logger.debug('Added new transcript. New count:', fullList.length);
     logger.debug('Latest transcript:', {
@@ -460,6 +492,7 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
   // Clear transcripts (used when starting new recording)
   const clearTranscripts = useCallback(() => {
     allTranscriptsRef.current = [];
+    seenSequenceIdsRef.current.clear();
     setTranscripts([]);
     // Don't clear currentMeetingId here - it will be set by recording-started event
   }, []);

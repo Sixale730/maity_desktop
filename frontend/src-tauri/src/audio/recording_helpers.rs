@@ -383,12 +383,18 @@ pub async fn initialize_recording<R: Runtime>(
                     break;
                 }
                 let (mic_rms, mic_peak, sys_rms, sys_peak) = state_for_levels.get_audio_levels();
-                let _ = app_for_levels.emit(events::RECORDING_AUDIO_LEVELS, serde_json::json!({
+                let payload = serde_json::json!({
                     "micRms": mic_rms,
                     "micPeak": mic_peak,
                     "sysRms": sys_rms,
                     "sysPeak": sys_peak,
-                }));
+                });
+                // Broadcast a propósito: NO migrar a emit_to por label. Los
+                // listen() del frontend registran EventTarget::Any, que recibe
+                // también los emit_to (verificado en tauri 2.11.2,
+                // match_any_or_filter), así que emit_to no ahorra ningún wakeup
+                // y en cambio serializa el payload una vez por label.
+                let _ = app_for_levels.emit(events::RECORDING_AUDIO_LEVELS, payload);
             }
         });
     }
