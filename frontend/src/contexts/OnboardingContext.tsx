@@ -107,6 +107,21 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
 
   const saveTimeoutRef = useRef<NodeJS.Timeout>();
 
+  // Dedupe del ARRANQUE de descargas (uno por sesion y por modelo).
+  //
+  // startBackgroundDownloads tiene dos llamadores que se solapan: WelcomeStep dispara
+  // la descarga y completa el onboarding en el MISMO tick, lo que voltea `completed` y
+  // hace re-correr el efecto de BackgroundDownloadStarter, que llama otra vez. Como
+  // startParakeet/startGemma tienen varios `await` antes del invoke, sus guards leen
+  // un estado que la primera llamada todavia no escribio y ambas terminan invocando la
+  // descarga. Resultado: toda cuenta nueva en Windows bajaba Parakeet DOS veces.
+  //
+  // Guardamos la promesa del arranque y la reusamos; no se limpia, porque re-arrancar
+  // tras un fallo es trabajo del gate (parakeet_retry_download), no de esta red de
+  // seguridad.
+  const parakeetKickoffRef = useRef<Promise<void> | null>(null);
+  const gemmaKickoffRef = useRef<Promise<void> | null>(null);
+
   // Load status on mount and initialize database
   useEffect(() => {
     loadOnboardingStatus();
@@ -510,11 +525,19 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
       }
     };
 
-    // Parakeet primero; Gemma con 3s de delay para priorizar ancho de banda
-    void startParakeet();
+    // Parakeet primero; Gemma con 3s de delay para priorizar ancho de banda.
+    // Cada arranque se deduplica con su promesa compartida (ver parakeetKickoffRef).
+    if (!parakeetKickoffRef.current) {
+      parakeetKickoffRef.current = startParakeet();
+    }
+    void parakeetKickoffRef.current;
+
     if (includeGemma) {
       setTimeout(() => {
-        void startGemma();
+        if (!gemmaKickoffRef.current) {
+          gemmaKickoffRef.current = startGemma();
+        }
+        void gemmaKickoffRef.current;
       }, 3000);
     }
   };

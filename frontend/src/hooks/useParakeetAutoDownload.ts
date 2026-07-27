@@ -7,6 +7,8 @@ import { TauriEvent } from '@/lib/tauri-events';
 export interface ParakeetAutoDownloadState {
   isModelReady: boolean;
   isDownloading: boolean;
+  /** Hay un reintento en vuelo: usar para deshabilitar el boton y evitar dobles clics. */
+  isRetrying: boolean;
   downloadProgress: number;
   downloadedMb: number;
   totalMb: number;
@@ -18,6 +20,16 @@ export interface ParakeetAutoDownloadState {
 }
 
 const MODEL_NAME = 'parakeet-tdt-0.6b-v3-int8';
+
+/**
+ * "Download already in progress" NO es un error real: significa que otra invocacion
+ * ya esta bajando el modelo y sus eventos de progreso van a llegar igual. Rust lo
+ * emite como error igual que cualquier otro `Err` (commands.rs), asi que si no lo
+ * filtramos aqui una UI bloqueante mostraria "algo salio mal" con la descarga sana.
+ */
+function isBenignAlreadyRunning(message: string): boolean {
+  return /already in progress/i.test(message);
+}
 
 interface ModelStatusEntry {
   name?: string;
@@ -38,7 +50,9 @@ export function useParakeetAutoDownload(): ParakeetAutoDownloadState {
   const [totalMb, setTotalMb] = useState(0);
   const [speedMbps, setSpeedMbps] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const [isRetrying, setIsRetrying] = useState(false);
   const inFlightRef = useRef(false);
+  const retryInFlightRef = useRef(false);
 
   const refresh = useCallback(async (): Promise<boolean> => {
     try {
@@ -94,6 +108,11 @@ export function useParakeetAutoDownload(): ParakeetAutoDownloadState {
       await invoke('parakeet_download_model', { modelName: MODEL_NAME });
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
+      if (isBenignAlreadyRunning(errorMsg)) {
+        logger.debug('[ParakeetAutoDownload] ya habia una descarga viva, sigo sus eventos');
+        setIsDownloading(true);
+        return;
+      }
       console.error('[ParakeetAutoDownload] startDownload error:', errorMsg);
       setError(errorMsg);
       setIsDownloading(false);
@@ -103,14 +122,33 @@ export function useParakeetAutoDownload(): ParakeetAutoDownloadState {
   }, []);
 
   const retry = useCallback(async () => {
+    // Sin este guard, un doble clic lanzaba dos reintentos: el boton no se deshabilita
+    // solo porque `parakeet_retry_download` no resuelve hasta terminar los ~600 MB.
+    if (retryInFlightRef.current) {
+      logger.debug('[ParakeetAutoDownload] retry ignorado (ya hay uno en vuelo)');
+      return;
+    }
+    retryInFlightRef.current = true;
+    setIsRetrying(true);
     setError(null);
+    // ANTES del await, no despues: el invoke no resuelve hasta que la descarga TERMINA,
+    // asi que marcarlo despues dejaba una ventana ciega (isDownloading=false, error=null)
+    // durante toda la descarga, con la tarea de Rust ya viva.
+    setIsDownloading(true);
     try {
       await invoke('parakeet_retry_download', { modelName: MODEL_NAME });
-      setIsDownloading(true);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+      if (isBenignAlreadyRunning(msg)) {
+        logger.debug('[ParakeetAutoDownload] retry: ya habia una descarga viva');
+        return;
+      }
       console.error('[ParakeetAutoDownload] retry error:', msg);
       setError(msg);
+      setIsDownloading(false);
+    } finally {
+      retryInFlightRef.current = false;
+      setIsRetrying(false);
     }
   }, []);
 
@@ -118,14 +156,21 @@ export function useParakeetAutoDownload(): ParakeetAutoDownloadState {
     const unlisteners: (() => void)[] = [];
 
     const setup = async () => {
+      // Todos los listeners filtran por modelName: el bus de eventos es global y una
+      // descarga de otro modelo (p.ej. el v2 lanzado desde Ajustes) contaminaba el
+      // estado de este hook, que solo observa MODEL_NAME.
+      const isOtherModel = (name?: string) => Boolean(name) && name !== MODEL_NAME;
+
       const unProgress = await listen<{
+        modelName?: string;
         progress?: number;
         status?: string;
         downloaded_mb?: number;
         total_mb?: number;
         speed_mbps?: number;
       }>(TauriEvent.PARAKEET_MODEL_DOWNLOAD_PROGRESS, (event) => {
-        const { progress, status, downloaded_mb, total_mb, speed_mbps } = event.payload;
+        const { modelName, progress, status, downloaded_mb, total_mb, speed_mbps } = event.payload;
+        if (isOtherModel(modelName)) return;
         if (status === 'cancelled') {
           setIsDownloading(false);
           return;
@@ -138,21 +183,33 @@ export function useParakeetAutoDownload(): ParakeetAutoDownloadState {
       });
       unlisteners.push(unProgress);
 
-      const unComplete = await listen<void>(TauriEvent.PARAKEET_MODEL_DOWNLOAD_COMPLETE, () => {
-        logger.debug('[ParakeetAutoDownload] Download complete');
-        setIsModelReady(true);
-        setIsDownloading(false);
-        setDownloadProgress(100);
-        setError(null);
-      });
+      const unComplete = await listen<{ modelName?: string }>(
+        TauriEvent.PARAKEET_MODEL_DOWNLOAD_COMPLETE,
+        (event) => {
+          if (isOtherModel(event.payload?.modelName)) return;
+          logger.debug('[ParakeetAutoDownload] Download complete');
+          setIsModelReady(true);
+          setIsDownloading(false);
+          setDownloadProgress(100);
+          setError(null);
+        },
+      );
       unlisteners.push(unComplete);
 
-      const unError = await listen<{ error?: string }>(TauriEvent.PARAKEET_MODEL_DOWNLOAD_ERROR, (event) => {
-        const errorMsg = event.payload?.error || 'Download failed';
-        console.error('[ParakeetAutoDownload] Download error:', errorMsg);
-        setError(errorMsg);
-        setIsDownloading(false);
-      });
+      const unError = await listen<{ modelName?: string; error?: string }>(
+        TauriEvent.PARAKEET_MODEL_DOWNLOAD_ERROR,
+        (event) => {
+          if (isOtherModel(event.payload?.modelName)) return;
+          const errorMsg = event.payload?.error || 'Download failed';
+          if (isBenignAlreadyRunning(errorMsg)) {
+            logger.debug('[ParakeetAutoDownload] evento "already in progress" ignorado');
+            return;
+          }
+          console.error('[ParakeetAutoDownload] Download error:', errorMsg);
+          setError(errorMsg);
+          setIsDownloading(false);
+        },
+      );
       unlisteners.push(unError);
     };
 
@@ -166,6 +223,7 @@ export function useParakeetAutoDownload(): ParakeetAutoDownloadState {
   return {
     isModelReady,
     isDownloading,
+    isRetrying,
     downloadProgress,
     downloadedMb,
     totalMb,

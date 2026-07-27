@@ -510,13 +510,21 @@ pub async fn parakeet_retry_download<R: Runtime>(
     };
 
     if let Some(engine) = engine {
-        // DEFENSIVE: Ensure clean state before retry
-        // This handles any edge cases where error handler didn't complete
+        // Si todavia hay una descarga VIVA para este modelo, no relanzar.
+        //
+        // Antes se forzaba `active_downloads.remove()` "por si acaso", pero eso no mata
+        // la tarea vieja: solo le quita la bandera, de modo que la descarga nueva pasa
+        // el guard y ambas terminan escribiendo el mismo .onnx a la vez. En Windows los
+        // handles se abren con share mode permisivo, asi que no hay error: los dos
+        // buffers se intercalan y el archivo queda corrupto pero del tamano esperado.
+        //
+        // La tarea viva sigue emitiendo sus propios eventos de progreso, asi que la UI
+        // se entera igual y no necesita que relancemos nada.
         {
-            let mut active = engine.active_downloads.write().await;
+            let active = engine.active_downloads.read().await;
             if active.contains(&model_name) {
-                log::warn!("Retry: Model {} was still in active downloads, removing", model_name);
-                active.remove(&model_name);
+                log::warn!("Retry ignorado: ya hay una descarga viva para {}", model_name);
+                return Ok(());
             }
         }
 

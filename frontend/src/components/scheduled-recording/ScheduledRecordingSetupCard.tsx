@@ -30,7 +30,11 @@ interface ScheduledRecordingSetupCardProps {
 /**
  * Tarjeta presentacional para configurar y ACTIVAR la grabación por jornada.
  * Reutilizada por el gate del onboarding y el modal post-actualización.
- * (Intencionalmente NO menciona que se puede desactivar después.)
+ *
+ * El texto de pie SÍ aclara que el horario se puede cambiar o desactivar luego en
+ * Configuración → Grabaciones. Es un cambio deliberado sobre la decisión original de
+ * `0e6623d` (que lo omitía para maximizar activación): en un gate sin escape, ocultar
+ * la salida genera fricción y era un riesgo para la certificación de la Store.
  */
 export function ScheduledRecordingSetupCard({
   onActivate,
@@ -150,6 +154,9 @@ export function ScheduledRecordingSetupCard({
         {noDays && (
           <p className="text-xs text-amber-500">Selecciona al menos un día.</p>
         )}
+        <p className="text-xs text-muted-foreground text-center">
+          Puedes cambiar el horario o desactivarlo en Configuración → Grabaciones.
+        </p>
         {onDismiss && (
           <button
             type="button"

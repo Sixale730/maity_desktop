@@ -364,8 +364,12 @@ impl ParakeetEngine {
         Ok(())
     }
 
-    /// Clean incomplete model directory before download
-    /// Removes all files if directory exists but model is not Available
+    /// Borra TODOS los archivos del directorio si la validacion falla.
+    ///
+    /// Ya no se llama desde `download_model_detailed_inner`: alli rompia el resume
+    /// (ver el comentario en esa funcion). Se conserva por si hace falta una limpieza
+    /// explicita en el futuro.
+    #[allow(dead_code)]
     async fn clean_incomplete_model_directory(&self, model_dir: &PathBuf) -> Result<()> {
         if !model_dir.exists() {
             return Ok(()); // Nothing to clean
@@ -679,27 +683,50 @@ impl ParakeetEngine {
     }
 
     /// Download a Parakeet model with detailed progress (MB/speed/resume support)
+    ///
+    /// Reserva la bandera de `active_downloads` de forma ATOMICA y garantiza que se
+    /// limpie en TODOS los caminos de salida (incluidos los `?` a media funcion).
+    /// El cuerpo real vive en `download_model_detailed_inner`.
     pub async fn download_model_detailed(
         &self,
         model_name: &str,
         progress_callback: Option<Box<dyn Fn(DownloadProgress) + Send>>,
     ) -> Result<()> {
-        log::info!("Starting download for Parakeet model: {}", model_name);
-
-        // Check if download is already in progress for this model
+        // Check+insert ATOMICO en una sola adquisicion del write lock. Antes el check
+        // (read lock) y el insert (write lock) eran adquisiciones distintas: dos
+        // invocaciones concurrentes del mismo modelo veian ambas `contains == false` y
+        // terminaban escribiendo el mismo .onnx a la vez. `HashSet::insert` devuelve
+        // false si la clave ya estaba, asi que sirve de check y reserva a la vez.
         {
-            let active = self.active_downloads.read().await;
-            if active.contains(model_name) {
+            let mut active = self.active_downloads.write().await;
+            if !active.insert(model_name.to_string()) {
                 log::warn!("Download already in progress for Parakeet model: {}", model_name);
                 return Err(anyhow!("Download already in progress for model: {}", model_name));
             }
         }
 
-        // Add to active downloads
+        let result = self
+            .download_model_detailed_inner(model_name, progress_callback)
+            .await;
+
+        // Limpieza garantizada. Habia 4 salidas `Err` que no limpiaban la bandera
+        // (build del cliente HTTP, `send()` por archivo, retry del 416, apertura del
+        // archivo). El modelo quedaba reportando `Downloading { progress: 0 }` para
+        // siempre, sin eventos de progreso y sin forma de reintentar.
         {
             let mut active = self.active_downloads.write().await;
-            active.insert(model_name.to_string());
+            active.remove(model_name);
         }
+
+        result
+    }
+
+    async fn download_model_detailed_inner(
+        &self,
+        model_name: &str,
+        progress_callback: Option<Box<dyn Fn(DownloadProgress) + Send>>,
+    ) -> Result<()> {
+        log::info!("Starting download for Parakeet model: {}", model_name);
 
         // Clear any previous cancellation flag for this model
         {
@@ -713,9 +740,6 @@ impl ParakeetEngine {
             match models.get(model_name).cloned() {
                 Some(info) => info,
                 None => {
-                    // Remove from active downloads on error
-                    let mut active = self.active_downloads.write().await;
-                    active.remove(model_name);
                     return Err(anyhow!("Model {} not found", model_name));
                 }
             }
@@ -757,19 +781,20 @@ impl ParakeetEngine {
         let model_dir = &model_info.path;
         if !model_dir.exists() {
             if let Err(e) = fs::create_dir_all(model_dir).await {
-                // Remove from active downloads on error
-                let mut active = self.active_downloads.write().await;
-                active.remove(model_name);
                 return Err(anyhow!("Failed to create model directory: {}", e));
             }
         }
 
-        // Clean up incomplete downloads before starting
-        log::info!("Checking for incomplete model files to clean up...");
-        if let Err(e) = self.clean_incomplete_model_directory(model_dir).await {
-            log::warn!("Failed to clean incomplete model directory: {}", e);
-            // Continue anyway - we'll handle errors during download
-        }
+        // NO se limpia el directorio aqui. `clean_incomplete_model_directory` corria
+        // ANTES de calcular `existing_size`, y como `validate_model_directory` revisa
+        // `vocab.txt` primero pero `vocab.txt` se descarga ULTIMO, cualquier corte
+        // durante el encoder (652 de 670 MB, el 97% del payload) fallaba la validacion
+        // y borraba TODO el directorio. Eso dejaba el `Range: bytes=N-` de mas abajo
+        // como codigo inalcanzable: cada reintento volvia a bajar desde cero.
+        //
+        // El loop por archivo ya cubre los tres casos sin necesidad del borrado:
+        // completo -> skip (tolerancia del 1%); parcial -> Range + append;
+        // 416 -> borra ESE archivo y lo baja fresco.
 
         // Optimized HTTP client for large file downloads
         let client = reqwest::Client::builder()
@@ -919,8 +944,6 @@ impl ParakeetEngine {
                     );
 
                     if let Err(e) = fs::remove_file(&file_path).await {
-                        let mut active = self.active_downloads.write().await;
-                        active.remove(model_name);
                         return Err(anyhow!("Failed to delete incomplete file {}: {}", filename, e));
                     }
 
@@ -930,8 +953,6 @@ impl ParakeetEngine {
                         .map_err(|e| anyhow!("Retry failed for {}: {}", filename, e))?;
 
                     if !response.status().is_success() {
-                        let mut active = self.active_downloads.write().await;
-                        active.remove(model_name);
                         return Err(anyhow!("Retry failed for {} with status: {}", filename, response.status()));
                     }
 
@@ -939,8 +960,6 @@ impl ParakeetEngine {
                 }
             } else {
                 // Other errors
-                let mut active = self.active_downloads.write().await;
-                active.remove(model_name);
                 return Err(anyhow!("Download failed for {} with status: {}", filename, response.status()));
             };
 
@@ -974,9 +993,6 @@ impl ParakeetEngine {
                         // Flush and keep partial file for resume on next attempt
                         let _ = writer.flush().await;
                         drop(writer);
-                        // Remove from active downloads on cancellation
-                        let mut active = self.active_downloads.write().await;
-                        active.remove(model_name);
                         return Err(anyhow!("Download cancelled by user"));
                     }
                 }
@@ -989,12 +1005,6 @@ impl ParakeetEngine {
                     Err(_) => {
                         log::warn!("Download timeout for {}: no data received for 30 seconds", model_name);
                         let _ = writer.flush().await;
-
-                        // Remove from active downloads
-                        {
-                            let mut active = self.active_downloads.write().await;
-                            active.remove(model_name);
-                        }
 
                         // Update model status to Missing so retry can work
                         {
@@ -1016,12 +1026,6 @@ impl ParakeetEngine {
                             Err(e) => {
                                 log::error!("Download error for {}: {:?}", model_name, e);
                                 let _ = writer.flush().await;
-
-                                // Remove from active downloads
-                                {
-                                    let mut active = self.active_downloads.write().await;
-                                    active.remove(model_name);
-                                }
 
                                 // Update model status to Missing so retry can work
                                 {
@@ -1048,11 +1052,6 @@ impl ParakeetEngine {
                 };
 
                 if let Err(e) = writer.write_all(&chunk).await {
-                    // Remove from active downloads on error
-                    {
-                        let mut active = self.active_downloads.write().await;
-                        active.remove(model_name);
-                    }
 
                     // Update model status to Missing so retry can work
                     {
@@ -1122,11 +1121,6 @@ impl ParakeetEngine {
 
             // Flush the buffered writer
             if let Err(e) = writer.flush().await {
-                // Remove from active downloads on error
-                {
-                    let mut active = self.active_downloads.write().await;
-                    active.remove(model_name);
-                }
 
                 // Update model status to Missing so retry can work
                 {
@@ -1168,12 +1162,6 @@ impl ParakeetEngine {
             }
         }
 
-        // Remove from active downloads on completion
-        {
-            let mut active = self.active_downloads.write().await;
-            active.remove(model_name);
-        }
-
         // Clear cancellation flag on successful completion
         {
             let mut cancel_flag = self.cancel_download_flag.write().await;
@@ -1196,11 +1184,10 @@ impl ParakeetEngine {
             *cancel_flag = Some(model_name.to_string());
         }
 
-        // Remove from active downloads
-        {
-            let mut active = self.active_downloads.write().await;
-            active.remove(model_name);
-        }
+        // NO se toca `active_downloads` aqui: la bandera es propiedad exclusiva de
+        // `download_model_detailed`, que la limpia al salir su tarea. Borrarla desde
+        // fuera dejaria pasar una descarga nueva mientras la vieja todavia se
+        // desenrolla y sigue escribiendo el .onnx (dos writers sobre el mismo archivo).
 
         // Update model status to Missing (so it can be retried)
         {

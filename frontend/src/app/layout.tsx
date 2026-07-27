@@ -35,6 +35,7 @@ import { ParakeetAutoDownloadProvider } from '@/contexts/ParakeetAutoDownloadCon
 import { useRegistrationGate } from '@/hooks/useRegistrationGate'
 import { OnboardingDownloadWidget } from '@/components/Onboarding/OnboardingDownloadWidget'
 import { OnboardingAccountBadge } from '@/components/Onboarding/OnboardingAccountBadge'
+import { ModelDownloadGate } from '@/components/ModelDownloadGate'
 import { BackgroundDownloadStarter } from '@/components/Onboarding/BackgroundDownloadStarter'
 import { LoginScreen } from '@/components/Auth'
 import { CloudSyncInitializer } from '@/components/CloudSyncInitializer'
@@ -294,18 +295,24 @@ function AppContent({ children }: { children: React.ReactNode }) {
   const isSpecialRoute =
     pathname === '/coach-float' || pathname === '/recording-widget' || pathname === '/device-picker'
 
-  // Inicializa el motor Parakeet y resuelve el splash. YA NO hay gate de modelo:
-  // si a una cuenta existente le falta el modelo, `BackgroundDownloadStarter` arranca
-  // la descarga en background (con el widget flotante), sin pantalla de consentimiento.
-  // `modelGateActive` queda solo como flag de splash inicial (null = comprobando,
-  // false = resuelto); nunca true.
+  // Inicializa el motor Parakeet y decide si hay que bloquear esperando el modelo.
+  // `modelGateActive`: null = comprobando (splash), true = falta el modelo (gate),
+  // false = pasar. La descarga en sí la arranca WelcomeStep (cuentas nuevas) o
+  // BackgroundDownloadStarter (cuentas existentes) — el gate solo espera.
   const checkModelAvailability = async () => {
+    let hasModel = false
     try {
       await invoke('parakeet_init')
+      hasModel = await invoke<boolean>('parakeet_has_available_models')
     } catch (error) {
       console.error('[Layout] Failed to init Parakeet engine:', error)
+      // Si no podemos afirmar que está, bloqueamos: el gate reintenta y muestra el
+      // error real, que es mejor que dejar entrar a un dashboard donde grabar falla.
+      hasModel = false
     }
-    setModelGateActive(false)
+    // El gate se resuelve ANTES de bajar el splash para que no exista ni un frame con
+    // el main app visible en cuentas sin modelo (React 18 agrupa ambos setState).
+    setModelGateActive(!hasModel)
   }
 
   // Telemetry: emit nav.page_view to platform_logs on every Next.js route change
@@ -449,10 +456,11 @@ function AppContent({ children }: { children: React.ReactNode }) {
     logger.debug('[Layout] Onboarding completed, entering app')
     setShowOnboarding(false)
     setOnboardingCompleted(true)
-    // El paso de bienvenida (WelcomeStep) ya arrancó ambas descargas en
-    // background. No hay gate de modelo: pasa directo al registro/dashboard con el
-    // widget flotante mostrando el progreso.
-    setModelGateActive(false)
+    // WelcomeStep ya arrancó ambas descargas en background. Volvemos al splash
+    // (null) mientras comprobamos si Parakeet está en disco; si falta, el gate
+    // bloqueante lo espera. Gemma sigue en background y nunca bloquea.
+    setModelGateActive(null)
+    void checkModelAvailability()
   }
 
   return (
@@ -505,12 +513,17 @@ function AppContent({ children }: { children: React.ReactNode }) {
                         3. splash (registrationLoading)
                         4. onboarding de registro (/registration) con OnboardingDownloadWidget
                            (progreso de las descargas en la esquina)
-                        5. scheduled setup gate
-                        6. main app — el OnboardingDownloadWidget sigue mostrando el progreso
-                           hasta que ambos modelos terminan; el usuario ya puede navegar.
+                        5. gate bloqueante del modelo de transcripción (ModelDownloadGate):
+                           solo Parakeet, y solo si falta en disco. Va después del registro
+                           para que los 17 pasos solapen con la descarga, y antes del horario.
+                        6. scheduled setup gate
+                        7. main app — el OnboardingDownloadWidget sigue mostrando el progreso
+                           de Gemma hasta que termina; el usuario ya puede navegar.
 
-                        NO hay pantalla de consentimiento de modelos separada ni pantalla de espera
-                        bloqueante: las descargas corren en background y el widget muestra el progreso.
+                        NO hay pantalla de consentimiento de modelos separada (el consentimiento
+                        vive en el botón "Comenzar y descargar" de WelcomeStep). SÍ hay espera
+                        bloqueante, pero SOLO para Parakeet: sin ese modelo grabar falla y no hay
+                        fallback a otro motor. Gemma nunca bloquea — sigue en background.
 
                         TODAS las ramas de onboarding (1, 4, 5 y /billing/plans de la 6) montan
                         <OnboardingAccountBadge /> (fixed top-4 right-4 z-[60]): muestra la cuenta
@@ -538,6 +551,17 @@ function AppContent({ children }: { children: React.ReactNode }) {
                         {/* Widget flotante: acompaña el onboarding de registro */}
                         <OnboardingDownloadWidget />
                         {/* Badge de cuenta activa + cerrar sesión (no hay Sidebar aquí) */}
+                        <OnboardingAccountBadge />
+                      </>
+                    ) : modelGateActive && !isSpecialRoute ? (
+                      // GATE BLOQUEANTE DEL MODELO DE TRANSCRIPCIÓN.
+                      // Va DESPUÉS del registro (así los 17 pasos solapan con la
+                      // descarga) y ANTES del horario. Sin botón de omitir: decisión
+                      // explícita — grabar sin este modelo falla y no hay fallback.
+                      // NO montar <OnboardingDownloadWidget /> aquí: duplicaría el
+                      // progreso de Parakeet que el propio gate ya muestra.
+                      <>
+                        <ModelDownloadGate onComplete={() => setModelGateActive(false)} />
                         <OnboardingAccountBadge />
                       </>
                     ) : showScheduledSetup ? (
