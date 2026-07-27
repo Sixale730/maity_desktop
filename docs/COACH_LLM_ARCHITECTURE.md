@@ -12,6 +12,18 @@ contextuales, y los pasos exactos para activar GPU en cada plataforma.
 > apuntan exclusivamente a `gemma3-4b-q4`. Las secciones que mencionan 1B quedan
 > con valor histórico (motiva por qué 4B es mejor) pero no reflejan el estado
 > actual del código. Ver §4.1 de `PLAN_COACH_FLOATING_GAUGE.md`.
+>
+> **⚠️ La nota de arriba quedó OBSOLETA (julio 2026).** El 1B volvió y es la ruta
+> por defecto en la mayoría de las máquinas:
+> - `builtin_ai_get_recommended_model` es `if is_macos && ram > 16 { 4b } else { 1b }`
+>   → **todo Windows/Linux descarga `gemma3:1b`** para el resumen.
+> - `95bb3f4` (16-jul) reinstauró el 1B en el coach para hardware tier Low, con
+>   auto-descarga (`ensure_low_tier_tips_model`) y tips apagados hasta tenerlo;
+>   `resolve_effective_tips_model` es quien elige, y degrada a `Unavailable` en vez
+>   de fallar si no hay modelo.
+> - El onboarding **ya no exige el 4b**: aceptar solo el 4b convertía cada
+>   instalación limpia de Windows en un bucle de onboarding (ver el bloque
+>   "estado del onboarding es MONÓTONO" en `CLAUDE.md`).
 
 ---
 

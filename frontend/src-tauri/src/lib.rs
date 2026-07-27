@@ -870,6 +870,17 @@ pub fn run() {
 
             let app_handle_for_config = _app.handle().clone();
             tauri::async_runtime::spawn(async move {
+                // Reconciliacion one-shot del onboarding contra el disco. Es el UNICO
+                // punto donde mirar el disco puede reescribir el estado: leerlo
+                // (`get_onboarding_status`, `tray::check_can_record`) ya no muta nada.
+                //
+                // Va PRIMERO, antes de tocar la DB o los motores: solo necesita el
+                // sistema de archivos y el store, y debe ganarle al primer
+                // `get_onboarding_status` del frontend para que este lea el estado ya
+                // curado. `save_onboarding_status_cmd` protege el caso contrario
+                // (nunca deja bajar `completed`), asi que la carrera no es fatal.
+                onboarding::reconcile_onboarding_status_at_startup(&app_handle_for_config).await;
+
                 // Read transcript provider from database
                 let transcript_provider = {
                     let state = app_handle_for_config.try_state::<crate::state::AppState>();

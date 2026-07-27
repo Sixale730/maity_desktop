@@ -3,7 +3,7 @@
 
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 // ============================================================================
 // Model Definitions
@@ -85,6 +85,44 @@ pub struct ModelDef {
     /// Default = Both para no romper compat con modelos viejos.
     #[serde(default)]
     pub tier: ModelTier,
+}
+
+impl ModelDef {
+    /// Rango de tamano aceptable del .gguf en MB: `size_mb` con ±10% de tolerancia.
+    ///
+    /// Vive aqui, junto al registry, para que exista UN solo umbral por modelo.
+    /// Antes `onboarding.rs` se inventaba los suyos (1.8 GB para el 4b, 800 MB para
+    /// el 1b), que no coincidian con estos ni entre si.
+    pub fn size_bounds_mb(&self) -> (u64, u64) {
+        let min = (self.size_mb as f64 * 0.9) as u64;
+        let max = (self.size_mb as f64 * 1.1) as u64;
+        (min, max)
+    }
+
+    /// True si un archivo de `file_size_mb` es un .gguf plausible para este modelo.
+    pub fn accepts_file_size_mb(&self, file_size_mb: u64) -> bool {
+        let (min, max) = self.size_bounds_mb();
+        file_size_mb >= min && file_size_mb <= max
+    }
+}
+
+/// Hay al menos UN modelo del registry valido en `models_dir`.
+///
+/// Sincrona y sin estado a proposito: la usa el reconciliador del onboarding, que
+/// corre en el arranque, antes (y a veces en lugar) de que exista un `ModelManager`
+/// en el app state — `init_model_manager_at_startup` solo se llama cuando el proveedor
+/// de resumen configurado es `builtin-ai`.
+///
+/// No pregunta por un modelo CONCRETO a proposito: `builtin_ai_get_recommended_model`
+/// entrega `gemma3:1b` en toda maquina que no sea macOS >16GB, asi que exigir el 4b
+/// marcaria como "instalacion rota" justo lo que el recomendador produce.
+pub fn any_model_on_disk(models_dir: &Path) -> bool {
+    get_available_models().iter().any(|def| {
+        let path = models_dir.join(&def.gguf_file);
+        std::fs::metadata(&path)
+            .map(|meta| meta.is_file() && def.accepts_file_size_mb(meta.len() / (1024 * 1024)))
+            .unwrap_or(false)
+    })
 }
 
 /// Get all available built-in AI models

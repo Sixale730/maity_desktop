@@ -227,9 +227,9 @@ impl ModelManager {
                     Ok(metadata) => {
                         let file_size_mb = metadata.len() / (1024 * 1024);
 
-                        // Allow 10% variance for file size check
-                        let expected_min = (model_def.size_mb as f64 * 0.9) as u64;
-                        let expected_max = (model_def.size_mb as f64 * 1.1) as u64;
+                        // Tolerancia ±10%. La regla vive en `ModelDef` para que este
+                        // scan y el reconciliador del onboarding compartan umbral.
+                        let (expected_min, expected_max) = model_def.size_bounds_mb();
 
                         log::info!(
                             "Model '{}': found {} MB (expected {}-{} MB)",
@@ -239,7 +239,7 @@ impl ModelManager {
                             expected_max
                         );
 
-                        if file_size_mb >= expected_min && file_size_mb <= expected_max {
+                        if model_def.accepts_file_size_mb(file_size_mb) {
                             log::info!("Model '{}': AVAILABLE", model_def.name);
                             ModelStatus::Available
                         } else {
