@@ -40,6 +40,8 @@ winget install microsoft.winappcli --source winget   # winapp CLI
 
 Si hay que regenerarlo: `winapp init frontend --use-defaults --setup-sdks none --no-gitignore` (crea skeleton + carpeta `Assets`), luego editar identidad + capabilities. El manifest debe tener:
 - `<Identity Name="Sixale.Maity" Publisher="CN=C88867C5-..." Version="0.2.52.0" />` (Version en 4 partes).
+  - **⚠️ El 4º dígito (revision) DEBE ser SIEMPRE 0 para la Store** (rebote real 2026-07-27): Partner Center rechaza el paquete al subirlo con *"Apps are not allowed to have a Version with a revision number other than zero specified in the app manifest"*. Ese dígito se lo **reserva Microsoft** — NO sirve para re-submissions. Una re-submission con el mismo código requiere bump de `Z` (X.Y.Z), aceptando que el semver MSIX se adelante al de Tauri si hace falta.
+  - La versión debe ser **estrictamente mayor** que la publicada en la Store. La versión publicada NO se ve ni con `winget show` (da `Version: Unknown`) ni en la página del producto — consultarla en Partner Center.
 - `<Application ... Executable="maity-desktop.exe" EntryPoint="Windows.FullTrustApplication">`.
 - Capabilities: `<rescap:Capability Name="runFullTrust" />` + `<DeviceCapability Name="microphone" />`.
 - **Autostart del canal Store** — `<Extensions>` dentro de `<Application>` (después de `<uap:VisualElements>`, el schema exige ese orden) con `<desktop:Extension Category="windows.startupTask">` → `<desktop:StartupTask TaskId="MaityStartup" Enabled="true" DisplayName="Maity" />`. Claves:
@@ -141,10 +143,12 @@ Genera `Sixale.Maity_<version>_x64.msix` en la raíz del repo. El cert de dev es
    - GUI: doble clic al `.cer` → Instalar certificado… → **Equipo local** → almacén **Personas de confianza** (Trusted People).
    - O en PowerShell elevado: `Import-Certificate -FilePath <staging>\maity-dev.cer -CertStoreLocation Cert:\LocalMachine\TrustedPeople`
    - ⚠️ Si `winapp package` regenera el cert en una corrida futura, hay que re-confiar el `.cer` nuevo.
-3. **Cerrar cualquier instancia de Maity corriendo** (single-instance + SQLite compartida) y doble clic al `.msix` → Instalar.
-   - ⚠️ **Reinstalar la MISMA versión falla** (Windows rechaza un paquete con versión idéntica a la instalada pero contenido distinto). Al iterar sin bump de versión: `Get-AppxPackage -Name Sixale.Maity | Remove-AppxPackage` ANTES de instalar el `.msix` regenerado (los datos sobreviven — viven en `%APPDATA%\com.maity.ai`, fuera del paquete).
+3. **Cerrar cualquier instancia de Maity corriendo** (single-instance) y doble clic al `.msix` → Instalar.
+   - ⚠️ **Reinstalar la MISMA versión falla** (Windows rechaza un paquete con versión idéntica a la instalada pero contenido distinto). Al iterar: `Get-AppxPackage -Name Sixale.Maity | Remove-AppxPackage` ANTES de instalar el `.msix` regenerado.
+   - **⚠️ Remove-AppxPackage BORRA los datos del usuario** (corregido 2026-07-27): el MSIX instalado guarda TODO (SQLite, modelos, config) en `%LOCALAPPDATA%\Packages\Sixale.Maity_q5b9hqhck1xz0\LocalCache\Roaming\com.maity.ai`, y quitar el paquete se lleva esa carpeta. En una máquina con datos reales: **respaldar `LocalCache\Roaming\com.maity.ai` antes** de desinstalar, y restaurarlo tras reinstalar.
+   - **⚠️ NO bumpear el 4º dígito para iterar localmente** (incidente 2026-07-27): un sideload de prueba `X.Y.Z.1` instala local bien, pero (a) la Store solo acepta `X.Y.Z.0` → el paquete de prueba y el de la Store divergen, y (b) esa instalación local **eclipsa la versión de la Store del mismo X.Y.Z** (0.2.53.1 local > 0.2.53.0 Store → la Store nunca la actualiza y la máquina se queda con el build dev). Iterar con Remove-AppxPackage (con respaldo de datos), no con bumps de revision.
 4. **Smoke test instalado**: arranca desde el menú inicio, login, grabar (mic + sistema), guardar, onboarding si aplica. Esta prueba es fiel al canal Store salvo por la firma (la de la Store es de Microsoft — el usuario final nunca ve el diálogo de certificado).
-5. **Limpieza** al terminar: `Get-AppxPackage -Name Sixale.Maity | Remove-AppxPackage`; opcionalmente quitar el cert en `certlm.msc` → Personas de confianza; borrar el `.pfx`.
+5. **Limpieza** al terminar: `Get-AppxPackage -Name Sixale.Maity | Remove-AppxPackage` (⚠️ con respaldo previo de `LocalCache\Roaming\com.maity.ai` si la instalación acumuló datos que importan); opcionalmente quitar el cert en `certlm.msc` → Personas de confianza; borrar el `.pfx`.
 
 ### 7. Subir a la Store (Partner Center — walkthrough con respuestas para Maity)
 
@@ -207,22 +211,26 @@ Deep link (Windows): ms-windows-store://pdp/?ProductId=9NTKJ5X6230F
 CLI:                 winget install 9NTKJ5X6230F --source msstore
 ```
 
-### ✅ Los dos canales COMPARTEN los datos (VERIFICADO 2026-07-20)
+### ⚠️ Los dos canales NO comparten los datos (CORREGIDO 2026-07-27)
 
-**No hay redirección de AppData.** Se comprobó registrando el MSIX con `winapp run` y observando dónde caían las escrituras:
+**El MSIX INSTALADO SÍ redirige AppData** a `%LOCALAPPDATA%\Packages\Sixale.Maity_q5b9hqhck1xz0\LocalCache\Roaming\com.maity.ai` (ahí viven SQLite, modelos y config de la instancia MSIX — verificado 2026-07-27 en la máquina de desarrollo: el perfil `%APPDATA%\com.maity.ai` estaba casi vacío mientras LocalCache tenía la DB y 1.6 GB de modelos).
 
-- `%APPDATA%\com.maity.ai\meeting_minutes.sqlite-shm` y `onboarding-status.json` → **escritos por la instancia MSIX**
-- `%LOCALAPPDATA%\Packages\Sixale.Maity_q5b9hqhck1xz0\` → la carpeta se crea, pero **queda sin datos de Maity**
+**La verificación del 2026-07-20 que decía lo contrario estaba mal** — se hizo con `winapp run`, que registra el paquete desde archivos sueltos y **NO redirige** (por eso las escrituras caían en `%APPDATA%`). El comportamiento difiere entre las dos rutas:
 
-La redirección de AppData era comportamiento del **Desktop Bridge viejo (Win10 1607–1809)**; Microsoft la eliminó para apps `Windows.FullTrustApplication`. Implicaciones:
+| Ruta | ¿Redirige AppData? | Datos en |
+|---|---|---|
+| `winapp run` (archivos sueltos) | ❌ No | `%APPDATA%\com.maity.ai` |
+| `.msix` INSTALADO (doble clic / Store) | ✅ Sí | `...\Sixale.Maity_q5b9hqhck1xz0\LocalCache\Roaming\com.maity.ai` |
 
-- ✅ Migrar de descarga directa → Store **conserva** DB, modelos Whisper (~1.5 GB) y config. **NO hace falta escribir un importador de datos.**
-- ⚠️ Pero ambos canales golpean la MISMA SQLite → ver reglas abajo.
+Implicaciones:
 
-### Reglas que impone el DB compartido
+- ❌ Migrar de descarga directa (NSIS) → Store **NO conserva** DB, modelos (~1.5 GB) ni config: la instancia Store arranca desde cero (re-onboarding, re-descarga de modelos). Si algún día importa, habría que escribir un importador o copiar la carpeta a mano.
+- ✅ NSIS y Store instalados a la vez ya NO contienden por la misma SQLite (cada uno tiene la suya) — pero sigue el resto de problemas de la doble instalación (ver sección de riesgo).
+- ⚠️ `Remove-AppxPackage` **borra LocalCache** → borra los datos del usuario de la instancia MSIX (ver §6.5).
 
-1. **Las migraciones deben ser ADITIVAS** mientras convivan los canales. La Store va días atrás (certificación), así que un release de GitHub puede migrar la DB hacia adelante y la versión vieja de la Store la abrirá "desde el futuro". Agregar tablas/columnas: OK. Renombrar o dropear algo que la versión vieja lee: **rompe**.
-2. El crash `SQLx VersionMissing` ya está cubierto por `set_ignore_missing(true)` en `database/manager.rs` (v0.2.51) — pero eso NO te salva de un DROP.
+### Migraciones: aditivas de todos modos
+
+Aunque los canales ya no compartan DB, **mantener las migraciones ADITIVAS**: un usuario puede copiar su DB entre perfiles (o entre máquinas/canales), y dentro de un mismo canal la Store va días atrás por certificación — una DB migrada por un build nuevo puede acabar abierta por uno viejo. `set_ignore_missing(true)` (`database/manager.rs`, v0.2.51) cubre el crash `SQLx VersionMissing`, pero NO salva de un DROP/RENAME.
 
 ### Auto-updater gateado (ya implementado)
 
@@ -233,7 +241,7 @@ Bajo MSIX el updater de GitHub instalaría una **segunda copia Win32** en parale
 
 ### Riesgo abierto: doble instalación
 
-Un usuario puede terminar con NSIS **y** Store a la vez → dos entradas en el menú inicio, dos autostart, contención del micrófono y del sync queue sobre la misma DB. Además provoca el **error de DB por version-skew**: la versión más nueva (normalmente la que instaló después) migra la SQLite compartida hacia adelante y la versión más vieja — si es anterior a `set_ignore_missing(true)` (v0.2.51, `database/manager.rs`) — ya no puede abrirla y aborta con `migration <ts> was previously applied but is missing in the resolved migrations`.
+Un usuario puede terminar con NSIS **y** Store a la vez → dos entradas en el menú inicio, dos autostart, contención del micrófono, y datos PARTIDOS en dos perfiles (cada instancia tiene su propia SQLite desde la corrección 2026-07-27: NSIS en `%APPDATA%`, MSIX en `LocalCache` — el usuario ve "reuniones que desaparecen" según cuál abra). El escenario de version-skew sobre una MISMA DB solo aplica ya dentro de un canal (downgrade o DB copiada a mano); lo cubre `set_ignore_missing(true)` (v0.2.51, `database/manager.rs`) para versiones ≥0.2.51.
 
 - **Mitigación primaria (sin código):** en maity.cloud el botón principal apunta a la Store; el `.exe` de GitHub queda como link secundario ("instalación offline / empresas"). Si casi nadie instala ambas, el problema no existe.
 - **✅ Mitigación en código — IMPLEMENTADA Y VERIFICADA (Store→quitar NSIS, jul-2026):** al arrancar bajo identidad de paquete (MSIX), Maity detecta la instalación NSIS rival y **exige** quitarla (diálogo forzado, sin opción de posponer). Solo se cubre esta dirección (la Store es siempre el canal sobreviviente). Piezas:
@@ -268,7 +276,8 @@ Un usuario puede terminar con NSIS **y** Store a la vez → dos entradas en el m
 
 - **⚠️ `winapp run` NO registra el staging tal cual** (descubierto 2026-07-20): construye una subcarpeta `<staging>\AppX\` con SOLO lo que el manifest declara (exe + `Assets\` + pri) y **descarta el payload suelto** (ffmpeg.exe, ffprobe.exe, llama-helper.exe, templates\, y los 4 DLLs del VC++ Runtime). Síntoma: la app corre y transcribe, pero `recording_saver` truena en cada chunk con `Failed to spawn FFmpeg process: os error 2` (miles de errores) y el coach no arranca (sidecar ausente). **Fix: DESPUÉS de `winapp run`, copiar esos elementos dentro de `<staging>\AppX\`** — funciona en caliente con la app corriendo (CreateProcess busca primero en el dir del exe; el incremental saver retiene el PCM en RAM y drena el backlog al aparecer ffmpeg, sin pérdida de audio). ⚠️ Los DLLs del VC++ Runtime son la excepción: se cargan al **arrancar** el proceso, así que copiarlos en caliente no sirve — tienen que estar en `AppX\` antes de lanzar. Verificar en logs (`%LOCALAPPDATA%\Maity\logs\`) que los `Saved checkpoint N` fluyan cada 30s sin errores.
 
-- **NO hay redirección de AppData bajo MSIX** (verificado 2026-07-20) — la doc vieja del Desktop Bridge dice que sí; para `Windows.FullTrustApplication` **ya no aplica**. No diseñes migraciones de datos asumiendo aislamiento. Ver sección de convivencia de canales.
+- **⚠️ La redirección de AppData bajo MSIX SÍ existe en el paquete INSTALADO** (corregido 2026-07-27; la verificación del 07-20 que decía que no se hizo con `winapp run`, que no redirige). Datos de la instancia MSIX: `%LOCALAPPDATA%\Packages\Sixale.Maity_q5b9hqhck1xz0\LocalCache\Roaming\com.maity.ai`. Consecuencias: los canales NO comparten datos, `Remove-AppxPackage` los borra, y una prueba con `winapp run` NO es representativa de dónde escribe la app instalada. Ver sección de convivencia de canales.
+- **⚠️ Partner Center: el 4º dígito de `Identity/Version` DEBE ser 0** (rebote 2026-07-27): *"Apps are not allowed to have a Version with a revision number other than zero"*. El revision se lo reserva Microsoft; re-submission con el mismo código = bump de `Z`. Corolarios: (a) NO iterar pruebas locales bumpeando el 4º dígito — ese sideload eclipsa a la futura versión de la Store del mismo X.Y.Z y la máquina se queda con el build dev; (b) la versión publicada en la Store no se ve con `winget show` (da `Version: Unknown`) ni en la página del producto — consultarla en Partner Center antes de elegir versión.
 - **`tauri build`, no `cargo build`** — cargo build debug → webview busca `localhost:3118`.
 - **`target` en la raíz del workspace** (`C:\maity_desktop\target`), no en `src-tauri/`.
 - `winapp init` deja **iconos placeholder** → reemplazar por el de Maity.
