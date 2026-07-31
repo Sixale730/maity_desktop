@@ -32,6 +32,14 @@ proceso/ventana), `platform` (`'desktop'` | web), `event_type`, `event_data`
 (jsonb), `status`, `error`, `app_version` (**lleno desde este ciclo** — antes
 el desktop mandaba null), `device_info` (userAgent), `created_at`.
 
+> **Gotcha de auth (verificado jul-31)**: sin sesión Supabase el RPC devuelve
+> **401 y el evento se pierde en silencio** — el rol `anon` no tiene USAGE
+> sobre el schema `maity` y el cliente pide ese schema. En la práctica casi
+> todo emisor corre tras el AuthGate, pero `app.error` pre-login (db-init,
+> rust, window) NO aterriza para usuarios deslogueados. Al depurar telemetría
+> con un perfil sin sesión: el request sale, el server lo rechaza — verificar
+> con intercepción de red, no con la tabla.
+
 ### Eventos que emite el desktop
 
 | event_type | Quién lo emite | Cuándo | Payload clave |
