@@ -4,6 +4,7 @@ import React, { Component, ErrorInfo, ReactNode } from 'react'
 import { Button } from '@/components/ui/button'
 import { AlertTriangle, RefreshCw, Bug, Copy, Check, FileDown } from 'lucide-react'
 import { logger } from '@/lib/logger'
+import { reportCaughtError } from '@/lib/errorTelemetry'
 
 interface Props {
   children: ReactNode
@@ -53,6 +54,11 @@ export class ErrorBoundary extends Component<Props, State> {
     // Log to console
     console.error('[ErrorBoundary] Caught error:', error)
     console.error('[ErrorBoundary] Component stack:', errorInfo.componentStack)
+
+    // Telemetría: cubre TODOS los usos del boundary (root y withErrorBoundary)
+    reportCaughtError('error-boundary', error, {
+      componentStack: errorInfo.componentStack ?? undefined,
+    })
 
     // Call custom error handler if provided
     this.props.onError?.(error, errorInfo)

@@ -33,6 +33,12 @@ const PROVIDER_INVARIANTS: ProviderInvariant[] = [
     reason:
       'El plugin updater no requiere sesion Supabase. Ponerlo dentro de un auth gate hace que el auto-check no dispare en maquinas con login lento. Ver commit 230b807.',
   },
+  {
+    component: 'ErrorTelemetryInitializer',
+    mustNotBeDescendantOf: ['AuthGate', 'AuthProvider', 'ErrorBoundary'],
+    reason:
+      'La telemetria de errores debe capturar errores pre-auth y seguir viva cuando ErrorBoundary desmonta el arbol al mostrar su fallback. Dentro de cualquiera de esos gates, los errores mas valiosos (los que tumban la app o pasan antes del login) jamas llegarian a platform_logs.',
+  },
 ];
 
 const LAYOUT_PATH = path.resolve(__dirname, 'layout.tsx');

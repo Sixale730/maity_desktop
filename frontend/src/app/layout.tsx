@@ -39,7 +39,9 @@ import { ModelDownloadGate } from '@/components/ModelDownloadGate'
 import { BackgroundDownloadStarter } from '@/components/Onboarding/BackgroundDownloadStarter'
 import { LoginScreen } from '@/components/Auth'
 import { CloudSyncInitializer } from '@/components/CloudSyncInitializer'
+import { ErrorTelemetryInitializer } from '@/components/ErrorTelemetryInitializer'
 import { GlobalConversationNotifier } from '@/components/GlobalConversationNotifier'
+import { HealthHeartbeatInitializer } from '@/components/HealthHeartbeatInitializer'
 import { DbInitErrorGate } from '@/components/DbInitErrorGate'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ThemeProvider } from '@/contexts/ThemeContext'
@@ -700,6 +702,9 @@ export default function RootLayout({
           dangerouslySetInnerHTML={{ __html: chunkErrorRecoveryScript }}
         />
         <ChunkErrorRecovery />
+        {/* FUERA de ErrorBoundary/AuthGate: captura errores pre-auth y sigue
+            vivo si el boundary desmonta el árbol. Invariante: layout.test.ts */}
+        <ErrorTelemetryInitializer />
         <ErrorBoundary>
           {/* DbInitErrorGate vive AFUERA de QueryClientProvider y AuthProvider:
               cuando el SQLite local falla en startup, queremos bloquear todo el
@@ -719,6 +724,7 @@ export default function RootLayout({
                 <AuthProvider>
                   <AuthGate>
                     <CloudSyncInitializer />
+                    <HealthHeartbeatInitializer />
                     <GlobalConversationNotifier />
                     <AppContent>{children}</AppContent>
                   </AuthGate>

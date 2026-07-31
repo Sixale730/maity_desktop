@@ -563,6 +563,10 @@ La píldora de grabación y el banner "no se detectó micrófono" (`app/page.tsx
 - **Logo (`components/shared/Logo.tsx`):** rama no-colapsada muestra `/logo-collapsed.png` (28×28) + wordmark "Maity" con `text-foreground` (respeta la paleta del tema). NO usar la vieja píldora con `bg-[#f0f2fe]`/`dark:bg-blue-900/30` (fondo azul que no combina). Sigue siendo `DialogTrigger` → abre "Acerca de".
 - **Búsqueda eliminada:** el input "Buscar contenido de reunión" fue removido de `Sidebar/index.tsx`. La infraestructura de búsqueda subyacente (`searchQuery`, `filteredSidebarItems`, `filteredConversations`, `searchResults`) permanece pero queda **inerte** (`searchQuery` siempre `''` → filtros devuelven la lista base). Si se reintroduce la búsqueda, volver a cablear un input a `setSearchQuery` + `searchTranscripts` (comando Tauri `api_search_transcripts`).
 
+## Telemetria y diagnostico remoto
+
+Inventario completo en **`docs/TELEMETRIA.md`**: pirámide de 3 niveles — (1) `health.heartbeat` (RAM por proceso vía `get_health_snapshot`, cada 5 min activo / 15 min idle) y eventos a Supabase `maity.platform_logs` vía `platformLogger`; (2) `app.error` con rate-limit (handlers globales + ErrorBoundary, `lib/errorTelemetry.ts`); (3) logs completos SOLO locales (`[METRIC] mem-sample` cada 30s + export ZIP manual). Los logs crudos NO van a la nube (volumen/privacidad — decisión jul-2026). El doc incluye las queries SQL de análisis y el runbook de fugas de RAM.
+
 ## Depuracion
 
 ```bash
