@@ -9,6 +9,7 @@ use zip::write::SimpleFileOptions;
 use zip::ZipWriter;
 
 use super::file_logger::{get_log_directory, list_log_files, get_logs_total_size};
+use super::mem_sampler::{self, MemSample, SessionPeaks};
 use crate::database::repositories::recording_log::RecordingLogRepository;
 use crate::state::AppState;
 
@@ -309,6 +310,47 @@ pub fn log_frontend_event(
     Ok(())
 }
 
+/// Snapshot combinado de salud para el heartbeat de telemetría del frontend.
+///
+/// `mem` sale del cache del sampler periódico de `mem_sampler` (edad ≤30s,
+/// `cpu_pct` real por el delta del System persistente); el fallback fresco
+/// solo corre antes del primer tick y se distingue por `mem_sample_age_s: None`.
+/// `peaks` se resetea con `reset_session_peaks()` (lo hace el ciclo del coach),
+/// así que son informativos por tramo, no acumulados de toda la app.
+#[derive(Debug, serde::Serialize)]
+pub struct HealthSnapshot {
+    pub mem: Option<MemSample>,
+    pub mem_sample_age_s: Option<u64>,
+    pub peaks: SessionPeaks,
+    pub phase: &'static str,
+    pub lag_seconds: u64,
+}
+
+/// Métricas de salud en UNA invocación IPC: memoria por proceso, fase de
+/// grabación y lag de transcripción. Costo ~0 en el camino normal (lock corto
+/// + clone de struct chico + lecturas atómicas).
+#[tauri::command]
+pub async fn get_health_snapshot() -> Result<HealthSnapshot, String> {
+    let (mem, mem_sample_age_s) = match mem_sampler::last_sample() {
+        Some((s, age)) => (Some(s), Some(age)),
+        None => {
+            // El refresh de procesos recorre la tabla del OS: fuera del runtime.
+            let fresh = tokio::task::spawn_blocking(mem_sampler::collect_fresh)
+                .await
+                .map_err(|e| format!("health snapshot join error: {}", e))?;
+            (fresh, None)
+        }
+    };
+
+    Ok(HealthSnapshot {
+        mem,
+        mem_sample_age_s,
+        peaks: mem_sampler::session_peaks(),
+        phase: crate::audio::recording_phase::current_phase().as_str(),
+        lag_seconds: crate::audio::transcription::worker::transcription_lag_seconds(),
+    })
+}
+
 /// Clear old log files (keeps only the most recent)
 #[tauri::command]
 pub async fn clear_old_logs(keep_count: Option<usize>) -> Result<usize, String> {
@@ -328,4 +370,68 @@ pub async fn clear_old_logs(keep_count: Option<usize>) -> Result<usize, String> 
 
     tracing::info!("Cleared {} old log files", deleted);
     Ok(deleted)
+}
+
+#[cfg(test)]
+mod health_snapshot_tests {
+    use super::*;
+
+    /// Primera vez que MemSample/SessionPeaks cruzan el boundary IPC: blinda
+    /// los derives de Serialize y las keys que consume healthHeartbeatService.
+    #[test]
+    fn health_snapshot_serializa_con_keys_esperadas() {
+        let snapshot = HealthSnapshot {
+            mem: Some(MemSample {
+                app_rss_mb: 512,
+                llama_rss_mb: 1024,
+                llama_procs: 1,
+                webview_rss_mb: 300,
+                webview_procs: 4,
+                ffmpeg_procs: 0,
+                sys_avail_mb: 8000,
+                sys_total_mb: 16000,
+                cpu_pct: 12.5,
+            }),
+            mem_sample_age_s: Some(7),
+            peaks: SessionPeaks {
+                app_rss_peak_mb: 900,
+                llama_rss_peak_mb: 2400,
+                webview_rss_peak_mb: 400,
+                sys_avail_min_mb: 3000,
+                llama_procs_max: 2,
+            },
+            phase: "recording",
+            lag_seconds: 3,
+        };
+
+        let v = serde_json::to_value(&snapshot).expect("HealthSnapshot serializable");
+        assert_eq!(v["phase"], "recording");
+        assert_eq!(v["lag_seconds"], 3);
+        assert_eq!(v["mem_sample_age_s"], 7);
+        assert_eq!(v["mem"]["app_rss_mb"], 512);
+        assert_eq!(v["mem"]["cpu_pct"], 12.5);
+        assert_eq!(v["peaks"]["app_rss_peak_mb"], 900);
+        assert_eq!(v["peaks"]["sys_avail_min_mb"], 3000);
+    }
+
+    #[test]
+    fn health_snapshot_mem_none_serializa_null() {
+        let snapshot = HealthSnapshot {
+            mem: None,
+            mem_sample_age_s: None,
+            peaks: SessionPeaks {
+                app_rss_peak_mb: 0,
+                llama_rss_peak_mb: 0,
+                webview_rss_peak_mb: 0,
+                sys_avail_min_mb: 0,
+                llama_procs_max: 0,
+            },
+            phase: "idle",
+            lag_seconds: 0,
+        };
+
+        let v = serde_json::to_value(&snapshot).expect("serializable");
+        assert!(v["mem"].is_null());
+        assert!(v["mem_sample_age_s"].is_null());
+    }
 }

@@ -10,6 +10,7 @@
 //! WebView2) y se libera tras el stop?
 
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use log::{error, info, warn};
@@ -26,7 +27,13 @@ static MEM_WEBVIEW_PEAK_MB: AtomicU64 = AtomicU64::new(0);
 static SYS_AVAIL_MIN_MB: AtomicU64 = AtomicU64::new(u64::MAX);
 static LLAMA_PROCS_MAX: AtomicU64 = AtomicU64::new(0);
 
+/// Último sample del loop periódico, para que `get_health_snapshot` lo lea
+/// sin pagar otro refresh de procesos (y con `cpu_pct` real, que necesita el
+/// delta del `System` persistente del sampler).
+static LAST_SAMPLE: Mutex<Option<(MemSample, Instant)>> = Mutex::new(None);
+
 /// Una muestra de memoria/CPU del ecosistema de procesos de Maity.
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct MemSample {
     pub app_rss_mb: u64,
     pub llama_rss_mb: u64,
@@ -40,6 +47,7 @@ pub struct MemSample {
 }
 
 /// Picos observados desde el último `reset_session_peaks()`.
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct SessionPeaks {
     pub app_rss_peak_mb: u64,
     pub llama_rss_peak_mb: u64,
@@ -65,6 +73,23 @@ pub fn session_peaks() -> SessionPeaks {
         sys_avail_min_mb: if avail_min == u64::MAX { 0 } else { avail_min },
         llama_procs_max: LLAMA_PROCS_MAX.load(Ordering::Relaxed),
     }
+}
+
+/// Último sample del sampler periódico + edad en segundos. `None` solo antes
+/// del primer tick (el interval del sampler dispara inmediato al arrancar).
+pub fn last_sample() -> Option<(MemSample, u64)> {
+    LAST_SAMPLE
+        .lock()
+        .ok()?
+        .as_ref()
+        .map(|(s, t)| (s.clone(), t.elapsed().as_secs()))
+}
+
+/// Sample fresco bajo demanda, fallback pre-primer-tick. `System` nuevo →
+/// `cpu_pct` sale 0 (sin delta previo); el llamador lo distingue porque la
+/// edad del sample viene como `None`. Correr en `spawn_blocking`.
+pub fn collect_fresh() -> Option<MemSample> {
+    collect(&mut System::new())
 }
 
 /// Arranca el sampler periódico. Llamar UNA vez desde el setup de la app.
@@ -100,6 +125,11 @@ pub fn start() {
             if let Some(s) = sample {
                 log_sample("periodic", &s);
                 warn_state.check(&s);
+                // Solo el loop periódico alimenta el cache: los snapshots de
+                // `snapshot_now` usan System fresco y su cpu_pct=0 lo contaminaría.
+                if let Ok(mut cache) = LAST_SAMPLE.lock() {
+                    *cache = Some((s, Instant::now()));
+                }
             }
         }
     });

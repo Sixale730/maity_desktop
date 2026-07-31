@@ -1393,6 +1393,7 @@ pub fn run() {
             logging::commands::reveal_in_folder,
             logging::commands::log_frontend_event,
             logging::commands::clear_old_logs,
+            logging::commands::get_health_snapshot,
             // Coach commands
             coach::setup::install_coach_if_needed,
             coach::setup::cancel_gguf_download,
