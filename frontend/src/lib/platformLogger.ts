@@ -10,6 +10,8 @@
  * platforms emit to the same canonical table for cross-app analytics.
  */
 
+import { getVersion } from '@tauri-apps/api/app'
+
 import { supabase } from '@/lib/supabase'
 
 export type PlatformLogStatus = 'success' | 'error' | 'timeout' | 'skipped'
@@ -18,6 +20,7 @@ export type PlatformLogStatus = 'success' | 'error' | 'timeout' | 'skipped'
 export type PlatformEventType =
   | 'app.open'
   | 'app.close'
+  | 'health.heartbeat'
   | 'nav.page_view'
   | 'app.start'
   | 'app.error'
@@ -36,9 +39,26 @@ export type PlatformEventType =
 class PlatformLogger {
   private static instance: PlatformLogger
   private sessionId: string
+  private appVersion: string | null = null
+  private appVersionPromise: Promise<string> | null = null
 
   private constructor() {
     this.sessionId = this.generateSessionId()
+  }
+
+  /**
+   * Versión de la app con cache perezosa y single-flight: el burst de arranque
+   * (app.open + nav.page_view) no dispara N getVersion(). Fuera de Tauri
+   * (dev en browser) degrada a 'unknown'.
+   */
+  private resolveAppVersion(): Promise<string> {
+    if (this.appVersion) return Promise.resolve(this.appVersion)
+    if (!this.appVersionPromise) {
+      this.appVersionPromise = getVersion()
+        .then((v) => (this.appVersion = v))
+        .catch(() => (this.appVersion = 'unknown'))
+    }
+    return this.appVersionPromise
   }
 
   static getInstance(): PlatformLogger {
@@ -77,7 +97,7 @@ class PlatformLogger {
         p_status: status ?? null,
         p_error: error ?? null,
         p_meeting_id: (data?.meeting_id as string) ?? null,
-        p_app_version: null,
+        p_app_version: await this.resolveAppVersion(),
         p_device_info: userAgent,
       })
     } catch {
