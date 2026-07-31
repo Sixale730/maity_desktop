@@ -44,6 +44,7 @@ use tauri::Emitter;
 use tokio::sync::mpsc;
 use tracing::field::{Field, Visit};
 use tracing::{Event, Level, Subscriber};
+use tracing_log::NormalizeEvent;
 use tracing_subscriber::layer::{Context, Layer};
 
 /// Cap de envíos por proceso (espejo del `ErrorReportLimiter` del frontend).
@@ -153,7 +154,13 @@ pub struct RustErrorLayer {
 
 impl<S: Subscriber> Layer<S> for RustErrorLayer {
     fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
-        let meta = event.metadata();
+        // CRÍTICO: los eventos bridgeados desde el crate `log` (LogTracer, o
+        // sea el ~96% de los errores del codebase) llevan
+        // `event.metadata().target() == "log"`; el target REAL solo aparece en
+        // la metadata normalizada. Sin esto, el filtro descartaba todos los
+        // `log::error!` (bug cazado en el e2e del ciclo jul-31).
+        let normalized = event.normalized_metadata();
+        let meta = normalized.as_ref().unwrap_or_else(|| event.metadata());
         if *meta.level() != Level::ERROR {
             return;
         }
@@ -224,6 +231,27 @@ mod tests {
             },
             rx,
         )
+    }
+
+    #[test]
+    fn eventos_bridgeados_de_log_pasan_el_filtro() {
+        // Regresión del bug del e2e jul-31: los `log::error!` (LogTracer)
+        // llevan metadata.target()=="log" — sin NormalizeEvent el filtro los
+        // descartaba TODOS. LogTracer global: init una vez por proceso.
+        let _ = tracing_log::LogTracer::init();
+        log::set_max_level(log::LevelFilter::Trace);
+
+        let (layer, mut rx) = test_layer(64, 0);
+        let subscriber = tracing_subscriber::registry().with(layer);
+        tracing::subscriber::with_default(subscriber, || {
+            log::error!(target: "app_lib::database::commands", "bridged boom");
+            log::error!(target: "frontend", "no debe pasar");
+        });
+
+        let got = rx.try_recv().expect("el log::error! bridgeado debe pasar el filtro");
+        assert_eq!(got.target, "app_lib::database::commands");
+        assert_eq!(got.message, "bridged boom");
+        assert!(rx.try_recv().is_err());
     }
 
     #[test]
