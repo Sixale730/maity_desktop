@@ -14,7 +14,7 @@
   <Identity
     Name="Sixale.Maity"
     Publisher="CN=C88867C5-0981-430C-9134-4C455473D0F2"
-    Version="0.2.53.0" />
+    Version="0.2.54.0" />
 
   <Properties>
     <DisplayName>Maity</DisplayName>

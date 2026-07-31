@@ -1,6 +1,6 @@
 [package]
 name = "maity-desktop"
-version = "0.2.53"
+version = "0.2.54"
 description = "A Tauri App for meeting minutes"
 authors = ["Sujith S"]
 license = "MIT"
@@ -177,7 +177,29 @@ anyhow = "1.0"
 time = { version = "0.3", features = ["formatting"] }
 reqwest = { version = "0.12", default-features = false, features = ["multipart", "json", "rustls-tls-native-roots"] }
 core-graphics = "0.24"
-cidre = { git = "https://github.com/yury/cidre", rev = "a9587fa", features = ["av"] }
+# IMPORTANTE: `default-features = false` es obligatorio. Los default features de cidre
+# son `full`, que enciende sus ~50 modulos — incluido `am` (Apple Mobile Device), que
+# declara `#[link(name = "MobileDevice", kind = "framework")]` y mete un LC_LOAD_DYLIB a
+# /System/Library/PrivateFrameworks/MobileDevice.framework en el binario. Apple rechazo
+# la app por eso (Guideline 2.5.1, jul-2026) aunque no llamamos ni un simbolo de ese
+# framework. `full` ademas enciende la feature `private` de cidre via `am`.
+# Solo listamos lo que realmente usa el codigo de audio (arc/os no llevan feature):
+#   av + cat + cf + core_audio + ns  →  audio/capture/core_audio.rs, system_detector.rs,
+#                                        device_detection.rs, diagnostics.rs
+# `av` ya arrastra ns → objc + cg → cf, por eso no hace falta listarlos.
+# NO reintroducir `am` ni `private`: verificar con
+#   otool -L <bin> | grep -i PrivateFrameworks   (debe salir vacio)
+cidre = { git = "https://github.com/yury/cidre", rev = "a9587fa", default-features = false, features = [
+    "av",
+    "cat",
+    "cm",       # av lo necesita cuando `blocks` esta activo, pero no lo declara (bug de features de cidre)
+    "app",      # AppKit: ns::RunningApp en audio/system_detector.rs
+    "core_audio",
+    "blocks",
+    "async",
+    "macos_15_0",
+    "half",
+] }
 dasp = "0.11.0"
 futures-channel = "0.3.31"
 
