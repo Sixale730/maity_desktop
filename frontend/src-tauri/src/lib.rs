@@ -602,6 +602,12 @@ pub fn run() {
                 }
             }
 
+            // Puente Rust ERROR → frontend (telemetría app.error source:'rust',
+            // issue #60): arranca la task drenadora del canal que llenó el layer
+            // de logging/rust_error_bridge.rs. Los ERROR entre el init del
+            // logging (main.rs) y este punto quedaron buffered en el canal.
+            logging::rust_error_bridge::start(_app.handle().clone());
+
             // Listen for "app-ready" event from frontend to show the window.
             // The window starts hidden (visible: false in tauri.conf.json) to avoid
             // showing a black screen or ChunkLoadError while Next.js compiles/loads.

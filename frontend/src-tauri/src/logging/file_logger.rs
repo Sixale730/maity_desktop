@@ -65,10 +65,14 @@ pub fn init_file_logging(app_name: &str) -> anyhow::Result<()> {
     let filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new("info"));
 
+    // Puente ERROR→frontend (issue #60). OJO: el fallback `fmt::init()` de
+    // main.rs (cuando esta función falla) NO lleva este layer — en ese modo
+    // degradado los errores solo van a consola.
     tracing_subscriber::registry()
         .with(filter)
         .with(file_layer)
         .with(console_layer)
+        .with(super::rust_error_bridge::make_layer())
         .init();
 
     tracing::info!("File logging initialized at: {:?}", log_dir);

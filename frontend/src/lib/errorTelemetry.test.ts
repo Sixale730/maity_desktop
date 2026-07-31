@@ -5,14 +5,19 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('@/lib/platformLogger', () => ({ platformLogger: { log: vi.fn() } }))
+vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn(() => Promise.resolve(() => {})) }))
 
+import { listen } from '@tauri-apps/api/event'
 import { platformLogger } from '@/lib/platformLogger'
+import { TauriEvent } from '@/lib/tauri-events'
 import {
   ErrorReportLimiter,
   buildErrorKey,
+  initErrorTelemetry,
   normalizeError,
   reportCaughtError,
   truncateStr,
+  type RustErrorPayload,
 } from './errorTelemetry'
 
 describe('ErrorReportLimiter', () => {
@@ -107,5 +112,51 @@ describe('reportCaughtError', () => {
     const circular: Record<string, unknown> = {}
     circular.self = circular
     expect(() => reportCaughtError('unhandledrejection', circular)).not.toThrow()
+  })
+})
+
+describe('puente rust-error', () => {
+  beforeEach(() => {
+    vi.mocked(platformLogger.log).mockClear()
+  })
+
+  // Un solo test: `initErrorTelemetry` es idempotente por flag de módulo, así
+  // que el registro del listener solo ocurre una vez por archivo de test — no
+  // se puede repartir en dos its (la limpieza de mocks entre tests borraría la
+  // llamada registrada).
+  it('doble init registra el listener UNA vez y mapea el payload a app.error', () => {
+    expect(() => {
+      initErrorTelemetry()
+      initErrorTelemetry()
+    }).not.toThrow()
+    const rustCalls = vi
+      .mocked(listen)
+      .mock.calls.filter(([eventName]) => eventName === TauriEvent.RUST_ERROR)
+    expect(rustCalls).toHaveLength(1)
+    const handler = rustCalls[0][1] as (e: { payload: RustErrorPayload }) => void
+
+    // El limiter del módulo es un singleton con gap de 2s compartido con los
+    // tests anteriores — adelantar el reloj para que no suprima este envío.
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(Date.now() + 3_600_000)
+      handler({
+        payload: { target: 'app_lib::audio::worker', message: 'boom rust', ts_ms: 1234 },
+      })
+    } finally {
+      vi.useRealTimers()
+    }
+
+    const calls = vi
+      .mocked(platformLogger.log)
+      .mock.calls.filter(([type]) => type === 'app.error')
+    expect(calls).toHaveLength(1)
+    const data = calls[0][1] as Record<string, unknown>
+    expect(data.source).toBe('rust')
+    expect(data.name).toBe('app_lib::audio::worker')
+    expect(data.message).toBe('boom rust')
+    expect(data.rust_ts_ms).toBe(1234)
+    // El stack se descarta a propósito: apuntaría al listener, no a Rust.
+    expect(data.stack).toBeNull()
   })
 })

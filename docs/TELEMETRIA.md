@@ -1,6 +1,7 @@
 # Telemetría y diagnóstico remoto — inventario completo
 
-> Última actualización: 2026-07-30 (ciclo health.heartbeat).
+> Última actualización: 2026-07-31 (ciclo issues #60/#62/#64: puente Rust
+> ERROR→DB, gates de ventanas aux, telemetría de db-init).
 > Pregunta que responde este doc: **"¿qué información tenemos para diagnosticar
 > un problema en producción sin pedirle nada al usuario?"**
 
@@ -82,20 +83,37 @@ principal lo corre (`isAuxWindowPath` excluye coach-float/recording-widget/
 device-picker). Sin retry offline: un heartbeat perdido no se encola (mentiría
 sobre `created_at`).
 
-### `app.error` (nuevo, jul-2026)
+### `app.error` (jul-2026)
 
-Fuentes (`frontend/src/lib/errorTelemetry.ts`): handlers globales `window
-'error'` + `'unhandledrejection'` (los rechazos de `invoke()` Rust llegan como
-strings → `name: 'UnhandledRejection'`) y `ErrorBoundary.componentDidCatch`.
+Fuentes (`frontend/src/lib/errorTelemetry.ts`):
+- `window` / `unhandledrejection`: handlers globales (los rechazos de
+  `invoke()` Rust llegan como strings → `name: 'UnhandledRejection'`).
+- `error-boundary`: `ErrorBoundary.componentDidCatch`.
+- `db-init` (jul-31, issue #64): `DbInitErrorGate` reporta el fallo de
+  inicialización de la DB (`name: 'DbInitFailed'`) — antes el incidente era
+  invisible remotamente.
+- `rust` (jul-31, issue #60): **puente Rust ERROR→frontend**
+  (`src-tauri/src/logging/rust_error_bridge.rs`). Un Layer de tracing captura
+  los ERROR del crate (`log::error!` incluidos vía LogTracer), filtra por
+  target (`app_lib*`; excluye `"frontend"` — anti-bucle — y crates de
+  terceros), dedupea/capea (20/proceso, gap 2s) y los manda por canal mpsc a
+  una task drenadora que emite el evento `rust-error`; el listener del
+  frontend los reenvía con `name` = target Rust y `rust_ts_ms` = epoch ms del
+  lado Rust (para correlacionar contra maity.log). Gaps conocidos: el fallback
+  `fmt::init()` de main.rs no lleva el layer; eventos pre-listener se pierden
+  del lado remoto (persisten en maity.log); los panics no pasan por tracing.
+
 Presupuesto: máx 20 envíos/sesión/ventana, dedup por `name:message[:120]`,
 gap mínimo 2s, truncado (message 500 / stack 1500 / componentStack 1000).
 `ErrorTelemetryInitializer` se monta FUERA de ErrorBoundary/AuthGate
 (invariante en `layout.test.ts`) para capturar errores pre-auth y sobrevivir
-al fallback del boundary. Hook en `logger.error`: descartado (ruido/bucles),
-issue aparte.
+al fallback del boundary; solo la ventana principal lo monta (las aux hacen
+early-return en el layout — si eso cambiara, el emit broadcast de `rust-error`
+multiplicaría reportes; la barrera real es el dedup del lado Rust). Hook en
+`logger.error`: descartado definitivamente (#63 cerrado como no-planeado).
 
-`event_data`: `{source, name, message, stack, component_stack, pathname,
-dedup_key, seq, session_uptime_s}` + columna `error` = message.
+`event_data`: `{source, name, message, stack, component_stack, rust_ts_ms,
+pathname, dedup_key, seq, session_uptime_s}` + columna `error` = message.
 
 ## Nivel 3: logs locales (Rust)
 
@@ -156,12 +174,16 @@ group by 1, 2 order by sesiones desc limit 20;
 3. `coach.session_summary` → ¿sidecar_restarts/breaker_opens altos?
 4. Solo si falta detalle: pedirle el Export ZIP (nivel 3) y leer `[METRIC]`.
 
-## Lo que NO existe todavía (issues abiertos en este ciclo)
+## Lo que NO existe todavía
 
-- **Rust ERROR→DB**: los `tracing::error!` de Rust solo llegan al log local
-  (indirectamente varios llegan como rechazos de `invoke`).
-- **Bundle de incidente con consentimiento**: subir el tail del log rotativo a
-  Supabase Storage al detectar crash/umbral de RAM.
-- **Gate de pathname en `CloudSyncInitializer`**: hoy las ventanas auxiliares
-  también levantan el sync worker (hallazgo de esta exploración).
-- **Hook opt-in en `logger.error`** con denylist.
+- **Bundle de incidente con consentimiento** (#61): subir el tail del log
+  rotativo a Supabase Storage al detectar crash/umbral de RAM. El patrón
+  canal→drenadora de `rust_error_bridge.rs` es la base para emitir el evento
+  desde los warnings del `mem_sampler`.
+- **Panics a la nube**: los panics no pasan por tracing → el puente `rust`
+  no los ve (quedan en maity.log y en Sentry si está activo).
+
+Resueltos en el ciclo jul-31: Rust ERROR→DB (#60, puente `rust-error`); gate
+de ventanas aux en initializers (#62 — el "triple worker" no existía, era la
+lista de rutas triplicada); hook en `logger.error` (#63, cerrado como
+no-planeado: 5 call-sites, cobertura ya dada por window handlers + #60).

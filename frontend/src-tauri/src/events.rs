@@ -18,6 +18,7 @@ pub const DB_INIT_FAILED: &str = "db-init-failed";
 pub const DATABASE_INITIALIZED: &str = "database-initialized";
 pub const FIRST_LAUNCH_DETECTED: &str = "first-launch-detected";
 pub const DEEP_LINK_RECEIVED: &str = "deep-link-received";
+pub const RUST_ERROR: &str = "rust-error";
 
 // ── Auth (OAuth localhost server) ───────────────────────────────────────────
 pub const AUTH_CODE_RECEIVED: &str = "auth-code-received";
