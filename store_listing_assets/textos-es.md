@@ -1,8 +1,8 @@
 # Maity — Textos y assets para Microsoft Store (Partner Center)
 
 > Idioma de la ficha: **Español (Spanish)**. Producto: **Maity** · Store ID `9NTKJ5X6230F`.
-> **Atajo:** abre `copiar-textos.html` (doble clic) para copiar cada sección con un botón.
-> Assets en `store_listing_assets/`.
+> **Atajo:** abre `copiar-textos.html` (doble clic) para copiar cada sección con un botón — incluye **ES y EN**.
+> Versión en inglés: `textos-en.md`. Assets en `store_listing_assets/`.
 
 ---
 
@@ -42,6 +42,8 @@ Maity analiza cómo te comunicas realmente en el día a día: te muestra tu clar
 Chatea con Maity, tu coach de comunicación y productividad siempre disponible. Prepárate para una reunión difícil, haz lluvia de ideas sobre qué decir, convierte notas sueltas en una presentación lista para exponer, o suelta un documento (PDF, Word o Excel) y deja que lo lea y te lo resuma. Conecta tu calendario y Maity se adelanta con un briefing diario proactivo, y puede generar minutas de reunión claras directamente desde tus conversaciones.
 
 Ya sea que te prepares para una conversación importante, busques crecer en el trabajo o lideres un equipo, Maity te da retroalimentación honesta y un coach de tu lado, todos los días.
+
+Maity es gratis para descargar y usar. El plan gratuito tiene límites de uso diarios y mensuales en funciones como el análisis de conversaciones y Maity Chat. La suscripción Maity Pro elimina esos límites y se contrata fuera de la aplicación, en nuestro sitio web; Maity no realiza compras a través del sistema de comercio de la Microsoft Store.
 ```
 
 ## 4) What's new in this version

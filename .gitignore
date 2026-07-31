@@ -117,7 +117,12 @@ graphify-out/
 /msix_staging/
 frontend/msix_staging/
 *.msix
+# Red de seguridad: winapp --generate-cert y la exportacion del §6.5 dejan estos
+# archivos sueltos en la raiz. Su sitio es signing/ (ya ignorado); esto evita que
+# una corrida vieja de la skill los cuele en un commit.
 Sixale.Maity_cert.pfx
+*.pfx
+*.cer
 
 # VC++ Runtime redistribuible copiado del VS Build Tools en cada build
 # (scripts/stage-vcredist.js). NO commitear: debe coincidir con el toolset que

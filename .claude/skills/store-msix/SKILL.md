@@ -124,24 +124,42 @@ Get-AppxPackage -Name Sixale.Maity | Remove-AppxPackage
 # Primera vez (o si no existe el pfx): genera cert de dev nuevo
 winapp package "<staging>" --manifest "<staging>\Package.appxmanifest" --generate-cert
 # Corridas siguientes: REUSAR el pfx para no re-confiar el cert en cada iteración
-winapp package "<staging>" --manifest "<staging>\Package.appxmanifest" --cert C:\maity_desktop\Sixale.Maity_cert.pfx --cert-password password
+winapp package "<staging>" --manifest "<staging>\Package.appxmanifest" --cert C:\maity_desktop\signing\Sixale.Maity_cert.pfx --cert-password password
 ```
 Genera `Sixale.Maity_<version>_x64.msix` en la raíz del repo. El cert de dev es solo para instalar local; **NO firmar con Certum** — Microsoft firma el MSIX al subirlo a la Store.
 
 ⚠️ `--generate-cert` crea un cert NUEVO cada corrida (habría que re-confiarlo cada vez) y deja **`Sixale.Maity_cert.pfx`** en la raíz del repo (llave privada; password por defecto de winapp: `password`). Por eso: generarlo UNA vez, confiar su `.cer` una vez (§6.5) y de ahí en adelante empaquetar con `--cert`. **NO abrir el pfx para instalar el cert** (usar el `.cer` exportado), **NO commitearlo**. `/msix_staging/` y `*.msix` ya están en `.gitignore`.
 
+> 🔴 **Los certificados viven en `signing/` (gitignored), NUNCA dentro del staging.**
+> El directorio de staging **ES el payload del paquete**: todo lo que esté ahí acaba
+> dentro del `.msix`. Pasó de verdad — el paquete 0.2.53 del 2026-07-27 se empaquetó
+> con `Sixale.Maity_cert.pfx` (2632 bytes, **llave privada**) y `maity-dev.cer`
+> adentro, y estuvo a punto de subirse a Partner Center. Antes de cada
+> `winapp package`, verificar que el staging solo tenga binarios, DLLs, manifest,
+> `Assets/` y `templates/`:
+> ```powershell
+> Get-ChildItem <staging> -Recurse -Include *.pfx,*.cer,*.key,*.env   # debe salir vacio
+> ```
+> Y comprobar el paquete ya generado (es un zip):
+> ```powershell
+> Add-Type -AssemblyName System.IO.Compression.FileSystem
+> $z=[System.IO.Compression.ZipFile]::OpenRead('<repo>\Sixale.Maity_<ver>_x64.msix')
+> $z.Entries | Where-Object { $_.FullName -match '\.(pfx|cer|key)$' }   # debe salir vacio
+> $z.Dispose()
+> ```
+
 ### 6.5 Probar el MSIX instalándolo (OBLIGATORIO antes de subir a la Store)
 
 **Flujo estándar desde 2026-07-21:** todo `.msix` se prueba instalado localmente ANTES de subirse a Partner Center. A diferencia de `winapp run`, el doble clic al `.msix` **sí valida la firma** → hay que confiar el cert de dev UNA vez (síntoma si falta: instalador con "Editor: Desconocido", botón Instalar deshabilitado y error `0x800B010A`).
 
-1. **Extraer el cert público del propio `.msix`** (sin contraseña, a diferencia del .pfx):
+1. **Extraer el cert público del propio `.msix`** (sin contraseña, a diferencia del .pfx). Destino `signing/` (gitignored), **NUNCA `<staging>`** — lo que cae en el staging viaja dentro del paquete:
    ```powershell
    $sig = Get-AuthenticodeSignature '<repo>\Sixale.Maity_<version>_x64.msix'
-   [System.IO.File]::WriteAllBytes('<staging>\maity-dev.cer', $sig.SignerCertificate.Export('Cert'))
+   [System.IO.File]::WriteAllBytes('<repo>\signing\maity-dev.cer', $sig.SignerCertificate.Export('Cert'))
    ```
 2. **Confiarlo** (una vez por certificado; requiere admin — lo hace el USUARIO, no el agente: es un cambio de confianza de la máquina):
    - GUI: doble clic al `.cer` → Instalar certificado… → **Equipo local** → almacén **Personas de confianza** (Trusted People).
-   - O en PowerShell elevado: `Import-Certificate -FilePath <staging>\maity-dev.cer -CertStoreLocation Cert:\LocalMachine\TrustedPeople`
+   - O en PowerShell elevado: `Import-Certificate -FilePath <repo>\signing\maity-dev.cer -CertStoreLocation Cert:\LocalMachine\TrustedPeople`
    - ⚠️ Si `winapp package` regenera el cert en una corrida futura, hay que re-confiar el `.cer` nuevo.
 3. **Cerrar cualquier instancia de Maity corriendo** (single-instance) y doble clic al `.msix` → Instalar.
    - ⚠️ **Reinstalar la MISMA versión falla** (Windows rechaza un paquete con versión idéntica a la instalada pero contenido distinto). Al iterar: `Get-AppxPackage -Name Sixale.Maity | Remove-AppxPackage` ANTES de instalar el `.msix` regenerado.
@@ -278,6 +296,7 @@ Un usuario puede terminar con NSIS **y** Store a la vez → dos entradas en el m
 
 - **⚠️ La redirección de AppData bajo MSIX SÍ existe en el paquete INSTALADO** (corregido 2026-07-27; la verificación del 07-20 que decía que no se hizo con `winapp run`, que no redirige). Datos de la instancia MSIX: `%LOCALAPPDATA%\Packages\Sixale.Maity_q5b9hqhck1xz0\LocalCache\Roaming\com.maity.ai`. Consecuencias: los canales NO comparten datos, `Remove-AppxPackage` los borra, y una prueba con `winapp run` NO es representativa de dónde escribe la app instalada. Ver sección de convivencia de canales.
 - **⚠️ Partner Center: el 4º dígito de `Identity/Version` DEBE ser 0** (rebote 2026-07-27): *"Apps are not allowed to have a Version with a revision number other than zero"*. El revision se lo reserva Microsoft; re-submission con el mismo código = bump de `Z`. Corolarios: (a) NO iterar pruebas locales bumpeando el 4º dígito — ese sideload eclipsa a la futura versión de la Store del mismo X.Y.Z y la máquina se queda con el build dev; (b) la versión publicada en la Store no se ve con `winget show` (da `Version: Unknown`) ni en la página del producto — consultarla en Partner Center antes de elegir versión.
+- **⚠️ Mostrar precios en la app exige la declaración de compras** (rebote 2026-07-29, política **10.8.2 Third-Party In-Product Purchases**, encontrada en "Ver planes y precios"): aunque el checkout Pro abre el navegador externo (handoff a maity.cloud), basta con que la app *muestre* la oportunidad de gastar dinero. **Fix (sin tocar código ni paquete):** en la submission → **Properties → Product declarations** → checkbox *"This app allows users to make purchases, but does not use the Microsoft Store commerce system"* (aparece como aviso de texto bajo el botón Get de la ficha). En el mismo reporte vino la nota **10.8.4** (describir limitaciones del plan gratuito/trial en la descripción) → cubierta añadiendo el párrafo final de la Description: límites de uso diarios/mensuales del plan Free + Pro se contrata fuera de la app (ver `store_listing_assets/textos-es.md` y `textos-en.md`; sin cifras — las cuotas son JSONB runtime en `maity.billing_plans` y números impresos driftearían). NO afirmar "grabación ilimitada" en la ficha (corrección de Julio 07-29).
 - **`tauri build`, no `cargo build`** — cargo build debug → webview busca `localhost:3118`.
 - **`target` en la raíz del workspace** (`C:\maity_desktop\target`), no en `src-tauri/`.
 - `winapp init` deja **iconos placeholder** → reemplazar por el de Maity.

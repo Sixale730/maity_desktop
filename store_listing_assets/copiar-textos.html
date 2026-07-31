@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Maity — Textos de la Store (ES)</title>
+<title>Maity — Textos de la Store (ES + EN)</title>
 <style>
 :root{--blue:#6C6CF5;--bg:#0f1020;--card:#191a2e;--ink:#eef0f8;--muted:#a6a9c2;--line:#2a2c46}
 *{box-sizing:border-box}
@@ -11,6 +11,8 @@ body{margin:0;font-family:"Segoe UI",system-ui,sans-serif;background:var(--bg);c
 .wrap{max-width:880px;margin:0 auto}
 h1{font-size:24px;margin:0 0 4px;display:flex;align-items:center;gap:12px}
 .sub{color:var(--muted);margin:0 0 26px;font-size:14px}
+.lang{font-size:18px;margin:34px 0 14px;padding-bottom:8px;border-bottom:2px solid var(--blue);display:flex;align-items:center;gap:10px}
+.lang .flag{font-size:20px}
 .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px 18px 18px;margin-bottom:16px}
 .head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px}
 .head h2{font-size:15px;margin:0;letter-spacing:.2px}
@@ -27,42 +29,35 @@ pre{white-space:pre-wrap;word-wrap:break-word;margin:0;font:inherit;color:var(--
 </head>
 <body>
 <div class="wrap">
-  <h1><img src="logos/tile-71x71.png" width="34" height="34" style="border-radius:8px" alt=""> Textos de la Store — Español</h1>
-  <p class="sub">Producto: Maity · Ficha en Español. Copia cada sección con un botón y pégala en Partner Center.</p>
+  <h1><img src="logos/tile-71x71.png" width="34" height="34" style="border-radius:8px" alt=""> Textos de la Store — Español + English</h1>
+  <p class="sub">Producto: Maity. Copia cada sección con un botón y pégala en Partner Center (Store listings → cada idioma tiene su propia ficha).</p>
 
   <div class="card">
-    <div class="head"><h2>Product name</h2><button class="btn" onclick="copyEl('name',this)">Copiar</button></div>
+    <div class="head"><h2>Product name <span class="hint">(igual en ambos idiomas)</span></h2><button class="btn" onclick="copyEl('name',this)">Copiar</button></div>
 <pre id="name">Maity</pre>
   </div>
 
-  <div class="card">
-    <div class="head"><h2>Description</h2><button class="btn" onclick="copyEl('desc',this)">Copiar</button></div>
-<pre id="desc">Maity te ayuda a comunicarte con más claridad, persuasión y empatía, convirtiendo tus conversaciones reales del día a día en retroalimentación que sí puedes aplicar.
+  <div id="langs"></div>
+</div>
+
+<script>
+const LANGS = [
+{
+  id:"es", label:"Español", flag:"🇲🇽",
+  desc:`Maity te ayuda a comunicarte con más claridad, persuasión y empatía, convirtiendo tus conversaciones reales del día a día en retroalimentación que sí puedes aplicar.
 
 Maity analiza cómo te comunicas realmente en el día a día: te muestra tu claridad, estructura, persuasión, empatía y capacidad de adaptación, junto con señales prácticas como las muletillas y qué tan balanceado fue tu tiempo de habla. En lugar de consejos genéricos, recibes coaching específico basado en conversaciones que de verdad tuviste.
 
 Chatea con Maity, tu coach de comunicación y productividad siempre disponible. Prepárate para una reunión difícil, haz lluvia de ideas sobre qué decir, convierte notas sueltas en una presentación lista para exponer, o suelta un documento (PDF, Word o Excel) y deja que lo lea y te lo resuma. Conecta tu calendario y Maity se adelanta con un briefing diario proactivo, y puede generar minutas de reunión claras directamente desde tus conversaciones.
 
-Ya sea que te prepares para una conversación importante, busques crecer en el trabajo o lideres un equipo, Maity te da retroalimentación honesta y un coach de tu lado, todos los días.</pre>
-  </div>
+Ya sea que te prepares para una conversación importante, busques crecer en el trabajo o lideres un equipo, Maity te da retroalimentación honesta y un coach de tu lado, todos los días.
 
-  <div class="card">
-    <div class="head"><h2>What's new in this version</h2><button class="btn" onclick="copyEl('new',this)">Copiar</button></div>
-<pre id="new">- Maity Chat más rápido y confiable, con lectura de documentos y generación de presentaciones
+Maity es gratis para descargar y usar. El plan gratuito tiene límites de uso diarios y mensuales en funciones como el análisis de conversaciones y Maity Chat. La suscripción Maity Pro elimina esos límites y se contrata fuera de la aplicación, en nuestro sitio web; Maity no realiza compras a través del sistema de comercio de la Microsoft Store.`,
+  whatsnew:`- Maity Chat más rápido y confiable, con lectura de documentos y generación de presentaciones
 - Integración con el calendario y briefing diario proactivo
 - Retroalimentación de conversaciones e insights de coaching más claros
-- Mejoras de rendimiento y estabilidad</pre>
-  </div>
-
-  <div class="card">
-    <div class="head"><h2>Product features <span class="hint">(una por línea — botón "Add more")</span></h2><button class="btn" onclick="copyEl('featsAll',this)">Copiar todas</button></div>
-    <div id="feats"></div>
-<pre id="featsAll" style="display:none"></pre>
-  </div>
-</div>
-
-<script>
-const FEATURES=[
+- Mejoras de rendimiento y estabilidad`,
+  features:[
 "Convierte tus conversaciones diarias reales en retroalimentación de comunicación",
 "Insights de claridad, estructura, persuasión, empatía y adaptación",
 "Señales prácticas: muletillas y balance de tu tiempo de habla",
@@ -75,16 +70,83 @@ const FEATURES=[
 "Genera minutas de reunión claras desde tus conversaciones",
 "Transcripción de reuniones en Zoom, Teams y Meet",
 "Retroalimentación honesta y un coach de tu lado, todos los días"
+  ],
+  short:"Convierte tus conversaciones reales en coaching de comunicación: claridad, persuasión y empatía, todos los días.",
+  keywords:"comunicación, coach, reuniones, IA, feedback, presentaciones, minutas, calendario, productividad, transcripción"
+},
+{
+  id:"en", label:"English", flag:"🇺🇸",
+  desc:`Maity helps you communicate with more clarity, persuasion, and empathy by turning your real, everyday conversations into feedback you can actually apply.
+
+Maity analyzes how you actually communicate day to day: it shows you your clarity, structure, persuasion, empathy, and adaptability, along with practical signals like filler words and how balanced your speaking time was. Instead of generic advice, you get specific coaching based on conversations you actually had.
+
+Chat with Maity, your always-available communication and productivity coach. Prepare for a difficult meeting, brainstorm what to say, turn loose notes into a presentation ready to deliver, or drop in a document (PDF, Word, or Excel) and let Maity read and summarize it for you. Connect your calendar and Maity gets ahead of your day with a proactive daily briefing, and it can generate clear meeting minutes directly from your conversations.
+
+Whether you're preparing for an important conversation, looking to grow at work, or leading a team, Maity gives you honest feedback and a coach in your corner, every day.
+
+Maity is free to download and use. The free plan has daily and monthly usage limits on features such as conversation analysis and Maity Chat. The Maity Pro subscription removes those limits and is purchased outside the app, on our website; Maity does not make purchases through the Microsoft Store commerce system.`,
+  whatsnew:`- Faster, more reliable Maity Chat, with document reading and presentation generation
+- Calendar integration and proactive daily briefing
+- Clearer conversation feedback and coaching insights
+- Performance and stability improvements`,
+  features:[
+"Turns your real, everyday conversations into communication feedback",
+"Insights on clarity, structure, persuasion, empathy, and adaptability",
+"Practical signals: filler words and speaking-time balance",
+"Specific coaching based on conversations you actually had",
+"Maity Chat: your always-available communication and productivity coach",
+"Prepare for difficult meetings and rehearse what to say",
+"Turn loose notes into a presentation ready to deliver",
+"Reads and summarizes documents (PDF, Word, and Excel)",
+"Connect your calendar and get a proactive daily briefing",
+"Generate clear meeting minutes from your conversations",
+"Meeting transcription for Zoom, Teams, and Meet",
+"Honest feedback and a coach in your corner, every day"
+  ],
+  short:"Turn your real conversations into communication coaching: clarity, persuasion, and empathy, every day.",
+  keywords:"communication, coach, meetings, AI, feedback, presentations, meeting minutes, calendar, productivity, transcription"
+}
 ];
-const cont=document.getElementById('feats');
-FEATURES.forEach(f=>{
-  const row=document.createElement('div'); row.className='feat';
-  const s=document.createElement('span'); s.textContent=f;
-  const b=document.createElement('button'); b.className='btn sm'; b.textContent='Copiar';
-  b.onclick=()=>copyText(f,b);
-  row.append(s,b); cont.append(row);
+
+const root=document.getElementById('langs');
+LANGS.forEach(L=>{
+  const h=document.createElement('h2'); h.className='lang';
+  h.innerHTML=`<span class="flag">${L.flag}</span> ${L.label}`;
+  root.append(h);
+
+  root.append(card(`Description`, L.desc, `desc-${L.id}`));
+  root.append(card(`What's new in this version`, L.whatsnew, `new-${L.id}`));
+
+  // Product features: fila por feature + botón "Copiar todas"
+  const c=document.createElement('div'); c.className='card';
+  const head=document.createElement('div'); head.className='head';
+  head.innerHTML=`<h2>Product features <span class="hint">(una por línea — botón "Add more")</span></h2>`;
+  const all=document.createElement('button'); all.className='btn'; all.textContent='Copiar todas';
+  all.onclick=()=>copyText(L.features.join('\n'),all);
+  head.append(all); c.append(head);
+  L.features.forEach(f=>{
+    const row=document.createElement('div'); row.className='feat';
+    const s=document.createElement('span'); s.textContent=f;
+    const b=document.createElement('button'); b.className='btn sm'; b.textContent='Copiar';
+    b.onclick=()=>copyText(f,b);
+    row.append(s,b); c.append(row);
+  });
+  root.append(c);
+
+  root.append(card(`Short description`, L.short, `short-${L.id}`));
+  root.append(card(`Search terms / keywords`, L.keywords, `kw-${L.id}`));
 });
-document.getElementById('featsAll').textContent=FEATURES.join('\n');
+
+function card(title, text, id){
+  const c=document.createElement('div'); c.className='card';
+  const head=document.createElement('div'); head.className='head';
+  const h=document.createElement('h2'); h.textContent=title;
+  const b=document.createElement('button'); b.className='btn'; b.textContent='Copiar';
+  const pre=document.createElement('pre'); pre.id=id; pre.textContent=text;
+  b.onclick=()=>copyText(pre.textContent,b);
+  head.append(h,b); c.append(head,pre);
+  return c;
+}
 
 function copyEl(id,btn){ copyText(document.getElementById(id).textContent, btn); }
 async function copyText(text,btn){
