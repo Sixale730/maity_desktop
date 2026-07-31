@@ -1,7 +1,13 @@
 use sqlx::{migrate::MigrateDatabase, Result, Sqlite, SqlitePool, Transaction};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tauri::Manager;
+
+/// Compañero `-wal` de un archivo SQLite: sufijo pegado al nombre completo
+/// (`x.sqlite` → `x.sqlite-wal`, `x.sqlite.bak` → `x.sqlite.bak-wal`).
+fn bak_companion_wal(path: &Path) -> PathBuf {
+    PathBuf::from(format!("{}-wal", path.to_string_lossy()))
+}
 
 #[derive(Clone)]
 pub struct DatabaseManager {
@@ -189,6 +195,60 @@ impl DatabaseManager {
         }
     }
 
+    /// Checkpoint del WAL al archivo principal SIN cerrar el pool (a diferencia de
+    /// `cleanup()`). TRUNCATE: vuelca todas las páginas y trunca el WAL a cero.
+    /// El caller decide si el fallo es fatal (en el flujo rival es solo warn).
+    pub async fn checkpoint(&self) -> Result<()> {
+        sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Respaldo en caliente de la DB a `bak_path` (+ compañero `<bak>-wal` si aplica).
+    ///
+    /// Primario: `VACUUM INTO` — copia consistente por construcción sin importar writers
+    /// concurrentes ni el estado del WAL (SQLite exige que el destino NO exista, por eso
+    /// se borran los restos previos). Fallback: copia de archivos — el main más el `-wal`
+    /// solo si tiene contenido. El `-shm` NUNCA se copia: es un índice de memoria
+    /// compartida que SQLite regenera al abrir.
+    pub async fn backup_to(&self, db_path: &Path, bak_path: &Path) -> Result<()> {
+        let bak_wal = bak_companion_wal(bak_path);
+        for stale in [bak_path, bak_wal.as_path()] {
+            if stale.exists() {
+                fs::remove_file(stale).map_err(sqlx::Error::Io)?;
+            }
+        }
+
+        let vacuum = sqlx::query("VACUUM INTO ?1")
+            .bind(bak_path.to_string_lossy().as_ref())
+            .execute(&self.pool)
+            .await;
+        match vacuum {
+            Ok(_) => {
+                log::info!("Respaldo de DB creado con VACUUM INTO: {}", bak_path.display());
+                Ok(())
+            }
+            Err(e) => {
+                log::warn!(
+                    "VACUUM INTO falló ({}), usando copia de archivos como fallback",
+                    e
+                );
+                fs::copy(db_path, bak_path).map_err(sqlx::Error::Io)?;
+                let wal_path = bak_companion_wal(db_path);
+                let wal_has_content = wal_path
+                    .metadata()
+                    .map(|m| m.len() > 0)
+                    .unwrap_or(false);
+                if wal_has_content {
+                    fs::copy(&wal_path, &bak_wal).map_err(sqlx::Error::Io)?;
+                }
+                log::info!("Respaldo de DB creado por copia: {}", bak_path.display());
+                Ok(())
+            }
+        }
+    }
+
     /// Cleanup database connection and checkpoint WAL
     /// This should be called on application shutdown to ensure:
     /// - All WAL changes are written to the main database file
@@ -212,5 +272,105 @@ impl DatabaseManager {
         log::info!("Database connection pool closed");
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod maintenance_tests {
+    use super::*;
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    /// Pool sobre archivo real en tempdir (no `:memory:`): estos tests verifican el
+    /// comportamiento de los archivos `-wal`/`.bak` en disco. WAL explícito para no
+    /// depender del default de sqlx.
+    async fn file_manager(db_path: &Path) -> DatabaseManager {
+        Sqlite::create_database(db_path.to_str().unwrap())
+            .await
+            .unwrap();
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect(db_path.to_str().unwrap())
+            .await
+            .unwrap();
+        sqlx::query("PRAGMA journal_mode=WAL")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO t (v) VALUES ('x'), ('y')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        DatabaseManager { pool }
+    }
+
+    #[tokio::test]
+    async fn checkpoint_trunca_el_wal_sin_cerrar_el_pool() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.sqlite");
+        let mgr = file_manager(&db_path).await;
+
+        let wal = bak_companion_wal(&db_path);
+        assert!(
+            wal.metadata().map(|m| m.len() > 0).unwrap_or(false),
+            "precondición: tras los INSERT el -wal debe tener contenido"
+        );
+
+        mgr.checkpoint().await.unwrap();
+        assert_eq!(wal.metadata().map(|m| m.len()).unwrap_or(0), 0);
+
+        // El pool sigue vivo (a diferencia de cleanup()).
+        sqlx::query("INSERT INTO t (v) VALUES ('z')")
+            .execute(mgr.pool())
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn checkpoint_sobre_pool_cerrado_da_err_sin_panic() {
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = file_manager(&dir.path().join("test.sqlite")).await;
+        mgr.cleanup().await.unwrap();
+        assert!(mgr.checkpoint().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn cleanup_es_idempotente() {
+        // Cubre el doble-cleanup real: uninstall_rival cierra el pool y el
+        // RunEvent::Exit posterior vuelve a llamar cleanup().
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = file_manager(&dir.path().join("test.sqlite")).await;
+        mgr.cleanup().await.unwrap();
+        mgr.cleanup().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn backup_to_crea_bak_integro_y_borra_stale() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.sqlite");
+        let bak_path = dir.path().join("test.sqlite.bak");
+        let mgr = file_manager(&db_path).await;
+
+        // Restos de un respaldo anterior: VACUUM INTO exige destino inexistente.
+        std::fs::write(&bak_path, b"stale-garbage").unwrap();
+        std::fs::write(bak_companion_wal(&bak_path), b"stale-wal").unwrap();
+
+        mgr.backup_to(&db_path, &bak_path).await.unwrap();
+
+        let bak_pool = SqlitePool::connect(bak_path.to_str().unwrap()).await.unwrap();
+        let integrity: (String,) = sqlx::query_as("PRAGMA integrity_check")
+            .fetch_one(&bak_pool)
+            .await
+            .unwrap();
+        assert_eq!(integrity.0, "ok");
+        let count: (i64,) = sqlx::query_as("SELECT count(*) FROM t")
+            .fetch_one(&bak_pool)
+            .await
+            .unwrap();
+        assert_eq!(count.0, 2, "el respaldo debe traer los datos, no el stale");
+        bak_pool.close().await;
     }
 }

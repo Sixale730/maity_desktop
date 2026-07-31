@@ -488,3 +488,164 @@ pub async fn reset_database<R: Runtime>(app: AppHandle<R>) -> Result<String, Str
     info!("[reset_database] DB backed up to {:?}", backup_path);
     Ok(backup_path.to_string_lossy().to_string())
 }
+
+/// Metadatos del respaldo `.bak` que deja `uninstall_rival` antes de cerrar la DB.
+#[derive(Serialize)]
+pub struct DbBackupInfo {
+    pub path: String,
+    /// Epoch en segundos de la última modificación (para mostrar la fecha en el gate).
+    pub modified_epoch_s: u64,
+    pub size_bytes: u64,
+}
+
+/// Devuelve `Some(info)` si existe `meeting_minutes.sqlite.bak` (respaldo creado por el
+/// flujo de desinstalación del rival). `DbInitErrorGate` lo usa para decidir si ofrece
+/// "Restaurar respaldo" además de "Restablecer".
+#[tauri::command]
+pub async fn get_db_backup_info<R: Runtime>(app: AppHandle<R>) -> Result<Option<DbBackupInfo>, String> {
+    let app_data = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("No se pudo localizar la carpeta de datos: {}", e))?;
+    let bak_path = app_data.join("meeting_minutes.sqlite.bak");
+    let Ok(meta) = std::fs::metadata(&bak_path) else {
+        return Ok(None);
+    };
+    let modified_epoch_s = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    Ok(Some(DbBackupInfo {
+        path: bak_path.to_string_lossy().to_string(),
+        modified_epoch_s,
+        size_bytes: meta.len(),
+    }))
+}
+
+/// Restaura el respaldo `.bak` sobre una DB corrupta. Espejo de `reset_database`:
+/// mismo contrato (solo lo invoca `DbInitErrorGate` con el pool SIN abrir — de otro modo
+/// los rename fallan por locks de Windows — y NO reinicia la app: el caller pide al
+/// usuario cerrar y reabrir).
+///
+/// Orden crítico: la DB corrupta Y sus `-wal`/`-shm` se apartan a `.broken-{ts}` ANTES de
+/// colocar el respaldo. Un `-wal` huérfano junto al archivo restaurado comparte salts con
+/// la DB vieja y SQLite lo REPLAYARÍA sobre la copia limpia al abrir → re-corrupción.
+/// Si existe `.bak-wal` (fallback de copia de `backup_to`), se coloca como `-wal` del
+/// restaurado: sus salts corresponden al `.bak`.
+#[tauri::command]
+pub async fn restore_db_backup<R: Runtime>(app: AppHandle<R>) -> Result<String, String> {
+    let app_data = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("No se pudo localizar la carpeta de datos: {}", e))?;
+    restore_db_backup_in_dir(&app_data)
+}
+
+/// Cuerpo de `restore_db_backup` sobre un directorio concreto (testeable sin AppHandle).
+fn restore_db_backup_in_dir(app_data: &std::path::Path) -> Result<String, String> {
+    let bak_path = app_data.join("meeting_minutes.sqlite.bak");
+    if !bak_path.exists() {
+        // Anómalo: el botón de restaurar solo se muestra cuando get_db_backup_info
+        // reportó un respaldo. Llegar aquí sin .bak amerita ERROR (y sirve de disparo
+        // determinista para verificar el puente rust-error).
+        error!("[restore_db_backup] No existe {:?}", bak_path);
+        return Err("No hay respaldo .bak para restaurar".to_string());
+    }
+
+    let db_path = app_data.join("meeting_minutes.sqlite");
+    let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S").to_string();
+
+    if db_path.exists() {
+        let broken_path: PathBuf =
+            app_data.join(format!("meeting_minutes.sqlite.broken-{}", timestamp));
+        std::fs::rename(&db_path, &broken_path)
+            .map_err(|e| format!("No se pudo apartar la base corrupta: {}", e))?;
+    }
+    for suffix in &["-wal", "-shm"] {
+        let aux = app_data.join(format!("meeting_minutes.sqlite{}", suffix));
+        if aux.exists() {
+            let aux_backup =
+                app_data.join(format!("meeting_minutes.sqlite{}.broken-{}", suffix, timestamp));
+            if let Err(e) = std::fs::rename(&aux, &aux_backup) {
+                error!("[restore_db_backup] Failed to rename {:?}: {}", aux, e);
+            }
+        }
+    }
+
+    std::fs::copy(&bak_path, &db_path)
+        .map_err(|e| format!("No se pudo restaurar el respaldo: {}", e))?;
+    let bak_wal = app_data.join("meeting_minutes.sqlite.bak-wal");
+    if bak_wal.exists() {
+        let wal_path = app_data.join("meeting_minutes.sqlite-wal");
+        if let Err(e) = std::fs::copy(&bak_wal, &wal_path) {
+            error!("[restore_db_backup] Failed to place .bak-wal: {}", e);
+        }
+    }
+
+    info!("[restore_db_backup] Respaldo restaurado desde {:?}", bak_path);
+    Ok(db_path.to_string_lossy().to_string())
+}
+
+#[cfg(test)]
+mod restore_tests {
+    use super::restore_db_backup_in_dir;
+
+    /// Header mínimo válido de un archivo SQLite (solo para distinguir del garbage;
+    /// la validez real del respaldo la cubren los tests de `backup_to` en manager.rs).
+    const SQLITE_MAGIC: &[u8] = b"SQLite format 3\0";
+
+    #[test]
+    fn sin_bak_devuelve_err() {
+        let dir = tempfile::tempdir().unwrap();
+        let res = restore_db_backup_in_dir(dir.path());
+        assert!(res.is_err());
+        assert!(res.unwrap_err().contains(".bak"));
+    }
+
+    #[test]
+    fn aparta_corrupta_y_wal_shm_huerfanos_antes_de_restaurar() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = |n: &str| dir.path().join(n);
+        std::fs::write(p("meeting_minutes.sqlite"), b"garbage-main").unwrap();
+        // -wal/-shm huérfanos de la DB corrupta: si sobreviven junto al restaurado,
+        // SQLite replayaría el WAL viejo sobre la copia limpia (re-corrupción).
+        std::fs::write(p("meeting_minutes.sqlite-wal"), b"garbage-wal").unwrap();
+        std::fs::write(p("meeting_minutes.sqlite-shm"), b"garbage-shm").unwrap();
+        std::fs::write(p("meeting_minutes.sqlite.bak"), SQLITE_MAGIC).unwrap();
+
+        restore_db_backup_in_dir(dir.path()).unwrap();
+
+        let restored = std::fs::read(p("meeting_minutes.sqlite")).unwrap();
+        assert_eq!(restored, SQLITE_MAGIC, "el main debe ser el contenido del .bak");
+        assert!(
+            !p("meeting_minutes.sqlite-wal").exists(),
+            "el -wal huérfano debe quedar apartado, no junto al restaurado"
+        );
+        assert!(!p("meeting_minutes.sqlite-shm").exists());
+
+        let broken: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .filter(|n| n.contains(".broken-"))
+            .collect();
+        assert_eq!(broken.len(), 3, "main + -wal + -shm apartados: {:?}", broken);
+    }
+
+    #[test]
+    fn bak_wal_se_coloca_como_wal_del_restaurado() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = |n: &str| dir.path().join(n);
+        std::fs::write(p("meeting_minutes.sqlite"), b"garbage-main").unwrap();
+        std::fs::write(p("meeting_minutes.sqlite.bak"), SQLITE_MAGIC).unwrap();
+        // Fallback de copia de backup_to: el WAL cuyo salt corresponde al .bak.
+        std::fs::write(p("meeting_minutes.sqlite.bak-wal"), b"bak-wal-frames").unwrap();
+
+        restore_db_backup_in_dir(dir.path()).unwrap();
+
+        let wal = std::fs::read(p("meeting_minutes.sqlite-wal")).unwrap();
+        assert_eq!(wal, b"bak-wal-frames");
+    }
+}

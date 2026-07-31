@@ -21,7 +21,7 @@ import { platformLogger } from '@/lib/platformLogger'
 export const MAX_ERROR_REPORTS_PER_SESSION = 20
 export const MIN_REPORT_GAP_MS = 2_000
 
-export type ErrorSource = 'window' | 'unhandledrejection' | 'error-boundary'
+export type ErrorSource = 'window' | 'unhandledrejection' | 'error-boundary' | 'db-init'
 
 export function truncateStr(s: string, max: number): string {
   return s.length > max ? `${s.slice(0, max)}…` : s

@@ -9,7 +9,10 @@
  * broken state when trying to record — at which point engine.rs:240 surfaces
  * "La base de datos no se pudo inicializar" without any way to recover. This
  * component listens for the same failure earlier and offers a one-click reset
- * (backup + rename, app must be restarted manually) plus log export.
+ * (backup + rename, app must be restarted manually), a restore from the `.bak`
+ * left by the rival-uninstall flow (issue #64) when one exists, plus log export.
+ * The failure is also reported to platform_logs (`app.error`, source 'db-init')
+ * so corrupted installs are visible remotely.
  *
  * Mounted OUTSIDE AuthProvider in layout.tsx so it can block before auth runs.
  */
@@ -18,20 +21,30 @@ import { useEffect, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
-import { AlertTriangle, RefreshCw, FileArchive, X, CheckCircle2 } from 'lucide-react'
+import { AlertTriangle, RefreshCw, FileArchive, X, CheckCircle2, ArchiveRestore } from 'lucide-react'
 import { TauriEvent } from '@/lib/tauri-events'
+import { reportCaughtError } from '@/lib/errorTelemetry'
 
 interface DbInitErrorPayload {
   error: string
   sqlitePath: string
 }
 
+interface DbBackupInfo {
+  path: string
+  modified_epoch_s: number
+  size_bytes: number
+}
+
 type ResetState = 'idle' | 'resetting' | 'done' | 'failed'
 
 export function DbInitErrorGate({ children }: { children: React.ReactNode }) {
   const [errorPayload, setErrorPayload] = useState<DbInitErrorPayload | null>(null)
+  const [backupInfo, setBackupInfo] = useState<DbBackupInfo | null>(null)
   const [resetState, setResetState] = useState<ResetState>('idle')
   const [resetMessage, setResetMessage] = useState<string>('')
+  const [restoreState, setRestoreState] = useState<ResetState>('idle')
+  const [restoreMessage, setRestoreMessage] = useState<string>('')
   const [isExporting, setIsExporting] = useState(false)
   const [exportPath, setExportPath] = useState<string | null>(null)
 
@@ -39,6 +52,15 @@ export function DbInitErrorGate({ children }: { children: React.ReactNode }) {
     const unlistenPromise = listen<DbInitErrorPayload>(TauriEvent.DB_INIT_FAILED, (event) => {
       console.error('[DbInitErrorGate] db-init-failed event:', event.payload)
       setErrorPayload(event.payload)
+      // Telemetría: sin esto el incidente es invisible remotamente (issue #64). Sin
+      // sesión Supabase el RPC falla en silencio — aceptable.
+      const err = new Error(event.payload.error)
+      err.name = 'DbInitFailed'
+      reportCaughtError('db-init', err)
+      // ¿Hay respaldo .bak del flujo rival? Habilita el botón "Restaurar respaldo".
+      invoke<DbBackupInfo | null>('get_db_backup_info')
+        .then((info) => setBackupInfo(info))
+        .catch(() => setBackupInfo(null))
     })
     return () => {
       void unlistenPromise.then((fn) => fn())
@@ -68,6 +90,26 @@ export function DbInitErrorGate({ children }: { children: React.ReactNode }) {
     } catch (err) {
       setResetState('failed')
       setResetMessage(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  const handleRestore = async () => {
+    if (!backupInfo) return
+    const backupDate = new Date(backupInfo.modified_epoch_s * 1000).toLocaleString()
+    if (!window.confirm(
+      `Se restaurará el respaldo del ${backupDate}. La base dañada se apartará como copia ` +
+      'de respaldo. Tendrás que cerrar y volver a abrir Maity. ¿Continuar?'
+    )) {
+      return
+    }
+    setRestoreState('resetting')
+    try {
+      await invoke<string>('restore_db_backup')
+      setRestoreState('done')
+      setRestoreMessage('Respaldo restaurado.\n\nCierra y vuelve a abrir Maity.')
+    } catch (err) {
+      setRestoreState('failed')
+      setRestoreMessage(err instanceof Error ? err.message : String(err))
     }
   }
 
@@ -137,6 +179,22 @@ export function DbInitErrorGate({ children }: { children: React.ReactNode }) {
           </div>
         )}
 
+        {restoreState === 'done' && (
+          <div className="mb-5 p-3 bg-green-500/10 border border-green-500/20 rounded-lg flex items-start gap-2">
+            <CheckCircle2 className="w-4 h-4 text-green-400 shrink-0 mt-0.5" />
+            <pre className="text-xs text-zinc-300 whitespace-pre-wrap break-words flex-1">
+              {restoreMessage}
+            </pre>
+          </div>
+        )}
+
+        {restoreState === 'failed' && (
+          <div className="mb-5 p-3 bg-red-500/10 border border-red-500/20 rounded-lg">
+            <p className="text-xs text-red-300 mb-1 font-medium">No se pudo restaurar:</p>
+            <pre className="text-xs text-zinc-300 whitespace-pre-wrap break-words">{restoreMessage}</pre>
+          </div>
+        )}
+
         {exportPath && (
           <div className="mb-5 p-3 bg-blue-500/10 border border-blue-500/20 rounded-lg flex items-start gap-2">
             <FileArchive className="w-4 h-4 text-blue-400 shrink-0 mt-0.5" />
@@ -147,9 +205,34 @@ export function DbInitErrorGate({ children }: { children: React.ReactNode }) {
         )}
 
         <div className="flex flex-col gap-2">
+          {backupInfo && (
+            <button
+              onClick={handleRestore}
+              disabled={
+                restoreState === 'resetting' ||
+                restoreState === 'done' ||
+                resetState !== 'idle'
+              }
+              className="w-full px-4 py-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:bg-zinc-700 disabled:cursor-not-allowed text-white text-sm font-medium transition-colors flex items-center justify-center gap-2"
+            >
+              <ArchiveRestore
+                className={`w-4 h-4 ${restoreState === 'resetting' ? 'animate-pulse' : ''}`}
+              />
+              {restoreState === 'resetting'
+                ? 'Restaurando...'
+                : restoreState === 'done'
+                  ? 'Respaldo restaurado'
+                  : `Restaurar respaldo del ${new Date(backupInfo.modified_epoch_s * 1000).toLocaleDateString()}`}
+            </button>
+          )}
+
           <button
             onClick={handleReset}
-            disabled={resetState === 'resetting' || resetState === 'done'}
+            disabled={
+              resetState === 'resetting' ||
+              resetState === 'done' ||
+              restoreState !== 'idle'
+            }
             className="w-full px-4 py-2.5 rounded-lg bg-red-600 hover:bg-red-500 disabled:bg-zinc-700 disabled:cursor-not-allowed text-white text-sm font-medium transition-colors flex items-center justify-center gap-2"
           >
             <RefreshCw className={`w-4 h-4 ${resetState === 'resetting' ? 'animate-spin' : ''}`} />

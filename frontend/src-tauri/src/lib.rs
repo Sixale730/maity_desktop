@@ -1334,6 +1334,9 @@ pub fn run() {
             database::commands::set_current_user,
             database::commands::clear_current_user,
             database::commands::reset_database,
+            // Respaldo .bak del flujo rival (issue #64): consulta + restauracion desde el gate
+            database::commands::get_db_backup_info,
+            database::commands::restore_db_backup,
             // Database and Models path commands
             database::commands::log_recording_event,
             database::commands::get_recording_logs,
