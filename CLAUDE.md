@@ -398,7 +398,9 @@ Stack de providers (de exterior a interior):
 9. `ParakeetAutoDownloadProvider` — Auto-descarga Parakeet
 + `RecordingStateProvider`, `AnalyticsProvider`, `UpdateCheckProvider`
 
-**Componentes globales en layout**: `SplashScreen`, `AuthGate`, `ChunkErrorRecovery`, `ErrorBoundary`, `MeetingDetectionDialog`, `OfflineIndicator`, `CloudSyncInitializer`, `AnalysisPollingInitializer`
+**Componentes globales en layout**: `SplashScreen`, `AuthGate`, `ChunkErrorRecovery`, `ErrorBoundary`, `ErrorTelemetryInitializer`, `MeetingDetectionDialog`, `OfflineIndicator`, `CloudSyncInitializer`, `HealthHeartbeatInitializer`, `GlobalConversationNotifier`, `DbInitErrorGate`
+
+> **Ventanas auxiliares** (`/coach-float`, `/recording-widget`, `/device-picker`): `RootLayout` hace early-return ANTES de montar todos esos componentes. La lista canónica de rutas vive en `lib/auxWindows.ts` (`isAuxWindowPath`) — no duplicarla inline. `CloudSyncInitializer`, `GlobalConversationNotifier` y `HealthHeartbeatInitializer` llevan además su propio gate `isAux` como defensa en profundidad (patrón: el efecto depende del booleano `isAux`, NO de `pathname`, para no reiniciarse en cada navegación).
 
 ### Hooks (23 en `hooks/`)
 

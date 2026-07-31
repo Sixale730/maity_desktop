@@ -50,6 +50,7 @@ import { logger } from '@/lib/logger'
 import { fileLogger } from '@/lib/fileLogger'
 import { platformLogger } from '@/lib/platformLogger'
 import { TauriEvent } from '@/lib/tauri-events'
+import { isAuxWindowPath } from '@/lib/auxWindows'
 import { usePageViewTracker } from '@/hooks/usePageViewTracker'
 import { useMicrophoneFallbackToast } from '@/hooks/useMicrophoneFallbackToast'
 import { useCoachMetricsTelemetry } from '@/hooks/useCoachMetricsTelemetry'
@@ -294,8 +295,7 @@ function AppContent({ children }: { children: React.ReactNode }) {
   const { registrationFormCompleted, isLoading: registrationLoading } = useRegistrationGate()
 
   const isRegistrationRoute = pathname === '/registration' || pathname?.startsWith('/billing/plans')
-  const isSpecialRoute =
-    pathname === '/coach-float' || pathname === '/recording-widget' || pathname === '/device-picker'
+  const isSpecialRoute = isAuxWindowPath(pathname)
 
   // Inicializa el motor Parakeet y decide si hay que bloquear esperando el modelo.
   // `modelGateActive`: null = comprobando (splash), true = falta el modelo (gate),
@@ -671,16 +671,13 @@ export default function RootLayout({
 }) {
   const pathname = usePathname()
 
-  // Coach float + recording widget: ventanas Tauri secundarias always-on-top.
-  // Bypass total de auth/sidebar/providers — son mini-ventanas independientes.
+  // Ventanas Tauri secundarias (coach float, recording widget, device picker):
+  // Bypass total de auth/sidebar/providers/initializers — son mini-ventanas
+  // independientes. Lista canónica en lib/auxWindows.ts.
   // Background transparente en html+body para que el blur de la ventana Tauri
   // (transparent: true) llegue al SO. El body global tiene `bg-background`
   // (negro solido en dark mode) que tapaba el glass effect — override aqui.
-  if (
-    pathname === '/coach-float' ||
-    pathname === '/recording-widget' ||
-    pathname === '/device-picker'
-  ) {
+  if (isAuxWindowPath(pathname)) {
     return (
       <html lang="es" className="dark" style={{ background: 'transparent' }}>
         <body

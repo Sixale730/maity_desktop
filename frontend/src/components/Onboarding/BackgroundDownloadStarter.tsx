@@ -3,6 +3,7 @@
 import { useEffect, useRef } from 'react';
 import { usePathname } from 'next/navigation';
 import { useOnboarding } from '@/contexts/OnboardingContext';
+import { isAuxWindowPath } from '@/lib/auxWindows';
 
 /**
  * Arranca las descargas de modelos en background cuando el onboarding YA está
@@ -31,11 +32,7 @@ export function BackgroundDownloadStarter() {
   useEffect(() => {
     if (startedRef.current) return;
     // No arrancar en ventanas auxiliares (coach flotante, widget de grabación, picker)
-    if (
-      pathname === '/coach-float' ||
-      pathname === '/recording-widget' ||
-      pathname === '/device-picker'
-    ) {
+    if (isAuxWindowPath(pathname)) {
       return;
     }
     // Solo cuando el onboarding ya está completo (cuenta existente o recién terminada)

@@ -1,11 +1,12 @@
 'use client';
 
 import { useEffect, useRef } from 'react';
-import { useRouter } from 'next/navigation';
+import { useRouter, usePathname } from 'next/navigation';
 import { useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { useAuth } from '@/contexts/AuthContext';
 import { supabase } from '@/lib/supabase';
+import { isAuxWindowPath } from '@/lib/auxWindows';
 import { logger } from '@/lib/logger';
 import { logPoll } from '@/lib/diagnostics';
 import type { OmiConversation } from '@/features/conversations/services/conversations.service';
@@ -70,6 +71,11 @@ export function GlobalConversationNotifier() {
   const { maityUser } = useAuth();
   const queryClient = useQueryClient();
   const router = useRouter();
+  // Gate de ventana auxiliar (defensa en profundidad, patrón HealthHeartbeatInitializer):
+  // hoy las rutas aux no montan esta rama del layout, pero si eso cambiara habría
+  // N websockets Realtime + notificaciones nativas duplicadas por ventana.
+  const pathname = usePathname();
+  const isAux = isAuxWindowPath(pathname);
 
   // Realtime payload.old can arrive empty under RLS, so we keep our own shadow
   // map of the previous status per conversation id to detect real transitions
@@ -78,6 +84,7 @@ export function GlobalConversationNotifier() {
   const prevStatusRef = useRef<Map<string, string | null>>(new Map());
 
   useEffect(() => {
+    if (isAux) return;
     const userId = maityUser?.id;
     if (!userId) {
       prevStatusRef.current.clear();
@@ -286,7 +293,7 @@ export function GlobalConversationNotifier() {
       }
       prevStatusRef.current.clear();
     };
-  }, [maityUser?.id, queryClient, router]);
+  }, [isAux, maityUser?.id, queryClient, router]);
 
   return null;
 }

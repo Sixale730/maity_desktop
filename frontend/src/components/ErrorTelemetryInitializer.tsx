@@ -9,9 +9,13 @@ import { initErrorTelemetry } from '@/lib/errorTelemetry';
  *
  * Va FUERA de ErrorBoundary y AuthGate (invariante validada en layout.test.ts):
  * debe capturar errores pre-auth y seguir vivo si el boundary desmonta el
- * árbol — por eso el init es idempotente y sin teardown. Sin gate de pathname:
- * cada ventana auxiliar reporta SUS propios errores (el `pathname` del payload
- * las distingue; el cap de 20 es por ventana).
+ * árbol — por eso el init es idempotente y sin teardown.
+ *
+ * Ventanas auxiliares: NUNCA montan este componente — RootLayout hace early
+ * return para las rutas de `lib/auxWindows.ts` antes de llegar a esta rama, así
+ * que hoy solo la ventana principal reporta. Si eso cambiara, ojo con el puente
+ * rust-error: su `emit()` es broadcast a todas las webviews y cada listener
+ * duplicaría el reporte (la barrera real es el dedup del lado Rust).
  */
 export function ErrorTelemetryInitializer() {
   useEffect(() => {
