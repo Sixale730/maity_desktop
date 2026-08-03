@@ -42,7 +42,34 @@ pub fn normalize(name: &str) -> String {
     while out.ends_with(' ') {
         out.pop();
     }
-    strip_replug_suffix(&out)
+    strip_replug_suffix(&strip_bt_index(&out))
+}
+
+/// Remove the Windows Bluetooth enumeration index that appears *inside* the
+/// parenthesized part of the name: `"microfono (2- auriculares bt)"` →
+/// `"microfono (auriculares bt)"`. Windows bumps that index on every BT
+/// re-pair, so the same headset compares unequal across sessions otherwise.
+/// Only the parenthesized form is handled; a bare leading `"2- ..."` (no
+/// parens) is left untouched — it is indistinguishable from a real name.
+fn strip_bt_index(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.char_indices().peekable();
+    while let Some((i, c)) = chars.next() {
+        out.push(c);
+        if c == '(' {
+            let rest = &s[i + 1..];
+            let digits = rest.chars().take_while(|c| c.is_ascii_digit()).count();
+            // digits, '-' and ' ' are single-byte, so char counts == byte offsets
+            if digits > 0 && rest[digits..].starts_with('-') {
+                let mut skip = digits + 1;
+                skip += rest[skip..].chars().take_while(|c| *c == ' ').count();
+                for _ in 0..skip {
+                    chars.next();
+                }
+            }
+        }
+    }
+    out
 }
 
 /// Map a single char to its ASCII/fold equivalent. Hand-rolled (no new deps)
@@ -182,6 +209,28 @@ mod tests {
     fn rejects_unrelated_devices() {
         assert!(!is_same_device("Logi USB Headset", "Realtek Audio"));
         assert!(!is_same_device("Microphone Array", "Speakers"));
+    }
+
+    #[test]
+    fn handles_windows_bt_index() {
+        // Windows bumps the BT index on re-pair: "(2- ...)" → "(3- ...)"
+        assert!(is_same_device(
+            "Micrófono (2- Auriculares BT)",
+            "Micrófono (3- Auriculares BT)",
+        ));
+        // And against the index-less form some drivers report
+        assert!(is_same_device(
+            "Micrófono (Auriculares BT)",
+            "Micrófono (2- Auriculares BT)",
+        ));
+    }
+
+    #[test]
+    fn bt_index_strip_is_scoped() {
+        // Bare leading index (no parens) is NOT stripped — different names stay different
+        assert_eq!(normalize("2- Auriculares BT"), "2- auriculares bt");
+        // Model numbers with a dash but non-digit prefix are untouched
+        assert_eq!(normalize("Headset (WH-1000XM4)"), "headset (wh-1000xm4)");
     }
 
     #[test]
