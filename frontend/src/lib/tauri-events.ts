@@ -42,6 +42,7 @@ export const TauriEvent = {
   SPEECH_DETECTED: 'speech-detected',
   MICROPHONE_FALLBACK: 'microphone-fallback',
   MIC_LOOPBACK_WARNING: 'mic-loopback-warning',
+  MIC_SILENCE_WARNING: 'mic-silence-warning',
   DEVICE_PICKER_SELECTED: 'device-picker-selected',
   SYSTEM_AUDIO_STARTED: 'system-audio-started',
   SYSTEM_AUDIO_STOPPED: 'system-audio-stopped',

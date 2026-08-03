@@ -28,6 +28,26 @@ use super::transcription::{
 
 use super::recording_lifecycle::{RECORDING_MANAGER, TRANSCRIPTION_TASK, TRANSCRIPT_LISTENER_ID};
 
+// ── Watchdog de silencio de micrófono ───────────────────────────────────────
+// Detecta un WAV mudo ANTES de que la reunión termine: WASAPI no reporta error
+// cuando el perfil BT cambia (A2DP↔HFP) o el mic se mutea por hardware — el
+// stream sigue "vivo" entregando ceros, o directamente deja de entregar chunks.
+
+/// RMS por debajo del cual el mic se considera silencio digital absoluto
+/// (-100 dBFS). El noise floor de un mic físico vivo (dither/ruido térmico)
+/// nunca baja de ~1e-4; solo buffers de ceros exactos quedan debajo, así que
+/// las pausas de conversación jamás disparan esto.
+const MIC_SILENCE_RMS_THRESHOLD: f32 = 1e-5;
+/// Segundos de RMS≈0 sostenido antes de alertar (modo "silent"). 15 s para no
+/// molestar a quien mutea el mic deliberadamente unos segundos.
+const MIC_SILENCE_ALERT_SECS: u32 = 15;
+/// Segundos sin recibir NINGÚN chunk antes de alertar (modo "stalled"). No hay
+/// causa legítima de 10 s sin chunks en grabación activa; absorbe con margen
+/// la apertura del stream (~1-2 s) y el hot-swap de dispositivo (~2 s).
+const MIC_STALL_ALERT_SECS: u32 = 10;
+/// Debe coincidir con el interval de la task de niveles (100 ms).
+const WATCHDOG_TICK_MS: u64 = 100;
+
 /// Result of device resolution for recording
 pub struct ResolvedDevices {
     pub microphone: Option<Arc<super::devices::AudioDevice>>,
@@ -460,7 +480,14 @@ pub async fn initialize_recording<R: Runtime>(
         let app_for_levels = app.clone();
         let state_for_levels = recording_state.clone();
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(100));
+            let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(WATCHDOG_TICK_MS));
+            // Estado del watchdog de silencio — vive en el stack de la task,
+            // muere con ella al terminar la grabación.
+            let mut last_seq: u64 = state_for_levels.mic_chunk_seq();
+            let mut silent_ticks: u32 = 0; // ticks consecutivos con chunks pero RMS≈0
+            let mut stalled_ticks: u32 = 0; // ticks consecutivos sin chunks nuevos
+            let mut alerted = false; // latch: una alerta por episodio
+            let ticks_per_sec = (1000 / WATCHDOG_TICK_MS) as u32;
             loop {
                 interval.tick().await;
                 if !state_for_levels.is_recording() {
@@ -479,6 +506,59 @@ pub async fn initialize_recording<R: Runtime>(
                 // match_any_or_filter), así que emit_to no ahorra ningún wakeup
                 // y en cambio serializa el payload una vez por label.
                 let _ = app_for_levels.emit(events::RECORDING_AUDIO_LEVELS, payload);
+
+                // ── Watchdog de silencio de micrófono ────────────────────────
+                if state_for_levels.is_paused() {
+                    // En pausa el silencio/stall es esperado: reset total.
+                    silent_ticks = 0;
+                    stalled_ticks = 0;
+                    last_seq = state_for_levels.mic_chunk_seq();
+                    continue;
+                }
+                let seq = state_for_levels.mic_chunk_seq();
+                if seq == last_seq {
+                    // Ningún chunk nuevo — mic_rms está STALE, no interpretarlo.
+                    stalled_ticks += 1;
+                    silent_ticks = 0;
+                } else {
+                    last_seq = seq;
+                    stalled_ticks = 0;
+                    if mic_rms < MIC_SILENCE_RMS_THRESHOLD {
+                        silent_ticks += 1;
+                    } else {
+                        silent_ticks = 0;
+                        if alerted {
+                            // Volvió audio audible → rearmar el latch.
+                            alerted = false;
+                            info!("🎙️ Mic audio recovered — silence watchdog re-armed");
+                        }
+                    }
+                }
+                let (fired, mode, secs) = if stalled_ticks >= MIC_STALL_ALERT_SECS * ticks_per_sec {
+                    (true, "stalled", stalled_ticks / ticks_per_sec)
+                } else if silent_ticks >= MIC_SILENCE_ALERT_SECS * ticks_per_sec {
+                    (true, "silent", silent_ticks / ticks_per_sec)
+                } else {
+                    (false, "", 0)
+                };
+                if fired && !alerted {
+                    alerted = true;
+                    let device = state_for_levels
+                        .get_microphone_device()
+                        .map(|d| d.name.clone());
+                    warn!(
+                        "🔇 Mic silence watchdog fired: mode={}, {}s sin audio, device={:?}",
+                        mode, secs, device
+                    );
+                    let _ = app_for_levels.emit(
+                        events::MIC_SILENCE_WARNING,
+                        serde_json::json!({
+                            "device": device,
+                            "silenceSecs": secs,
+                            "mode": mode,
+                        }),
+                    );
+                }
             }
         });
     }

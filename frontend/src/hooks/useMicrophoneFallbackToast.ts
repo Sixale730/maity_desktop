@@ -13,6 +13,12 @@ interface MicLoopbackPayload {
   device?: string
 }
 
+interface MicSilencePayload {
+  device?: string | null
+  silenceSecs?: number
+  mode?: 'silent' | 'stalled' | string
+}
+
 function describeReason(reason?: string): string {
   switch (reason) {
     case 'not_found':
@@ -37,6 +43,7 @@ export function useMicrophoneFallbackToast(): void {
   useEffect(() => {
     let unlisten: UnlistenFn | undefined
     let unlistenLoopback: UnlistenFn | undefined
+    let unlistenSilence: UnlistenFn | undefined
 
     const subscribe = async () => {
       unlisten = await listen<MicrophoneFallbackPayload>(
@@ -63,6 +70,26 @@ export function useMicrophoneFallbackToast(): void {
           })
         },
       )
+
+      // Watchdog de silencio (Rust, recording_helpers): el mic lleva N s sin
+      // audio durante grabación activa — o el stream se atascó ("stalled") o
+      // entrega ceros exactos ("silent", típico mute por hardware o cambio de
+      // perfil Bluetooth A2DP↔HFP). Una alerta por episodio (latch en Rust).
+      unlistenSilence = await listen<MicSilencePayload>(
+        TauriEvent.MIC_SILENCE_WARNING,
+        (event) => {
+          const device = event.payload?.device ?? 'el micrófono'
+          const secs = event.payload?.silenceSecs ?? 0
+          const description =
+            event.payload?.mode === 'stalled'
+              ? `"${device}" dejó de entregar audio hace ${secs} s. Desconéctalo y vuelve a conectarlo, o elige otro micrófono en el widget.`
+              : `"${device}" lleva ${secs} s en silencio absoluto. Revisa que no esté silenciado (botón de mute) o que tus audífonos Bluetooth no hayan cambiado de perfil.`
+          toast.warning('No se detecta audio del micrófono', {
+            description,
+            duration: 12000,
+          })
+        },
+      )
     }
 
     subscribe()
@@ -70,6 +97,7 @@ export function useMicrophoneFallbackToast(): void {
     return () => {
       unlisten?.()
       unlistenLoopback?.()
+      unlistenSilence?.()
     }
   }, [])
 }

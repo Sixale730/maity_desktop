@@ -42,6 +42,10 @@ pub const AUDIO_LEVELS: &str = "audio-levels";
 pub const SPEECH_DETECTED: &str = "speech-detected";
 pub const MICROPHONE_FALLBACK: &str = "microphone-fallback";
 pub const MIC_LOOPBACK_WARNING: &str = "mic-loopback-warning";
+/// Watchdog: el mic lleva N s sin audio durante grabación activa. Payload:
+/// `{ device: string|null, silenceSecs: number, mode: "silent"|"stalled" }`.
+/// Latch: una alerta por episodio; se rearma cuando vuelve audio audible.
+pub const MIC_SILENCE_WARNING: &str = "mic-silence-warning";
 pub const DEVICE_PICKER_SELECTED: &str = "device-picker-selected";
 pub const SYSTEM_AUDIO_STARTED: &str = "system-audio-started";
 pub const SYSTEM_AUDIO_STOPPED: &str = "system-audio-stopped";
