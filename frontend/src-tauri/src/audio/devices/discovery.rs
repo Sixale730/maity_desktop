@@ -27,12 +27,20 @@ pub async fn list_audio_devices() -> Result<Vec<AudioDevice>> {
         }
     };
 
-    // Add any additional devices from the default host
+    // Add any additional devices from the default host. `host.devices()`
+    // enumerates inputs AND outputs, so classify by real capability instead
+    // of assuming Output — a mislabeled input disappears from every mic list
+    // in the UI and skews the permission check.
     if let Ok(other_devices) = host.devices() {
         for device in other_devices {
             if let Ok(name) = device.name() {
                 if !devices.iter().any(|d| d.name == name) {
-                    devices.push(AudioDevice::new(name, DeviceType::Output));
+                    let device_type = if device.default_input_config().is_ok() {
+                        DeviceType::Input
+                    } else {
+                        DeviceType::Output
+                    };
+                    devices.push(AudioDevice::new(name, device_type));
                 }
             }
         }
