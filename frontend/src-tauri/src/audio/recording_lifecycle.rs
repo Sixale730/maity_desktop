@@ -95,7 +95,19 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
     // Resolve devices from preferences
     let microphone_device =
         recording_helpers::resolve_microphone_from_preference(&app, preferred_mic_name).await?;
-    let system_device = recording_helpers::resolve_system_audio_from_preference(preferred_system_name);
+    let system_device =
+        recording_helpers::resolve_system_audio_from_preference(&app, preferred_system_name).await;
+
+    // Nombres RESUELTOS (post-fallbacks y preflight de endpoint) para el evento:
+    // el frontend debe ver de dónde se graba de verdad, no un eco del input.
+    let mic_label = microphone_device
+        .as_ref()
+        .map(|d| d.name.clone())
+        .unwrap_or_else(|| "Default Microphone".to_string());
+    let sys_label = system_device
+        .as_ref()
+        .map(|d| d.name.clone())
+        .unwrap_or_else(|| "Default System Audio".to_string());
 
     // Initialize recording with resolved devices (comitea el gate al activar la sesión)
     recording_helpers::initialize_recording(&app, microphone_device, system_device, meeting_name, auto_save, start_gate).await?;
@@ -103,7 +115,7 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
     // Emit success event
     app.emit(events::RECORDING_STARTED, serde_json::json!({
         "message": "Recording started successfully with parallel processing",
-        "devices": ["Default Microphone", "Default System Audio"],
+        "devices": [mic_label, sys_label],
         "workers": 3
     })).map_err(|e| e.to_string())?;
 
@@ -165,16 +177,26 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
         }
     };
 
+    // Nombres RESUELTOS (post-fallbacks y preflight de endpoint) para el evento:
+    // el frontend debe ver de dónde se graba de verdad, no un eco del input.
+    let mic_label = devices
+        .microphone
+        .as_ref()
+        .map(|d| d.name.clone())
+        .unwrap_or_else(|| "Default Microphone".to_string());
+    let sys_label = devices
+        .system_audio
+        .as_ref()
+        .map(|d| d.name.clone())
+        .unwrap_or_else(|| "Default System Audio".to_string());
+
     // Initialize recording with explicit devices (comitea el gate al activar la sesión)
     recording_helpers::initialize_recording(&app, devices.microphone, devices.system_audio, meeting_name, auto_save, start_gate).await?;
 
     // Emit success event
     app.emit(events::RECORDING_STARTED, serde_json::json!({
         "message": "Recording started with custom devices and parallel processing",
-        "devices": [
-            mic_device_name.unwrap_or_else(|| "Default Microphone".to_string()),
-            system_device_name.unwrap_or_else(|| "Default System Audio".to_string())
-        ],
+        "devices": [mic_label, sys_label],
         "workers": 3
     })).map_err(|e| e.to_string())?;
 

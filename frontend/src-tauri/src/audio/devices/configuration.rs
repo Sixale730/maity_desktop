@@ -58,9 +58,49 @@ pub struct AudioDevice {
     pub device_type: DeviceType,
 }
 
+/// Quita `suffix` del final de `s` ignorando mayúsculas ASCII, devolviendo la
+/// base sin espacios finales. None si `s` no termina en ese sufijo.
+fn strip_ci_suffix<'a>(s: &'a str, suffix: &str) -> Option<&'a str> {
+    let start = s.len().checked_sub(suffix.len())?;
+    let tail = s.get(start..)?;
+    if tail.eq_ignore_ascii_case(suffix) {
+        Some(s[..start].trim_end())
+    } else {
+        None
+    }
+}
+
 impl AudioDevice {
     pub fn new(name: String, device_type: DeviceType) -> Self {
         AudioDevice { name, device_type }
+    }
+
+    /// Parsea un nombre de dispositivo que puede venir en el formato canónico
+    /// CRUDO (tal como lo enumera el OS, sin sufijo) o en el formato legacy con
+    /// sufijo `" (input)"` / `" (output)"` que guardaban las preferencias viejas.
+    /// Sin sufijo, el tipo lo aporta el contexto del caller (`default_type`):
+    /// el path de micrófono sabe que es Input y el de system audio que es Output,
+    /// así que el sufijo nunca fue información necesaria — solo una fuente de
+    /// fallbacks silenciosos cuando la UI mandaba el nombre crudo.
+    pub fn from_name_with_default_type(name: &str, default_type: DeviceType) -> Result<Self> {
+        let trimmed = name.trim();
+        if trimmed.is_empty() {
+            return Err(anyhow!("Device name cannot be empty"));
+        }
+
+        let (base, device_type) = if let Some(base) = strip_ci_suffix(trimmed, "(input)") {
+            (base, DeviceType::Input)
+        } else if let Some(base) = strip_ci_suffix(trimmed, "(output)") {
+            (base, DeviceType::Output)
+        } else {
+            (trimmed, default_type)
+        };
+
+        if base.is_empty() {
+            return Err(anyhow!("Device name cannot be empty"));
+        }
+
+        Ok(AudioDevice::new(base.to_string(), device_type))
     }
 
     pub fn from_name(name: &str) -> Result<Self> {

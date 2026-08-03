@@ -11,6 +11,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { useAuth } from '@/contexts/AuthContext';
 import { getUserRoleFromEmail, isAdmin as checkIsAdmin } from '@/lib/roles';
 import { logger } from '@/lib/logger';
+import { stripDeviceTypeSuffix } from '@/lib/deviceName';
 import { TauriEvent } from '@/lib/tauri-events';
 
 export type { OllamaModel, StorageLocations, NotificationSettings };
@@ -328,9 +329,11 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
       try {
         const prefs = await configService.getRecordingPreferences();
         if (prefs && (prefs.preferred_mic_device || prefs.preferred_system_device)) {
+          // Normaliza preferencias legacy "Nombre (input)"/"(output)" al formato
+          // canónico crudo — el mismo que usan switch_audio_device y el resto.
           setSelectedDevices({
-            micDevice: prefs.preferred_mic_device,
-            systemDevice: prefs.preferred_system_device
+            micDevice: stripDeviceTypeSuffix(prefs.preferred_mic_device),
+            systemDevice: stripDeviceTypeSuffix(prefs.preferred_system_device)
           });
           logger.debug('Loaded device preferences:', prefs);
         }

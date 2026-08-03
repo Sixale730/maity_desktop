@@ -9,13 +9,16 @@ use tauri::{AppHandle, Emitter, Runtime};
 
 use crate::events;
 
+use cpal::traits::DeviceTrait;
+
 use super::{
-    parse_audio_device,
     default_input_device,
     default_output_device,
     RecordingManager,
 };
-use super::devices::{device_name_matcher, list_audio_devices, AudioDevice, DeviceType};
+use super::devices::{
+    device_name_matcher, get_device_and_config, list_audio_devices, AudioDevice, DeviceType,
+};
 
 use super::transcription::{
     self,
@@ -36,12 +39,13 @@ pub struct ResolvedDevices {
 /// frontend can show a tailored toast.
 #[derive(Debug, Clone, Copy)]
 pub enum DeviceFallbackReason {
-    /// `parse_audio_device` accepted the string but the device is no longer
-    /// in the live OS enumeration (USB unplugged between sessions, locale
-    /// rename, driver change with no fuzzy match).
+    /// The parsed device is no longer in the live OS enumeration (USB
+    /// unplugged between sessions, locale rename, driver change with no
+    /// fuzzy match) — or the platform layer silently opened a different
+    /// endpoint than the one requested.
     NotFound,
-    /// `parse_audio_device` rejected the format (legacy preferences, manual
-    /// edit). Rare in practice but worth distinguishing in the UI.
+    /// `from_name_with_default_type` rejected the string (empty name after
+    /// stripping). Rare in practice but worth distinguishing in the UI.
     InvalidFormat,
 }
 
@@ -163,13 +167,66 @@ fn fallback_to_default_mic<R: Runtime>(
     }
 }
 
+/// Preflight: resuelve el mismo endpoint que abrirá el stream real
+/// (`get_device_and_config`) y devuelve el dispositivo con el nombre del
+/// endpoint efectivamente abierto. En Windows la capa WASAPI
+/// (`get_windows_device`) puede caer en silencio al default devolviendo `Ok`;
+/// sin este preflight, el saver, el device monitor y el evento
+/// `recording-started` reportan el nombre PEDIDO aunque se grabe de otro lado.
+/// Adoptar el nombre enumerado también hace que los matchers exactos (`==`) de
+/// `switch_audio_device` y `device_monitor` funcionen. Si el endpoint es
+/// genuinamente otro dispositivo (no una mera variante del nombre), emite
+/// `microphone-fallback` para que el usuario vea el toast.
+async fn resolve_actual_endpoint<R: Runtime>(
+    app: &AppHandle<R>,
+    device: Arc<AudioDevice>,
+    notify_fallback: bool,
+) -> Arc<AudioDevice> {
+    match get_device_and_config(&device).await {
+        Ok((cpal_device, _config)) => match cpal_device.name() {
+            Ok(actual_name) if actual_name != device.name => {
+                if device_name_matcher::is_same_device(&actual_name, &device.name) {
+                    info!(
+                        "Nombre de endpoint normalizado: '{}' → '{}'",
+                        device.name, actual_name
+                    );
+                } else {
+                    warn!(
+                        "⚠️ El endpoint abierto ('{}') NO es el pedido ('{}') — fallback silencioso de la capa de plataforma",
+                        actual_name, device.name
+                    );
+                    if notify_fallback {
+                        emit_microphone_fallback(
+                            app,
+                            &device.name,
+                            &actual_name,
+                            DeviceFallbackReason::NotFound,
+                        );
+                    }
+                }
+                Arc::new(AudioDevice::new(actual_name, device.device_type.clone()))
+            }
+            _ => device,
+        },
+        Err(e) => {
+            warn!(
+                "No se pudo verificar el endpoint para '{}': {} — se continúa con el nombre pedido",
+                device.name, e
+            );
+            device
+        }
+    }
+}
+
 /// Resolve microphone device from preference name or fallback to default.
 ///
-/// Two-stage validation when a preference is set:
-///   1. `parse_audio_device` confirms the saved string has the expected
-///      `(input)` / `(output)` suffix.
+/// Validation stages when a preference is set:
+///   1. `from_name_with_default_type` parses the saved string — canonical raw
+///      name or legacy `(input)` / `(output)` suffixed format.
 ///   2. `input_device_exists` confirms the device is actually present in
 ///      the live enumeration (handles unplug, locale flip, driver rename).
+///   3. `resolve_actual_endpoint` opens the endpoint the stream will use and
+///      adopts its real name (catches the silent WASAPI default fallback).
 ///
 /// On any failure we fall back to the system default mic and emit
 /// `microphone-fallback` so the UI can show a clear toast instead of the
@@ -181,10 +238,10 @@ pub async fn resolve_microphone_from_preference<R: Runtime>(
     match preferred_name {
         Some(pref_name) => {
             info!("🎤 Attempting to use preferred microphone: '{}'", pref_name);
-            match parse_audio_device(&pref_name) {
+            match AudioDevice::from_name_with_default_type(&pref_name, DeviceType::Input) {
                 Ok(device) if input_device_exists(&device.name).await => {
                     info!("✅ Using preferred microphone: '{}'", device.name);
-                    Ok(Some(Arc::new(device)))
+                    Ok(Some(resolve_actual_endpoint(app, Arc::new(device), true).await))
                 }
                 Ok(device) => {
                     warn!(
@@ -217,14 +274,17 @@ pub async fn resolve_microphone_from_preference<R: Runtime>(
 
 /// Resolve system audio device from preference name or fallback to default
 /// System audio is optional - returns None if unavailable
-pub fn resolve_system_audio_from_preference(preferred_name: Option<String>) -> Option<Arc<super::devices::AudioDevice>> {
+pub async fn resolve_system_audio_from_preference<R: Runtime>(
+    app: &AppHandle<R>,
+    preferred_name: Option<String>,
+) -> Option<Arc<super::devices::AudioDevice>> {
     match preferred_name {
         Some(pref_name) => {
             info!("🔊 Attempting to use preferred system audio: '{}'", pref_name);
-            match parse_audio_device(&pref_name) {
+            match AudioDevice::from_name_with_default_type(&pref_name, DeviceType::Output) {
                 Ok(device) => {
                     info!("✅ Using preferred system audio: '{}'", device.name);
-                    Some(Arc::new(device))
+                    Some(resolve_actual_endpoint(app, Arc::new(device), false).await)
                 }
                 Err(e) => {
                     warn!("⚠️ Preferred system audio '{}' not available: {}", pref_name, e);
@@ -260,19 +320,24 @@ pub fn resolve_system_audio_from_preference(preferred_name: Option<String>) -> O
     }
 }
 
-/// Parse explicit device names into device handles. The microphone goes
-/// through `input_device_exists` so a stale name (USB unplugged, locale
-/// rename) falls back to the system default and emits `microphone-fallback`.
-/// System audio stays as a plain parse — it's optional, the recording
-/// continues without it and a toast there would be noise.
+/// Parse explicit device names into device handles. Accepts the canonical raw
+/// name or the legacy suffixed format. The microphone goes through
+/// `input_device_exists` so a stale name (USB unplugged, locale rename) falls
+/// back to the system default and emits `microphone-fallback`. System audio is
+/// optional: an unparseable name degrades to the default output (mirroring
+/// `resolve_system_audio_from_preference`) instead of aborting the start.
+/// Both resolved devices go through `resolve_actual_endpoint` so downstream
+/// reporting carries the endpoint that will actually open.
 pub async fn parse_explicit_devices<R: Runtime>(
     app: &AppHandle<R>,
     mic_device_name: &Option<String>,
     system_device_name: &Option<String>,
 ) -> Result<ResolvedDevices, String> {
     let microphone = if let Some(ref name) = mic_device_name {
-        match parse_audio_device(name) {
-            Ok(device) if input_device_exists(&device.name).await => Some(Arc::new(device)),
+        match AudioDevice::from_name_with_default_type(name, DeviceType::Input) {
+            Ok(device) if input_device_exists(&device.name).await => {
+                Some(resolve_actual_endpoint(app, Arc::new(device), true).await)
+            }
             Ok(_) => fallback_to_default_mic(app, name, DeviceFallbackReason::NotFound)?,
             Err(_) => fallback_to_default_mic(app, name, DeviceFallbackReason::InvalidFormat)?,
         }
@@ -281,9 +346,28 @@ pub async fn parse_explicit_devices<R: Runtime>(
     };
 
     let system_audio = if let Some(ref name) = system_device_name {
-        Some(Arc::new(parse_audio_device(name).map_err(|e| {
-            format!("Invalid system device '{}': {}", name, e)
-        })?))
+        match AudioDevice::from_name_with_default_type(name, DeviceType::Output) {
+            Ok(device) => Some(resolve_actual_endpoint(app, Arc::new(device), false).await),
+            Err(e) => {
+                warn!(
+                    "⚠️ Invalid system device '{}': {} — falling back to default output",
+                    name, e
+                );
+                match default_output_device() {
+                    Ok(device) => {
+                        info!("✅ Using default system audio: '{}'", device.name);
+                        Some(Arc::new(device))
+                    }
+                    Err(default_err) => {
+                        warn!(
+                            "⚠️ No system audio available ({}) — recording will continue with microphone only",
+                            default_err
+                        );
+                        None
+                    }
+                }
+            }
+        }
     } else {
         None
     };

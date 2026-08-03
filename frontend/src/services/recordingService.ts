@@ -78,11 +78,15 @@ export class RecordingService {
     meetingName: string,
     recordingMode: 'conversation' | 'presentation' = 'conversation'
   ): Promise<void> {
+    // Claves en camelCase: el comando Rust no usa rename_all, así que Tauri 2
+    // espera micDeviceName/systemDeviceName/... — con snake_case las claves no
+    // matchean y los Option<String> llegan como None SIN error (bug histórico:
+    // el dispositivo elegido, el título y el Modo Ponente nunca llegaban al backend).
     return invoke('start_recording_with_devices_and_meeting', {
-      mic_device_name: micDeviceName,
-      system_device_name: systemDeviceName,
-      meeting_name: meetingName,
-      recording_mode: recordingMode
+      micDeviceName,
+      systemDeviceName,
+      meetingName,
+      recordingMode
     });
   }
 

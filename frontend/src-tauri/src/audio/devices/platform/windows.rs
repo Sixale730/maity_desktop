@@ -176,11 +176,17 @@ pub fn get_windows_device(audio_device: &AudioDevice) -> Result<(cpal::Device, c
                 }
             }
 
-            // If we didn't find a matching device, try the default input device as fallback
-            info!("No matching input device found, trying default input device");
+            // If we didn't find a matching device, try the default input device as
+            // fallback. WARN y no info: devolvemos Ok con OTRO dispositivo — el
+            // preflight `resolve_actual_endpoint` detecta este caso comparando el
+            // nombre del endpoint abierto contra el pedido y avisa al frontend.
+            warn!(
+                "⚠️ Requested input device '{}' not found in WASAPI enumeration — falling back to default input",
+                base_name
+            );
             if let Some(default_device) = wasapi_host.default_input_device() {
-                if let Ok(_name) = default_device.name() {
-                    // info!("Using default input device: {}", _name);
+                if let Ok(name) = default_device.name() {
+                    warn!("⚠️ Using default input device instead: '{}'", name);
                     if let Ok(config) = default_device.default_input_config() {
                         return Ok((default_device, config));
                     } else if let Ok(supported_configs) = default_device.supported_input_configs() {
@@ -243,11 +249,16 @@ pub fn get_windows_device(audio_device: &AudioDevice) -> Result<(cpal::Device, c
                 }
             }
 
-            // If we didn't find a matching device, try the default output device as fallback
-            info!("No matching output device found, trying default output device");
+            // If we didn't find a matching device, try the default output device as
+            // fallback. WARN y no info: devolvemos Ok con OTRO dispositivo (ver
+            // comentario del path de input).
+            warn!(
+                "⚠️ Requested output device '{}' not found in WASAPI enumeration — falling back to default output",
+                base_name
+            );
             if let Some(default_device) = wasapi_host.default_output_device() {
                 if let Ok(name) = default_device.name() {
-                    info!("Using default output device: {}", name);
+                    warn!("⚠️ Using default output device instead: '{}'", name);
                     if let Ok(config) = default_device.default_output_config() {
                         return Ok((default_device, config));
                     } else if let Ok(supported_configs) = default_device.supported_output_configs() {

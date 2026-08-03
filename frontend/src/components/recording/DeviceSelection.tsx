@@ -9,6 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Label } from '@/components/ui/label';
 import Analytics from '@/lib/analytics';
 import { logger } from '@/lib/logger';
+import { stripDeviceTypeSuffix } from '@/lib/deviceName';
 import { TauriEvent } from '@/lib/tauri-events';
 import type { AudioDevice, SelectedDevices, AudioLevelData, AudioLevelUpdate } from '@/types/audio';
 
@@ -268,8 +269,11 @@ export function DeviceSelection({ selectedDevices, onDeviceChange, disabled = fa
               Micrófono
             </Label>
           </div>
+          {/* value = nombre CRUDO del OS (formato canónico compartido con
+              switch_audio_device); stripDeviceTypeSuffix da compat con
+              preferencias viejas que guardaban "Nombre (input)". */}
           <Select
-            value={selectedDevices.micDevice || 'default'}
+            value={stripDeviceTypeSuffix(selectedDevices.micDevice) || 'default'}
             onValueChange={handleMicDeviceChange}
             disabled={disabled}
           >
@@ -281,7 +285,7 @@ export function DeviceSelection({ selectedDevices, onDeviceChange, disabled = fa
               {inputDevices.map((device) => (
                 <SelectItem
                   key={device.name}
-                  value={`${device.name} (${device.device_type.toLowerCase()})`}
+                  value={device.name}
                 >
                   {device.name}
                 </SelectItem>
@@ -338,7 +342,7 @@ export function DeviceSelection({ selectedDevices, onDeviceChange, disabled = fa
           </div>
 
           <Select
-            value={selectedDevices.systemDevice || 'default'}
+            value={stripDeviceTypeSuffix(selectedDevices.systemDevice) || 'default'}
             onValueChange={handleSystemDeviceChange}
             disabled={disabled}
           >
@@ -350,7 +354,7 @@ export function DeviceSelection({ selectedDevices, onDeviceChange, disabled = fa
               {outputDevices.map((device) => (
                 <SelectItem
                   key={device.name}
-                  value={`${device.name} (${device.device_type.toLowerCase()})`}
+                  value={device.name}
                 >
                   {device.name}
                 </SelectItem>
