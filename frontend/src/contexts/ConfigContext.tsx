@@ -37,6 +37,8 @@ interface ConfigContextType {
   // Device configuration
   selectedDevices: SelectedDevices;
   setSelectedDevices: (devices: SelectedDevices) => void;
+  /** Igual que setSelectedDevices pero además persiste en recording_preferences.json */
+  updateSelectedDevices: (devices: SelectedDevices) => void;
 
   // Language preference
   selectedLanguage: string;
@@ -457,6 +459,32 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  // Setter que ADEMÁS persiste en recording_preferences.json. Antes cada
+  // escritor (píldora, SettingsModal, coach-float) solo tocaba el estado en
+  // memoria y la selección se perdía al reiniciar; /settings persistía pero
+  // el contexto quedaba stale. La cadena de promesas serializa los
+  // read-merge-write (set_recording_preferences reemplaza el objeto entero,
+  // hay que preservar save_folder/auto_save/file_format/system_audio_gain).
+  const persistDevicesChainRef = useRef<Promise<void>>(Promise.resolve());
+  const updateSelectedDevices = useCallback((devices: SelectedDevices) => {
+    setSelectedDevices(devices);
+    persistDevicesChainRef.current = persistDevicesChainRef.current.then(async () => {
+      try {
+        const prefs = await invoke<Record<string, unknown>>('get_recording_preferences');
+        await invoke('set_recording_preferences', {
+          preferences: {
+            ...prefs,
+            preferred_mic_device: devices.micDevice,
+            preferred_system_device: devices.systemDevice,
+          },
+        });
+        logger.debug('Persisted device selection:', devices);
+      } catch (error) {
+        console.warn('[ConfigContext] Failed to persist device selection:', error);
+      }
+    });
+  }, []);
+
   const value: ConfigContextType = useMemo(() => ({
     modelConfig,
     setModelConfig,
@@ -468,6 +496,7 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
     setTranscriptModelConfig,
     selectedDevices,
     setSelectedDevices,
+    updateSelectedDevices,
     selectedLanguage,
     setSelectedLanguage,
     showConfidenceIndicator,
@@ -488,6 +517,7 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
     setRecordingMode,
     transcriptModelConfig,
     selectedDevices,
+    updateSelectedDevices,
     selectedLanguage,
     showConfidenceIndicator,
     toggleConfidenceIndicator,

@@ -42,7 +42,7 @@ export default function Home() {
 
   // Use contexts for state management
   const { meetingTitle } = useTranscripts();
-  const { transcriptModelConfig, selectedDevices, setSelectedDevices } = useConfig();
+  const { transcriptModelConfig, selectedDevices, updateSelectedDevices } = useConfig();
   const recordingState = useRecordingState();
 
   // Extract status from global state — single source of truth
@@ -301,7 +301,7 @@ export default function Home() {
                   selectedDevices={selectedDevices}
                   meetingName={meetingTitle}
                   onDeviceSwitched={(deviceName, deviceType) => {
-                    setSelectedDevices({
+                    updateSelectedDevices({
                       ...selectedDevices,
                       ...(deviceType === 'Microphone'
                         ? { micDevice: deviceName }

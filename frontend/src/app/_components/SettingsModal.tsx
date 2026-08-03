@@ -47,7 +47,7 @@ export function SettingsModals({
     modelOptions,
     error,
     selectedDevices,
-    setSelectedDevices,
+    updateSelectedDevices,
     selectedLanguage,
     setSelectedLanguage,
     transcriptModelConfig,
@@ -183,7 +183,7 @@ export function SettingsModals({
 
           <DeviceSelection
             selectedDevices={selectedDevices}
-            onDeviceChange={setSelectedDevices}
+            onDeviceChange={updateSelectedDevices}
             disabled={isRecording}
           />
 

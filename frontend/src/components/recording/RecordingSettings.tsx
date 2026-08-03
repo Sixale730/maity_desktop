@@ -7,6 +7,8 @@ import type { SelectedDevices } from '@/types/audio';
 import type { RecordingPreferences } from '@/types/audio';
 import Analytics from '@/lib/analytics';
 import { toast } from 'sonner';
+import { useConfig } from '@/contexts/ConfigContext';
+import { stripDeviceTypeSuffix } from '@/lib/deviceName';
 
 export type { RecordingPreferences };
 
@@ -25,6 +27,10 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [showRecordingNotification, setShowRecordingNotification] = useState(true);
+  // Setter crudo del contexto (savePreferences ya persiste; con
+  // updateSelectedDevices se escribiría el JSON dos veces). Sin esto,
+  // /settings guardaba pero el ConfigContext quedaba stale hasta reiniciar.
+  const { setSelectedDevices } = useConfig();
 
   // Load recording preferences on component mount
   useEffect(() => {
@@ -83,6 +89,10 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
     };
     setPreferences(newPreferences);
     await savePreferences(newPreferences);
+    setSelectedDevices({
+      micDevice: stripDeviceTypeSuffix(devices.micDevice),
+      systemDevice: stripDeviceTypeSuffix(devices.systemDevice),
+    });
 
     // Track default device preference changes
     // Note: Individual device selection analytics are tracked in DeviceSelection component

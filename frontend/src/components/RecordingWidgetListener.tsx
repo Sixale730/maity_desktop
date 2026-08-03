@@ -40,7 +40,7 @@ interface WidgetStartPayload {
  */
 export function RecordingWidgetListener() {
   const { isRecording } = useRecordingState();
-  const { selectedDevices, setSelectedDevices } = useConfig();
+  const { selectedDevices, updateSelectedDevices } = useConfig();
   // El segundo arg (setIsRecording) es no-op porque RecordingStateContext es
   // la fuente de verdad; el tercer arg (showModal) tampoco aplica aquí —
   // si hace falta abrir un modal (config faltante), `useRecordingStart` lo
@@ -61,14 +61,16 @@ export function RecordingWidgetListener() {
         if (isRecording) return;
 
         // Iter 6: aplicar devices custom del payload (si vienen) ANTES de
-        // que useRecordingStart lea selectedDevices. setSelectedDevices es
-        // sync (useState) — el handleRecordingStart en el mismo tick verá
-        // el valor viejo, pero handleRecordingStart lee del ConfigContext
+        // que useRecordingStart lea selectedDevices. El setState es sync
+        // (useState) — el handleRecordingStart en el mismo tick verá el
+        // valor viejo, pero handleRecordingStart lee del ConfigContext
         // que se actualiza para el siguiente paint. Si el patrón causa race
         // en alguna prueba, pasar devices como parámetro al hook (V7).
+        // updateSelectedDevices además persiste la elección (fue deliberada
+        // del usuario en el coach-float).
         const payload = e.payload;
         if (payload && (payload.micDevice || payload.sysDevice)) {
-          setSelectedDevices({
+          updateSelectedDevices({
             micDevice: payload.micDevice ?? selectedDevices.micDevice,
             systemDevice: payload.sysDevice ?? selectedDevices.systemDevice,
           });
@@ -78,7 +80,7 @@ export function RecordingWidgetListener() {
       },
     );
     return () => { unlistenP.then(fn => fn()); };
-  }, [handleRecordingStart, isRecording, selectedDevices, setSelectedDevices]);
+  }, [handleRecordingStart, isRecording, selectedDevices, updateSelectedDevices]);
 
   return null;
 }
