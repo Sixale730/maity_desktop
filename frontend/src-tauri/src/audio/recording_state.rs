@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tokio::sync::mpsc;
@@ -104,13 +104,10 @@ pub struct RecordingState {
     // Core recording state
     is_recording: AtomicBool,
     is_paused: AtomicBool,
-    is_reconnecting: AtomicBool,  // NEW: Attempting to reconnect to device
 
     // Audio devices
     microphone_device: Mutex<Option<Arc<AudioDevice>>>,
     system_device: Mutex<Option<Arc<AudioDevice>>>,
-    // Track which device is disconnected for reconnection attempts
-    disconnected_device: Mutex<Option<(Arc<AudioDevice>, DeviceType)>>,
 
     // Audio pipeline
     audio_sender: Mutex<Option<mpsc::UnboundedSender<AudioChunk>>>,
@@ -142,6 +139,8 @@ pub struct RecordingState {
     sys_rms_level: AtomicU32,
     mic_peak_level: AtomicU32,
     sys_peak_level: AtomicU32,
+    // Monotonic count of real mic chunks (silence watchdog stall detection)
+    mic_chunk_seq: AtomicU64,
 }
 
 impl RecordingState {
@@ -149,10 +148,8 @@ impl RecordingState {
         Arc::new(Self {
             is_recording: AtomicBool::new(false),
             is_paused: AtomicBool::new(false),
-            is_reconnecting: AtomicBool::new(false),
             microphone_device: Mutex::new(None),
             system_device: Mutex::new(None),
-            disconnected_device: Mutex::new(None),
             audio_sender: Mutex::new(None),
             buffer_pool: AudioBufferPool::new(16, 48000), // Pool of 16 buffers with 48kHz samples capacity
             error_count: AtomicU32::new(0),
@@ -167,6 +164,7 @@ impl RecordingState {
             sys_rms_level: AtomicU32::new(0),
             mic_peak_level: AtomicU32::new(0),
             sys_peak_level: AtomicU32::new(0),
+            mic_chunk_seq: AtomicU64::new(0),
         })
     }
 
@@ -205,10 +203,6 @@ impl RecordingState {
         match self.system_device.lock() {
             Ok(mut guard) => *guard = None,
             Err(e) => { log::error!("system_device lock poisoned in stop_recording: {e}"); }
-        }
-        match self.disconnected_device.lock() {
-            Ok(mut guard) => *guard = None,
-            Err(e) => { log::error!("disconnected_device lock poisoned in stop_recording: {e}"); }
         }
         log::info!("Recording stopped, device references cleared");
     }
@@ -267,6 +261,7 @@ impl RecordingState {
             DeviceType::Microphone => {
                 self.mic_rms_level.store(rms.to_bits(), Ordering::Relaxed);
                 self.mic_peak_level.store(peak.to_bits(), Ordering::Relaxed);
+                self.mic_chunk_seq.fetch_add(1, Ordering::Relaxed);
             }
             DeviceType::System => {
                 self.sys_rms_level.store(rms.to_bits(), Ordering::Relaxed);
@@ -285,50 +280,12 @@ impl RecordingState {
         )
     }
 
-    // Reconnection state management
-    /// Attempts to start reconnection. Returns true if successfully started,
-    /// false if a reconnection is already in progress (race condition prevention).
-    pub fn start_reconnecting(&self, device: Arc<AudioDevice>, device_type: DeviceType) -> bool {
-        // Use compare_exchange to atomically check and set the flag
-        // This prevents race conditions where multiple threads try to start reconnecting
-        match self.is_reconnecting.compare_exchange(
-            false,  // expected: not currently reconnecting
-            true,   // new value: now reconnecting
-            Ordering::SeqCst,
-            Ordering::SeqCst,
-        ) {
-            Ok(_) => {
-                // Successfully claimed the reconnection lock
-                match self.disconnected_device.lock() {
-                    Ok(mut guard) => *guard = Some((device, device_type)),
-                    Err(e) => log::error!("disconnected_device lock poisoned in start_reconnecting: {e}"),
-                }
-                log::info!("Started reconnection attempt for device");
-                true
-            }
-            Err(_) => {
-                // Another thread is already reconnecting
-                log::info!("Reconnection already in progress, skipping");
-                false
-            }
-        }
-    }
-
-    pub fn stop_reconnecting(&self) {
-        self.is_reconnecting.store(false, Ordering::SeqCst);
-        match self.disconnected_device.lock() {
-            Ok(mut guard) => *guard = None,
-            Err(e) => log::error!("disconnected_device lock poisoned in stop_reconnecting: {e}"),
-        }
-        log::info!("Stopped reconnection attempt");
-    }
-
-    pub fn is_reconnecting(&self) -> bool {
-        self.is_reconnecting.load(Ordering::SeqCst)
-    }
-
-    pub fn get_disconnected_device(&self) -> Option<(Arc<AudioDevice>, DeviceType)> {
-        self.disconnected_device.lock().ok().and_then(|guard| guard.clone())
+    /// Contador monotónico de chunks REALES de micrófono vistos por el
+    /// pipeline en la sesión. Lo lee el watchdog de silencio
+    /// (recording_helpers) para detectar streams atascados: si no avanza,
+    /// mic_rms_level está STALE y no debe interpretarse.
+    pub fn mic_chunk_seq(&self) -> u64 {
+        self.mic_chunk_seq.load(Ordering::Relaxed)
     }
 
     // Device management
@@ -527,7 +484,6 @@ impl RecordingState {
     // Cleanup
     pub fn cleanup(&self) {
         self.stop_recording();
-        self.stop_reconnecting();
 
         // Clear all mutex-guarded state; log but do not panic on poisoned locks
         macro_rules! clear_lock {
@@ -541,7 +497,6 @@ impl RecordingState {
 
         clear_lock!(self.microphone_device, None, "microphone_device");
         clear_lock!(self.system_device, None, "system_device");
-        clear_lock!(self.disconnected_device, None, "disconnected_device");
         clear_lock!(self.audio_sender, None, "audio_sender");
         clear_lock!(self.last_error, None, "last_error");
         clear_lock!(self.error_callback, None, "error_callback");
@@ -562,10 +517,8 @@ impl Default for RecordingState {
         Self {
             is_recording: AtomicBool::new(false),
             is_paused: AtomicBool::new(false),
-            is_reconnecting: AtomicBool::new(false),
             microphone_device: Mutex::new(None),
             system_device: Mutex::new(None),
-            disconnected_device: Mutex::new(None),
             audio_sender: Mutex::new(None),
             buffer_pool: AudioBufferPool::new(16, 48000), // Pool of 16 buffers with 48kHz samples capacity
             error_count: AtomicU32::new(0),
@@ -580,6 +533,7 @@ impl Default for RecordingState {
             sys_rms_level: AtomicU32::new(0),
             mic_peak_level: AtomicU32::new(0),
             sys_peak_level: AtomicU32::new(0),
+            mic_chunk_seq: AtomicU64::new(0),
         }
     }
 }
@@ -667,7 +621,6 @@ mod tests {
             assert!(!state.is_recording());
             assert!(!state.is_paused());
             assert!(!state.is_active());
-            assert!(!state.is_reconnecting());
         }
 
         #[test]
@@ -789,23 +742,5 @@ mod tests {
             );
         }
 
-        #[test]
-        fn reconnection_start_prevents_double_start() {
-            use crate::audio::devices::{AudioDevice, DeviceType as TauriDeviceType};
-            let state = RecordingState::new();
-            let device = Arc::new(AudioDevice {
-                name: "mic".into(),
-                device_type: TauriDeviceType::Input,
-            });
-
-            assert!(state.start_reconnecting(device.clone(), DeviceType::Microphone));
-            assert!(state.is_reconnecting());
-            assert!(!state.start_reconnecting(device.clone(), DeviceType::Microphone),
-                "second start should fail because reconnection is in progress");
-
-            state.stop_reconnecting();
-            assert!(!state.is_reconnecting());
-            assert!(state.get_disconnected_device().is_none());
-        }
     }
 }

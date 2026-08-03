@@ -7,6 +7,7 @@ use anyhow::Result;
 use log::{debug, info, warn, error};
 
 use super::devices::{AudioDevice, list_audio_devices};
+use super::devices::device_name_matcher::is_same_device;
 
 /// Device monitoring events
 #[derive(Debug, Clone)]
@@ -43,10 +44,20 @@ struct MonitoredDevice {
 
 impl MonitoredDevice {
     fn new(name: String, device_type: DeviceMonitorType) -> Self {
-        // Heuristic: check if device name contains bluetooth-related keywords
-        let is_bluetooth = name.to_lowercase().contains("airpods")
-            || name.to_lowercase().contains("bluetooth")
-            || name.to_lowercase().contains("wireless");
+        // Heuristic: check if device name contains bluetooth-related keywords.
+        // "bt" only counts as a standalone token to avoid false hits inside
+        // longer words; "auriculares"/"hands-free" are how Windows in Spanish
+        // labels BT headsets.
+        let lower = name.to_lowercase();
+        let is_bluetooth = lower.contains("airpods")
+            || lower.contains("bluetooth")
+            || lower.contains("wireless")
+            || lower.contains("auriculares")
+            || lower.contains("hands-free")
+            || lower.contains("manos libres")
+            || lower
+                .split(|c: char| !c.is_ascii_alphanumeric())
+                .any(|t| t == "bt");
 
         Self {
             name,
@@ -66,15 +77,6 @@ impl MonitoredDevice {
         }
     }
 
-    /// Get appropriate reconnect check interval
-    #[allow(dead_code)]
-    fn reconnect_interval(&self) -> Duration {
-        if self.is_bluetooth {
-            Duration::from_secs(5) // Check every 5s for Bluetooth
-        } else {
-            Duration::from_secs(3) // Check every 3s for wired devices
-        }
-    }
 }
 
 /// Audio device monitor that detects disconnects and reconnects
@@ -166,7 +168,7 @@ impl AudioDeviceMonitor {
         stop_signal: Arc<tokio::sync::Notify>,
     ) {
         let mut last_device_list = Vec::new();
-        let check_interval = Duration::from_secs(2); // Poll every 2 seconds
+        let mut check_interval = Duration::from_secs(2); // Poll every 2 seconds
 
         loop {
             // Check for stop signal with timeout
@@ -197,23 +199,34 @@ impl AudioDeviceMonitor {
             }
             last_device_list = current_devices.clone();
 
-            // Check each monitored device
+            // Check each monitored device. Fuzzy match (is_same_device) en vez
+            // de igualdad exacta: Windows sube el índice BT "(2- ...)" → "(3- ...)"
+            // en cada re-emparejamiento y el nombre exacto deja de existir.
             for monitored in &mut monitored_devices {
-                let device_found = current_devices.iter().any(|d| d.name == monitored.name);
+                let found_name = current_devices
+                    .iter()
+                    .find(|d| is_same_device(&d.name, &monitored.name))
+                    .map(|d| d.name.clone());
 
-                if device_found {
+                if let Some(found_name) = found_name {
                     // Device is present
                     if monitored.consecutive_missing > 0 {
-                        // Device has reconnected!
-                        info!("✅ Device '{}' reconnected after {} missing checks",
-                              monitored.name, monitored.consecutive_missing);
+                        // Device has reconnected! Emit the RE-ENUMERATED name —
+                        // es el que aceptan switch_audio_device y compañía.
+                        info!("✅ Device '{}' reconnected as '{}' after {} missing checks",
+                              monitored.name, found_name, monitored.consecutive_missing);
 
                         let _ = event_sender.send(DeviceEvent::DeviceReconnected {
-                            device_name: monitored.name.clone(),
+                            device_name: found_name.clone(),
                             device_type: monitored.device_type.clone(),
                         });
 
                         monitored.consecutive_missing = 0;
+                    }
+                    // Adopt the current enumeration name so future exact
+                    // consumers (switch matchers, logs) see the real endpoint.
+                    if found_name != monitored.name {
+                        monitored.name = found_name;
                     }
                 } else {
                     // Device is missing
@@ -247,6 +260,7 @@ impl AudioDeviceMonitor {
 
             if next_interval != check_interval {
                 debug!("Adjusting monitor interval to {:?}", next_interval);
+                check_interval = next_interval;
             }
         }
     }

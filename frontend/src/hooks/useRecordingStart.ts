@@ -548,10 +548,33 @@ export function useRecordingStart(
             duration: 8000,
           });
         } else if (event.type === 'DeviceReconnected') {
-          toast.success('Dispositivo reconectado', {
-            description: `${event.device_name || 'Dispositivo'} se reconecto correctamente.`,
-            duration: 5000,
-          });
+          // Auto-reconexión: el monitor solo vigila los devices de la sesión,
+          // así que el evento ya viene filtrado. Reusa switch_audio_device
+          // (el mismo camino del modal flotante) para reabrir los streams con
+          // el nombre RE-ENUMERADO que emite el monitor (Windows puede subir
+          // el índice BT "(2- ...)" → "(3- ...)" al re-emparejar).
+          let switched = false;
+          if (event.device_name && event.device_type) {
+            try {
+              switched = await invoke<boolean>('switch_audio_device', {
+                deviceName: event.device_name,
+                deviceType: event.device_type,
+              });
+            } catch {
+              switched = false;
+            }
+          }
+          if (switched) {
+            toast.success('Dispositivo reconectado', {
+              description: `«${event.device_name}» reconectado — la grabación continúa con él.`,
+              duration: 5000,
+            });
+          } else {
+            toast.success('Dispositivo disponible de nuevo', {
+              description: `${event.device_name || 'Dispositivo'} se reconectó. Puedes volver a elegirlo en el selector de dispositivos.`,
+              duration: 6000,
+            });
+          }
         } else if (event.type === 'DeviceListChanged') {
           toast.info('Cambio en dispositivos de audio', {
             description: 'Se detecto un cambio en los dispositivos de audio disponibles.',

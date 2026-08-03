@@ -194,20 +194,6 @@ impl From<DeviceEvent> for DeviceEventResponse {
     }
 }
 
-/// Reconnection status information
-#[derive(Debug, Serialize, Clone)]
-pub struct ReconnectionStatus {
-    pub is_reconnecting: bool,
-    pub disconnected_device: Option<DisconnectedDeviceInfo>,
-}
-
-/// Information about a disconnected device
-#[derive(Debug, Serialize, Clone)]
-pub struct DisconnectedDeviceInfo {
-    pub name: String,
-    pub device_type: String,
-}
-
 /// Poll for audio device events (disconnect/reconnect)
 /// Should be called periodically (every 1-2 seconds) by frontend during recording
 #[tauri::command]
@@ -223,32 +209,6 @@ pub async fn poll_audio_device_events() -> Result<Option<DeviceEventResponse>, S
         }
     } else {
         Ok(None)
-    }
-}
-
-/// Get current reconnection status
-#[tauri::command]
-pub async fn get_reconnection_status() -> Result<ReconnectionStatus, String> {
-    let manager_guard = RECORDING_MANAGER.lock().map_err(|e| format!("Recording manager lock poisoned: {}", e))?;
-
-    if let Some(manager) = manager_guard.as_ref() {
-        let state = manager.get_state();
-        let disconnected_device = state.get_disconnected_device().map(|(device, device_type)| {
-            DisconnectedDeviceInfo {
-                name: device.name.clone(),
-                device_type: format!("{:?}", device_type),
-            }
-        });
-
-        Ok(ReconnectionStatus {
-            is_reconnecting: manager.is_reconnecting(),
-            disconnected_device,
-        })
-    } else {
-        Ok(ReconnectionStatus {
-            is_reconnecting: false,
-            disconnected_device: None,
-        })
     }
 }
 
@@ -302,52 +262,6 @@ pub async fn switch_audio_device(
         }
         Err(e) => {
             error!("Device switch error: {}", e);
-            Err(e.to_string())
-        }
-    }
-}
-
-/// Manually trigger device reconnection attempt
-/// Useful for UI "Retry" button
-#[tauri::command]
-pub async fn attempt_device_reconnect(
-    device_name: String,
-    device_type: String,
-) -> Result<bool, String> {
-    let monitor_type = match device_type.as_str() {
-        "Microphone" => DeviceMonitorType::Microphone,
-        "SystemAudio" => DeviceMonitorType::SystemAudio,
-        _ => return Err(format!("Invalid device type: {}", device_type)),
-    };
-
-    // Take the manager out of the mutex so we can call async methods without
-    // holding the MutexGuard across await points (MutexGuard is not Send).
-    let mut manager = {
-        let mut guard = RECORDING_MANAGER.lock()
-            .map_err(|e| format!("Recording manager lock poisoned: {}", e))?;
-        guard.take().ok_or_else(|| "Recording not active".to_string())?
-    };
-
-    let result = manager.attempt_device_reconnect(&device_name, monitor_type).await;
-
-    // Put the manager back
-    {
-        let mut guard = RECORDING_MANAGER.lock()
-            .map_err(|e| format!("Recording manager lock poisoned: {}", e))?;
-        *guard = Some(manager);
-    }
-
-    match result {
-        Ok(success) => {
-            if success {
-                info!("✅ Manual reconnection successful");
-            } else {
-                warn!("❌ Manual reconnection failed - device not available");
-            }
-            Ok(success)
-        }
-        Err(e) => {
-            error!("Manual reconnection error: {}", e);
             Err(e.to_string())
         }
     }
