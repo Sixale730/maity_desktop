@@ -377,6 +377,15 @@ Para cuentas existentes (`get_onboarding_status.completed===true`): saltan el on
 
 - El resumen con IA local usa el sidecar `llama-helper.exe` (`externalBin: ["binaries/llama-helper"]` en `tauri.conf.json`; fuente en `C:\maity_desktop\llama-helper\`, `cargo build --release -p llama-helper`). Debe existir el binario REAL en `frontend/src-tauri/binaries/llama-helper-x86_64-pc-windows-msvc.exe` (y en `msix_staging/llama-helper.exe` para el MSIX) — un stub de 0 bytes hace fallar el `spawn`. Además el modelo Gemma debe estar descargado (`gemma3:1b`/`gemma3:4b` según plataforma).
 
+### Verificación de email (signup desktop) — flujo cross-app
+
+El signup con email/password (`signUpWithEmail`, `AuthContext.tsx`) manda `emailRedirectTo: 'https://www.maity.cloud/auth/confirm'`. El correo (armado por el Send Email Hook del repo web) trae un link a esa página con `?token_hash=...&type=signup` — **sin pasar por `/auth/v1/verify` de GoTrue** (issues web Sixale730/maity#135/#136). La página intenta abrir `maity://auth/confirm?token_hash=...&type=signup`:
+
+- **Con app instalada**: el deep link llega a `handleDeepLinkCallback` (`AuthContext.tsx`), que hace `supabase.auth.verifyOtp({ token_hash, type: 'signup' })` → confirma la cuenta Y deja la sesión en el desktop. Cold start cubierto con `getCurrent()` del plugin deep-link al montar (single-instance solo reenvía a instancias ya vivas). El canal Store requiere el protocolo declarado en `frontend/Package.appxmanifest` (`<uap:Protocol Name="maity"/>` — bajo MSIX el `register()` en runtime queda virtualizado y no crea la asociación).
+- **Sin app (celular/otra PC)**: la página hace el `verifyOtp` en el navegador (fallback tras ~2.5 s sin blur) y muestra "cuenta verificada"; el desktop entra solo por el poll de `useAwaitEmailConfirmation.ts` (device-flow, issue #58).
+
+Reglas: NO cambiar `emailRedirectTo` a localhost/deep-link (el correo se abre "casi siempre en el celular"); el token es de un solo uso — si `verifyOtp` falla pero ya hay sesión (el poll o la web ganaron la carrera), se ignora en silencio. El flujo PKCE `?code=` NUNCA es canjeable fuera del webview que inició el signup (el `code_verifier` vive ahí) — no intentar `exchangeCodeForSession` en otra superficie.
+
 ### Handoff de Pagos
 
 - El desktop no tiene Stripe directamente; al elegir Pro, `useCreateCheckoutSession` construye la URL `https://www.maity.cloud/auth/handoff#access_token=...&next=/billing/plans?checkout=pro`

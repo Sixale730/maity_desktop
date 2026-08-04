@@ -55,6 +55,13 @@
             Enabled="true"
             DisplayName="Maity" />
         </desktop:Extension>
+        <!-- Protocolo maity:// (deep links: OAuth y verificación de email). Bajo MSIX el
+             deep_link().register() en runtime queda virtualizado y NO crea la asociación
+             a nivel OS — sin esta declaración la app de la Store nunca recibe el link.
+             El nombre debe coincidir con el scheme de tauri.conf.json ("deep-link"). -->
+        <uap:Extension Category="windows.protocol">
+          <uap:Protocol Name="maity" />
+        </uap:Extension>
       </Extensions>
     </Application>
   </Applications>

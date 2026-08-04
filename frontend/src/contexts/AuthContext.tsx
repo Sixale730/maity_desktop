@@ -6,7 +6,7 @@ import type { Session, User } from '@supabase/supabase-js'
 import type { MaityUser } from '@/types/auth'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
-import { onOpenUrl } from '@tauri-apps/plugin-deep-link'
+import { onOpenUrl, getCurrent as getCurrentDeepLink } from '@tauri-apps/plugin-deep-link'
 import { logger } from '@/lib/logger'
 import { fileLogger } from '@/lib/fileLogger'
 import { translateAuthError } from '@/lib/auth-errors'
@@ -31,6 +31,25 @@ interface AuthContextType {
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined)
+
+// Prefijos de deep link que procesa este contexto:
+// - maity://auth/callback  → OAuth social (tokens en el fragment)
+// - maity://auth/confirm   → verificación de email (token_hash en el query, reenviado
+//   por la página web maity.cloud/auth/confirm; canjearlo aquí deja la sesión en el desktop)
+const AUTH_DEEP_LINK_PREFIXES = ['maity://auth/callback', 'maity://auth/confirm'] as const
+
+function isAuthDeepLink(url: string): boolean {
+  return AUTH_DEEP_LINK_PREFIXES.some((prefix) => url.startsWith(prefix))
+}
+
+/** Extract query params from a deep-link URL (maity://auth/confirm?token_hash=...&type=signup). */
+function extractQueryParams(url: string): URLSearchParams {
+  const queryIndex = url.indexOf('?')
+  if (queryIndex === -1) return new URLSearchParams()
+  const hashIndex = url.indexOf('#')
+  const end = hashIndex > queryIndex ? hashIndex : url.length
+  return new URLSearchParams(url.substring(queryIndex + 1, end))
+}
 
 /**
  * Extract access_token and refresh_token from a deep-link callback URL.
@@ -250,11 +269,55 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, [user])
 
-  // Handle a deep-link callback URL containing OAuth tokens
+  // Handle a deep-link URL: OAuth tokens (auth/callback) o verificación de email (auth/confirm)
   const handleDeepLinkCallback = useCallback(async (url: string) => {
-    if (!url.startsWith('maity://auth/callback')) return
+    if (!isAuthDeepLink(url)) return
     if (isHandlingCallback.current) return
     isHandlingCallback.current = true
+
+    if (url.startsWith('maity://auth/confirm')) {
+      // Verificación de email iniciada en el desktop: la página web reenvía el
+      // token_hash del correo vía deep link. verifyOtp confirma la cuenta Y crea la
+      // sesión en ESTE cliente → onAuthStateChange flipa isAuthenticated y AuthGate
+      // desmonta LoginScreen (misma salida que el poll de useAwaitEmailConfirmation).
+      logger.debug('[Auth] Processing email verification deep link')
+      setError(null)
+      const tokenHash = extractQueryParams(url).get('token_hash')
+      try {
+        if (!tokenHash) {
+          logger.debug('[Auth] Deep link de confirmación sin token_hash, ignorado')
+          return
+        }
+        const { data, error: verifyError } = await withTimeout(
+          supabase.auth.verifyOtp({ token_hash: tokenHash, type: 'signup' }),
+          'verifyOtp',
+        )
+        if (verifyError) {
+          // Token de un solo uso: si el poll ya logueó (o la web lo canjeó primero),
+          // esto no es un error para el usuario — la cuenta ya quedó verificada.
+          const { data: current } = await supabase.auth.getSession()
+          if (current.session) {
+            logger.debug('[Auth] verifyOtp falló pero ya hay sesión activa, ignorando', verifyError)
+          } else {
+            logger.debug('[Auth] verifyOtp error sin sesión previa', verifyError)
+            setError(
+              'El link de verificación ya fue usado o expiró. Es probable que tu cuenta ya esté verificada — inicia sesión con tu correo y contraseña.',
+            )
+          }
+        } else if (data.session) {
+          logger.debug('[Auth] Email verificado, sesión establecida vía deep link')
+          setSession(data.session)
+          setUser(data.session.user)
+          await fetchOrCreateMaityUserRef.current(data.session.user)
+        }
+      } catch (err) {
+        console.error('[Auth] Error verifying email via deep link:', err)
+        setError('No se pudo completar la verificación. Inicia sesión con tu correo y contraseña.')
+      } finally {
+        isHandlingCallback.current = false
+      }
+      return
+    }
 
     logger.debug('[Auth] Processing OAuth callback')
     setError(null)
@@ -481,11 +544,31 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   // Listen for deep-link events as fallback (macOS: onOpenUrl, Windows: single-instance event)
   useEffect(() => {
+    // Cold start (Windows): si el protocolo maity:// LANZÓ la app (no había instancia),
+    // single-instance no dispara — es la primera instancia y la URL viene en su argv.
+    // getCurrent() la recupera del plugin. Es un pull al montar, así que no hay carrera
+    // con el registro de listeners. Un doble procesamiento (si onOpenUrl también la
+    // entrega) es inofensivo: el guard isHandlingCallback y el check de sesión en la
+    // rama de verifyOtp lo absorben.
+    getCurrentDeepLink()
+      .then((urls) => {
+        if (!urls) return
+        for (const url of urls) {
+          if (typeof url === 'string' && isAuthDeepLink(url)) {
+            handleDeepLinkCallback(url)
+            break
+          }
+        }
+      })
+      .catch((err) => {
+        logger.debug('[Auth] getCurrent deep link not available:', err)
+      })
+
     // macOS/iOS: onOpenUrl fires directly
     let cleanupOpenUrl: (() => void) | null = null
     onOpenUrl((urls) => {
       for (const url of urls) {
-        if (typeof url === 'string' && url.startsWith('maity://auth/callback')) {
+        if (typeof url === 'string' && isAuthDeepLink(url)) {
           handleDeepLinkCallback(url)
           break
         }
@@ -500,7 +583,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // Windows/Linux: single-instance plugin forwards deep-link URLs as events
     const unlistenPromise = listen<string>(TauriEvent.DEEP_LINK_RECEIVED, (event) => {
       const url = event.payload
-      if (url.startsWith('maity://auth/callback')) {
+      if (isAuthDeepLink(url)) {
         handleDeepLinkCallback(url)
       }
     })
