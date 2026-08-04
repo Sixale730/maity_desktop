@@ -320,6 +320,17 @@ Los modelos se cargan una vez y se cachean. Cambiar modelos requiere reinicio de
 | `/registration` | `app/registration/page.tsx` | Onboarding de registro (avatar 3D + cuestionario 17 pasos) — solo usuarios con `registration_form_completed=false` |
 | `/billing/plans` | `app/billing/plans/page.tsx` | Seleccion de plan (Free/Pro/Enterprise) — checkout Pro abre navegador externo via handoff |
 
+### Gate de Sesión (login compacto estilo Steam + coach-float + grabación) — ago-2026
+
+Sin sesión la app NO graba por ninguna vía y NO muestra el coach-float; la ventana principal se compacta a un login de 480×640 (estilo Steam). Piezas (no revertir por separado — se diseñaron juntas):
+
+- **Verdad de la sesión en Rust**: `state.rs::has_session(app)` lee `AppState.current_user_id` (lo llena `set_current_user` cuando `maityUser` carga en `AuthContext`; lo limpia `clear_current_user` al logout). Usa `try_state` por el orden de `manage` en first-launch.
+- **Gate de grabación SOLO en entrypoints nativos**: `recording_lifecycle.rs::start_recording_with_meeting_name` (chokepoint de tray + scheduler) devuelve `Err` sin sesión; el tick del scheduler (`scheduled_recording/service.rs`, brazo `(false, Some(_))`) skipea con `SkipReason::NoSession` — al loguearse, el siguiente tick (≤30 s) arranca la jornada. Los paths de cierre/rotación NO llevan gate (un segmento owned debe poder cerrarse aunque muera la sesión). Los comandos `start_recording*` invocables por el frontend NO se gatean: viven detrás del AuthGate y gatearlos crea carrera con el IPC de `set_current_user` post-login.
+- **Coach-float por sesión**: el auto-open ya NO vive en el `setup()` de lib.rs (el viejo spawn de 800 ms lo abría encima del LoginScreen). Vive en la transición None→Some de `set_current_user` → `coach::commands::open_coach_on_login` (respeta pref `coach_float_visible` y el override `STARTED_AT_BOOT`). `clear_current_user` cierra el coach. `open_floating_coach` tiene el check central (Ok silencioso sin sesión). El tray sin sesión enfoca el login en vez de grabar/togglear.
+- **Login compacto**: comando `set_main_window_auth_layout(authenticated)` en lib.rs, idempotente vía `LOGIN_COMPACT_ACTIVE` (AtomicBool). El AuthGate lo invoca ANTES de emitir `app-ready` (ventana aún oculta → el primer `show()` sale ya con el tamaño correcto, sin flash) y en cada transición login/logout. Solo restaura 1100×700 si él mismo compactó: arrancar ya logueado es no-op y respeta el tamaño del usuario. Único flash posible: el fallback de 3 s de lib.rs si Next tarda >3 s en emitir `app-ready` (aceptado).
+- **Logout**: `AuthContext.signOut` invoca `logout_cleanup` (reutiliza `graceful_shutdown_before_exit`, timeout 30 s) ANTES de limpiar estado local — detiene y GUARDA la grabación activa (jornada → persistencia nativa; manual → stop estándar) mientras `current_user_id` sigue vivo. Best-effort: nunca bloquea el logout.
+- **Meeting detector**: sin cambios — solo emite eventos a la main; sin sesión no hay listeners montados (AuthGate).
+
 ### Gate de Registro (`useRegistrationGate` + `AppContent` en `layout.tsx`)
 
 Orden de ramas en `AppContent` para cuentas nuevas:
