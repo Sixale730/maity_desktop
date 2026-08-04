@@ -132,6 +132,16 @@ fn toggle_recording_handler<R: Runtime>(app: &AppHandle<R>) {
                 }
             }
         } else {
+            // Sin sesión no se graba: la ventana ya quedó enfocada por el
+            // focus_main_window del inicio del handler, así que el usuario
+            // aterriza en el login. La rama de STOP no se gatea — detener
+            // siempre debe ser posible.
+            if !crate::state::has_session(&app_clone).await {
+                log::info!("Tray toggle: sin sesión — enfocando login en vez de grabar");
+                update_tray_menu_async(&app_clone).await;
+                return;
+            }
+
             // UX-007: Start recording directly via native Rust call, bypassing the
             // webview entirely. The old approach (eval sessionStorage + location.assign)
             // broke when the window was minimized because Chromium suspends JS in
@@ -290,6 +300,13 @@ fn open_coach_float_handler<R: Runtime>(app: &AppHandle<R>) {
 fn toggle_recording_widget_handler<R: Runtime>(app: &AppHandle<R>) {
     let app_clone = app.clone();
     tauri::async_runtime::spawn(async move {
+        // Sin sesión el coach-float no existe: no flipear la pref (dejaría el
+        // toggle desincronizado) — enfocar el login y salir.
+        if !crate::state::has_session(&app_clone).await {
+            log::info!("Tray: toggle coach-float sin sesión — enfocando login");
+            focus_main_window(&app_clone);
+            return;
+        }
         let currently_visible =
             crate::coach::commands::coach_float_get_visibility_pref(app_clone.clone()).await;
         let new_visible = !currently_visible;

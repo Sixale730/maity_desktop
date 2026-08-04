@@ -239,6 +239,14 @@ pub async fn open_floating_coach<R: Runtime>(
     app: AppHandle<R>,
     start_compact: Option<bool>,
 ) -> Result<(), String> {
+    // Gate central de sesión: el coach-float solo existe con usuario logueado.
+    // Ok silencioso (no Err) para que los callers frontend no muestren toasts
+    // de error — sin sesión simplemente no hay ventana flotante.
+    if !crate::state::has_session(&app).await {
+        info!("open_floating_coach ignorado: sin sesión activa");
+        return Ok(());
+    }
+
     let compact = start_compact.unwrap_or(false);
 
     if let Some(w) = app.get_webview_window(COACH_FLOAT_LABEL) {
@@ -458,8 +466,8 @@ fn load_coach_visibility_pref<R: Runtime>(app: &AppHandle<R>) -> Option<bool> {
     value.as_bool()
 }
 
-/// Persiste la preferencia de visibilidad del coach-float al store. `pub(crate)` para que
-/// el `setup()` en lib.rs pueda forzar la pref a `true` al arrancar por autostart — la
+/// Persiste la preferencia de visibilidad del coach-float al store. La usa
+/// `open_coach_on_login` para forzar la pref a `true` en arranques por autostart — la
 /// flotante es el único entry point cuando la main window está minimizada, así que el
 /// boot-by-OS sobrescribe cualquier "X→hide" previo en sesión anterior.
 pub(crate) fn save_coach_visibility_pref<R: Runtime>(app: &AppHandle<R>, visible: bool) -> Result<(), String> {
@@ -639,10 +647,41 @@ pub async fn device_picker_select<R: Runtime>(
     Ok(())
 }
 
-/// Helper interno que el `setup` de lib.rs llama al inicio para decidir si
-/// abrir el coach-float automáticamente según la preferencia guardada.
+/// Decide si abrir el coach-float automáticamente según la preferencia
+/// guardada. Lo consulta `open_coach_on_login` en la transición de login.
 pub fn should_auto_open_coach<R: Runtime>(app: &AppHandle<R>) -> bool {
     load_coach_visibility_pref(app).unwrap_or(true)
+}
+
+/// Auto-open del coach-float en la transición de LOGIN (None→Some de
+/// `set_current_user`). Reemplaza al viejo spawn de 800 ms del `setup()` de
+/// lib.rs, que abría la flotante sin consultar sesión (bug: aparecía encima
+/// del LoginScreen). Con sesión persistida el efecto neto es el mismo que
+/// antes — el coach abre segundos después del arranque, cuando el webview
+/// restaura la sesión y AuthContext invoca `set_current_user`.
+///
+/// Conserva el override de autostart: si el OS lanzó Maity al boot, FORZAR la
+/// pref a `true` y abrir aunque el usuario lo haya cerrado con la X en la
+/// sesión previa — la flotante es el único entry point con la main minimizada.
+pub async fn open_coach_on_login<R: Runtime>(app: AppHandle<R>) {
+    let at_boot = crate::STARTED_AT_BOOT.load(std::sync::atomic::Ordering::Relaxed);
+    let should_open = if at_boot {
+        if let Err(e) = save_coach_visibility_pref(&app, true) {
+            warn!("Failed to force coach pref=true at boot: {}", e);
+        }
+        info!("STARTED_AT_BOOT=true → forzando coach-float visible");
+        true
+    } else {
+        should_auto_open_coach(&app)
+    };
+
+    if should_open {
+        if let Err(e) = open_floating_coach(app, Some(true)).await {
+            warn!("Failed to auto-open coach float on login: {}", e);
+        }
+    } else {
+        info!("Coach float hidden by user preference, not auto-opening on login");
+    }
 }
 
 /// Setea explícitamente el tamaño de la ventana coach-float (iter 11):

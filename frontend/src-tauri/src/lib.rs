@@ -82,7 +82,7 @@ static LANGUAGE_PREFERENCE: std::sync::LazyLock<StdMutex<String>> =
 // los argv que llegan por el callback de `tauri-plugin-single-instance`. Se consulta en el
 // listener `app-ready` para decidir si la main window aparece visible+enfocada (apertura
 // manual) o visible+minimizada-en-taskbar (apertura por boot, patrón Steam/Discord).
-static STARTED_AT_BOOT: AtomicBool = AtomicBool::new(false);
+pub(crate) static STARTED_AT_BOOT: AtomicBool = AtomicBool::new(false);
 
 // One-shot: true después del primer `app-ready`. El frontend re-emite `app-ready` en cada
 // remount del webview (p. ej. el hard-navigate post-stop de `useRecordingStop`), y el manejo
@@ -98,6 +98,14 @@ static MAIN_WINDOW_PLACEMENT_DONE: AtomicBool = AtomicBool::new(false);
 // el patrón Steam: el procesamiento ocurre en background sin imponer UI al usuario.
 pub static KEEP_MAIN_MINIMIZED_AFTER_STOP: AtomicBool = AtomicBool::new(false);
 
+// True mientras la main window está en modo "login compacto" (480×640, estilo Steam).
+// Lo setea/limpia `set_main_window_auth_layout`, invocado por el AuthGate del frontend
+// ANTES de emitir `app-ready` (ventana aún oculta → sin flash) y en cada transición de
+// sesión. El `swap` lo hace idempotente y garantiza que SOLO restauramos 1100×700 si
+// nosotros mismos compactamos antes — arrancar ya logueado es no-op total y respeta el
+// tamaño de ventana que el usuario/OS haya restaurado.
+static LOGIN_COMPACT_ACTIVE: AtomicBool = AtomicBool::new(false);
+
 #[derive(Debug, Deserialize)]
 struct RecordingArgs {
     save_path: String,
@@ -108,6 +116,52 @@ struct TranscriptionStatus {
     chunks_in_queue: usize,
     is_processing: bool,
     last_activity_ms: u64,
+}
+
+/// Layout de la main window según estado de sesión (login compacto estilo Steam).
+/// El AuthGate lo invoca ANTES de emitir `app-ready` (ventana oculta → el primer
+/// `show()` ya sale con el tamaño correcto, sin flash grande→chico) y en cada
+/// transición login/logout. Ver el comentario de `LOGIN_COMPACT_ACTIVE`.
+#[tauri::command]
+async fn set_main_window_auth_layout<R: Runtime>(
+    app: AppHandle<R>,
+    authenticated: bool,
+) -> Result<(), String> {
+    let Some(w) = app.get_webview_window("main") else {
+        return Ok(());
+    };
+    if !authenticated {
+        if !LOGIN_COMPACT_ACTIVE.swap(true, Ordering::SeqCst) {
+            let _ = w.set_size(tauri::LogicalSize::new(480.0, 640.0));
+            let _ = w.set_resizable(false);
+            let _ = w.center();
+            log::info!("Main window → login compacto (480×640)");
+        }
+    } else if LOGIN_COMPACT_ACTIVE.swap(false, Ordering::SeqCst) {
+        let _ = w.set_resizable(true);
+        let _ = w.set_size(tauri::LogicalSize::new(1100.0, 700.0));
+        let _ = w.center();
+        log::info!("Main window → layout autenticado (1100×700)");
+    }
+    Ok(())
+}
+
+/// Cleanup al cerrar sesión: detiene y guarda cualquier grabación activa (segmento
+/// de jornada → persistencia nativa; manual → stop estándar) ANTES de que el
+/// frontend limpie `current_user_id` — sin el user el guardado del segmento falla.
+/// Best-effort con timeout: nunca bloquea el logout.
+#[tauri::command]
+async fn logout_cleanup<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
+    if tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        graceful_shutdown_before_exit(&app),
+    )
+    .await
+    .is_err()
+    {
+        log::warn!("logout_cleanup: stop de grabación excedió 30s; continuando logout");
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -691,12 +745,12 @@ pub fn run() {
                 });
             }
 
-            // NOTA: el auto-open del modal flotante vive en el spawn de `coach_float`
-            // más abajo (línea ~654). El `recording-widget` legacy (en `audio/recording_widget.rs`)
-            // existe como ventana auxiliar opcional pero NO se abre automáticamente — el
-            // commit 45a4cbd lo reemplazó con el coach-float como única ventana flotante de
-            // la app. El bug "el modal no aparece al boot" se resolvió quitando el spawn
-            // duplicado de aquí y forzando la pref del coach-float a visible en autostart.
+            // NOTA: el auto-open del modal flotante vive en `set_current_user` →
+            // `coach::commands::open_coach_on_login` (transición de LOGIN): el coach-float
+            // solo aparece con usuario logueado. El `recording-widget` legacy (en
+            // `audio/recording_widget.rs`) existe como ventana auxiliar opcional pero NO se
+            // abre automáticamente — el commit 45a4cbd lo reemplazó con el coach-float como
+            // única ventana flotante de la app.
 
             // Register deep-link scheme for OAuth callbacks
             #[cfg(desktop)]
@@ -746,49 +800,12 @@ pub fn run() {
                 Err(e) => log::warn!("Failed to access widget-preferences.json for migration: {}", e),
             }
 
-            // Auto-abrir el coach-float como ÚNICA ventana flotante de la app.
-            // En idle arranca en modo compact (320×130, esquina inferior derecha)
-            // mostrando sólo el botón "Iniciar grabación". Al iniciar grabación,
-            // el page.tsx detecta isRecording y se expande automáticamente al
-            // layout completo (niveles + health + tips + footer Pausa/Detener).
-            // Esto reemplaza el recording-widget como ventana separada — ya no
-            // tenemos dos flotantes solapados.
-            let app_handle_for_coach = _app.handle().clone();
-            tauri::async_runtime::spawn(async move {
-                // Pequeña pausa para que la main window arranque primero.
-                tokio::time::sleep(tokio::time::Duration::from_millis(800)).await;
-
-                // Override autostart: si el OS lanzó Maity al boot, FORZAR el coach-float
-                // a abrir (y persistir pref=true) aunque el usuario lo haya cerrado con
-                // la X en la sesión previa. La flotante es el único entry point cuando la
-                // main está minimizada — sin ella el usuario quedaría sin forma de iniciar
-                // grabación tras un reinicio. La pref persistida en true significa que en
-                // siguientes aperturas manuales también aparece, hasta que el usuario lo
-                // desactive explícitamente desde Settings.
-                let at_boot = STARTED_AT_BOOT.load(Ordering::Relaxed);
-                let should_open = if at_boot {
-                    if let Err(e) = coach::commands::save_coach_visibility_pref(&app_handle_for_coach, true) {
-                        log::warn!("Failed to force coach pref=true at boot: {}", e);
-                    }
-                    log::info!("STARTED_AT_BOOT=true → forzando coach-float visible");
-                    true
-                } else {
-                    coach::commands::should_auto_open_coach(&app_handle_for_coach)
-                };
-
-                if should_open {
-                    if let Err(e) = coach::commands::open_floating_coach(
-                        app_handle_for_coach,
-                        Some(true), // start_compact = true (idle layout)
-                    )
-                    .await
-                    {
-                        log::warn!("Failed to auto-open coach float: {}", e);
-                    }
-                } else {
-                    log::info!("Coach float hidden by user preference, not auto-opening");
-                }
-            });
+            // El auto-open del coach-float ya NO vive aquí: se movió a la transición de
+            // LOGIN (`set_current_user` → `coach::commands::open_coach_on_login`). El viejo
+            // spawn de 800 ms abría la flotante sin consultar sesión y aparecía encima del
+            // LoginScreen (bug ago-2026). Con sesión persistida el efecto neto es el mismo:
+            // el coach abre segundos después del arranque, cuando el webview restaura la
+            // sesión de Supabase y AuthContext invoca `set_current_user`.
 
             // Interceptar el cierre de la ventana principal: en lugar de matar
             // el proceso, esconder la ventana en el tray y limpiar tareas de
@@ -1337,6 +1354,9 @@ pub fn run() {
             // Multi-account privacy: track current Supabase user in AppState
             database::commands::set_current_user,
             database::commands::clear_current_user,
+            // Sesión ↔ ventana: login compacto estilo Steam + cleanup de logout
+            set_main_window_auth_layout,
+            logout_cleanup,
             database::commands::reset_database,
             // Respaldo .bak del flujo rival (issue #64): consulta + restauracion desde el gate
             database::commands::get_db_backup_info,

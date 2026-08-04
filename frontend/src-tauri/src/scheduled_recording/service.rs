@@ -61,6 +61,7 @@ enum SkipReason {
     ManualInProgress,
     TranscriptionNotReady,
     RearmingNextHour,
+    NoSession,
 }
 
 impl SkipReason {
@@ -69,6 +70,7 @@ impl SkipReason {
             SkipReason::ManualInProgress => "manual_in_progress",
             SkipReason::TranscriptionNotReady => "transcription_not_ready",
             SkipReason::RearmingNextHour => "rearming_next_hour",
+            SkipReason::NoSession => "no_session",
         }
     }
 
@@ -83,6 +85,7 @@ impl SkipReason {
             SkipReason::RearmingNextHour => {
                 "Grabación de jornada detenida; se reanudará a la siguiente hora en punto."
             }
+            SkipReason::NoSession => "Inicia sesión en Maity para grabar la jornada.",
         }
     }
 }
@@ -430,6 +433,14 @@ async fn evaluate_tick<R: Runtime>(
     match (owned, active.as_ref()) {
         // Dentro de ventana y NO somos dueños de una grabación → intentar arrancar.
         (false, Some(_)) => {
+            // Sin sesión no se arranca la jornada: al loguearse, el siguiente
+            // tick (≤ check_interval) la inicia desde ese momento. Los paths de
+            // cierre/rotación NO llevan este gate — si la sesión muere con una
+            // grabación owned, el cierre debe poder correr igual.
+            if !crate::state::has_session(app).await {
+                return (SchedulerPhase::Armed, Some(SkipReason::NoSession));
+            }
+
             // ¿Re-arme pendiente (paro manual reciente o supresión por cierre)? No arrancar aún.
             {
                 let rearm = *shared.rearm_at.read().await;

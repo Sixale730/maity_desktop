@@ -425,23 +425,47 @@ pub async fn api_get_or_create_meeting_idempotency_key(
 /// Set the current Supabase user.id in AppState. Called by frontend on login.
 /// Subsequent SQLite reads/writes use this to filter (privacy isolation between accounts).
 #[tauri::command]
-pub async fn set_current_user(
+pub async fn set_current_user<R: Runtime>(
+    app: AppHandle<R>,
     state: tauri::State<'_, AppState>,
     user_id: String,
 ) -> Result<(), String> {
-    let mut guard = state.current_user_id.write().await;
-    *guard = Some(user_id.clone());
+    // Detectar la transición None→Some (login real). Re-invocaciones con el
+    // mismo id (remounts de AuthContext, refresh de maityUser) no cuentan.
+    let was_logged_out = {
+        let mut guard = state.current_user_id.write().await;
+        let was = guard.is_none();
+        *guard = Some(user_id.clone());
+        was
+    };
     info!("[AppState] current_user_id set to {}", user_id);
+
+    // El auto-open del coach-float vive AQUÍ (no en el setup de lib.rs): la
+    // flotante solo aparece cuando hay usuario logueado. Respeta la pref de
+    // visibilidad y el override de STARTED_AT_BOOT (ver open_coach_on_login).
+    if was_logged_out {
+        tauri::async_runtime::spawn(async move {
+            crate::coach::commands::open_coach_on_login(app).await;
+        });
+    }
     Ok(())
 }
 
 /// Clear the current user from AppState. Called by frontend on logout.
 /// After this, SQLite queries return empty and writes that require a user fail.
 #[tauri::command]
-pub async fn clear_current_user(state: tauri::State<'_, AppState>) -> Result<(), String> {
-    let mut guard = state.current_user_id.write().await;
-    *guard = None;
+pub async fn clear_current_user<R: Runtime>(
+    app: AppHandle<R>,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    {
+        let mut guard = state.current_user_id.write().await;
+        *guard = None;
+    }
     info!("[AppState] current_user_id cleared (logout)");
+    // Sin sesión no hay coach-float. Idempotente (no-op si no existe la ventana);
+    // también dispara al montar AuthContext con maityUser aún null — inofensivo.
+    let _ = crate::coach::commands::close_floating_coach(app).await;
     Ok(())
 }
 

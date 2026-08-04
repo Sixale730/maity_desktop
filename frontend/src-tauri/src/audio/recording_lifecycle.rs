@@ -67,6 +67,13 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
         meeting_name
     );
 
+    // Gate de sesión para los entrypoints NATIVOS (tray, scheduler): estos
+    // caminos no pasan por el AuthGate de React, así que sin este check la app
+    // grababa sin usuario logueado (y el guardado fallaba en silencio después).
+    if !crate::state::has_session(&app).await {
+        return Err("No hay sesión activa; inicia sesión para grabar".to_string());
+    }
+
     // Idle→Starting en una sola CAS: gate + "¿ya grabando?" son la misma operación.
     // El gate viaja hasta initialize_recording, que lo comitea (Starting→Recording)
     // en el punto exacto donde la sesión queda activa. Drop sin commit → Idle.
