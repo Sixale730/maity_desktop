@@ -799,6 +799,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     const doSignOut = async () => {
       try {
+        // Detener y GUARDAR cualquier grabación activa (jornada o manual) ANTES
+        // de limpiar el estado local: el guardado del segmento necesita que
+        // current_user_id siga vivo en Rust. Best-effort con timeout en Rust —
+        // nunca bloquea el logout.
+        await invoke('logout_cleanup').catch((err) => {
+          logger.warn('[Auth] logout_cleanup failed:', err)
+        })
+
         isHandlingCallback.current = false
         setError(null)
         setMaityUserError(null)

@@ -190,17 +190,32 @@ function AuthGate({ children }: { children: React.ReactNode }) {
     }
   }, [isAuthenticated, maityUser, maityUserError, retryFetchMaityUser])
 
-  // Signal Tauri to show the window once we have real content (not splash).
-  // This runs once when auth resolves to any visible state.
+  // Signal Tauri to show the window once we have real content (not splash),
+  // AFTER fixing the window layout for the auth state (login compacto estilo
+  // Steam: 480×640 sin sesión, 1100×700 autenticado). El orden importa: el
+  // resize corre con la ventana AÚN OCULTA, así el primer show() de Rust ya
+  // sale con el tamaño correcto (sin flash grande→chico). El comando es
+  // idempotente (flag LOGIN_COMPACT_ACTIVE en Rust): arrancar ya logueado es
+  // no-op y respeta el tamaño de ventana del usuario. Las transiciones
+  // login/logout re-disparan este efecto vía isAuthenticated.
   const hasSignaledReady = useRef(false)
   useEffect(() => {
-    if (!mounted || isLoading || hasSignaledReady.current) return
-    // At this point we have real UI to show (login, maityUser wait, or app)
-    hasSignaledReady.current = true
-    emit(TauriEvent.APP_READY).catch(() => {
-      // Silently ignore — may fail outside Tauri (e.g. browser dev)
-    })
-  }, [mounted, isLoading])
+    if (!mounted || isLoading) return
+    void (async () => {
+      try {
+        await invoke('set_main_window_auth_layout', { authenticated: isAuthenticated })
+      } catch {
+        // Silently ignore — may fail outside Tauri (e.g. browser dev)
+      }
+      if (!hasSignaledReady.current) {
+        // At this point we have real UI to show (login, maityUser wait, or app)
+        hasSignaledReady.current = true
+        emit(TauriEvent.APP_READY).catch(() => {
+          // Silently ignore — may fail outside Tauri (e.g. browser dev)
+        })
+      }
+    })()
+  }, [mounted, isLoading, isAuthenticated])
 
   // SSG hydration placeholder
   if (!mounted) {
