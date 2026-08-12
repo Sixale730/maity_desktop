@@ -151,7 +151,6 @@ const STRINGS: Record<string, string> = {
 
   // === Composer (faltantes detectadas) ===
   'chat.send': 'Enviar',
-  'chat.voice': 'Voz',
   'chat.attach': 'Adjuntar documento',
 
   // === Adjuntos (extracción de documentos) ===

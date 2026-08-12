@@ -12,7 +12,6 @@ import {
   Eye,
   FileText,
   Loader2,
-  Mic,
   Paperclip,
   SendHorizontal,
   X,
@@ -189,13 +188,6 @@ export const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function 
               <ChevronDown size={9} strokeWidth={2} />
             </button>
 
-            <button
-              type="button"
-              className="w-7 h-7 rounded-md grid place-items-center text-foreground/60 hover:text-foreground hover:bg-card-hi transition-colors"
-              title={t('chat.voice')}
-            >
-              <Mic size={14} strokeWidth={1.8} />
-            </button>
             <input
               ref={fileInputRef}
               type="file"
