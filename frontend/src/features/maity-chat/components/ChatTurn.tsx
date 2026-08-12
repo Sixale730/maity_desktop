@@ -16,10 +16,11 @@ import {
 import ReactMarkdown, { Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { toast } from 'sonner';
-import { PDFService, PptxService } from '@maity/shared';
+import { PptxService } from '@maity/shared';
 import { Dot } from '@/shared/components/shell-v5';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { parseMessageMarkers } from '../utils/parseMessageMarkers';
+import { saveArtifact } from '../utils/saveArtifact';
 import { ChatMark } from './ChatMark';
 import type { ChatMessage } from '../types';
 
@@ -90,6 +91,7 @@ export function ChatTurn({
   const [exporting, setExporting] = useState(false);
   const [copied, setCopied] = useState(false);
   const [downloadingPptx, setDownloadingPptx] = useState(false);
+  const [downloadingMd, setDownloadingMd] = useState(false);
   const isMaity = message.role === 'assistant';
   const parsed = parseMessageMarkers(message.content);
   const { docTitle, ctaLabel, body } = parsed;
@@ -116,17 +118,35 @@ export function ChatTurn({
 
   const dotColor = move ? move.color : 'rgba(241,241,245,0.25)';
 
+  /** Genera el PDF con @react-pdf/renderer y lo guarda vía Rust. Ambos módulos
+   *  se lazy-importan (mismo patrón que MinutaToolbar) para que la lib pesada no
+   *  caiga en el bundle inicial de Next. */
   const handleExport = async () => {
     if (!effectiveDocTitle) return;
     setExporting(true);
     try {
-      await PDFService.generateChatDocumentPDF({
-        title: effectiveDocTitle,
-        content: effectiveDocContent,
-        userName: userFirstName ?? undefined,
-        generatedAt: new Date(message.created_at),
+      const [{ pdf }, { ChatDocumentPdf }] = await Promise.all([
+        import('@react-pdf/renderer'),
+        import('../utils/chat-document-pdf'),
+      ]);
+      const blob = await pdf(
+        <ChatDocumentPdf
+          title={effectiveDocTitle}
+          content={effectiveDocContent}
+          userName={userFirstName ?? undefined}
+          generatedAt={new Date(message.created_at)}
+        />,
+      ).toBlob();
+
+      await saveArtifact({
+        fileName: `${slugify(effectiveDocTitle)}.pdf`,
+        blob,
+        filterName: t('chat.filter_pdf'),
+        extensions: ['pdf'],
+        t,
       });
-    } catch {
+    } catch (err) {
+      console.error('[ChatTurn] PDF export failed:', err);
       toast.error(t('chat.export_failed'));
     } finally {
       setExporting(false);
@@ -151,27 +171,42 @@ export function ChatTurn({
     }
   };
 
-  const handleDownloadMarkdown = () => {
-    const filename = `${slugify(effectiveDocTitle ?? 'documento')}.md`;
-    const blob = new Blob([markdownPayload()], { type: 'text/markdown;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
+  const handleDownloadMarkdown = async () => {
+    setDownloadingMd(true);
+    try {
+      await saveArtifact({
+        fileName: `${slugify(effectiveDocTitle ?? 'documento')}.md`,
+        blob: new Blob([markdownPayload()], { type: 'text/markdown;charset=utf-8' }),
+        filterName: t('chat.filter_markdown'),
+        extensions: ['md'],
+        t,
+      });
+    } catch (err) {
+      console.error('[ChatTurn] Markdown export failed:', err);
+      toast.error(t('chat.export_failed'));
+    } finally {
+      setDownloadingMd(false);
+    }
   };
 
-  /** Construye + descarga el .pptx. pptxgenjs se lazy-loadea dentro de
-   *  PptxService, así que la lib pesada solo se carga cuando el usuario hace clic. */
+  /** Construye + guarda el .pptx. pptxgenjs se lazy-loadea dentro de
+   *  PptxService, así que la lib pesada solo se carga cuando el usuario hace clic.
+   *  Usa `generateDeckBlob` (no `generateDeck`, que dispara la descarga del
+   *  navegador) para que el archivo lo escriba Rust y sepamos la ruta final. */
   const handleDownloadPptx = async () => {
     if (!deckSpec) return;
     setDownloadingPptx(true);
     try {
-      await PptxService.generateDeck(deckSpec);
-    } catch {
+      const { blob, fileName } = await PptxService.generateDeckBlob(deckSpec);
+      await saveArtifact({
+        fileName,
+        blob,
+        filterName: t('chat.filter_pptx'),
+        extensions: ['pptx'],
+        t,
+      });
+    } catch (err) {
+      console.error('[ChatTurn] PPTX export failed:', err);
       toast.error(t('chat.export_failed'));
     } finally {
       setDownloadingPptx(false);
@@ -281,11 +316,16 @@ export function ChatTurn({
                 <button
                   type="button"
                   onClick={handleDownloadMarkdown}
+                  disabled={downloadingMd}
                   title={t('chat.download_markdown')}
                   aria-label={t('chat.download_markdown')}
-                  className="w-7 h-7 grid place-items-center rounded-full border border-border text-foreground/70 hover:text-foreground hover:bg-card-hi transition-colors"
+                  className="w-7 h-7 grid place-items-center rounded-full border border-border text-foreground/70 hover:text-foreground hover:bg-card-hi disabled:opacity-50 transition-colors"
                 >
-                  <FileCode2 className="w-3.5 h-3.5" />
+                  {downloadingMd ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <FileCode2 className="w-3.5 h-3.5" />
+                  )}
                 </button>
                 <button
                   type="button"

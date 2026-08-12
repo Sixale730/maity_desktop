@@ -143,21 +143,10 @@ export { cn } from './maity-shared/utils/cn'
 // Re-export openExternalUrl para que PlanSelection pueda usarlo vía patch
 export { openExternalUrl }
 
-/**
- * Stub mínimo de `PDFService` — la web usa esto para exportar el chat como PDF.
- * En el desktop la feature no es crítica todavía; devolvemos un no-op que
- * notifica al usuario que la exportación a PDF aún no está disponible.
- *
- * Cuando se quiera implementar PDF export en el desktop, reemplazar este stub
- * con una implementación real (probablemente vía comando Tauri o jsPDF).
- */
-export const PDFService = {
-  async generateChatDocumentPDF(_data: unknown): Promise<void> {
-    // Lazy import de sonner para no acoplar el stub al toast system
-    const { toast } = await import('sonner')
-    toast.info('Exportar a PDF aún no está disponible en el desktop.')
-  },
-}
+// El stub `PDFService` (un no-op que solo avisaba "PDF aún no disponible") se
+// eliminó: el desktop ya exporta PDF de verdad. Vive en
+// `features/maity-chat/utils/chat-document-pdf.tsx` (@react-pdf/renderer) y lo
+// guarda el comando Rust `save_artifact_file`.
 
 /**
  * Telemetría del chat — reporte de bugs/ideas. Replica el contrato del web
@@ -244,11 +233,16 @@ function deckSlugify(s: string): string {
 
 export const PptxService = {
   /**
-   * Construye el deck y dispara la descarga en el navegador. Nunca truena con
+   * Construye el deck y devuelve los BYTES + el nombre sugerido. Nunca truena con
    * slides vacíos — cae a una sola slide de título para que el usuario siempre
    * obtenga un archivo.
+   *
+   * El cuerpo es el port tal cual del web; lo único que cambia respecto de
+   * `pptx.service.ts` es la salida: en desktop el archivo lo escribe Rust
+   * (comando `save_artifact_file`) para que el usuario elija dónde y podamos
+   * confirmar la ruta. Ver `generateDeck` abajo para la salida del navegador.
    */
-  async generateDeck(spec: DeckSpec): Promise<void> {
+  async generateDeckBlob(spec: DeckSpec): Promise<{ blob: Blob; fileName: string }> {
     const PptxGenJS = (await import('pptxgenjs')).default
     const pptx = new PptxGenJS()
     pptx.defineLayout({ name: 'MAITY_WIDE', width: DECK_W, height: DECK_H })
@@ -337,6 +331,28 @@ export const PptxService = {
     }
 
     const fileName = `${deckSlugify(spec.title)}.pptx`
-    await pptx.writeFile({ fileName })
+    // pptxgenjs 4.x tipa write() como union string|ArrayBuffer|Blob|Uint8Array.
+    const blob = (await pptx.write({ outputType: 'blob' })) as Blob
+    return { blob, fileName }
+  },
+
+  /**
+   * Salida del web: dispara la descarga del navegador.
+   *
+   * NO usar en el desktop — dentro de WebView2 el archivo cae en la carpeta de
+   * descargas del propio WebView, sin preguntar y sin que la app aprenda la
+   * ruta, así que no se puede confirmar el guardado. Se conserva para minimizar
+   * el drift con `packages/shared/src/services/pptx.service.ts`.
+   */
+  async generateDeck(spec: DeckSpec): Promise<void> {
+    const { blob, fileName } = await PptxService.generateDeckBlob(spec)
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = fileName
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    URL.revokeObjectURL(url)
   },
 }

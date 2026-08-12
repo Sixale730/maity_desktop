@@ -42,6 +42,7 @@ pub mod coach;
 pub mod console_utils;
 pub mod database;
 pub mod events;
+pub mod file_export;
 pub mod llm;
 pub mod logging;
 pub mod meeting_detector;
@@ -1421,6 +1422,10 @@ pub fn run() {
             logging::commands::log_frontend_event,
             logging::commands::clear_old_logs,
             logging::commands::get_health_snapshot,
+            // Guardado de artefactos generados (.md/.pdf/.pptx) con dialogo nativo
+            file_export::save_artifact_file,
+            file_export::get_export_preferences,
+            file_export::set_export_preferences,
             // Coach commands
             coach::setup::install_coach_if_needed,
             coach::setup::cancel_gguf_download,

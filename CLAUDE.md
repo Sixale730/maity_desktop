@@ -404,6 +404,23 @@ Reglas: NO cambiar `emailRedirectTo` a localhost/deep-link (el correo se abre "c
 - Prerequisito: la web debe desplegar `/auth/handoff` (issue Sixale730/maity#133)
 - Enterprise/anual → `/agenda` interceptado en router-compat (sin patch adicional)
 
+### Guardado de artefactos generados (Maity Chat: .md / .pdf / .pptx) — ago-2026
+
+**Nunca usar `<a download>` en el desktop.** Dentro de WebView2 el destino lo decide el WebView: guarda en su propia carpeta de descargas sin preguntar, sin UI visible dentro de Tauri, y la app **nunca aprende la ruta** — por eso no podía confirmar el guardado ni ofrecer "abrir carpeta". Ese era exactamente el síntoma de los botones de descarga de Maity Chat ("parece que no hace nada, pero el archivo sí está en Descargas"). La ruta que "se recordaba" era del perfil de WebView2, no de la app.
+
+El guardado lo hace Rust: `src-tauri/src/file_export.rs` → comando `save_artifact_file(defaultFileName, contentsBase64, filterName, extensions, forceAsk?)`, que devuelve `Some(ruta)` o **`None` si el usuario canceló** (no-op silencioso: el frontend no debe mostrar error). Frontend: helper único `features/maity-chat/utils/saveArtifact.ts` (blob → base64 con `FileReader`, toast con la ruta + acción "Abrir carpeta" que reusa `reveal_in_folder`). Los tres botones de `ChatTurn.tsx` pasan por ahí.
+
+Reglas que no hay que romper:
+- **El comando DEBE ser `async`.** `blocking_save_file()` despacha el diálogo al main thread y espera en un `sync_channel(0)`; desde un comando síncrono (que corre EN el main thread) **deadlockea la app**.
+- **El diálogo se maneja desde Rust con `DialogExt`**, no desde JS. Así no hace falta instalar `@tauri-apps/plugin-dialog` ni agregar permisos `dialog:*` a las capabilities: los comandos propios no pasan por el ACL de Tauri. Mismo patrón que `database::commands::select_legacy_database_path`.
+- **`@tauri-apps/plugin-fs` está instalado y sus permissions están en `tauri.conf.json`, pero el plugin NO se inicializa en `lib.rs`** → cualquier `writeFile` desde JS truena en runtime con "plugin fs not found". Las permissions obsoletas lo hacen parecer soportado; no lo está. Escribir con `std::fs` desde Rust.
+- Extraer la ruta con `FilePath::into_path()`, **no** `.to_string()` (para la variante `Url` eso devuelve un `file://...`).
+- Preferencia `ask_where_to_save` (default `true`) en `export_preferences.json` vía tauri-plugin-store, comandos `get/set_export_preferences`, toggle en Settings → General (`PreferenceSettings.tsx`, visible para todos los roles). En `false` escribe directo a Descargas desambiguando colisiones tipo Explorer (`doc (2).md`). **La verdad vive en Rust**, no en el frontend: la rama "no preguntar" resuelve la carpeta y las colisiones del lado nativo.
+
+**PDF**: `features/maity-chat/utils/chat-document-pdf.tsx` con `@react-pdf/renderer` (lazy-import, igual que `MinutaToolbar`). Solo fuentes built-in del PDF (Helvetica/Courier) — sin `Font.register`, sin fetch de red, sin tocar la CSP. El markdown se parsea con `utils/markdownBlocks.ts` (hand-rolled y testeado): `remark-parse`/`unified` son deps transitivas privadas de `react-markdown` que pnpm no hoistea, y `==resaltado==` es extensión propia de Maity que remark no parsea igual.
+
+**PPTX**: `PptxService.generateDeckBlob()` (en `shared/maity-shared.ts`) devuelve bytes. `generateDeck()` se conserva como la salida del navegador del web para minimizar drift — **no usarla en desktop**.
+
 ### Context Providers (9, en `layout.tsx`)
 
 Stack de providers (de exterior a interior):

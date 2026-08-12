@@ -134,6 +134,10 @@ dashmap = "6.1.0"
 # Directories
 dirs = "5.0.1"
 
+# Decodificacion del payload que manda el WebView al guardar artefactos del chat
+# (.md/.pdf/.pptx). Ya estaba resuelto transitivamente en Cargo.lock.
+base64 = "0.22"
+
 # Additional dependencies for notification system
 url = "2.5.0"
 

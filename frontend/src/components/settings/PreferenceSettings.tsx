@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useRef } from "react"
 import { Switch } from "@/components/ui/switch"
-import { FolderOpen, LogOut, Palette, Mic, Power } from "lucide-react"
+import { FolderOpen, LogOut, Palette, Mic, Power, Download } from "lucide-react"
 import { ThemeSelector } from "@/components/settings/ThemeSelector"
 import { invoke } from "@tauri-apps/api/core"
 import { enable as enableAutostart, disable as disableAutostart, isEnabled as isAutostartEnabled } from "@tauri-apps/plugin-autostart"
@@ -72,6 +72,33 @@ export function PreferenceSettings() {
       logger.warn('Failed to set coach-float visibility:', err);
       // Revertir UI si falló el backend.
       setRecordingWidgetVisible(!next);
+    }
+  };
+
+  // Preferencia de guardado de los archivos que genera Maity (documentos .md/.pdf
+  // del chat, presentaciones .pptx). La verdad vive en Rust (comandos
+  // get/set_export_preferences → export_preferences.json), no aquí: la rama
+  // "no preguntar" resuelve la carpeta de Descargas y desambigua colisiones del
+  // lado nativo, así que el frontend no puede ser la fuente de verdad.
+  const [askWhereToSave, setAskWhereToSave] = useState<boolean | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    invoke<{ ask_where_to_save: boolean }>('get_export_preferences')
+      .then((p) => { if (!cancelled) setAskWhereToSave(p.ask_where_to_save); })
+      .catch((e) => {
+        logger.warn('Failed to load export preferences:', e);
+        if (!cancelled) setAskWhereToSave(true);
+      });
+    return () => { cancelled = true; };
+  }, []);
+  const handleToggleAskWhereToSave = async (next: boolean) => {
+    setAskWhereToSave(next);
+    try {
+      await invoke('set_export_preferences', { preferences: { ask_where_to_save: next } });
+    } catch (err) {
+      logger.warn('Failed to save export preferences:', err);
+      // Revertir UI si falló el backend.
+      setAskWhereToSave(!next);
     }
   };
 
@@ -370,6 +397,29 @@ export function PreferenceSettings() {
                   || msixStartupState === 'disabledByPolicy'
                   || msixStartupState === 'enabledByPolicy')
               : (autostartEnabled === null || !isProductionBuild)}
+          />
+        </div>
+      </div>
+
+      {/* Descargas de archivos generados */}
+      <div className="bg-card rounded-lg border border-border p-6 shadow-sm">
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <div className="flex items-center gap-2 mb-2">
+              <Download className="w-5 h-5 text-foreground" />
+              <h3 className="text-lg font-semibold text-foreground">Preguntar dónde guardar</h3>
+            </div>
+            <p className="text-sm text-muted-foreground">
+              Cuando descargues un documento o una presentación que Maity generó, se abre el
+              diálogo de tu sistema para que elijas la carpeta y el nombre del archivo. Si lo
+              apagas, los archivos se guardan directo en tu carpeta de Descargas. En ambos casos
+              Maity te avisa dónde quedó el archivo.
+            </p>
+          </div>
+          <Switch
+            checked={askWhereToSave ?? true}
+            onCheckedChange={handleToggleAskWhereToSave}
+            disabled={askWhereToSave === null}
           />
         </div>
       </div>
