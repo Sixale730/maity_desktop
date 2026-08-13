@@ -57,17 +57,44 @@ pub async fn sync_queue_get_ready_jobs<R: Runtime>(
         })
 }
 
+/// Lease por defecto de un claim (segundos). Coincide con el `stale_seconds`
+/// por defecto de `sync_queue_reset_stale`: un job abandonado vuelve a
+/// 'pending' a los 5 min. Los ejecutores largos (finalize) deben extenderlo
+/// con `sync_queue_heartbeat_job`.
+const DEFAULT_LEASE_SECS: i64 = 300;
+
 #[tauri::command]
 pub async fn sync_queue_claim_job<R: Runtime>(
     _app: AppHandle<R>,
     state: tauri::State<'_, AppState>,
     id: i64,
+    // Opcional para no romper a los llamadores existentes del frontend, que
+    // invocan con `{ id }` a secas.
+    lease_secs: Option<i64>,
 ) -> Result<bool, String> {
     let pool = state.db_manager.pool();
-    SyncQueueRepository::claim_job(pool, id)
+    SyncQueueRepository::claim_job(pool, id, lease_secs.unwrap_or(DEFAULT_LEASE_SECS))
         .await
         .map_err(|e| {
             error!("Failed to claim sync job {}: {}", id, e);
+            e.to_string()
+        })
+}
+
+/// Extiende el lease de un job en ejecución (keep-alive de trabajos largos).
+/// Devuelve false si el job dejó de estar 'in_progress' (perdió la propiedad).
+#[tauri::command]
+pub async fn sync_queue_heartbeat_job<R: Runtime>(
+    _app: AppHandle<R>,
+    state: tauri::State<'_, AppState>,
+    id: i64,
+    lease_secs: Option<i64>,
+) -> Result<bool, String> {
+    let pool = state.db_manager.pool();
+    SyncQueueRepository::heartbeat_job(pool, id, lease_secs.unwrap_or(DEFAULT_LEASE_SECS))
+        .await
+        .map_err(|e| {
+            error!("Failed to heartbeat sync job {}: {}", id, e);
             e.to_string()
         })
 }

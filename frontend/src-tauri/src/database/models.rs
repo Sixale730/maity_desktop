@@ -235,6 +235,10 @@ pub struct SyncQueueJob {
     pub completed_at: Option<String>,
     // Supabase user.id of the owner. NULL = legacy job (pre privacy migration) — deleted by migration.
     pub user_id: Option<String>,
+    // Hasta cuándo es válido el claim del job (UTC, formato SQLite). NULL = job
+    // sin lease: nunca claimeado, o claimeado por un binario anterior a la
+    // migración 20260812000000 (reset_stale_jobs lo cubre por updated_at).
+    pub lease_expires_at: Option<String>,
 }
 
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]

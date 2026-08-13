@@ -1375,6 +1375,7 @@ pub fn run() {
             database::sync_queue_commands::sync_queue_enqueue,
             database::sync_queue_commands::sync_queue_get_ready_jobs,
             database::sync_queue_commands::sync_queue_claim_job,
+            database::sync_queue_commands::sync_queue_heartbeat_job,
             database::sync_queue_commands::sync_queue_complete_job,
             database::sync_queue_commands::sync_queue_fail_job,
             database::sync_queue_commands::sync_queue_defer_job,
