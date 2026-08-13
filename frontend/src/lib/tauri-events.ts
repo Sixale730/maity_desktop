@@ -86,6 +86,10 @@ export const TauriEvent = {
   CLOUD_SESSION_REFRESHED: 'cloud-session-refreshed',
   // El refresh_token murió (invalid_grant); Rust ya limpió su copia.
   CLOUD_SESSION_EXPIRED: 'cloud-session-expired',
+  // Transición de un job de sync_queue en el loop consumidor de Rust.
+  // cloudSyncWorker.ts lo reenvía al bus DOM como CustomEvent('sync-status-changed').
+  // Payload: { meetingId, jobType, status: 'completed'|'retrying'|'failed', error? }.
+  CLOUD_SYNC_STATUS_CHANGED: 'cloud-sync-status-changed',
 
   // ── Meeting detector ──────────────────────────────────────────────────────
   MEETING_DETECTED: 'meeting-detected',

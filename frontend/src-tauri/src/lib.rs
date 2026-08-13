@@ -891,6 +891,17 @@ pub fn run() {
                 }
             }
 
+            // Loop consumidor de sync_queue en Rust. Va DESPUÉS del reset de
+            // arranque para que su primera pasada ya vea revividos los jobs que
+            // quedaron 'in_progress' por un cierre abrupto.
+            //
+            // Es el ÚNICO ejecutor de la cola: `cloudSyncWorker.ts` dejó de
+            // ejecutar jobs (WebView2 suspende el JS con la ventana oculta en el
+            // tray y en jornada los jobs se acumulaban horas). El loop se
+            // auto-gatea: sin `current_user_id` o sin sesión Supabase sembrada
+            // no toca la cola.
+            cloud_sync::worker::spawn(_app.handle().clone());
+
             // Set models directories (always set, even if engines won't be initialized)
             whisper_engine::commands::set_models_directory(&_app.handle());
             parakeet_engine::commands::set_models_directory(&_app.handle());

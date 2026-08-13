@@ -5,6 +5,22 @@
  * finalize con 403 QUOTA_EXCEEDED. Este módulo centraliza el parseo, el
  * cálculo del siguiente período de cuota y una memoria de sesión para cortar
  * loops de auto-retry (stuckRescue / failed-retry / stuck-watcher).
+ *
+ * ESTADO (jul-2026):
+ *  - El camino 403 QUOTA_EXCEEDED es **residual**: la web ya responde 200 al
+ *    finalize con `analysis_status:'quota_skipped'` (la cuota no gatea la
+ *    minuta, issue #132). No se borra porque hay jobs viejos diferidos con
+ *    `last_error` `quota:` en las DBs de usuarios y porque el reanálisis manual
+ *    (`reanalyzeConversation`) todavía puede toparse con él.
+ *  - `parseQuotaError` / `nextQuotaRetrySqlite` tienen un **port en Rust**
+ *    (`cloud_sync/worker.rs`: `quota_period` / `next_quota_retry`), que es el
+ *    que decide el `next_retry_at` real desde que Rust ejecuta la cola. Si se
+ *    toca la semántica de los períodos aquí, hay que tocarla allá también —
+ *    los tests de ambos lados fijan los mismos casos (daily / monthly /
+ *    desconocido → +6 h).
+ *  - `nextQuotaRetrySqlite` y `toSqliteUtc` ya no tienen consumidores en el
+ *    frontend (el ejecutor JS se desmanteló); se conservan como referencia
+ *    ejecutable del contrato de formato SQLite.
  */
 
 export const PRICING_URL = 'https://www.maity.cloud/pricing';

@@ -92,6 +92,13 @@ pub const CLOUD_SESSION_REFRESHED: &str = "cloud-session-refreshed";
 /// El refresh_token dejó de ser válido (`invalid_grant`); Rust ya limpió su
 /// copia de la sesión y no volverá a intentar hasta una nueva siembra. Payload: `{}`.
 pub const CLOUD_SESSION_EXPIRED: &str = "cloud-session-expired";
+/// Un job de `sync_queue` cambió de estado en el loop consumidor headless.
+/// `cloudSyncWorker.ts` lo reenvía al bus DOM como `CustomEvent('sync-status-changed')`,
+/// que es lo que escuchan `useCloudSyncStatuses`, `/conversations` y `PlanIndicator`.
+/// Payload: `{ meetingId: string, jobType: string, status: "completed"|"retrying"|"failed",
+/// error?: string }` — las 3 primeras keys son las que ya emitía el ejecutor JS;
+/// `error` es aditivo.
+pub const CLOUD_SYNC_STATUS_CHANGED: &str = "cloud-sync-status-changed";
 
 // ── Meeting detector ────────────────────────────────────────────────────────
 pub const MEETING_DETECTED: &str = "meeting-detected";

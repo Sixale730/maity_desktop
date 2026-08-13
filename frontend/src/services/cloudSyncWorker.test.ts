@@ -1,30 +1,51 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
+/**
+ * El worker JS ya NO ejecuta jobs (lo hace el loop headless de Rust,
+ * `cloud_sync/worker.rs`). Lo que queda testeable acá es:
+ *  - el puente `cloud-sync-status-changed` (Tauri) → `sync-status-changed` (DOM),
+ *  - el ciclo start/stop (idempotencia + limpieza del listener),
+ *  - `nudge()` como invoke a `cloud_sync_nudge`,
+ *  - `waitForJobResult` (polling de un job que ahora completa Rust).
+ */
+
 const invokeMock = vi.fn();
-const saveConversationToSupabaseMock = vi.fn();
-const saveTranscriptSegmentsMock = vi.fn();
-const getSessionMock = vi.fn();
-const refreshSessionMock = vi.fn();
+const listenMock = vi.fn();
+const unlistenMock = vi.fn();
+/** Handler registrado por el puente; se dispara a mano en los tests. */
+let statusHandler: ((event: { payload: unknown }) => void) | null = null;
+
+const supabaseLimitMock = vi.fn();
 
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: (cmd: string, args: unknown) => invokeMock(cmd, args),
 }));
 
-vi.mock('@/features/conversations/services/conversations.service', () => ({
-  saveConversationToSupabase: (...args: unknown[]) => saveConversationToSupabaseMock(...args),
-  saveTranscriptSegments: (...args: unknown[]) => saveTranscriptSegmentsMock(...args),
+vi.mock('@tauri-apps/api/event', () => ({
+  listen: (event: string, handler: (e: { payload: unknown }) => void) =>
+    listenMock(event, handler),
 }));
 
 vi.mock('@/lib/supabase', () => ({
   supabase: {
-    auth: {
-      getSession: () => getSessionMock(),
-      refreshSession: () => refreshSessionMock(),
-    },
+    schema: () => ({
+      from: () => ({
+        select: () => ({
+          eq: () => ({
+            eq: () => ({
+              lt: () => ({
+                limit: () => supabaseLimitMock(),
+              }),
+            }),
+          }),
+        }),
+      }),
+    }),
   },
 }));
 
 import { cloudSyncWorker } from './cloudSyncWorker';
+import { TauriEvent } from '@/lib/tauri-events';
 
 const flushMicrotasks = async () => {
   for (let i = 0; i < 5; i++) {
@@ -36,21 +57,19 @@ describe('cloudSyncWorker', () => {
   beforeEach(() => {
     vi.useFakeTimers();
     invokeMock.mockReset();
-    saveConversationToSupabaseMock.mockReset();
-    saveTranscriptSegmentsMock.mockReset();
-    getSessionMock.mockReset();
-    refreshSessionMock.mockReset();
+    listenMock.mockReset();
+    unlistenMock.mockReset();
+    supabaseLimitMock.mockReset();
+    statusHandler = null;
 
-    invokeMock.mockImplementation(async (cmd: string) => {
-      switch (cmd) {
-        case 'sync_queue_reset_stale':
-          return 0;
-        case 'sync_queue_get_ready_jobs':
-          return [];
-        default:
-          return null;
+    invokeMock.mockResolvedValue(null);
+    supabaseLimitMock.mockResolvedValue({ data: [], error: null });
+    listenMock.mockImplementation(
+      async (_event: string, handler: (e: { payload: unknown }) => void) => {
+        statusHandler = handler;
+        return unlistenMock;
       }
-    });
+    );
   });
 
   afterEach(() => {
@@ -58,262 +77,129 @@ describe('cloudSyncWorker', () => {
     vi.useRealTimers();
   });
 
-  it('start is idempotent', () => {
-    cloudSyncWorker.start();
-    cloudSyncWorker.start();
-    cloudSyncWorker.start();
-    // Expect only one setInterval and one initial call path
-    const resetStaleCalls = invokeMock.mock.calls.filter(c => c[0] === 'sync_queue_reset_stale');
-    // start calls reset_stale + cleanupOldJobs (which also calls reset_stale) → 2 total per start
-    // Calling start 3 times should NOT produce 6 calls
-    expect(resetStaleCalls.length).toBeLessThanOrEqual(2);
+  it('no ejecuta jobs: nunca pide ni toma jobs de la cola (eso es de Rust)', async () => {
+    cloudSyncWorker.start('user-1');
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(30_000);
+
+    const executorCommands = invokeMock.mock.calls
+      .map((c) => c[0] as string)
+      .filter((cmd) =>
+        [
+          'sync_queue_get_ready_jobs',
+          'sync_queue_claim_job',
+          'sync_queue_complete_job',
+          'sync_queue_fail_job',
+          'sync_queue_defer_job',
+        ].includes(cmd)
+      );
+    expect(executorCommands).toEqual([]);
   });
 
-  it('stop clears the interval and does not process further jobs', async () => {
-    cloudSyncWorker.start();
+  it('start registra el puente de eventos una sola vez (idempotente)', async () => {
+    cloudSyncWorker.start('user-1');
+    cloudSyncWorker.start('user-1');
+    cloudSyncWorker.start('user-1');
     await flushMicrotasks();
-    cloudSyncWorker.stop();
 
-    const callsBefore = invokeMock.mock.calls.length;
-    await vi.advanceTimersByTimeAsync(20_000);
-    // Ready jobs should NOT be polled after stop
-    const newReadyCalls = invokeMock.mock.calls
-      .slice(callsBefore)
-      .filter(c => c[0] === 'sync_queue_get_ready_jobs');
-    expect(newReadyCalls.length).toBe(0);
+    expect(listenMock).toHaveBeenCalledTimes(1);
+    expect(listenMock.mock.calls[0][0]).toBe(TauriEvent.CLOUD_SYNC_STATUS_CHANGED);
   });
 
-  it('nudge forces immediate processing when started', async () => {
-    cloudSyncWorker.start();
-    await flushMicrotasks();
-
-    const callsBefore = invokeMock.mock.calls.length;
-    cloudSyncWorker.nudge();
-    await flushMicrotasks();
-
-    const newReadyCalls = invokeMock.mock.calls
-      .slice(callsBefore)
-      .filter(c => c[0] === 'sync_queue_get_ready_jobs');
-    expect(newReadyCalls.length).toBeGreaterThanOrEqual(1);
-  });
-
-  it('nudge does nothing when not started', async () => {
-    cloudSyncWorker.nudge();
-    await flushMicrotasks();
-    expect(invokeMock).not.toHaveBeenCalled();
-  });
-
-  it('save_conversation job: claims, executes, completes and emits sync-status-changed', async () => {
-    const job = {
-      id: 42,
-      job_type: 'save_conversation',
-      meeting_id: 'm-1',
-      payload: JSON.stringify({
-        user_id: 'u',
-        title: 't',
-        started_at: 's',
-        finished_at: 'f',
-        transcript_text: 'hola',
-        source: 'desktop',
-      }),
-      status: 'pending',
-      attempt_count: 0,
-      max_attempts: 10,
-      next_retry_at: null,
-      last_error: null,
-      depends_on: null,
-      result_data: null,
-      created_at: '',
-      updated_at: '',
-      completed_at: null,
-    };
-
-    getSessionMock.mockResolvedValue({ data: { session: { access_token: 'tok' } } });
-    saveConversationToSupabaseMock.mockResolvedValue('conv-abc');
-
-    invokeMock.mockImplementation(async (cmd: string) => {
-      switch (cmd) {
-        case 'sync_queue_reset_stale': return 0;
-        case 'sync_queue_get_ready_jobs': return [job];
-        case 'sync_queue_claim_job': return true;
-        case 'sync_queue_complete_job': return true;
-        default: return null;
-      }
-    });
-
+  it('reenvía cloud-sync-status-changed como CustomEvent sync-status-changed', async () => {
     const events: CustomEvent[] = [];
     const listener = (e: Event) => events.push(e as CustomEvent);
     window.addEventListener('sync-status-changed', listener);
 
-    cloudSyncWorker.start();
+    cloudSyncWorker.start('user-1');
     await flushMicrotasks();
-    await flushMicrotasks();
+
+    expect(statusHandler).toBeTypeOf('function');
+    statusHandler!({
+      payload: {
+        meetingId: 'm-1',
+        jobType: 'finalize_conversation',
+        status: 'completed',
+      },
+    });
 
     window.removeEventListener('sync-status-changed', listener);
 
-    expect(saveConversationToSupabaseMock).toHaveBeenCalledTimes(1);
-
-    const completeCall = invokeMock.mock.calls.find(c => c[0] === 'sync_queue_complete_job');
-    expect(completeCall).toBeDefined();
-    const completeArgs = completeCall![1] as { id: number; resultData: string };
-    expect(completeArgs.id).toBe(42);
-    expect(JSON.parse(completeArgs.resultData)).toEqual({ conversation_id: 'conv-abc' });
-
     expect(events).toHaveLength(1);
-    expect(events[0].detail).toMatchObject({
+    // Las keys son las que filtran useCloudSyncStatuses, /conversations y
+    // PlanIndicator: si cambian, esos listeners dejan de disparar en silencio.
+    expect(events[0].detail).toEqual({
       meetingId: 'm-1',
-      jobType: 'save_conversation',
+      jobType: 'finalize_conversation',
       status: 'completed',
     });
   });
 
-  it('failed job: increments retry with exponential backoff and emits "retrying"', async () => {
-    const job = {
-      id: 7,
-      job_type: 'save_conversation',
-      meeting_id: 'm-2',
-      payload: JSON.stringify({ user_id: 'u', title: 't', started_at: 's', finished_at: 'f', transcript_text: '', source: 'x' }),
-      status: 'pending',
-      attempt_count: 0,
-      max_attempts: 5,
-      next_retry_at: null,
-      last_error: null,
-      depends_on: null,
-      result_data: null,
-      created_at: '',
-      updated_at: '',
-      completed_at: null,
-    };
-
-    getSessionMock.mockResolvedValue({ data: { session: { access_token: 'tok' } } });
-    saveConversationToSupabaseMock.mockRejectedValue(new Error('network down'));
-
-    invokeMock.mockImplementation(async (cmd: string) => {
-      switch (cmd) {
-        case 'sync_queue_reset_stale': return 0;
-        case 'sync_queue_get_ready_jobs': return [job];
-        case 'sync_queue_claim_job': return true;
-        case 'sync_queue_fail_job': return true;
-        default: return null;
-      }
-    });
-
+  it('propaga el campo error cuando el job falla o se difiere', async () => {
     const events: CustomEvent[] = [];
     const listener = (e: Event) => events.push(e as CustomEvent);
     window.addEventListener('sync-status-changed', listener);
 
-    cloudSyncWorker.start();
+    cloudSyncWorker.start('user-1');
     await flushMicrotasks();
-    await flushMicrotasks();
+
+    statusHandler!({
+      payload: {
+        meetingId: 'm-2',
+        jobType: 'save_conversation',
+        status: 'retrying',
+        error: 'network:sin internet',
+      },
+    });
 
     window.removeEventListener('sync-status-changed', listener);
 
-    const failCall = invokeMock.mock.calls.find(c => c[0] === 'sync_queue_fail_job');
-    expect(failCall).toBeDefined();
-    const failArgs = failCall![1] as { id: number; errorMsg: string; nextRetryAt: string | null };
-    expect(failArgs.id).toBe(7);
-    expect(failArgs.errorMsg).toContain('network down');
-    // Not yet exhausted → should schedule a retry
-    expect(failArgs.nextRetryAt).toBeTruthy();
-
-    expect(events).toHaveLength(1);
     expect(events[0].detail).toMatchObject({
-      meetingId: 'm-2',
-      jobType: 'save_conversation',
       status: 'retrying',
+      error: 'network:sin internet',
     });
   });
 
-  it('failed job at max_attempts emits "failed" and sets nextRetryAt to null', async () => {
-    const job = {
-      id: 9,
-      job_type: 'save_conversation',
-      meeting_id: 'm-3',
-      payload: JSON.stringify({ user_id: 'u', title: 't', started_at: 's', finished_at: 'f', transcript_text: '', source: 'x' }),
-      status: 'pending',
-      attempt_count: 4,
-      max_attempts: 5,
-      next_retry_at: null,
-      last_error: null,
-      depends_on: null,
-      result_data: null,
-      created_at: '',
-      updated_at: '',
-      completed_at: null,
-    };
-
-    getSessionMock.mockResolvedValue({ data: { session: { access_token: 'tok' } } });
-    saveConversationToSupabaseMock.mockRejectedValue(new Error('permanent failure'));
-
-    invokeMock.mockImplementation(async (cmd: string) => {
-      switch (cmd) {
-        case 'sync_queue_reset_stale': return 0;
-        case 'sync_queue_get_ready_jobs': return [job];
-        case 'sync_queue_claim_job': return true;
-        case 'sync_queue_fail_job': return true;
-        default: return null;
-      }
-    });
-
-    const events: CustomEvent[] = [];
-    const listener = (e: Event) => events.push(e as CustomEvent);
-    window.addEventListener('sync-status-changed', listener);
-
-    cloudSyncWorker.start();
-    await flushMicrotasks();
+  it('stop libera el listener y deja de reenviar', async () => {
+    cloudSyncWorker.start('user-1');
     await flushMicrotasks();
 
-    window.removeEventListener('sync-status-changed', listener);
+    const capturedHandler = statusHandler!;
+    cloudSyncWorker.stop();
+    expect(unlistenMock).toHaveBeenCalledTimes(1);
 
-    const failCall = invokeMock.mock.calls.find(c => c[0] === 'sync_queue_fail_job');
-    const failArgs = failCall![1] as { nextRetryAt: string | null };
-    // attempt_count + 1 = 5 === max_attempts → nextRetryAt = null
-    expect(failArgs.nextRetryAt).toBeNull();
-
-    expect(events[0].detail.status).toBe('failed');
+    // Aunque llegara un evento tardío, ya no hay nadie escuchando del lado Tauri;
+    // se comprueba que el ciclo start→stop→start no duplica listeners.
+    cloudSyncWorker.start('user-1');
+    await flushMicrotasks();
+    expect(listenMock).toHaveBeenCalledTimes(2);
+    expect(statusHandler).not.toBe(capturedHandler);
   });
 
-  it('skips execution when claim returns false (someone else got the job)', async () => {
-    const job = {
-      id: 11,
-      job_type: 'save_conversation',
-      meeting_id: 'm-4',
-      payload: JSON.stringify({}),
-      status: 'pending',
-      attempt_count: 0,
-      max_attempts: 5,
-      next_retry_at: null,
-      last_error: null,
-      depends_on: null,
-      result_data: null,
-      created_at: '',
-      updated_at: '',
-      completed_at: null,
-    };
-
-    invokeMock.mockImplementation(async (cmd: string) => {
-      switch (cmd) {
-        case 'sync_queue_reset_stale': return 0;
-        case 'sync_queue_get_ready_jobs': return [job];
-        case 'sync_queue_claim_job': return false;
-        default: return null;
-      }
-    });
-
-    cloudSyncWorker.start();
-    await flushMicrotasks();
+  it('nudge invoca cloud_sync_nudge (despierta al consumidor de Rust)', async () => {
+    invokeMock.mockClear();
+    cloudSyncWorker.nudge();
     await flushMicrotasks();
 
-    expect(saveConversationToSupabaseMock).not.toHaveBeenCalled();
-    const completeCall = invokeMock.mock.calls.find(c => c[0] === 'sync_queue_complete_job');
-    expect(completeCall).toBeUndefined();
+    expect(invokeMock.mock.calls.some((c) => c[0] === 'cloud_sync_nudge')).toBe(true);
+  });
+
+  it('el stuck-watcher corre al arrancar y cada minuto', async () => {
+    cloudSyncWorker.start('user-1');
+    await flushMicrotasks();
+    expect(supabaseLimitMock).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(supabaseLimitMock).toHaveBeenCalledTimes(2);
+
+    cloudSyncWorker.stop();
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(supabaseLimitMock).toHaveBeenCalledTimes(2);
   });
 
   it('waitForJobResult returns parsed result_data when job completes', async () => {
     let callCount = 0;
     invokeMock.mockImplementation(async (cmd: string) => {
-      if (cmd === 'sync_queue_reset_stale') return 0;
-      if (cmd === 'sync_queue_get_ready_jobs') return [];
       if (cmd === 'sync_queue_get_job') {
         callCount++;
         if (callCount >= 2) {
@@ -328,7 +214,7 @@ describe('cloudSyncWorker', () => {
       return null;
     });
 
-    cloudSyncWorker.start();
+    cloudSyncWorker.start('user-1');
 
     const resultPromise = cloudSyncWorker.waitForJobResult(5, 10_000);
     await vi.advanceTimersByTimeAsync(3_000);
@@ -339,15 +225,13 @@ describe('cloudSyncWorker', () => {
 
   it('waitForJobResult returns null when job fails', async () => {
     invokeMock.mockImplementation(async (cmd: string) => {
-      if (cmd === 'sync_queue_reset_stale') return 0;
-      if (cmd === 'sync_queue_get_ready_jobs') return [];
       if (cmd === 'sync_queue_get_job') {
         return { id: 5, status: 'failed', last_error: 'boom', result_data: null };
       }
       return null;
     });
 
-    cloudSyncWorker.start();
+    cloudSyncWorker.start('user-1');
 
     const resultPromise = cloudSyncWorker.waitForJobResult(5, 10_000);
     await vi.advanceTimersByTimeAsync(2_000);
@@ -358,15 +242,13 @@ describe('cloudSyncWorker', () => {
 
   it('waitForJobResult returns null on timeout', async () => {
     invokeMock.mockImplementation(async (cmd: string) => {
-      if (cmd === 'sync_queue_reset_stale') return 0;
-      if (cmd === 'sync_queue_get_ready_jobs') return [];
       if (cmd === 'sync_queue_get_job') {
         return { id: 5, status: 'in_progress', result_data: null };
       }
       return null;
     });
 
-    cloudSyncWorker.start();
+    cloudSyncWorker.start('user-1');
 
     const resultPromise = cloudSyncWorker.waitForJobResult(5, 3_000);
     await vi.advanceTimersByTimeAsync(5_000);

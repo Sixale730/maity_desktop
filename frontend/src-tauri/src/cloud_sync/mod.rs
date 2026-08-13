@@ -11,12 +11,14 @@
 // siguiente refresh del cliente JS daría `invalid_grant` → logout espontáneo.
 //
 // `executors.rs` tiene las escrituras a PostgREST (espejo del supabase-js de
-// `conversations.service.ts`); el loop consumidor que las orquesta llega en el
-// commit 4. Aquí solo se re-exporta la API pública.
+// `conversations.service.ts`) y `worker.rs` el loop que las orquesta: desde
+// jul-2026 Rust es el ÚNICO ejecutor de `sync_queue`. El worker JS quedó
+// reducido a un puente de eventos + stuck-watcher + `waitForJobResult`.
 
 pub mod commands;
 pub mod executors;
 pub mod session;
+pub mod worker;
 
 pub use executors::{execute_save_conversation, execute_save_transcript_segments};
 pub use session::{
