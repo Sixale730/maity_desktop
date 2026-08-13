@@ -18,7 +18,10 @@ export interface SaveArtifactArgs {
 }
 
 /**
- * Guarda un artefacto del chat vía el comando Rust `save_artifact_file`.
+ * Guarda un archivo generado por la app vía el comando Rust `save_artifact_file`.
+ *
+ * Vive en `lib/` (no dentro de una feature) porque lo usan varias: los tres
+ * botones de Maity Chat (.md / .pdf / .pptx) y el "Descargar PDF" de la minuta.
  *
  * Por qué no un `<a download>`: dentro de WebView2 el destino lo decide el
  * WebView, guarda en su propia carpeta sin preguntar y la app nunca aprende la
@@ -26,11 +29,11 @@ export interface SaveArtifactArgs {
  * usuario elige dónde (o se guarda en Descargas según la preferencia) y siempre
  * sabemos la ruta final para confirmarla y poder abrir la carpeta.
  *
- * Un solo lugar para el toast + "Abrir carpeta" + la cancelación, para que los
- * tres botones del chat se comporten igual.
+ * Un solo lugar para el toast + "Abrir carpeta" + la cancelación, para que todos
+ * los botones de guardado se comporten igual.
  *
  * @returns la ruta guardada, o `null` si el usuario canceló el diálogo.
- * @throws  si el guardado falló de verdad — el caller muestra `chat.export_failed`.
+ * @throws  si el guardado falló de verdad — el caller muestra su propio error.
  */
 export async function saveArtifact({
   fileName,
@@ -53,11 +56,11 @@ export async function saveArtifact({
   // Cancelar es un no-op silencioso: nada de toast de error.
   if (!path) return null;
 
-  toast.success(t('chat.save_success'), {
+  toast.success(t('export.save_success'), {
     description: path,
     duration: 8000,
     action: {
-      label: t('chat.save_reveal'),
+      label: t('export.save_reveal'),
       onClick: () => {
         invoke('reveal_in_folder', { path }).catch(() => {});
       },

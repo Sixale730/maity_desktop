@@ -4,6 +4,8 @@ import { useState } from 'react';
 import { Download, Loader2, RefreshCw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { toast } from 'sonner';
+import { saveArtifact } from '@/lib/saveArtifact';
+import { useLanguage } from '@/contexts/LanguageContext';
 import type { MeetingMinutesDataV2 } from '@/features/conversations/services/conversations.service';
 
 interface MinutaToolbarProps {
@@ -15,6 +17,7 @@ interface MinutaToolbarProps {
 
 export function MinutaToolbar({ minuta, onRegenerate, isRegenerating }: MinutaToolbarProps) {
   const [downloading, setDownloading] = useState(false);
+  const { t } = useLanguage();
 
   const handleDownload = async () => {
     setDownloading(true);
@@ -24,14 +27,15 @@ export function MinutaToolbar({ minuta, onRegenerate, isRegenerating }: MinutaTo
         import('@/features/conversations/utils/minuta-pdf'),
       ]);
       const blob = await pdf(<MinutaPdfDocument minuta={minuta} />).toBlob();
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = `${sanitizeFilename(minuta.meta.titulo)}.pdf`;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      URL.revokeObjectURL(url);
+      // Guardado nativo (nunca `<a download>`): abre el diálogo del SO, confirma
+      // con toast + "Abrir carpeta". Cancelar devuelve null y es un no-op.
+      await saveArtifact({
+        fileName: `${sanitizeFilename(minuta.meta.titulo)}.pdf`,
+        blob,
+        filterName: t('export.filter_pdf'),
+        extensions: ['pdf'],
+        t,
+      });
     } catch (err) {
       console.error('[MinutaToolbar] PDF download failed:', err);
       toast.error('No se pudo generar el PDF');

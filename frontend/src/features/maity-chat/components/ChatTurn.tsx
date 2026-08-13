@@ -20,7 +20,7 @@ import { PptxService } from '@maity/shared';
 import { Dot } from '@/shared/components/shell-v5';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { parseMessageMarkers } from '../utils/parseMessageMarkers';
-import { saveArtifact } from '../utils/saveArtifact';
+import { saveArtifact } from '@/lib/saveArtifact';
 import { ChatMark } from './ChatMark';
 import type { ChatMessage } from '../types';
 
@@ -141,7 +141,7 @@ export function ChatTurn({
       await saveArtifact({
         fileName: `${slugify(effectiveDocTitle)}.pdf`,
         blob,
-        filterName: t('chat.filter_pdf'),
+        filterName: t('export.filter_pdf'),
         extensions: ['pdf'],
         t,
       });
@@ -177,7 +177,7 @@ export function ChatTurn({
       await saveArtifact({
         fileName: `${slugify(effectiveDocTitle ?? 'documento')}.md`,
         blob: new Blob([markdownPayload()], { type: 'text/markdown;charset=utf-8' }),
-        filterName: t('chat.filter_markdown'),
+        filterName: t('export.filter_markdown'),
         extensions: ['md'],
         t,
       });
@@ -201,7 +201,7 @@ export function ChatTurn({
       await saveArtifact({
         fileName,
         blob,
-        filterName: t('chat.filter_pptx'),
+        filterName: t('export.filter_pptx'),
         extensions: ['pptx'],
         t,
       });

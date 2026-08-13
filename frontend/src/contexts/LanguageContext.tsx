@@ -179,13 +179,14 @@ const STRINGS: Record<string, string> = {
   'chat.copy_success': 'Copiado al portapapeles',
   'chat.copy_failed': 'No se pudo copiar',
 
-  // === Guardado de archivos generados (.md/.pdf del documento, .pptx del deck) ===
+  // === Guardado de archivos generados (documento .md/.pdf, deck .pptx, minuta .pdf) ===
+  // Namespace `export.*`: las usa `lib/saveArtifact.ts`, que no es exclusivo del chat.
   // La cancelación del diálogo no necesita clave: es un no-op silencioso.
-  'chat.save_success': 'Archivo guardado',
-  'chat.save_reveal': 'Abrir carpeta',
-  'chat.filter_pdf': 'Documento PDF',
-  'chat.filter_markdown': 'Documento Markdown',
-  'chat.filter_pptx': 'Presentación de PowerPoint',
+  'export.save_success': 'Archivo guardado',
+  'export.save_reveal': 'Abrir carpeta',
+  'export.filter_pdf': 'Documento PDF',
+  'export.filter_markdown': 'Documento Markdown',
+  'export.filter_pptx': 'Presentación de PowerPoint',
 
   // === Presentaciones .pptx (artifact deck) ===
   'chat.download_pptx': 'Descargar .pptx',
