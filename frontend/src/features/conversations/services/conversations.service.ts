@@ -1078,6 +1078,14 @@ export interface UpdateEvaluationData {
   communication_feedback?: CommunicationFeedback;
 }
 
+/**
+ * ESPEJO EN RUST: el shape de `row` (y el de `saveTranscriptSegments` más abajo)
+ * está replicado 1:1 en `src-tauri/src/cloud_sync/executors.rs`, que es quien
+ * hace estas dos escrituras cuando el consumidor de `sync_queue` corre headless
+ * (ventana oculta en el tray, WebView2 suspende este JS). Cualquier cambio de
+ * keys/defaults debe ir en AMBOS lados — el golden test de `executors.rs` falla
+ * si divergen.
+ */
 export async function saveConversationToSupabase(
   data: SaveConversationData
 ): Promise<string> {

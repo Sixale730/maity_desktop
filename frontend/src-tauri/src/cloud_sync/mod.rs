@@ -10,12 +10,15 @@
 // refresh_token de Supabase ROTA, así que si Rust refresca y no propaga, el
 // siguiente refresh del cliente JS daría `invalid_grant` → logout espontáneo.
 //
-// Los ejecutores de jobs y el loop consumidor viven en módulos aparte
-// (commits 3 y 4); aquí solo está la sesión.
+// `executors.rs` tiene las escrituras a PostgREST (espejo del supabase-js de
+// `conversations.service.ts`); el loop consumidor que las orquesta llega en el
+// commit 4. Aquí solo se re-exporta la API pública.
 
 pub mod commands;
+pub mod executors;
 pub mod session;
 
+pub use executors::{execute_save_conversation, execute_save_transcript_segments};
 pub use session::{
     get_valid_token, CloudSession, CloudSyncState, ERR_NO_SESSION, ERR_SESSION_EXPIRED,
 };

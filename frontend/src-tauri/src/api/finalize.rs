@@ -56,10 +56,16 @@ struct FinalizeRequest {
 }
 
 // ============================================================================
-// TAURI COMMAND
+// IMPLEMENTACIÓN (invocable desde Rust)
 // ============================================================================
 
-/// Calls the Vercel conversations-finalize endpoint to evaluate a conversation.
+/// Cuerpo real del finalize, separado del `#[tauri::command]` para que el
+/// consumidor headless de `cloud_sync` pueda llamarlo sin pasar por el webview.
+///
+/// El `access_token` sigue siendo un PARÁMETRO (no se resuelve adentro): el path
+/// JS le pasa el de `supabase.auth.getSession()` y el worker de Rust el de
+/// `cloud_sync::get_valid_token`, sin que este módulo tenga que conocer el
+/// estado de sesión.
 ///
 /// The endpoint reads transcript segments from Supabase, evaluates with LLM
 /// (DeepSeek → OpenAI fallback), generates embeddings, memories, and daily scores,
@@ -69,8 +75,7 @@ struct FinalizeRequest {
 /// * `conversation_id` - UUID of the conversation in omi_conversations
 /// * `duration_seconds` - Duration of the conversation in seconds
 /// * `access_token` - Supabase JWT from the authenticated user session
-#[tauri::command]
-pub async fn finalize_conversation_cloud(
+pub async fn finalize_impl(
     conversation_id: String,
     duration_seconds: f64,
     access_token: String,
@@ -202,4 +207,26 @@ pub async fn finalize_conversation_cloud(
     }
 
     Ok(data)
+}
+
+// ============================================================================
+// TAURI COMMAND
+// ============================================================================
+
+/// Wrapper delgado sobre [`finalize_impl`]. La firma del comando NO cambia: el
+/// frontend (reintentos manuales desde la UI) lo sigue invocando igual.
+#[tauri::command]
+pub async fn finalize_conversation_cloud(
+    conversation_id: String,
+    duration_seconds: f64,
+    access_token: String,
+    recording_mode: Option<String>,
+) -> Result<FinalizeResponse, String> {
+    finalize_impl(
+        conversation_id,
+        duration_seconds,
+        access_token,
+        recording_mode,
+    )
+    .await
 }
