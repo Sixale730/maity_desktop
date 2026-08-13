@@ -10,6 +10,7 @@ import MainContent from '@/components/MainContent'
 import { Toaster } from 'sonner'
 import { useState, useEffect, useRef } from 'react'
 import { emit } from '@tauri-apps/api/event'
+import { createSubscriptionGroup } from '@/lib/tauriSubscribe'
 import { invoke } from '@tauri-apps/api/core'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { RecordingStateProvider } from '@/contexts/RecordingStateContext'
@@ -401,14 +402,16 @@ function AppContent({ children }: { children: React.ReactNode }) {
     // Tauri native: onCloseRequested fires reliably when user clicks the X button
     // or quits the app natively. Dynamic import so this doesn't crash in pure
     // browser dev mode (where @tauri-apps/api isn't initialized).
-    let unlistenTauriClose: (() => void) | undefined
+    // El grupo se crea ANTES del import dinámico: si el cleanup gana la carrera,
+    // el handler que llegue tarde se libera solo en vez de quedar vivo (#65).
+    const closeSubs = createSubscriptionGroup()
     ;(async () => {
       try {
         const { getCurrentWindow } = await import('@tauri-apps/api/window')
-        unlistenTauriClose = await getCurrentWindow().onCloseRequested(() => {
+        closeSubs.add(getCurrentWindow().onCloseRequested(() => {
           // Don't preventDefault — let the window close after we log.
           emitClose()
-        })
+        }))
       } catch {
         // Outside Tauri context (e.g. browser dev) — beforeunload covers this case.
       }
@@ -419,7 +422,7 @@ function AppContent({ children }: { children: React.ReactNode }) {
         window.removeEventListener('beforeunload', emitClose)
         window.removeEventListener('pagehide', emitClose)
       }
-      unlistenTauriClose?.()
+      closeSubs.dispose()
     }
   }, [])
 

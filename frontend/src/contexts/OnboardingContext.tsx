@@ -2,7 +2,7 @@
 
 import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { listen } from '@tauri-apps/api/event';
+import { createSubscriptionGroup } from '@/lib/tauriSubscribe';
 import type { PermissionStatus, OnboardingPermissions } from '@/types/onboarding';
 import { logger } from '@/lib/logger';
 import { TauriEvent } from '@/lib/tauri-events';
@@ -91,6 +91,10 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
   });
   // §4.1 Default unico: gemma3:4b (antes default era 1b). 1b queda fuera del onboarding.
   const [selectedSummaryModel, setSelectedSummaryModel] = useState<string>('gemma3:4b');
+  // Latest-ref para que el listener de progreso del modelo de resumen se monte
+  // una sola vez en lugar de resuscribirse cada vez que cambia la selección (#65).
+  const selectedSummaryModelRef = useRef(selectedSummaryModel);
+  selectedSummaryModelRef.current = selectedSummaryModel;
   const [databaseExists, setDatabaseExists] = useState(false);
   const [isBackgroundDownloading, setIsBackgroundDownloading] = useState(false);
 
@@ -223,7 +227,8 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
 
   // Listen to Parakeet download progress
   useEffect(() => {
-    const unlisten = listen<{
+    const subs = createSubscriptionGroup();
+    subs.on<{
       modelName: string;
       progress: number;
       downloaded_mb?: number;
@@ -249,7 +254,7 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
       }
     );
 
-    const unlistenComplete = listen<{ modelName: string }>(
+    subs.on<{ modelName: string }>(
       TauriEvent.PARAKEET_MODEL_DOWNLOAD_COMPLETE,
       (event) => {
         const { modelName } = event.payload;
@@ -260,7 +265,7 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
       }
     );
 
-    const unlistenError = listen<{ modelName: string; error: string }>(
+    subs.on<{ modelName: string; error: string }>(
       TauriEvent.PARAKEET_MODEL_DOWNLOAD_ERROR,
       (event) => {
         const { modelName } = event.payload;
@@ -270,16 +275,16 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
       }
     );
 
-    return () => {
-      unlisten.then(fn => fn());
-      unlistenComplete.then(fn => fn());
-      unlistenError.then(fn => fn());
-    };
-  }, [selectedSummaryModel]);
+    return () => subs.dispose();
+    // Sin deps: el handler no lee nada del render. Antes llevaba
+    // [selectedSummaryModel] — dep espuria que resuscribia al mismo evento (#65).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Listen to summary model (Built-in AI) download progress
   useEffect(() => {
-    const unlisten = listen<{
+    const subs = createSubscriptionGroup();
+    subs.on<{
       model: string;
       progress: number;
       downloaded_mb?: number;
@@ -292,7 +297,7 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
         const { model, progress, downloaded_mb, total_mb, speed_mbps, status } = event.payload;
         // §4.1 Solo trackeamos progreso de gemma3:4b (1b ya no se descarga en onboarding).
         // Mantenemos el OR con selectedSummaryModel por si el backend reporta otro id.
-        if (model === selectedSummaryModel || model === 'gemma3:4b') {
+        if (model === selectedSummaryModelRef.current || model === 'gemma3:4b') {
           setSummaryModelProgress(progress);
           setSummaryModelProgressInfo({
             percent: progress,
@@ -307,10 +312,11 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
       }
     );
 
-    return () => {
-      unlisten.then(fn => fn());
-    };
-  }, [selectedSummaryModel]);
+    return () => subs.dispose();
+    // Sin deps: el modelo vigente se lee del ref, asi que el listener se monta
+    // una sola vez en vez de resuscribirse al cambiar la seleccion (#65).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const checkDatabaseStatus = async () => {
     try {

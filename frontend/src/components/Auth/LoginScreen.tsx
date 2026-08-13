@@ -3,7 +3,7 @@
 import React, { useState, useEffect } from 'react'
 import { useAuth } from '@/contexts/AuthContext'
 import { Loader2, X, Eye, EyeOff } from 'lucide-react'
-import { listen } from '@tauri-apps/api/event'
+import { subscribeTauriEvent } from '@/lib/tauriSubscribe'
 import { logger } from '@/lib/logger'
 import { validatePassword } from '@/lib/password-validation'
 import { TauriEvent } from '@/lib/tauri-events'
@@ -104,16 +104,12 @@ export function LoginScreen() {
 
   // Listen for auth-server-stopped event from Rust
   useEffect(() => {
-    const unlisten = listen<{ reason: string }>(TauriEvent.AUTH_SERVER_STOPPED, (event) => {
+    return subscribeTauriEvent<{ reason: string }>(TauriEvent.AUTH_SERVER_STOPPED, (event) => {
       if (event.payload.reason === 'timeout') {
         logger.debug('[LoginScreen] Auth server timed out, resetting spinner')
         setIsSigningIn(false)
       }
     })
-
-    return () => {
-      unlisten.then((fn) => fn())
-    }
   }, [])
 
   const switchMode = (newMode: AuthMode) => {

@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { listen } from '@tauri-apps/api/event';
+import { createSubscriptionGroup } from '@/lib/tauriSubscribe';
 import { TauriEvent } from '@/lib/tauri-events';
 
 // §2.3 / §1.2 Payload del evento "meeting-metrics" emitido cada 3s por el backend
@@ -30,28 +30,24 @@ export function useMeetingMetrics(): UseMeetingMetricsResult {
   const [metrics, setMetrics] = useState<MeetingMetrics | null>(null);
 
   useEffect(() => {
-    const unlistenMetrics = listen<MeetingMetrics>(TauriEvent.MEETING_METRICS, (event) => {
+    const subs = createSubscriptionGroup();
+    subs.on<MeetingMetrics>(TauriEvent.MEETING_METRICS, (event) => {
       setMetrics(event.payload);
     });
-    const unlistenReset = listen(TauriEvent.RECORDING_START_COMPLETE, () => {
+    subs.on(TauriEvent.RECORDING_START_COMPLETE, () => {
       setMetrics(null);
     });
     // Reset también al detener: sin esto, el anchor `lastMetricRef` en
     // coach-float/page.tsx sobrevive y el setInterval de 1s sigue tickeando
     // (último secs + delta wall-clock), dejando el contador "TIEMPO DE PALABRA"
     // aumentando indefinidamente post-stop.
-    const unlistenStopComplete = listen(TauriEvent.RECORDING_STOP_COMPLETE, () => {
+    subs.on(TauriEvent.RECORDING_STOP_COMPLETE, () => {
       setMetrics(null);
     });
-    const unlistenStopped = listen(TauriEvent.RECORDING_STOPPED, () => {
+    subs.on(TauriEvent.RECORDING_STOPPED, () => {
       setMetrics(null);
     });
-    return () => {
-      unlistenMetrics.then((fn) => fn());
-      unlistenReset.then((fn) => fn());
-      unlistenStopComplete.then((fn) => fn());
-      unlistenStopped.then((fn) => fn());
-    };
+    return () => subs.dispose();
   }, []);
 
   const isWaitingForAudio =

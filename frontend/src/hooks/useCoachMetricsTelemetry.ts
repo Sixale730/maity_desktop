@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+import { createSubscriptionGroup } from '@/lib/tauriSubscribe'
 import { platformLogger } from '@/lib/platformLogger'
 import { TauriEvent } from '@/lib/tauri-events'
 
@@ -39,10 +39,10 @@ interface CoachMetricsPayload {
  */
 export function useCoachMetricsTelemetry(): void {
   useEffect(() => {
-    let unlisten: UnlistenFn | undefined
+    const subs = createSubscriptionGroup()
 
     const subscribe = async () => {
-      unlisten = await listen<CoachMetricsPayload>(TauriEvent.COACH_METRICS, (event) => {
+      subs.on<CoachMetricsPayload>(TauriEvent.COACH_METRICS, (event) => {
         const summary = event.payload?.session_summary
         if (!summary) return
         void platformLogger.log('coach.session_summary', { ...summary })
@@ -52,7 +52,7 @@ export function useCoachMetricsTelemetry(): void {
     subscribe()
 
     return () => {
-      unlisten?.()
+      subs.dispose()
     }
   }, [])
 }

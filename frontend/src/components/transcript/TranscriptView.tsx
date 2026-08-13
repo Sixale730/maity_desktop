@@ -2,6 +2,7 @@
 
 import { Transcript } from '@/types';
 import { useEffect, useRef, useState, memo } from 'react';
+import { subscribeTauriEvent } from '@/lib/tauriSubscribe';
 import { ConfidenceIndicator } from '@/components/transcript/ConfidenceIndicator';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { RecordingStatusBar } from '@/components/recording/RecordingStatusBar';
@@ -173,27 +174,15 @@ export const TranscriptView: React.FC<TranscriptViewProps> = ({ transcripts, isR
 
   // Listen for speech-detected event
   useEffect(() => {
-    let unsubscribe: (() => void) | undefined;
-
-    const setupListener = async () => {
-      const { listen } = await import('@tauri-apps/api/event');
-      unsubscribe = await listen<SpeechDetectedEvent>(TauriEvent.SPEECH_DETECTED, () => {
-        setSpeechDetected(true);
-      });
-    };
-
-    if (isRecording) {
-      setupListener();
-    } else {
+    if (!isRecording) {
       // Reset when not recording
       setSpeechDetected(false);
+      return;
     }
 
-    return () => {
-      if (unsubscribe) {
-        unsubscribe();
-      }
-    };
+    return subscribeTauriEvent<SpeechDetectedEvent>(TauriEvent.SPEECH_DETECTED, () => {
+      setSpeechDetected(true);
+    });
   }, [isRecording]);
 
   // Streaming effect: animate new transcripts character-by-character

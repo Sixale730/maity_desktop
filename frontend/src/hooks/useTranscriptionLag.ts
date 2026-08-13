@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { listen } from '@tauri-apps/api/event';
+import { subscribeTauriEvent } from '@/lib/tauriSubscribe';
 import { TauriEvent } from '@/lib/tauri-events';
 
 export interface TranscriptionLagData {
@@ -31,22 +31,15 @@ export function useTranscriptionLag(isRecording: boolean): UseTranscriptionLagRe
       return;
     }
 
-    let unlisten: (() => void) | undefined;
-
-    const setup = async () => {
-      unlisten = await listen<TranscriptionLagData>(TauriEvent.TRANSCRIPTION_LAG_UPDATE, (event) => {
-        const { queue_depth, lag_seconds, chunks_per_second } = event.payload;
-        setState({
-          lagSeconds: lag_seconds,
-          queueDepth: queue_depth,
-          chunksPerSecond: chunks_per_second,
-          isActive: true,
-        });
+    return subscribeTauriEvent<TranscriptionLagData>(TauriEvent.TRANSCRIPTION_LAG_UPDATE, (event) => {
+      const { queue_depth, lag_seconds, chunks_per_second } = event.payload;
+      setState({
+        lagSeconds: lag_seconds,
+        queueDepth: queue_depth,
+        chunksPerSecond: chunks_per_second,
+        isActive: true,
       });
-    };
-
-    setup();
-    return () => { unlisten?.(); };
+    });
   }, [isRecording]);
 
   return state;

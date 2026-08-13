@@ -1,5 +1,5 @@
-import { useState, useEffect, useCallback } from 'react';
-import { listen } from '@tauri-apps/api/event';
+import { useState, useEffect, useCallback, useRef } from 'react';
+import { subscribeTauriEvent } from '@/lib/tauriSubscribe';
 import { toast } from 'sonner';
 import type { TranscriptModelProps } from '@/types/transcript';
 import { logger } from '@/lib/logger';
@@ -100,69 +100,52 @@ export function useModalState(transcriptModelConfig?: TranscriptModelProps): Use
     });
   }, []);
 
+  // Latest-ref: `transcriptModelConfig` es un objeto que cambia de identidad,
+  // asi que llevarlo en el dep array resuscribia el listener una y otra vez
+  // (issue #65). El efecto monta UNA vez y lee el valor fresco del ref.
+  const latest = useRef({ transcriptModelConfig, showModal, hideModal });
+  latest.current = { transcriptModelConfig, showModal, hideModal };
+
   // Set up transcription error listener for model loading failures
   useEffect(() => {
-    let unlistenFn: (() => void) | undefined;
+    logger.debug('Setting up transcription-error listener...');
+    return subscribeTauriEvent<{ error: string, userMessage: string, actionable: boolean }>(
+      TauriEvent.TRANSCRIPTION_ERROR,
+      (event) => {
+        logger.debug('Transcription error received:', event.payload);
+        const { userMessage, actionable } = event.payload;
 
-    const setupTranscriptionErrorListener = async () => {
-      try {
-        logger.debug('Setting up transcription-error listener...');
-        unlistenFn = await listen<{ error: string, userMessage: string, actionable: boolean }>(TauriEvent.TRANSCRIPTION_ERROR, (event) => {
-          logger.debug('Transcription error received:', event.payload);
-          const { userMessage, actionable } = event.payload;
-
-          if (actionable) {
-            // This is a model-related error that requires user action
-            showModal('modelSelector', userMessage);
-          } else {
-            // Show toast instead of modal for non-actionable errors (consistent with sidebar)
-            toast.error('', {
-              description: userMessage,
-              duration: 5000,
-            });
-          }
-        });
-        logger.debug('Transcription error listener setup complete');
-      } catch (error) {
-        console.error('Failed to setup transcription error listener:', error);
-      }
-    };
-
-    setupTranscriptionErrorListener();
-
-    return () => {
-      logger.debug('Cleaning up transcription error listener...');
-      if (unlistenFn) {
-        unlistenFn();
-      }
-    };
-  }, [showModal]);
-
-  // Listen for model download completion to auto-close modal
-  useEffect(() => {
-    const setupDownloadListeners = async () => {
-      const unlisteners: (() => void)[] = [];
-
-      // Listen for Whisper model download complete
-      const unlistenWhisper = await listen<{ modelName: string }>(TauriEvent.MODEL_DOWNLOAD_COMPLETE, (event) => {
-        const { modelName } = event.payload;
-        logger.debug('[useModalState] Whisper model download complete:', modelName);
-
-        // Auto-close modal if the downloaded model matches the selected one
-        if (transcriptModelConfig?.provider === 'localWhisper' && transcriptModelConfig?.model === modelName) {
-          toast.success('¡Modelo listo! Cerrando ventana...', { duration: 1500 });
-          setTimeout(() => hideModal('modelSelector'), 1500);
+        if (actionable) {
+          // This is a model-related error that requires user action
+          latest.current.showModal('modelSelector', userMessage);
+        } else {
+          // Show toast instead of modal for non-actionable errors (consistent with sidebar)
+          toast.error('', {
+            description: userMessage,
+            duration: 5000,
+          });
         }
-      });
-      unlisteners.push(unlistenWhisper);
+      },
+    );
+  }, []);
 
-      return () => {
-        unlisteners.forEach(unsub => unsub());
-      };
-    };
+  // Listen for model download completion to auto-close modal.
+  // Issue #65: este efecto CONSTRUIA su cleanup y lo tiraba (el return vivia
+  // dentro del async, no del useEffect), asi que el listener nunca se liberaba
+  // y se acumulaba uno nuevo por cada cambio de transcriptModelConfig.
+  useEffect(() => {
+    return subscribeTauriEvent<{ modelName: string }>(TauriEvent.MODEL_DOWNLOAD_COMPLETE, (event) => {
+      const { modelName } = event.payload;
+      logger.debug('[useModalState] Whisper model download complete:', modelName);
 
-    setupDownloadListeners();
-  }, [transcriptModelConfig, hideModal]);
+      // Auto-close modal if the downloaded model matches the selected one
+      const { transcriptModelConfig: cfg, hideModal: hide } = latest.current;
+      if (cfg?.provider === 'localWhisper' && cfg?.model === modelName) {
+        toast.success('¡Modelo listo! Cerrando ventana...', { duration: 1500 });
+        setTimeout(() => hide('modelSelector'), 1500);
+      }
+    });
+  }, []);
 
   return {
     modals,

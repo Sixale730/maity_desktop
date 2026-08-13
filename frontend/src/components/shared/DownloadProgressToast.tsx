@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useEffect, useState, useCallback } from 'react';
-import { listen } from '@tauri-apps/api/event';
+import { createSubscriptionGroup } from '@/lib/tauriSubscribe';
 import { toast } from 'sonner';
 import { X, Check, ArrowBigDownDash } from 'lucide-react';
 import { TauriEvent } from '@/lib/tauri-events';
@@ -219,7 +219,8 @@ export function useDownloadProgressToast() {
 
   // Listen to Parakeet download events
   useEffect(() => {
-    const unlistenProgress = listen<{
+    const subs = createSubscriptionGroup();
+    subs.on<{
       modelName: string;
       progress: number;
       downloaded_mb?: number;
@@ -252,7 +253,7 @@ export function useDownloadProgressToast() {
       // Removed direct showDownloadToast call here, handled by effect
     });
 
-    const unlistenComplete = listen<{ modelName: string }>(
+    subs.on<{ modelName: string }>(
       TauriEvent.PARAKEET_MODEL_DOWNLOAD_COMPLETE,
       (event) => {
         const { modelName } = event.payload;
@@ -271,7 +272,7 @@ export function useDownloadProgressToast() {
       }
     );
 
-    const unlistenError = listen<{ modelName: string; error: string }>(
+    subs.on<{ modelName: string; error: string }>(
       TauriEvent.PARAKEET_MODEL_DOWNLOAD_ERROR,
       (event) => {
         const { modelName, error } = event.payload;
@@ -291,16 +292,13 @@ export function useDownloadProgressToast() {
       }
     );
 
-    return () => {
-      unlistenProgress.then((fn) => fn());
-      unlistenComplete.then((fn) => fn());
-      unlistenError.then((fn) => fn());
-    };
+    return () => subs.dispose();
   }, [updateDownload, cleanupDownload]);
 
   // Listen to Built-in AI (Gemma) download events
   useEffect(() => {
-    const unlisten = listen<{
+    const subs = createSubscriptionGroup();
+    subs.on<{
       model: string;
       progress: number;
       downloaded_mb?: number;
@@ -340,9 +338,7 @@ export function useDownloadProgressToast() {
       }
     });
 
-    return () => {
-      unlisten.then((fn) => fn());
-    };
+    return () => subs.dispose();
   }, [updateDownload, cleanupDownload]);
 
   return { downloads };

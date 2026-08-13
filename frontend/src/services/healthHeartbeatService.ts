@@ -21,7 +21,7 @@
  *   `console.*` en el path de envío (evita bucles con errorTelemetry).
  */
 import { invoke } from '@tauri-apps/api/core'
-import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+import { createSubscriptionGroup } from '@/lib/tauriSubscribe'
 
 import { platformLogger } from '@/lib/platformLogger'
 import { supabase } from '@/lib/supabase'
@@ -91,7 +91,7 @@ export function shouldEmitHeartbeat(phase: string, msSinceLastEmit: number): boo
 class HealthHeartbeatService {
   private active = false
   private intervalId: ReturnType<typeof setInterval> | null = null
-  private unlisteners: UnlistenFn[] = []
+  private subs: ReturnType<typeof createSubscriptionGroup> | null = null
   private lastLagPayload: TranscriptionLagPayload | null = null
   /** No se resetean en start(): un remount (StrictMode) no reinicia la sesión. */
   private startedAt = 0
@@ -108,27 +108,19 @@ class HealthHeartbeatService {
     }, HEARTBEAT_TICK_MS)
     void this.tick('initial')
 
-    try {
-      const unsubs = await Promise.all([
-        listen<TranscriptionLagPayload>(TauriEvent.TRANSCRIPTION_LAG_UPDATE, (event) => {
-          this.lastLagPayload = event.payload
-        }),
-        listen(TauriEvent.RECORDING_STARTED, () => {
-          void this.tick('recording-start')
-        }),
-        listen(TauriEvent.RECORDING_STOPPED, () => {
-          void this.tick('recording-stop')
-        }),
-      ])
-      if (!this.active) {
-        // stop() llegó mientras suscribíamos: soltar de inmediato.
-        unsubs.forEach((unsub) => unsub())
-        return
-      }
-      this.unlisteners = unsubs
-    } catch {
-      // Sin listeners el heartbeat de interval sigue funcionando.
-    }
+    // El grupo cubre la carrera start/stop: un listen() que resuelve despues de
+    // stop() se libera solo, en vez de quedar vivo sin dueño (#65).
+    const subs = createSubscriptionGroup()
+    this.subs = subs
+    subs.on<TranscriptionLagPayload>(TauriEvent.TRANSCRIPTION_LAG_UPDATE, (event) => {
+      this.lastLagPayload = event.payload
+    })
+    subs.on(TauriEvent.RECORDING_STARTED, () => {
+      void this.tick('recording-start')
+    })
+    subs.on(TauriEvent.RECORDING_STOPPED, () => {
+      void this.tick('recording-stop')
+    })
   }
 
   stop(): void {
@@ -137,8 +129,8 @@ class HealthHeartbeatService {
       clearInterval(this.intervalId)
       this.intervalId = null
     }
-    this.unlisteners.forEach((unsub) => unsub())
-    this.unlisteners = []
+    this.subs?.dispose()
+    this.subs = null
     this.lastLagPayload = null
   }
 

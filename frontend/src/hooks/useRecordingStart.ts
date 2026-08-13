@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { createSubscriptionGroup } from '@/lib/tauriSubscribe';
 import { useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '@/contexts/AuthContext';
 import {
@@ -411,14 +412,30 @@ export function useRecordingStart(
     setStatus,
   ]);
 
-  // Listen for recording trigger from meeting detector (Tauri event)
+  // Listen for recording trigger from meeting detector (Tauri event).
+  //
+  // Issue #65: este efecto llevaba seis dependencias inestables, así que se
+  // desuscribía y resuscribía al MISMO evento en cada render. Ahora monta una
+  // sola vez y lee todo del latest-ref.
+  const detectorLatest = useRef({
+    isRecording, isAutoStarting, checkTranscriptionReady,
+    handleTranscriptionNotReady, startRecordingFlow, setStatus,
+  });
+  detectorLatest.current = {
+    isRecording, isAutoStarting, checkTranscriptionReady,
+    handleTranscriptionNotReady, startRecordingFlow, setStatus,
+  };
+
   useEffect(() => {
-    let unlisten: (() => void) | undefined;
+    const subs = createSubscriptionGroup();
 
     const setupMeetingDetectorListener = async () => {
       try {
-        const { listen } = await import('@tauri-apps/api/event');
-        unlisten = await listen<string>(TauriEvent.START_RECORDING_FROM_DETECTOR, async (event) => {
+        subs.on<string>(TauriEvent.START_RECORDING_FROM_DETECTOR, async (event) => {
+          const {
+            isRecording, isAutoStarting, checkTranscriptionReady,
+            handleTranscriptionNotReady, startRecordingFlow, setStatus,
+          } = detectorLatest.current;
           const meetingName = event.payload;
           logger.debug(`Meeting detector triggered recording: "${meetingName}"`);
 
@@ -480,12 +497,8 @@ export function useRecordingStart(
 
     setupMeetingDetectorListener();
 
-    return () => {
-      if (unlisten) {
-        unlisten();
-      }
-    };
-  }, [isRecording, isAutoStarting, checkTranscriptionReady, handleTranscriptionNotReady, startRecordingFlow, setStatus]);
+    return () => subs.dispose();
+  }, []);
 
   // Listen for direct recording trigger from sidebar when already on home page
   useEffect(() => {

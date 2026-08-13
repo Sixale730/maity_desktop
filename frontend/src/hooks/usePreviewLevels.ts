@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { listen } from '@tauri-apps/api/event';
+import { createSubscriptionGroup } from '@/lib/tauriSubscribe';
 import { TauriEvent } from '@/lib/tauri-events';
 
 interface AudioLevelData {
@@ -85,7 +85,7 @@ export function usePreviewLevels(
     }
 
     const ownerId = `preview:${++runCounter}`;
-    let unlisten: (() => void) | undefined;
+    const subs = createSubscriptionGroup();
     let active = true;
 
     // Start CPAL monitoring for the selected (or default) mic
@@ -115,7 +115,7 @@ export function usePreviewLevels(
       // Iter 11: el payload ahora incluye DOS levels — input (mic) y output
       // (sistema vía WASAPI loopback / CoreAudio). Filtrar por device_type
       // para popular ambos canales correctamente.
-      unlisten = await listen<AudioLevelUpdate>(TauriEvent.AUDIO_LEVELS, (event) => {
+      subs.on<AudioLevelUpdate>(TauriEvent.AUDIO_LEVELS, (event) => {
         const update = event.payload;
         const inputLvl = update.levels.find((l) => l.device_type === 'input');
         const outputLvl = update.levels.find((l) => l.device_type === 'output');
@@ -133,7 +133,7 @@ export function usePreviewLevels(
 
     return () => {
       active = false;
-      unlisten?.();
+      subs.dispose();
       // El `stop` se encadena al `start`: son comandos concurrentes y sin esto
       // el stop podía llegar primero, quedar en no-op, y dejar el micrófono
       // abierto sin nadie que pudiera cerrarlo. Rust tiene además su propia

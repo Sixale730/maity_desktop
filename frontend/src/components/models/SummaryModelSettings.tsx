@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
+import { createSubscriptionGroup } from '@/lib/tauriSubscribe';
 import { invoke } from '@tauri-apps/api/core';
 import { toast } from 'sonner';
 import { ModelSettingsModal } from '@/components/models/ModelSettingsModal';
@@ -84,22 +85,14 @@ export function SummaryModelSettings({ refetchTrigger }: SummaryModelSettingsPro
 
   // Listen for model config updates from other components
   useEffect(() => {
-    const setupListener = async () => {
-      const { listen } = await import('@tauri-apps/api/event');
-      const unlisten = await listen<ModelConfig>(TauriEvent.MODEL_CONFIG_UPDATED, (event) => {
-        logger.debug('SummaryModelSettings received model-config-updated event:', event.payload);
-        setModelConfig(event.payload);
-      });
+    const subs = createSubscriptionGroup();
+    subs.on<ModelConfig>(TauriEvent.MODEL_CONFIG_UPDATED, (event) => {
+      logger.debug('SummaryModelSettings received model-config-updated event:', event.payload);
+      setModelConfig(event.payload);
+    });
 
-      return unlisten;
-    };
 
-    let cleanup: (() => void) | undefined;
-    setupListener().then(fn => cleanup = fn);
-
-    return () => {
-      cleanup?.();
-    };
+    return () => subs.dispose();
   }, []);
 
   // Save handler

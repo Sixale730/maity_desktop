@@ -2,6 +2,7 @@
 
 import React, { createContext, useContext, useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { recordingService } from '@/services/recordingService';
+import { createSubscriptionGroup } from '@/lib/tauriSubscribe';
 import { logger } from '@/lib/logger';
 
 /**
@@ -116,12 +117,12 @@ export function RecordingStateProvider({ children }: { children: React.ReactNode
    */
   useEffect(() => {
     logger.debug('[RecordingStateContext] Setting up event listeners');
-    const unsubscribers: (() => void)[] = [];
+    const subs = createSubscriptionGroup();
 
     const setupListeners = async () => {
       try {
         // Recording started
-        const unlistenStarted = await recordingService.onRecordingStarted(() => {
+        subs.add(recordingService.onRecordingStarted(() => {
           logger.debug('[RecordingStateContext] Recording started event');
           setState(prev => ({
             ...prev,
@@ -131,11 +132,10 @@ export function RecordingStateProvider({ children }: { children: React.ReactNode
             status: RecordingStatus.RECORDING,  // NEW: Set status to RECORDING
           }));
           startPolling();
-        });
-        unsubscribers.push(unlistenStarted);
+        }));
 
         // Recording stopped
-        const unlistenStopped = await recordingService.onRecordingStopped((payload) => {
+        subs.add(recordingService.onRecordingStopped((payload) => {
           logger.debug('[RecordingStateContext] Recording stopped event:', payload);
           setState(prev => {
             // Set status to STOPPING if not already in stop flow
@@ -160,30 +160,27 @@ export function RecordingStateProvider({ children }: { children: React.ReactNode
             };
           });
           stopPolling();
-        });
-        unsubscribers.push(unlistenStopped);
+        }));
 
         // Recording paused
-        const unlistenPaused = await recordingService.onRecordingPaused(() => {
+        subs.add(recordingService.onRecordingPaused(() => {
           logger.debug('[RecordingStateContext] Recording paused event');
           setState(prev => ({
             ...prev,
             isPaused: true,
             isActive: false,
           }));
-        });
-        unsubscribers.push(unlistenPaused);
+        }));
 
         // Recording resumed
-        const unlistenResumed = await recordingService.onRecordingResumed(() => {
+        subs.add(recordingService.onRecordingResumed(() => {
           logger.debug('[RecordingStateContext] Recording resumed event');
           setState(prev => ({
             ...prev,
             isPaused: false,
             isActive: true,
           }));
-        });
-        unsubscribers.push(unlistenResumed);
+        }));
 
         logger.debug('[RecordingStateContext] Event listeners set up successfully');
       } catch (error) {
@@ -195,7 +192,7 @@ export function RecordingStateProvider({ children }: { children: React.ReactNode
 
     return () => {
       logger.debug('[RecordingStateContext] Cleaning up event listeners');
-      unsubscribers.forEach(unsub => unsub());
+      subs.dispose();
       stopPolling();
     };
   }, []);

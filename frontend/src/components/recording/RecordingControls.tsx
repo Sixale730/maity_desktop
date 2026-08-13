@@ -5,7 +5,7 @@ import { appDataDir } from '@tauri-apps/api/path';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Play, Pause, Square, Mic, AlertCircle, X } from 'lucide-react';
 import { ProcessSummaryResponse } from '@/types/summary';
-import { listen } from '@tauri-apps/api/event';
+import { createSubscriptionGroup } from '@/lib/tauriSubscribe';
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import Analytics from '@/lib/analytics';
@@ -303,8 +303,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
 
   useEffect(() => {
     logger.debug('Setting up recording event listeners');
-    let cancelled = false;
-    const unsubscribes: (() => void)[] = [];
+    const subs = createSubscriptionGroup();
 
     // Unified error handler with circuit breaker. transcription-error funnels
     // through here so we count errors globally and only invoke stop_recording
@@ -352,7 +351,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
 
     const setupListeners = async () => {
       try {
-        const transcriptionErrorUnsubscribe = await listen(TauriEvent.TRANSCRIPTION_ERROR, (event) => {
+        subs.on(TauriEvent.TRANSCRIPTION_ERROR, (event) => {
           logger.debug('transcription-error event received:', event);
 
           let errorMessage: string;
@@ -373,25 +372,14 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
         // No need for duplicate listeners here
 
         // Speech detected listener - for UX feedback when VAD detects speech
-        const speechDetectedUnsubscribe = await listen(TauriEvent.SPEECH_DETECTED, (event) => {
+        subs.on(TauriEvent.SPEECH_DETECTED, (event) => {
           logger.debug('speech-detected event received:', event);
           setSpeechDetected(true);
         });
 
-        unsubscribes.push(
-          transcriptionErrorUnsubscribe,
-          speechDetectedUnsubscribe
-        );
-
-        // Race fix: if cleanup ran before setupListeners finished, unsubscribe
-        // immediately so we don't leave zombie listeners attached.
-        if (cancelled) {
-          unsubscribes.forEach(fn => fn());
-          unsubscribes.length = 0;
-          logger.debug('Listeners arrived after unmount — unsubscribed immediately');
-          return;
-        }
-
+        // La carrera de desmontaje (listener que resuelve despues del cleanup)
+        // ya la cubre el grupo: dispose() marca el latch y libera lo que llegue
+        // tarde. Antes esto se hacia a mano con un flag "cancelled".
         logger.debug('Recording event listeners set up successfully');
       } catch (error) {
         console.error('Failed to set up recording event listeners:', error);
@@ -402,12 +390,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
 
     return () => {
       logger.debug('Cleaning up recording event listeners');
-      cancelled = true;
-      unsubscribes.forEach(unsubscribe => {
-        if (unsubscribe && typeof unsubscribe === 'function') {
-          unsubscribe();
-        }
-      });
+      subs.dispose();
     };
   }, []);
 

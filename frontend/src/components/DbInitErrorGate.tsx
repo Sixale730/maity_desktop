@@ -19,7 +19,7 @@
 
 import { useEffect, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
-import { listen } from '@tauri-apps/api/event'
+import { subscribeTauriEvent } from '@/lib/tauriSubscribe'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { AlertTriangle, RefreshCw, FileArchive, X, CheckCircle2, ArchiveRestore } from 'lucide-react'
 import { TauriEvent } from '@/lib/tauri-events'
@@ -49,7 +49,7 @@ export function DbInitErrorGate({ children }: { children: React.ReactNode }) {
   const [exportPath, setExportPath] = useState<string | null>(null)
 
   useEffect(() => {
-    const unlistenPromise = listen<DbInitErrorPayload>(TauriEvent.DB_INIT_FAILED, (event) => {
+    return subscribeTauriEvent<DbInitErrorPayload>(TauriEvent.DB_INIT_FAILED, (event) => {
       console.error('[DbInitErrorGate] db-init-failed event:', event.payload)
       setErrorPayload(event.payload)
       // Telemetría: sin esto el incidente es invisible remotamente (issue #64). Sin
@@ -62,9 +62,6 @@ export function DbInitErrorGate({ children }: { children: React.ReactNode }) {
         .then((info) => setBackupInfo(info))
         .catch(() => setBackupInfo(null))
     })
-    return () => {
-      void unlistenPromise.then((fn) => fn())
-    }
   }, [])
 
   if (!errorPayload) {

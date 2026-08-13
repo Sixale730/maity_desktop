@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useEffect, useRef } from 'react';
-import { listen } from '@tauri-apps/api/event';
+import { createSubscriptionGroup } from '@/lib/tauriSubscribe';
 import { useRecordingStop } from '@/hooks/useRecordingStop';
 import { useTranscripts } from '@/contexts/TranscriptContext';
 import { logger } from '@/lib/logger';
@@ -52,12 +52,12 @@ export function RecordingPostProcessingProvider({ children }: { children: React.
   });
 
   useEffect(() => {
-    let unlistenFn: (() => void) | undefined;
+    const subs = createSubscriptionGroup();
 
     const setupListener = async () => {
       try {
         // Listen for recording-stop-complete event from Rust
-        unlistenFn = await listen<boolean>(TauriEvent.RECORDING_STOP_COMPLETE, (event) => {
+        subs.on<boolean>(TauriEvent.RECORDING_STOP_COMPLETE, (event) => {
           logger.debug('[RecordingPostProcessing] Received recording-stop-complete event:', event.payload);
 
           // Call the post-processing handler via ref (estable)
@@ -74,10 +74,8 @@ export function RecordingPostProcessingProvider({ children }: { children: React.
     setupListener();
 
     return () => {
-      if (unlistenFn) {
-        logger.debug('[RecordingPostProcessing] Cleaning up event listener');
-        unlistenFn();
-      }
+      logger.debug('[RecordingPostProcessing] Cleaning up event listener');
+      subs.dispose();
     };
   }, []); // Sin dependencias - solo se ejecuta una vez al montar
 
@@ -89,12 +87,11 @@ export function RecordingPostProcessingProvider({ children }: { children: React.
   // re-guarde los segmentos acumulados como una reunión duplicada. Encolar aquí también
   // crearía jobs duplicados apuntando al mismo meeting_id.
   useEffect(() => {
-    let unlistenRotate: (() => void) | undefined;
-    let unlistenClosed: (() => void) | undefined;
+    const subs = createSubscriptionGroup();
 
     const setupRotateListener = async () => {
       try {
-        unlistenRotate = await listen<{ meetingId: string | null; meetingName: string }>(
+        subs.on<{ meetingId: string | null; meetingName: string }>(
           TauriEvent.SCHEDULED_SEGMENT_ROTATED,
           async (event) => {
             logger.debug('[RecordingPostProcessing] Segmento rotado, reseteando buffer:', event.payload);
@@ -106,7 +103,7 @@ export function RecordingPostProcessingProvider({ children }: { children: React.
             clearTranscriptsRef.current();
           }
         );
-        unlistenClosed = await listen<{ meetingId: string | null; meetingName: string }>(
+        subs.on<{ meetingId: string | null; meetingName: string }>(
           TauriEvent.SCHEDULED_JORNADA_CLOSED,
           async (event) => {
             logger.debug('[RecordingPostProcessing] Jornada cerrada headless, reseteando buffer:', event.payload);
@@ -129,14 +126,7 @@ export function RecordingPostProcessingProvider({ children }: { children: React.
 
     setupRotateListener();
 
-    return () => {
-      if (unlistenRotate) {
-        unlistenRotate();
-      }
-      if (unlistenClosed) {
-        unlistenClosed();
-      }
-    };
+    return () => subs.dispose();
   }, []); // Solo se monta una vez
 
   return <>{children}</>;

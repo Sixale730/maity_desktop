@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { listen } from '@tauri-apps/api/event';
+import { subscribeTauriEvent } from '@/lib/tauriSubscribe';
 import { TauriEvent } from '@/lib/tauri-events';
 
 /**
@@ -35,11 +35,10 @@ export function useRecordingWidgetOpen(): boolean | null {
   }, []);
 
   useEffect(() => {
-    const unlistenP = listen<{ visible: boolean }>(
+    return subscribeTauriEvent<{ visible: boolean }>(
       TauriEvent.COACH_FLOAT_VISIBILITY_CHANGED,
       (e) => setWidgetOpen(e.payload.visible),
     );
-    return () => { unlistenP.then(fn => fn()); };
   }, []);
 
   return widgetOpen;

@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useEffect, useRef, useState } from 'react';
-import { listen } from '@tauri-apps/api/event';
+import { createSubscriptionGroup } from '@/lib/tauriSubscribe';
 import { invoke } from '@tauri-apps/api/core';
 import {
   Sparkles, AlertTriangle, ChevronLeft, ChevronRight,
@@ -225,101 +225,100 @@ export default function CoachFloatPage() {
   useEffect(() => { drawerOpenRef.current = drawerOpen; }, [drawerOpen]);
 
   useEffect(() => {
-    const subs = [
-      // recording-audio-levels: solo aplicar cuando realmente estamos grabando.
-      // Iter 9: en idle la pipeline puede emitir niveles spurious (warm-up)
-      // que movían las barras de sistema sin razón. Gate explícito.
-      listen<AudioLevels>(TauriEvent.RECORDING_AUDIO_LEVELS, (e) => {
-        if (!recordingActiveRef.current) return; // ignorar en idle
-        setLevels({ micRms: e.payload.micRms, sysRms: e.payload.sysRms });
-      }),
-      // audio-levels (preview del monitor independiente).
-      // Iter 11: el monitor ahora trae ambos canales — input (mic via CPAL) y
-      // output (sistema via WASAPI loopback / CoreAudio). Filtrar por
-      // device_type para popular ambas barras correctamente. En Linux o
-      // macOS sin permiso, outputLvl viene con rms_level=0 (graceful), así
-      // que la barra verde queda plana sin lógica adicional.
-      listen<{
-        timestamp: number;
-        levels: Array<{
-          device_name: string;
-          device_type: string; // 'input' | 'output'
-          rms_level: number;
-          peak_level: number;
-          is_active: boolean;
-        }>;
-      }>(TauriEvent.AUDIO_LEVELS, (e) => {
-        const inputLvl = e.payload.levels.find(l => l.device_type === 'input');
-        const outputLvl = e.payload.levels.find(l => l.device_type === 'output');
-        setLevels({
-          micRms: inputLvl?.rms_level ?? 0,
-          sysRms: outputLvl?.rms_level ?? 0,
-        });
-      }),
-      // Iter 9: el device-picker (mini-ventana) emite este evento al click
-      // en un device. Aplicamos la selección + hot-swap si grabando.
-      listen<{ deviceName: string; deviceType: 'Microphone' | 'SystemAudio' }>(
-        TauriEvent.DEVICE_PICKER_SELECTED,
-        (e) => {
-          applyPickedDevice(e.payload.deviceName, e.payload.deviceType);
-        },
-      ),
-      // Cuando llega start/stop-complete sincronizamos recordingActive de
-      // inmediato sin esperar al polling de 2s. Ya NO cerramos la ventana al
-      // terminar grabación — ahora el coach-float es la UI permanente y
-      // simplemente vuelve a modo compact (idle) cuando se detiene.
-      listen(TauriEvent.RECORDING_START_COMPLETE, () => {
-        setRecordingActive(true);
-        setBusy(false);
-        setErrorMsg(null);
-        if (startTimeoutRef.current) {
-          clearTimeout(startTimeoutRef.current);
-          startTimeoutRef.current = null;
-        }
-        // Iter 11: auto-abrir drawer al empezar grabación. Skip si el user
-        // lo cerró manualmente durante un cycle previo (ref guard).
-        if (!userManuallyClosedDrawerRef.current) {
-          setDrawerOpen(true);
-          invoke('coach_float_set_size', { drawer: true }).catch(console.error);
-          // Telemetría: distinguir apertura automática de la manual permite
-          // medir engagement real con el coach sin contaminar con auto-toggles.
-          Analytics.track('coach_float.drawer_auto_opened', {
-            reason: 'auto_on_start',
-          }).catch(() => {});
-        }
-      }),
-      listen(TauriEvent.RECORDING_STOP_COMPLETE, () => {
-        setRecordingActive(false);
-        setBusy(false);
-        // Iter 11: cerrar drawer al detener + resetear guard para el próximo cycle.
-        const wasDrawerOpen = drawerOpenRef.current;
-        setDrawerOpen(false);
-        invoke('coach_float_set_size', { drawer: false }).catch(console.error);
-        userManuallyClosedDrawerRef.current = false;
-        if (wasDrawerOpen) {
-          Analytics.track('coach_float.drawer_auto_closed', {
-            reason: 'auto_on_stop',
-          }).catch(() => {});
-        }
-      }),
-      listen(TauriEvent.RECORDING_STOPPED, () => {
-        setRecordingActive(false);
-        setBusy(false);
-        const wasDrawerOpen = drawerOpenRef.current;
-        setDrawerOpen(false);
-        invoke('coach_float_set_size', { drawer: false }).catch(console.error);
-        userManuallyClosedDrawerRef.current = false;
-        if (wasDrawerOpen) {
-          Analytics.track('coach_float.drawer_auto_closed', {
-            reason: 'auto_on_stop',
-          }).catch(() => {});
-        }
-      }),
-      // Pausa/reanuda: sincroniza el estado de pausa al instante.
-      listen(TauriEvent.RECORDING_PAUSED, () => { setIsPaused(true); }),
-      listen(TauriEvent.RECORDING_RESUMED, () => { setIsPaused(false); }),
-    ];
-    return () => { subs.forEach(p => p.then(fn => fn())); };
+    const subs = createSubscriptionGroup();
+    // recording-audio-levels: solo aplicar cuando realmente estamos grabando.
+    // Iter 9: en idle la pipeline puede emitir niveles spurious (warm-up)
+    // que movían las barras de sistema sin razón. Gate explícito.
+    subs.on<AudioLevels>(TauriEvent.RECORDING_AUDIO_LEVELS, (e) => {
+      if (!recordingActiveRef.current) return; // ignorar en idle
+      setLevels({ micRms: e.payload.micRms, sysRms: e.payload.sysRms });
+    });
+    // audio-levels (preview del monitor independiente).
+    // Iter 11: el monitor ahora trae ambos canales — input (mic via CPAL) y
+    // output (sistema via WASAPI loopback / CoreAudio). Filtrar por
+    // device_type para popular ambas barras correctamente. En Linux o
+    // macOS sin permiso, outputLvl viene con rms_level=0 (graceful), así
+    // que la barra verde queda plana sin lógica adicional.
+    subs.on<{
+      timestamp: number;
+      levels: Array<{
+        device_name: string;
+        device_type: string; // 'input' | 'output'
+        rms_level: number;
+        peak_level: number;
+        is_active: boolean;
+      }>;
+    }>(TauriEvent.AUDIO_LEVELS, (e) => {
+      const inputLvl = e.payload.levels.find(l => l.device_type === 'input');
+      const outputLvl = e.payload.levels.find(l => l.device_type === 'output');
+      setLevels({
+        micRms: inputLvl?.rms_level ?? 0,
+        sysRms: outputLvl?.rms_level ?? 0,
+      });
+    });
+    // Iter 9: el device-picker (mini-ventana) emite este evento al click
+    // en un device. Aplicamos la selección + hot-swap si grabando.
+    subs.on<{ deviceName: string; deviceType: 'Microphone' | 'SystemAudio' }>(
+      TauriEvent.DEVICE_PICKER_SELECTED,
+      (e) => {
+        applyPickedDevice(e.payload.deviceName, e.payload.deviceType);
+      },
+    );
+    // Cuando llega start/stop-complete sincronizamos recordingActive de
+    // inmediato sin esperar al polling de 2s. Ya NO cerramos la ventana al
+    // terminar grabación — ahora el coach-float es la UI permanente y
+    // simplemente vuelve a modo compact (idle) cuando se detiene.
+    subs.on(TauriEvent.RECORDING_START_COMPLETE, () => {
+      setRecordingActive(true);
+      setBusy(false);
+      setErrorMsg(null);
+      if (startTimeoutRef.current) {
+        clearTimeout(startTimeoutRef.current);
+        startTimeoutRef.current = null;
+      }
+      // Iter 11: auto-abrir drawer al empezar grabación. Skip si el user
+      // lo cerró manualmente durante un cycle previo (ref guard).
+      if (!userManuallyClosedDrawerRef.current) {
+        setDrawerOpen(true);
+        invoke('coach_float_set_size', { drawer: true }).catch(console.error);
+        // Telemetría: distinguir apertura automática de la manual permite
+        // medir engagement real con el coach sin contaminar con auto-toggles.
+        Analytics.track('coach_float.drawer_auto_opened', {
+          reason: 'auto_on_start',
+        }).catch(() => {});
+      }
+    });
+    subs.on(TauriEvent.RECORDING_STOP_COMPLETE, () => {
+      setRecordingActive(false);
+      setBusy(false);
+      // Iter 11: cerrar drawer al detener + resetear guard para el próximo cycle.
+      const wasDrawerOpen = drawerOpenRef.current;
+      setDrawerOpen(false);
+      invoke('coach_float_set_size', { drawer: false }).catch(console.error);
+      userManuallyClosedDrawerRef.current = false;
+      if (wasDrawerOpen) {
+        Analytics.track('coach_float.drawer_auto_closed', {
+          reason: 'auto_on_stop',
+        }).catch(() => {});
+      }
+    });
+    subs.on(TauriEvent.RECORDING_STOPPED, () => {
+      setRecordingActive(false);
+      setBusy(false);
+      const wasDrawerOpen = drawerOpenRef.current;
+      setDrawerOpen(false);
+      invoke('coach_float_set_size', { drawer: false }).catch(console.error);
+      userManuallyClosedDrawerRef.current = false;
+      if (wasDrawerOpen) {
+        Analytics.track('coach_float.drawer_auto_closed', {
+          reason: 'auto_on_stop',
+        }).catch(() => {});
+      }
+    });
+    // Pausa/reanuda: sincroniza el estado de pausa al instante.
+    subs.on(TauriEvent.RECORDING_PAUSED, () => { setIsPaused(true); });
+    subs.on(TauriEvent.RECORDING_RESUMED, () => { setIsPaused(false); });
+    return () => subs.dispose();
   }, []);
 
   // Iter 9: la lista de dispositivos la carga la mini-ventana device-picker

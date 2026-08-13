@@ -1,6 +1,7 @@
 'use client';
 
 import React, { createContext, useContext, useState, useEffect, useCallback, useMemo, ReactNode, useRef } from 'react';
+import { createSubscriptionGroup } from '@/lib/tauriSubscribe';
 import type { TranscriptModelProps } from '@/types/transcript';
 import type { SelectedDevices } from '@/types/audio';
 import { configService } from '@/services/configService';
@@ -308,21 +309,13 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
 
   // Listen for model config updates from other components
   useEffect(() => {
-    const setupListener = async () => {
-      const { listen } = await import('@tauri-apps/api/event');
-      const unlisten = await listen<ModelConfig>(TauriEvent.MODEL_CONFIG_UPDATED, (event) => {
-        logger.debug('[ConfigContext] Received model-config-updated event:', event.payload);
-        setModelConfig(event.payload);
-      });
-      return unlisten;
-    };
+    const subs = createSubscriptionGroup();
+    subs.on<ModelConfig>(TauriEvent.MODEL_CONFIG_UPDATED, (event) => {
+      logger.debug('[ConfigContext] Received model-config-updated event:', event.payload);
+      setModelConfig(event.payload);
+    });
 
-    let cleanup: (() => void) | undefined;
-    setupListener().then(fn => cleanup = fn);
-
-    return () => {
-      cleanup?.();
-    };
+    return () => subs.dispose();
   }, []);
 
   // Load device preferences on mount

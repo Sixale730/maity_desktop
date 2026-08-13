@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useCallback, useRef } from 'react'
 import { invoke } from '@tauri-apps/api/core'
-import { listen, UnlistenFn } from '@tauri-apps/api/event'
+import { createSubscriptionGroup, subscribeTauriEvent } from '@/lib/tauriSubscribe'
 import {
   Dialog,
   DialogContent,
@@ -104,10 +104,7 @@ export function MeetingDetectionDialog() {
 
   // Listen for meeting detection events
   useEffect(() => {
-    let unlisten: UnlistenFn | undefined
-
-    const setupListener = async () => {
-      unlisten = await listen<MeetingDetectedEvent>(TauriEvent.MEETING_DETECTED, (event) => {
+    return subscribeTauriEvent<MeetingDetectedEvent>(TauriEvent.MEETING_DETECTED, (event) => {
         const { meeting, action } = event.payload
         logger.debug('[MeetingDetection] Detected:', meeting, 'Action:', action)
 
@@ -145,16 +142,7 @@ export function MeetingDetectionDialog() {
           setAutoRecordCountdown(5) // 5 second countdown
           playNotificationSound()
         }
-      })
-    }
-
-    setupListener()
-
-    return () => {
-      if (unlisten) {
-        unlisten()
-      }
-    }
+    })
   }, [])
 
   // Handle auto-record countdown
@@ -178,27 +166,33 @@ export function MeetingDetectionDialog() {
 
     setIsLoading(true)
     try {
-      // Set up listeners BEFORE invoke to avoid race condition
+      // Set up listeners BEFORE invoke to avoid race condition.
+      //
+      // Issue #65: antes esto llevaba un `cleanup` mutable que NUNCA se anulaba
+      // tras invocarse. Como los dos handlers lo llamaban, un TRANSCRIPTION_ERROR
+      // despues de un RECORDING_STARTED desregistraba el mismo eventId dos veces
+      // -> "Cannot read properties of undefined (reading 'handlerId')". Ademas,
+      // si el .then del listener de error resolvia primero, `prevCleanup` era
+      // undefined y ese listener se filtraba para siempre. El grupo resuelve
+      // ambas cosas: dispose() es idempotente y cancel-safe.
       const recordingStartedPromise = new Promise<void>((resolve, reject) => {
-        let cleanup: (() => void) | undefined
+        const subs = createSubscriptionGroup()
+
         const timeout = setTimeout(() => {
-          cleanup?.()
+          subs.dispose()
           reject(new Error('Tiempo de espera agotado al iniciar grabacion'))
         }, 10000)
 
-        listen(TauriEvent.RECORDING_STARTED, () => {
+        const settle = (fn: () => void) => {
           clearTimeout(timeout)
-          cleanup?.()
-          resolve()
-        }).then(unlisten => { cleanup = unlisten })
+          subs.dispose()
+          fn()
+        }
 
-        listen<{ error: string }>(TauriEvent.TRANSCRIPTION_ERROR, (event) => {
-          clearTimeout(timeout)
-          cleanup?.()
-          reject(new Error(event.payload.error || 'Error al iniciar transcripcion'))
-        }).then(unlisten => {
-          const prevCleanup = cleanup
-          cleanup = () => { prevCleanup?.(); unlisten() }
+        subs.on(TauriEvent.RECORDING_STARTED, () => settle(resolve))
+
+        subs.on<{ error: string }>(TauriEvent.TRANSCRIPTION_ERROR, (event) => {
+          settle(() => reject(new Error(event.payload.error || 'Error al iniciar transcripcion')))
         })
       })
 

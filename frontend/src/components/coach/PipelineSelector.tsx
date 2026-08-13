@@ -2,7 +2,7 @@
 
 import React, { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { listen } from '@tauri-apps/api/event';
+import { subscribeTauriEvent } from '@/lib/tauriSubscribe';
 import { TauriEvent } from '@/lib/tauri-events';
 import {
   CheckCircle2,
@@ -89,35 +89,30 @@ export function PipelineSelector() {
 
   // Listen to setup progress
   useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    listen<{ step: string; progress: number; message: string }>(
+    return subscribeTauriEvent<{ step: string; progress: number; message: string }>(
       TauriEvent.COACH_SETUP_PROGRESS,
       (e) => {
         setSetupStep(e.payload.step as SetupStep);
         setSetupProgress(e.payload.progress);
         setSetupMessage(e.payload.message);
       }
-    ).then((fn) => { unlisten = fn; });
-    return () => { unlisten?.(); };
+    );
   }, []);
 
   // Listen to per-model download progress
   useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    listen<{ model_id: string; progress: number; downloaded_mb: number; total_mb: number }>(
+    return subscribeTauriEvent<{ model_id: string; progress: number; downloaded_mb: number; total_mb: number }>(
       TauriEvent.COACH_GGUF_DOWNLOAD_PROGRESS,
       (e) => {
         const { model_id, progress, downloaded_mb, total_mb } = e.payload;
         setDownloads((prev) => ({ ...prev, [model_id]: { progress, downloaded_mb, total_mb } }));
       }
-    ).then((fn) => { unlisten = fn; });
-    return () => { unlisten?.(); };
+    );
   }, []);
 
   // Refresh model list when a download completes
   useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    listen<{ model_id: string }>(TauriEvent.COACH_GGUF_DOWNLOAD_COMPLETE, (e) => {
+    return subscribeTauriEvent<{ model_id: string }>(TauriEvent.COACH_GGUF_DOWNLOAD_COMPLETE, (e) => {
       setDownloads((prev) => {
         const next = { ...prev };
         delete next[e.payload.model_id];
@@ -125,21 +120,18 @@ export function PipelineSelector() {
       });
       refreshModels();
       refreshEngineStatus();
-    }).then((fn) => { unlisten = fn; });
-    return () => { unlisten?.(); };
+    });
   }, []);
 
   // Clear download state when a download errors or is cancelled
   useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    listen<{ model_id: string; error: string }>(TauriEvent.COACH_GGUF_DOWNLOAD_ERROR, (e) => {
+    return subscribeTauriEvent<{ model_id: string; error: string }>(TauriEvent.COACH_GGUF_DOWNLOAD_ERROR, (e) => {
       setDownloads((prev) => {
         const next = { ...prev };
         delete next[e.payload.model_id];
         return next;
       });
-    }).then((fn) => { unlisten = fn; });
-    return () => { unlisten?.(); };
+    });
   }, []);
 
   const refreshModels = async () => {

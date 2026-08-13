@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { listen } from '@tauri-apps/api/event';
+import { subscribeTauriEvent } from '@/lib/tauriSubscribe';
 import { TauriEvent } from '@/lib/tauri-events';
 
 interface RecordingLevels {
@@ -20,16 +20,9 @@ export function useRecordingLevels(isRecording: boolean) {
       return;
     }
 
-    let unlisten: (() => void) | undefined;
-
-    const setup = async () => {
-      unlisten = await listen<RecordingLevels>(TauriEvent.RECORDING_AUDIO_LEVELS, (event) => {
-        setLevels(event.payload);
-      });
-    };
-
-    setup();
-    return () => { unlisten?.(); };
+    return subscribeTauriEvent<RecordingLevels>(TauriEvent.RECORDING_AUDIO_LEVELS, (event) => {
+      setLevels(event.payload);
+    });
   }, [isRecording]);
 
   return levels;

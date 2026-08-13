@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+import { createSubscriptionGroup } from '@/lib/tauriSubscribe'
 import { toast } from 'sonner'
 import { TauriEvent } from '@/lib/tauri-events'
 
@@ -48,13 +48,10 @@ function describeReason(reason?: string): string {
  */
 export function useMicrophoneFallbackToast(): void {
   useEffect(() => {
-    let unlisten: UnlistenFn | undefined
-    let unlistenLoopback: UnlistenFn | undefined
-    let unlistenSilence: UnlistenFn | undefined
-    let unlistenBluetooth: UnlistenFn | undefined
+    const subs = createSubscriptionGroup()
 
     const subscribe = async () => {
-      unlisten = await listen<MicrophoneFallbackPayload>(
+      subs.on<MicrophoneFallbackPayload>(
         TauriEvent.MICROPHONE_FALLBACK,
         (event) => {
           const requested = event.payload?.requested ?? 'micrófono preferido'
@@ -68,7 +65,7 @@ export function useMicrophoneFallbackToast(): void {
 
       // Preflight de grabación: el "micrófono" resuelto es un loopback del audio
       // del sistema (Stereo Mix y afines) — la voz del usuario no se grabará.
-      unlistenLoopback = await listen<MicLoopbackPayload>(
+      subs.on<MicLoopbackPayload>(
         TauriEvent.MIC_LOOPBACK_WARNING,
         (event) => {
           const device = event.payload?.device ?? 'dispositivo desconocido'
@@ -83,7 +80,7 @@ export function useMicrophoneFallbackToast(): void {
       // audio durante grabación activa — o el stream se atascó ("stalled") o
       // entrega ceros exactos ("silent", típico mute por hardware o cambio de
       // perfil Bluetooth A2DP↔HFP). Una alerta por episodio (latch en Rust).
-      unlistenSilence = await listen<MicSilencePayload>(
+      subs.on<MicSilencePayload>(
         TauriEvent.MIC_SILENCE_WARNING,
         (event) => {
           const device = event.payload?.device ?? 'el micrófono'
@@ -102,7 +99,7 @@ export function useMicrophoneFallbackToast(): void {
       // del micrófono de unos audífonos BT para no conmutarlos de A2DP a manos
       // libres. NO se reusa `microphone-fallback` porque su copy dice "no está
       // conectado", y aquí el headset sí lo está: el mensaje sería falso.
-      unlistenBluetooth = await listen<BluetoothMicAvoidedPayload>(
+      subs.on<BluetoothMicAvoidedPayload>(
         TauriEvent.BLUETOOTH_MIC_AVOIDED,
         (event) => {
           const output = event.payload?.outputDevice ?? 'tus audífonos Bluetooth'
@@ -125,11 +122,6 @@ export function useMicrophoneFallbackToast(): void {
 
     subscribe()
 
-    return () => {
-      unlisten?.()
-      unlistenLoopback?.()
-      unlistenSilence?.()
-      unlistenBluetooth?.()
-    }
+    return () => subs.dispose()
   }, [])
 }

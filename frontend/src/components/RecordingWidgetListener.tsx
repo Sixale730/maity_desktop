@@ -1,11 +1,20 @@
 'use client';
 
-import { useEffect } from 'react';
-import { listen } from '@tauri-apps/api/event';
+import { useEffect, useRef } from 'react';
 import { useRecordingStart } from '@/hooks/useRecordingStart';
 import { useRecordingState } from '@/contexts/RecordingStateContext';
 import { useConfig } from '@/contexts/ConfigContext';
 import { TauriEvent } from '@/lib/tauri-events';
+import { subscribeTauriEvent } from '@/lib/tauriSubscribe';
+
+/**
+ * Constante de modulo, NO un arrow inline. `useRecordingStart` la lleva en el
+ * dep array de `handleRecordingStart`, asi que un `() => {}` escrito en el
+ * cuerpo del componente le cambia la identidad EN CADA RENDER — que es como
+ * este componente terminaba resuscribiendose a `widget-request-start-recording`
+ * render tras render y disparando el crash del issue #65.
+ */
+const NOOP_SET_IS_RECORDING = () => { /* RecordingStateContext es la fuente de verdad */ };
 
 /**
  * Payload opcional del evento `widget-request-start-recording`. El coach-float
@@ -47,14 +56,23 @@ export function RecordingWidgetListener() {
   // maneja internamente con toast.
   const { handleRecordingStart } = useRecordingStart(
     isRecording,
-    () => { /* no-op */ },
+    NOOP_SET_IS_RECORDING,
     undefined,
   );
 
+  // Latest-ref: el efecto de abajo se suscribe UNA sola vez ([] deps) y lee
+  // los valores frescos desde el ref. Antes estos cuatro iban en el dep array
+  // y el listener se re-suscribía al mismo evento en cada render — issue #65.
+  // Mismo patrón que RecordingControls.tsx.
+  const latest = useRef({ isRecording, selectedDevices, updateSelectedDevices, handleRecordingStart });
+  latest.current = { isRecording, selectedDevices, updateSelectedDevices, handleRecordingStart };
+
   useEffect(() => {
-    const unlistenP = listen<WidgetStartPayload | null>(
+    return subscribeTauriEvent<WidgetStartPayload | null>(
       TauriEvent.WIDGET_REQUEST_START_RECORDING,
       (e) => {
+        const { isRecording, selectedDevices, updateSelectedDevices, handleRecordingStart } = latest.current;
+
         // Guard: si ya estamos grabando, ignorar el evento. El comando Rust
         // también valida (vía la máquina de fases de grabación) pero defendemos
         // en frontend para evitar invocar handleRecordingStart con state inconsistente.
@@ -79,8 +97,7 @@ export function RecordingWidgetListener() {
         handleRecordingStart();
       },
     );
-    return () => { unlistenP.then(fn => fn()); };
-  }, [handleRecordingStart, isRecording, selectedDevices, updateSelectedDevices]);
+  }, []);
 
   return null;
 }

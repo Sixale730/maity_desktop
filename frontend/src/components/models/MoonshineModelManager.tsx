@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { listen } from '@tauri-apps/api/event';
+import { createSubscriptionGroup } from '@/lib/tauriSubscribe';
 import { invoke } from '@tauri-apps/api/core';
 import { motion, AnimatePresence } from 'framer-motion';
 import { toast } from 'sonner';
@@ -88,15 +88,13 @@ export function MoonshineModelManager({
 
   // Set up event listeners for download progress
   useEffect(() => {
-    let unlistenProgress: (() => void) | null = null;
-    let unlistenComplete: (() => void) | null = null;
-    let unlistenError: (() => void) | null = null;
+    const subs = createSubscriptionGroup();
 
     const setupListeners = async () => {
       logger.debug('[MoonshineModelManager] Setting up event listeners...');
 
       // Download progress with throttling
-      unlistenProgress = await listen<{ modelName: string; progress: number }>(
+      subs.on<{ modelName: string; progress: number }>(
         TauriEvent.MOONSHINE_MODEL_DOWNLOAD_PROGRESS,
         (event) => {
           const { modelName, progress } = event.payload;
@@ -124,7 +122,7 @@ export function MoonshineModelManager({
       );
 
       // Download complete
-      unlistenComplete = await listen<{ modelName: string }>(
+      subs.on<{ modelName: string }>(
         TauriEvent.MOONSHINE_MODEL_DOWNLOAD_COMPLETE,
         (event) => {
           const { modelName } = event.payload;
@@ -164,7 +162,7 @@ export function MoonshineModelManager({
       );
 
       // Download error
-      unlistenError = await listen<{ modelName: string; error: string }>(
+      subs.on<{ modelName: string; error: string }>(
         TauriEvent.MOONSHINE_MODEL_DOWNLOAD_ERROR,
         (event) => {
           const { modelName, error } = event.payload;
@@ -204,9 +202,7 @@ export function MoonshineModelManager({
 
     return () => {
       logger.debug('[MoonshineModelManager] Cleaning up event listeners...');
-      if (unlistenProgress) unlistenProgress();
-      if (unlistenComplete) unlistenComplete();
-      if (unlistenError) unlistenError();
+      subs.dispose();
     };
   }, []); // Empty dependency array - listeners use refs for stable callbacks
 

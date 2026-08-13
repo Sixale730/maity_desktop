@@ -1,6 +1,6 @@
 import { useEffect, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
-import { listen } from '@tauri-apps/api/event';
+import { createSubscriptionGroup } from '@/lib/tauriSubscribe';
 import { toast } from 'sonner';
 import { TauriEvent } from '@/lib/tauri-events';
 import { useTranscripts } from '@/contexts/TranscriptContext';
@@ -127,12 +127,12 @@ export function useRecordingStop(
 
   // Set up recording-stopped listener for meeting navigation
   useEffect(() => {
-    let unlistenFn: (() => void) | undefined;
+    const subs = createSubscriptionGroup();
 
     const setupRecordingStoppedListener = async () => {
       try {
         logger.debug('Setting up recording-stopped listener for navigation...');
-        unlistenFn = await listen<{
+        subs.on<{
           message: string;
           folder_path?: string;
           meeting_name?: string;
@@ -167,11 +167,11 @@ export function useRecordingStop(
 
     return () => {
       logger.debug('Cleaning up recording stopped listener...');
-      if (unlistenFn) {
-        unlistenFn();
-      }
+      subs.dispose();
     };
-  }, [router]);
+    // El handler no lee router; sin deps evita resuscribirse en cada render (#65).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Main recording stop handler — LOCAL-FIRST flow
   const handleRecordingStop = useCallback(async (isCallApi: boolean) => {

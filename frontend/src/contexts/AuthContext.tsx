@@ -5,7 +5,7 @@ import { supabase, SUPABASE_URL, SUPABASE_ANON_KEY } from '@/lib/supabase'
 import type { Session, User } from '@supabase/supabase-js'
 import type { MaityUser } from '@/types/auth'
 import { invoke } from '@tauri-apps/api/core'
-import { listen } from '@tauri-apps/api/event'
+import { createSubscriptionGroup } from '@/lib/tauriSubscribe'
 import { onOpenUrl, getCurrent as getCurrentDeepLink } from '@tauri-apps/plugin-deep-link'
 import { logger } from '@/lib/logger'
 import { fileLogger } from '@/lib/fileLogger'
@@ -516,7 +516,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   // Listen for auth tokens from the localhost OAuth server (primary on Windows)
   useEffect(() => {
-    const unlistenTokens = listen<{ access_token: string; refresh_token: string }>(
+    const subs = createSubscriptionGroup()
+    subs.on<{ access_token: string; refresh_token: string }>(
       TauriEvent.AUTH_TOKENS_RECEIVED,
       async (event) => {
         const { access_token, refresh_token } = event.payload
@@ -536,9 +537,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         logger.debug('[Auth] get_pending_auth_tokens not available:', err)
       })
 
-    return () => {
-      unlistenTokens.then((fn) => fn())
-    }
+    return () => subs.dispose()
   }, [processAuthTokens])
 
   // Puente Rust → supabase-js: Rust refresca la sesión por su cuenta cuando la
@@ -546,7 +545,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   // cada uso, así que si no adoptamos el par nuevo aquí, supabase-js se queda
   // con el viejo y su siguiente refresh da invalid_grant → logout espontáneo.
   useEffect(() => {
-    const unlistenRefreshed = listen<{
+    const subs = createSubscriptionGroup()
+    subs.on<{
       accessToken: string
       refreshToken: string
       expiresAt: number
@@ -569,14 +569,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // Rust ya limpió su copia; NO forzamos logout de la UI: supabase-js tiene su
     // propio ciclo de refresh y puede seguir vivo. El sync headless queda en
     // pausa hasta la próxima siembra.
-    const unlistenExpired = listen(TauriEvent.CLOUD_SESSION_EXPIRED, () => {
+    subs.on(TauriEvent.CLOUD_SESSION_EXPIRED, () => {
       logger.warn('[Auth] Rust reporta cloud-session-expired: sync headless en pausa')
     })
 
-    return () => {
-      unlistenRefreshed.then((fn) => fn()).catch(() => {})
-      unlistenExpired.then((fn) => fn()).catch(() => {})
-    }
+    return () => subs.dispose()
   }, [])
 
   // Helper: process PKCE auth code (shared by listener and polling fallback)
@@ -609,7 +606,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   // Listen for PKCE auth code from the localhost OAuth server
   useEffect(() => {
-    const unlistenCode = listen<{ code: string }>(
+    const subs = createSubscriptionGroup()
+    subs.on<{ code: string }>(
       TauriEvent.AUTH_CODE_RECEIVED,
       async (event) => {
         await processAuthCode(event.payload.code)
@@ -628,9 +626,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         logger.debug('[Auth] get_pending_auth_code not available:', err)
       })
 
-    return () => {
-      unlistenCode.then((fn) => fn())
-    }
+    return () => subs.dispose()
   }, [processAuthCode])
 
   // Listen for deep-link events as fallback (macOS: onOpenUrl, Windows: single-instance event)
@@ -672,7 +668,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     })
 
     // Windows/Linux: single-instance plugin forwards deep-link URLs as events
-    const unlistenPromise = listen<string>(TauriEvent.DEEP_LINK_RECEIVED, (event) => {
+    const subs = createSubscriptionGroup()
+    subs.on<string>(TauriEvent.DEEP_LINK_RECEIVED, (event) => {
       const url = event.payload
       if (isAuthDeepLink(url)) {
         handleDeepLinkCallback(url)
@@ -681,7 +678,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     return () => {
       cleanupOpenUrl?.()
-      unlistenPromise.then((fn) => fn())
+      subs.dispose()
     }
   }, [handleDeepLinkCallback])
 

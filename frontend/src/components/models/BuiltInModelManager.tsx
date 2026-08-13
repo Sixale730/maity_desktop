@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { listen } from '@tauri-apps/api/event';
+import { createSubscriptionGroup } from '@/lib/tauriSubscribe';
 import { Button } from '@/components/ui/button';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { cn } from '@/lib/utils';
@@ -70,11 +70,11 @@ export function BuiltInModelManager({ selectedModel, onModelSelect }: BuiltInMod
 
   // Listen for download progress events
   useEffect(() => {
-    let unlisten: (() => void) | undefined;
+    const subs = createSubscriptionGroup();
 
     const setupListener = async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Tauri event payload structure
-      unlisten = await listen(TauriEvent.BUILTIN_AI_DOWNLOAD_PROGRESS, (event: any) => {
+      subs.on(TauriEvent.BUILTIN_AI_DOWNLOAD_PROGRESS, (event: any) => {
         const { model, progress, downloaded_mb, total_mb, speed_mbps, status } = event.payload;
 
         // Update percentage progress
@@ -187,11 +187,7 @@ export function BuiltInModelManager({ selectedModel, onModelSelect }: BuiltInMod
 
     setupListener();
 
-    return () => {
-      if (unlisten) {
-        unlisten();
-      }
-    };
+    return () => subs.dispose();
   }, []);
 
   const downloadModel = async (modelName: string) => {

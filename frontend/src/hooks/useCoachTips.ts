@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { listen } from '@tauri-apps/api/event';
+import { createSubscriptionGroup } from '@/lib/tauriSubscribe';
 import { invoke } from '@tauri-apps/api/core';
 import { TauriEvent } from '@/lib/tauri-events';
 
@@ -31,6 +31,8 @@ export function useCoachTips(maxTips = 20): UseCoachTipsResult {
   maxTipsRef.current = maxTips;
 
   useEffect(() => {
+    const subs = createSubscriptionGroup();
+
     // Recuperar historial de sesión activa al montar (silencioso si no hay sesión)
     invoke<CoachTipUpdate[]>('coach_get_session_tips')
       .then((history) => {
@@ -43,7 +45,7 @@ export function useCoachTips(maxTips = 20): UseCoachTipsResult {
       });
 
     // Escuchar nuevos tips y acumular (no overwrite)
-    const unlistenTip = listen<CoachTipUpdate>(TauriEvent.COACH_TIP_UPDATE, (event) => {
+    subs.on<CoachTipUpdate>(TauriEvent.COACH_TIP_UPDATE, (event) => {
       setTips((prev) => {
         const next = [...prev, event.payload];
         return next.length > maxTipsRef.current
@@ -53,26 +55,21 @@ export function useCoachTips(maxTips = 20): UseCoachTipsResult {
     });
 
     // Limpiar al iniciar nueva grabación
-    const unlistenReset = listen(TauriEvent.RECORDING_START_COMPLETE, () => {
+    subs.on(TauriEvent.RECORDING_START_COMPLETE, () => {
       setTips([]);
     });
 
     // Limpiar también al detener para que el drawer no muestre tips stale
     // cuando el usuario lo reabre en idle. Antes solo limpiábamos en start,
     // así que el tip card quedaba con el último tip de la sesión anterior.
-    const unlistenStopComplete = listen(TauriEvent.RECORDING_STOP_COMPLETE, () => {
+    subs.on(TauriEvent.RECORDING_STOP_COMPLETE, () => {
       setTips([]);
     });
-    const unlistenStopped = listen(TauriEvent.RECORDING_STOPPED, () => {
+    subs.on(TauriEvent.RECORDING_STOPPED, () => {
       setTips([]);
     });
 
-    return () => {
-      unlistenTip.then((fn) => fn());
-      unlistenReset.then((fn) => fn());
-      unlistenStopComplete.then((fn) => fn());
-      unlistenStopped.then((fn) => fn());
-    };
+    return () => subs.dispose();
   }, []);
 
   return {

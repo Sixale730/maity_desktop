@@ -13,6 +13,13 @@
     "no-restricted-syntax": ["error", {
       "selector": "CallExpression[callee.property.name='rpc'][callee.object.name='supabase']",
       "message": "Usa supabase.schema('public').rpc(...) — un .rpc() sin schema explicito depende del default del cliente y, si apunta al schema equivocado, devuelve 403 en silencio (issue #70). Para un RPC de maity: .schema('maity').rpc(...)."
+    }],
+    "no-restricted-imports": ["error", {
+      "paths": [{
+        "name": "@tauri-apps/api/event",
+        "importNames": ["listen", "once"],
+        "message": "Usa subscribeTauriEvent/createSubscriptionGroup de '@/lib/tauriSubscribe'. Un listen() suelto se desregistra dos veces o se filtra al desmontar antes de que resuelva, y Tauri tira 'Cannot read properties of undefined (reading handlerId)' como unhandledrejection (issue #65). `emit` sigue permitido."
+      }]
     }]
   },
   "overrides": [
@@ -44,6 +51,27 @@
       "files": ["src/shared/maity-shared/**/*.{ts,tsx}"],
       "rules": {
         "no-restricted-syntax": "off"
+      }
+    },
+    {
+      // Unicos autorizados a importar `listen` directo (issue #65):
+      //  - tauriSubscribe.ts ES la implementacion del helper.
+      //  - recording/transcriptService son wrappers finos que DEVUELVEN la
+      //    promesa del unlisten; el ciclo de vida lo maneja el llamador con
+      //    createSubscriptionGroup().
+      //  - errorTelemetry.ts es fire-and-forget deliberado: init idempotente
+      //    sin teardown, documentado en CLAUDE.md.
+      //  - los tests importan `listen` para mockearlo/tiparlo.
+      "files": [
+        "src/lib/tauriSubscribe.ts",
+        "src/lib/errorTelemetry.ts",
+        "src/services/recordingService.ts",
+        "src/services/transcriptService.ts",
+        "src/shared/maity-shared/**/*.{ts,tsx}",
+        "**/*.test.{ts,tsx}"
+      ],
+      "rules": {
+        "no-restricted-imports": "off"
       }
     }
   ]

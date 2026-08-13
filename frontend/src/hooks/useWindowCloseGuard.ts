@@ -1,4 +1,5 @@
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
+import { createSubscriptionGroup } from '@/lib/tauriSubscribe';
 
 /**
  * Guard contra cerrar la ventana mientras hay una grabacion activa.
@@ -8,15 +9,21 @@ import { useEffect } from 'react';
  * sin avisar. El guard avisa al user y le da la opcion explicita.
  */
 export function useWindowCloseGuard(isRecording: boolean) {
+  // Latest-ref: antes `isRecording` era dependencia del efecto, así que el
+  // handler de cierre se desregistraba y volvía a registrar cada vez que
+  // arrancaba o paraba una grabación (issue #65).
+  const isRecordingRef = useRef(isRecording);
+  isRecordingRef.current = isRecording;
+
   useEffect(() => {
-    let cleanup: (() => void) | undefined;
+    const subs = createSubscriptionGroup();
 
     const setup = async () => {
       try {
         const { getCurrentWindow } = await import('@tauri-apps/api/window');
         const appWindow = getCurrentWindow();
-        cleanup = await appWindow.onCloseRequested(async (event) => {
-          if (isRecording) {
+        subs.add(appWindow.onCloseRequested(async (event) => {
+          if (isRecordingRef.current) {
             event.preventDefault();
             const shouldHide = window.confirm(
               'Hay una grabación en progreso. Cerrar la ventana esconderá la app en la bandeja del sistema y la grabación continuará en segundo plano. ¿Continuar?'
@@ -28,13 +35,13 @@ export function useWindowCloseGuard(isRecording: boolean) {
               appWindow.close();
             }
           }
-        });
+        }));
       } catch {
         // Not in Tauri environment (e.g., browser dev), skip
       }
     };
 
     setup();
-    return () => cleanup?.();
-  }, [isRecording]);
+    return () => subs.dispose();
+  }, []);
 }

@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { listen } from '@tauri-apps/api/event';
+import { createSubscriptionGroup } from '@/lib/tauriSubscribe';
 import { invoke } from '@tauri-apps/api/core';
 import { TauriEvent } from '@/lib/tauri-events';
 
@@ -45,11 +45,11 @@ export function useTranscriptionProgress(): UseTranscriptionProgressResult {
   }, []);
 
   useEffect(() => {
-    const unlisteners: (() => void)[] = [];
+    const subs = createSubscriptionGroup();
 
     const setup = async () => {
       // Listen for finishing progress updates
-      const unlistenFinishing = await listen<TranscriptionFinishingData>(
+      subs.on<TranscriptionFinishingData>(
         TauriEvent.TRANSCRIPTION_FINISHING,
         (event) => {
           const { total_remaining, processed: proc, estimated_seconds } = event.payload;
@@ -60,18 +60,16 @@ export function useTranscriptionProgress(): UseTranscriptionProgressResult {
           setEstimatedSeconds(estimated_seconds);
         }
       );
-      unlisteners.push(unlistenFinishing);
 
       // Listen for transcription complete
-      const unlistenComplete = await listen<void>(TauriEvent.TRANSCRIPTION_COMPLETE, () => {
+      subs.on<void>(TauriEvent.TRANSCRIPTION_COMPLETE, () => {
         setIsFinishing(false);
         setIsComplete(true);
       });
-      unlisteners.push(unlistenComplete);
     };
 
     setup();
-    return () => { unlisteners.forEach(u => u()); };
+    return () => subs.dispose();
   }, []);
 
   return {

@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useRef } from 'react'
-import { listen } from '@tauri-apps/api/event'
+import { createSubscriptionGroup } from '@/lib/tauriSubscribe'
 import { toast } from 'sonner'
 import { logger } from '@/lib/logger'
 import { TauriEvent } from '@/lib/tauri-events'
@@ -16,29 +16,26 @@ export function ScheduledRecordingIndicator() {
   const prevPhase = useRef<string | null>(null)
 
   useEffect(() => {
-    const subscriptions = [
-      listen<{ phase: string; next_fire_at: string | null; in_window: boolean }>(
-        TauriEvent.SCHEDULED_RECORDING_STATUS,
-        (event) => {
-          const phase = event.payload?.phase
-          if (!phase || phase === prevPhase.current) return
-          // Avisar solo en el arranque real (no en la sincronización inicial de mount).
-          if (phase === 'recording' && prevPhase.current !== null) {
-            toast.success('Grabación de jornada iniciada')
-          }
-          prevPhase.current = phase
-          logger.debug('[ScheduledRecording] phase:', phase)
+    const subs = createSubscriptionGroup()
+    subs.on<{ phase: string; next_fire_at: string | null; in_window: boolean }>(
+      TauriEvent.SCHEDULED_RECORDING_STATUS,
+      (event) => {
+        const phase = event.payload?.phase
+        if (!phase || phase === prevPhase.current) return
+        // Avisar solo en el arranque real (no en la sincronización inicial de mount).
+        if (phase === 'recording' && prevPhase.current !== null) {
+          toast.success('Grabación de jornada iniciada')
         }
-      ),
-      listen<{ reason: string; message: string }>(TauriEvent.SCHEDULED_RECORDING_SKIPPED, (event) => {
-        const message = event.payload?.message
-        if (message) toast.info(message)
-      }),
-    ]
+        prevPhase.current = phase
+        logger.debug('[ScheduledRecording] phase:', phase)
+      }
+    )
+    subs.on<{ reason: string; message: string }>(TauriEvent.SCHEDULED_RECORDING_SKIPPED, (event) => {
+      const message = event.payload?.message
+      if (message) toast.info(message)
+    })
 
-    return () => {
-      subscriptions.forEach((p) => p.then((unlisten) => unlisten()))
-    }
+    return () => subs.dispose()
   }, [])
 
   return null

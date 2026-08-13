@@ -5,6 +5,7 @@ import { Transcript, TranscriptUpdate } from '@/types';
 import { toast } from 'sonner';
 import { useRecordingState } from './RecordingStateContext';
 import { transcriptService } from '@/services/transcriptService';
+import { createSubscriptionGroup } from '@/lib/tauriSubscribe';
 import { recordingService } from '@/services/recordingService';
 import { indexedDBService } from '@/services/indexedDBService';
 import { logger } from '@/lib/logger';
@@ -96,8 +97,7 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
 
   // Initialize IndexedDB and listen for recording-started/stopped events
   useEffect(() => {
-    let unlistenRecordingStarted: (() => void) | undefined;
-    let unlistenRecordingStopped: (() => void) | undefined;
+    const subs = createSubscriptionGroup();
 
     const setupRecordingListeners = async () => {
       try {
@@ -105,7 +105,7 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
         await indexedDBService.init();
 
         // Listen for recording-started event
-        unlistenRecordingStarted = await recordingService.onRecordingStarted(async () => {
+        subs.add(recordingService.onRecordingStarted(async () => {
           try {
             // Generate unique meeting ID
             const meetingId = `meeting-${Date.now()}`;
@@ -153,14 +153,18 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
           } catch (error) {
             console.error('Failed to initialize meeting in IndexedDB:', error);
           }
-        });
+        }));
 
         // Listen for recording-stopped event
-        unlistenRecordingStopped = await recordingService.onRecordingStopped(async (payload) => {
+        subs.add(recordingService.onRecordingStopped(async (payload) => {
           try {
-            if (currentMeetingId) {
+            // Issue #65: se leía `currentMeetingId` del closure, lo que obligaba
+            // a llevarlo en el dep array y resuscribía ambos listeners cada vez
+            // que cambiaba. El ref de abajo ya existía justamente para esto.
+            const meetingId = currentMeetingIdRef.current;
+            if (meetingId) {
               // Update folder path in IndexedDB
-              const metadata = await indexedDBService.getMeetingMetadata(currentMeetingId);
+              const metadata = await indexedDBService.getMeetingMetadata(meetingId);
 
               if (metadata && payload.folder_path) {
                 metadata.folderPath = payload.folder_path;
@@ -170,7 +174,7 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
           } catch (error) {
             console.error('Failed to update meeting metadata on stop:', error);
           }
-        });
+        }));
       } catch (error) {
         console.error('Failed to setup recording listeners:', error);
       }
@@ -179,16 +183,10 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
     setupRecordingListeners();
 
     return () => {
-      if (unlistenRecordingStarted) {
-        unlistenRecordingStarted();
-        logger.debug('Recording started listener cleaned up');
-      }
-      if (unlistenRecordingStopped) {
-        unlistenRecordingStopped();
-        logger.debug('Recording stopped listener cleaned up');
-      }
+      logger.debug('Recording listeners cleaned up');
+      subs.dispose();
     };
-  }, [currentMeetingId]);
+  }, []);
 
   // Ref to track currentMeetingId without causing listener re-registration
   const currentMeetingIdRef = useRef<string | null>(currentMeetingId);
@@ -199,7 +197,7 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
   // Main transcript buffering logic with sequence_id ordering
   // IMPORTANT: Empty dependency array to prevent listener re-registration
   useEffect(() => {
-    let unlistenFn: (() => void) | undefined;
+    const subs = createSubscriptionGroup();
     let transcriptCounter = 0;
     const transcriptBuffer = new Map<number, Transcript>();
     let processingTimer: ReturnType<typeof setTimeout> | undefined;
@@ -268,7 +266,7 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
     const setupListener = async () => {
       try {
         logger.debug('Setting up MAIN transcript listener during component initialization...');
-        unlistenFn = await transcriptService.onTranscriptUpdate((update) => {
+        subs.add(transcriptService.onTranscriptUpdate((update) => {
           const now = Date.now();
           logger.debug('MAIN LISTENER: Received transcript update:', {
             sequence_id: update.sequence_id,
@@ -323,7 +321,7 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
               }
             }, 16);
           }
-        });
+        }));
         logger.debug('MAIN transcript listener setup complete');
       } catch (error) {
         console.error('❌ Failed to setup MAIN transcript listener:', error);
@@ -340,10 +338,8 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
         clearTimeout(processingTimer);
         logger.debug('CLEANUP: Cleared processing timer');
       }
-      if (unlistenFn) {
-        unlistenFn();
-        logger.debug('CLEANUP: MAIN transcript listener cleaned up');
-      }
+      subs.dispose();
+      logger.debug('CLEANUP: MAIN transcript listener cleaned up');
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []); // Empty dependency - listener registered once at mount, uses ref for currentMeetingId

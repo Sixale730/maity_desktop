@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { listen } from '@tauri-apps/api/event';
+import { createSubscriptionGroup } from '@/lib/tauriSubscribe';
 import { logger } from '@/lib/logger';
 import { TauriEvent } from '@/lib/tauri-events';
 
@@ -153,7 +153,7 @@ export function useParakeetAutoDownload(): ParakeetAutoDownloadState {
   }, []);
 
   useEffect(() => {
-    const unlisteners: (() => void)[] = [];
+    const subs = createSubscriptionGroup();
 
     const setup = async () => {
       // Todos los listeners filtran por modelName: el bus de eventos es global y una
@@ -161,7 +161,7 @@ export function useParakeetAutoDownload(): ParakeetAutoDownloadState {
       // estado de este hook, que solo observa MODEL_NAME.
       const isOtherModel = (name?: string) => Boolean(name) && name !== MODEL_NAME;
 
-      const unProgress = await listen<{
+      subs.on<{
         modelName?: string;
         progress?: number;
         status?: string;
@@ -181,9 +181,8 @@ export function useParakeetAutoDownload(): ParakeetAutoDownloadState {
         setSpeedMbps(speed_mbps ?? 0);
         setIsDownloading(true);
       });
-      unlisteners.push(unProgress);
 
-      const unComplete = await listen<{ modelName?: string }>(
+      subs.on<{ modelName?: string }>(
         TauriEvent.PARAKEET_MODEL_DOWNLOAD_COMPLETE,
         (event) => {
           if (isOtherModel(event.payload?.modelName)) return;
@@ -194,9 +193,8 @@ export function useParakeetAutoDownload(): ParakeetAutoDownloadState {
           setError(null);
         },
       );
-      unlisteners.push(unComplete);
 
-      const unError = await listen<{ modelName?: string; error?: string }>(
+      subs.on<{ modelName?: string; error?: string }>(
         TauriEvent.PARAKEET_MODEL_DOWNLOAD_ERROR,
         (event) => {
           if (isOtherModel(event.payload?.modelName)) return;
@@ -210,14 +208,11 @@ export function useParakeetAutoDownload(): ParakeetAutoDownloadState {
           setIsDownloading(false);
         },
       );
-      unlisteners.push(unError);
     };
 
     setup();
 
-    return () => {
-      unlisteners.forEach(fn => fn());
-    };
+    return () => subs.dispose();
   }, []);
 
   return {

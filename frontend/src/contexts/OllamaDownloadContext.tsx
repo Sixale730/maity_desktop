@@ -1,7 +1,7 @@
 'use client';
 
 import React, { createContext, useContext, useState, useEffect } from 'react';
-import { listen } from '@tauri-apps/api/event';
+import { createSubscriptionGroup } from '@/lib/tauriSubscribe';
 import { toast } from 'sonner';
 import { logger } from '@/lib/logger';
 import { TauriEvent } from '@/lib/tauri-events';
@@ -45,12 +45,12 @@ export function OllamaDownloadProvider({ children }: { children: React.ReactNode
    */
   useEffect(() => {
     logger.debug('[OllamaDownloadContext] Setting up event listeners');
-    const unsubscribers: (() => void)[] = [];
+    const subs = createSubscriptionGroup();
 
     const setupListeners = async () => {
       try {
         // Download progress
-        const unlistenProgress = await listen<{ modelName: string; progress: number }>(
+        subs.on<{ modelName: string; progress: number }>(
           TauriEvent.OLLAMA_MODEL_DOWNLOAD_PROGRESS,
           (event) => {
             const { modelName, progress } = event.payload;
@@ -71,10 +71,9 @@ export function OllamaDownloadProvider({ children }: { children: React.ReactNode
             });
           }
         );
-        unsubscribers.push(unlistenProgress);
 
         // Download complete
-        const unlistenComplete = await listen<{ modelName: string }>(
+        subs.on<{ modelName: string }>(
           TauriEvent.OLLAMA_MODEL_DOWNLOAD_COMPLETE,
           (event) => {
             const { modelName } = event.payload;
@@ -99,10 +98,9 @@ export function OllamaDownloadProvider({ children }: { children: React.ReactNode
             });
           }
         );
-        unsubscribers.push(unlistenComplete);
 
         // Download error
-        const unlistenError = await listen<{ modelName: string; error: string }>(
+        subs.on<{ modelName: string; error: string }>(
           TauriEvent.OLLAMA_MODEL_DOWNLOAD_ERROR,
           (event) => {
             const { modelName, error } = event.payload;
@@ -127,7 +125,6 @@ export function OllamaDownloadProvider({ children }: { children: React.ReactNode
             });
           }
         );
-        unsubscribers.push(unlistenError);
 
         logger.debug('[OllamaDownloadContext] Event listeners set up successfully');
       } catch (error) {
@@ -139,7 +136,7 @@ export function OllamaDownloadProvider({ children }: { children: React.ReactNode
 
     return () => {
       logger.debug('[OllamaDownloadContext] Cleaning up event listeners');
-      unsubscribers.forEach(unsub => unsub());
+      subs.dispose();
     };
   }, []);
 

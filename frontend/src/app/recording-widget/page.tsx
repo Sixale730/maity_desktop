@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { listen } from '@tauri-apps/api/event';
+import { createSubscriptionGroup } from '@/lib/tauriSubscribe';
 import { invoke } from '@tauri-apps/api/core';
 import {
   ChevronDown, ChevronUp, X, Play, Pause, Square, Mic, Volume2,
@@ -144,42 +144,41 @@ export default function RecordingWidgetPage() {
   // al polling de 2s). Patrón: el evento es la señal rápida, el polling cura
   // desalineamientos.
   useEffect(() => {
-    const subs = [
-      listen<AudioLevels>(TauriEvent.RECORDING_AUDIO_LEVELS, (e) => {
-        setLevels({ micRms: e.payload.micRms, sysRms: e.payload.sysRms });
-      }),
-      listen(TauriEvent.RECORDING_START_COMPLETE, () => {
-        setIsRecording(true);
-        setIsPaused(false);
-        recordingStartRef.current = Date.now();
-        setDisplaySecs(0);
-        setBusy(false);
-        setErrorMsg(null);
-        if (startTimeoutRef.current) {
-          clearTimeout(startTimeoutRef.current);
-          startTimeoutRef.current = null;
-        }
-      }),
-      listen(TauriEvent.RECORDING_STOP_COMPLETE, () => {
-        setIsRecording(false);
-        setIsPaused(false);
-        recordingStartRef.current = null;
-        setDisplaySecs(0);
-        setLevels({ micRms: 0, sysRms: 0 });
-        setBusy(false);
-        userManuallyCollapsedRef.current = false;
-      }),
-      listen(TauriEvent.RECORDING_STOPPED, () => {
-        setIsRecording(false);
-        setIsPaused(false);
-        recordingStartRef.current = null;
-        setDisplaySecs(0);
-        setLevels({ micRms: 0, sysRms: 0 });
-        setBusy(false);
-        userManuallyCollapsedRef.current = false;
-      }),
-    ];
-    return () => { subs.forEach(p => p.then(fn => fn())); };
+    const subs = createSubscriptionGroup();
+    subs.on<AudioLevels>(TauriEvent.RECORDING_AUDIO_LEVELS, (e) => {
+      setLevels({ micRms: e.payload.micRms, sysRms: e.payload.sysRms });
+    });
+    subs.on(TauriEvent.RECORDING_START_COMPLETE, () => {
+      setIsRecording(true);
+      setIsPaused(false);
+      recordingStartRef.current = Date.now();
+      setDisplaySecs(0);
+      setBusy(false);
+      setErrorMsg(null);
+      if (startTimeoutRef.current) {
+        clearTimeout(startTimeoutRef.current);
+        startTimeoutRef.current = null;
+      }
+    });
+    subs.on(TauriEvent.RECORDING_STOP_COMPLETE, () => {
+      setIsRecording(false);
+      setIsPaused(false);
+      recordingStartRef.current = null;
+      setDisplaySecs(0);
+      setLevels({ micRms: 0, sysRms: 0 });
+      setBusy(false);
+      userManuallyCollapsedRef.current = false;
+    });
+    subs.on(TauriEvent.RECORDING_STOPPED, () => {
+      setIsRecording(false);
+      setIsPaused(false);
+      recordingStartRef.current = null;
+      setDisplaySecs(0);
+      setLevels({ micRms: 0, sysRms: 0 });
+      setBusy(false);
+      userManuallyCollapsedRef.current = false;
+    });
+    return () => subs.dispose();
   }, []);
 
   // Timer local cada 1s. Recalcula desde el anchor en lugar de incrementar

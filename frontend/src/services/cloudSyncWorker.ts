@@ -18,7 +18,7 @@
  *    esperan un resultado (los jobs los completa Rust; el polling no cambia).
  */
 import { invoke } from '@tauri-apps/api/core';
-import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import { createSubscriptionGroup } from '@/lib/tauriSubscribe';
 import { logger } from '@/lib/logger';
 import { logPoll } from '@/lib/diagnostics';
 import { supabase } from '@/lib/supabase';
@@ -66,7 +66,7 @@ class CloudSyncWorkerImpl {
   private stuckIntervalId: ReturnType<typeof setInterval> | null = null;
   private started = false;
   private currentUserId: string | null = null;
-  private unlistenStatus: UnlistenFn | null = null;
+  private subs: ReturnType<typeof createSubscriptionGroup> | null = null;
   private checkingStuck = false;
 
   /** Monta el puente de eventos y el stuck-watcher. `userId` es el
@@ -81,21 +81,14 @@ class CloudSyncWorkerImpl {
     // Puente Rust → bus DOM. Se registra de forma asíncrona; si `stop()` gana
     // la carrera, el unlisten se aplica de inmediato para no dejar listeners
     // colgados entre logins.
-    void listen<CloudSyncStatusPayload>(TauriEvent.CLOUD_SYNC_STATUS_CHANGED, (event) => {
+    // El grupo cubre la carrera start/stop: si stop() corre antes de que
+    // resuelva el listen(), lo libera al llegar en vez de dejarlo colgado (#65).
+    this.subs = createSubscriptionGroup();
+    this.subs.on<CloudSyncStatusPayload>(TauriEvent.CLOUD_SYNC_STATUS_CHANGED, (event) => {
       window.dispatchEvent(
         new CustomEvent('sync-status-changed', { detail: event.payload })
       );
-    })
-      .then((unlisten) => {
-        if (!this.started) {
-          unlisten();
-          return;
-        }
-        this.unlistenStatus = unlisten;
-      })
-      .catch((e) => {
-        console.warn('[CloudSyncWorker] Failed to bridge cloud-sync-status-changed:', e);
-      });
+    });
 
     // Despierta al consumidor de Rust por si quedaron jobs de la sesión previa.
     this.nudge();
@@ -126,10 +119,8 @@ class CloudSyncWorkerImpl {
       clearInterval(this.stuckIntervalId);
       this.stuckIntervalId = null;
     }
-    if (this.unlistenStatus) {
-      this.unlistenStatus();
-      this.unlistenStatus = null;
-    }
+    this.subs?.dispose();
+    this.subs = null;
     logger.debug('[CloudSyncWorker] Stopped');
   }
 

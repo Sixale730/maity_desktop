@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { listen } from '@tauri-apps/api/event';
+import { createSubscriptionGroup } from '@/lib/tauriSubscribe';
 import { invoke } from '@tauri-apps/api/core';
 import { motion } from 'framer-motion';
 import { toast } from 'sonner';
@@ -77,12 +77,10 @@ export function CanaryModelManager({
 
   // Event listeners for download progress
   useEffect(() => {
-    let unlistenProgress: (() => void) | null = null;
-    let unlistenComplete: (() => void) | null = null;
-    let unlistenError: (() => void) | null = null;
+    const subs = createSubscriptionGroup();
 
     const setupListeners = async () => {
-      unlistenProgress = await listen<{ modelName: string; progress: number }>(
+      subs.on<{ modelName: string; progress: number }>(
         TauriEvent.CANARY_MODEL_DOWNLOAD_PROGRESS,
         (event) => {
           const { modelName, progress } = event.payload;
@@ -106,7 +104,7 @@ export function CanaryModelManager({
         }
       );
 
-      unlistenComplete = await listen<{ modelName: string }>(
+      subs.on<{ modelName: string }>(
         TauriEvent.CANARY_MODEL_DOWNLOAD_COMPLETE,
         (event) => {
           const { modelName } = event.payload;
@@ -143,7 +141,7 @@ export function CanaryModelManager({
         }
       );
 
-      unlistenError = await listen<{ modelName: string; error: string }>(
+      subs.on<{ modelName: string; error: string }>(
         TauriEvent.CANARY_MODEL_DOWNLOAD_ERROR,
         (event) => {
           const { modelName, error } = event.payload;
@@ -181,9 +179,7 @@ export function CanaryModelManager({
     setupListeners();
 
     return () => {
-      if (unlistenProgress) unlistenProgress();
-      if (unlistenComplete) unlistenComplete();
-      if (unlistenError) unlistenError();
+      subs.dispose();
     };
   }, []);
 
