@@ -70,12 +70,19 @@ pub fn find_builtin_input_device() -> Result<Option<AudioDevice>> {
 /// sistema, así que `is_loopback_like_input` no los cubre, y `InputDeviceKind`
 /// los clasifica como `Wired` — sin este filtro serían candidatos "válidos" para
 /// sustituir un micrófono Bluetooth y grabaríamos silencio durante horas.
-const VIRTUAL_INPUT_MARKERS: [&str; 5] = [
+const VIRTUAL_INPUT_MARKERS: [&str; 8] = [
     "vb-audio",
     "cable output",
     "voicemeeter",
-    "virtual",
+    "virtual", // cubre "Oculus Virtual Audio Device", "VB-Audio Virtual Cable"…
     "blackhole",
+    // Micrófonos de streaming/remote play: el endpoint existe siempre pero sólo
+    // entrega audio cuando hay una sesión remota activa. Encontrados en una
+    // máquina real (ago-2026) conviviendo con los Bluetooth del reporte, donde
+    // podían salir elegidos como sustituto y grabar horas de silencio.
+    "steam streaming",
+    "nvidia broadcast",
+    "oculus",
 ];
 
 fn is_virtual_input(name: &str) -> bool {
