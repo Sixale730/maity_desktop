@@ -89,7 +89,7 @@ class PlatformLogger {
     try {
       const userAgent =
         typeof navigator !== 'undefined' ? navigator.userAgent : null
-      await supabase.rpc('insert_platform_log', {
+      await supabase.schema('public').rpc('insert_platform_log', {
         p_session_id: this.sessionId,
         p_platform: 'desktop',
         p_event_type: eventType,

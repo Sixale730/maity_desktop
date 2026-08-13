@@ -31,10 +31,24 @@ export interface MockChannel {
   emitChange: (payload: { eventType?: string; new?: Record<string, unknown>; old?: Record<string, unknown> }) => void;
 }
 
-export function createMockSupabaseClient() {
+/** Registro de cada .from()/.rpc() con el schema que estuvo vigente al llamarlo. */
+export interface SchemaCall {
+  kind: 'from' | 'rpc';
+  name: string;
+  /** Schema efectivo: el de un .schema(x) explicito, o el default del cliente. */
+  schema: string;
+}
+
+/**
+ * @param defaultSchema El `db.schema` del cliente real. Debe reflejar
+ *   lib/supabase.ts — es 'public' desde el issue #70. Los tests que verifican
+ *   ruteo de schema dependen de que esto NO mienta.
+ */
+export function createMockSupabaseClient(defaultSchema = 'public') {
   const rpcHandlers = new Map<string, (args: unknown) => QueryResult>();
   const tableResults = new Map<string, QueryResult>();
   const channels = new Map<string, MockChannel>();
+  const schemaCalls: SchemaCall[] = [];
 
   const makeTable = (name: string): TableMock => {
     const chain: Partial<TableMock> = {};
@@ -88,21 +102,36 @@ export function createMockSupabaseClient() {
     return channel;
   };
 
-  const client = {
-    from: vi.fn((name: string) => makeTable(name)),
+  /**
+   * Superficie de datos ligada a UN schema. `.schema(x)` devuelve una nueva
+   * instancia con x, igual que supabase-js; el cliente raiz usa el default.
+   *
+   * Antes `.schema()` era `vi.fn(function () { return this })` — un passthrough
+   * que TIRABA el schema pedido, asi que ningun test podia detectar una
+   * regresion de ruteo (issue #70: 5 RPC en 403 durante meses sin que nada
+   * fallara). Si vuelves a simplificar esto, ese agujero regresa.
+   */
+  const makeDataSurface = (schema: string) => ({
+    from: vi.fn((name: string) => {
+      schemaCalls.push({ kind: 'from', name, schema });
+      return makeTable(name);
+    }),
     rpc: vi.fn(async (fn: string, args: unknown) => {
+      schemaCalls.push({ kind: 'rpc', name: fn, schema });
       const handler = rpcHandlers.get(fn);
       if (!handler) return { data: null, error: new Error(`[mock-supabase] Unhandled rpc: ${fn}`) };
       return handler(args);
     }),
+  });
+
+  const client = {
+    ...makeDataSurface(defaultSchema),
     auth: {
       getUser: vi.fn(async () => ({ data: { user: null }, error: null })),
       getSession: vi.fn(async () => ({ data: { session: null }, error: null })),
       signOut: vi.fn(async () => ({ error: null })),
     },
-    schema: vi.fn(function (this: unknown) {
-      return this;
-    }),
+    schema: vi.fn((name: string) => makeDataSurface(name)),
     channel: vi.fn((topic: string) => {
       const ch = makeChannel(topic);
       channels.set(topic, ch);
@@ -123,10 +152,22 @@ export function createMockSupabaseClient() {
     getChannel(topic: string): MockChannel | undefined {
       return channels.get(topic);
     },
+    /** Todas las llamadas de datos, en orden, con su schema efectivo. */
+    get schemaCalls(): readonly SchemaCall[] {
+      return schemaCalls;
+    },
+    /** Schema efectivo de la ULTIMA llamada a esa tabla/RPC, o undefined. */
+    schemaOf(name: string): string | undefined {
+      for (let i = schemaCalls.length - 1; i >= 0; i -= 1) {
+        if (schemaCalls[i].name === name) return schemaCalls[i].schema;
+      }
+      return undefined;
+    },
     reset() {
       rpcHandlers.clear();
       tableResults.clear();
       channels.clear();
+      schemaCalls.length = 0;
     },
   };
 }

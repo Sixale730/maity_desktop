@@ -706,6 +706,21 @@ Workflows en `.github/workflows/`:
 - `pr-main-check.yml` — Checks para PRs a main
 - `release.yml` — Build final para releases
 
+## Cliente Supabase: el default es `public`, y todo call site dice su schema (ago-2026)
+
+`frontend/src/lib/supabase.ts` crea el cliente con **`db: { schema: 'public' }`**. Antes era `'maity'` (desde `230b807`, feb-2026) y eso puso **5 RPC del desktop en 403** cuando el hardening de la DB (issue web #143) cerró el schema `maity` a los roles de cliente: `authenticated` solo puede ejecutar `maity.submit_chat_bug_report`. Issue #70.
+
+**Lo grave no fue el 403, fue que ninguno se vio.** `insert_platform_log` tenía un `catch {}` vacío que ni siquiera inspeccionaba `.error`; `calculate_user_streak`/`get_my_xp_summary` caían a **cero** (indistinguible de cuenta nueva); `insert_user_feedback` solo hacía `console.warn`; y `get_user_role` devolvía `null` → el heurístico por dominio de email, o sea **un `manager` fuera de `@asertio.mx`/`@maity.cloud` se degradaba a `user` en silencio**. Meses en producción sin una sola señal.
+
+Reglas, todas deliberadas:
+
+- **`public` es el perímetro mediado.** Los clientes entran por wrappers `public.*` (SECURITY DEFINER); ahí vive la autorización. `calculate_user_streak` es el caso testigo: **nunca** se va a conceder `maity.calculate_user_streak` a `authenticated`, porque el gate está en el wrapper `public` (migración `20260814000000` de la web) — la interna la llaman el dashboard de equipo, el leaderboard y `award_xp_for_session` sobre ids de OTROS usuarios vía `LATERAL`, y un gate adentro rompería al manager.
+- **Las TABLAS de `maity` no se tocaron** — siguen accesibles vía RLS y se piden con **`.schema('maity')` explícito**. Nunca por el default. Los 16 `.from()` que dependían de él (conversaciones, `users` de `AuthContext`, `form_responses`, diagnostics) ya están explícitos.
+- **Dos guardias, porque los dos modos de falla no son simétricos.** Un `.rpc()` mal ruteado da **403 silencioso**; un `.from()` mal ruteado da `PGRST205`, que es ruidoso. La regla `no-restricted-syntax` de `frontend/.eslintrc.json` cubre `.rpc()` pelón (error, con el fix en el mensaje); el test `frontend/src/lib/supabase.test.ts` cubre **además** `.from()`, parseando todo `src/` con el TS Compiler API (mismo patrón que `app/layout.test.ts`) y verificando que el default del cliente siga siendo `public`. Ambos se verificaron rompiéndolos a propósito.
+- **`src/shared/maity-shared/**` está exento del lint**: es el árbol copiado zero-drift de `Sixale730/maity` y sus `.rpc()` pelones son correctos ahora que el default es `public`. Su `api/client/supabase.ts` era un Proxy que forzaba `.schema('public')`; quedó en no-op y se adelgazó a un **re-export**. El archivo se conserva (es el seam de import del árbol copiado), la lógica no.
+- **El mock de tests `src/test/mocks/supabase.ts` es schema-aware.** Su `.schema()` era `vi.fn(function () { return this })` — un passthrough que tiraba el schema pedido, así que **ningún test podía detectar una regresión de ruteo**. Hoy `.schema(x)` devuelve una superficie nueva y registra cada llamada (`schemaCalls`, `schemaOf(name)`). No volver a "simplificarlo".
+- **Realtime es independiente**: `GlobalConversationNotifier.tsx` hardcodea `schema: 'maity'` en el filtro `postgres_changes`. Realtime no lee `db.schema` — está bien así, no tocarlo.
+
 ## Deepgram via Cloudflare Worker Proxy
 
 La transcripcion en la nube usa Deepgram a traves de un Cloudflare Worker proxy. **La API key de Deepgram nunca llega al cliente**.

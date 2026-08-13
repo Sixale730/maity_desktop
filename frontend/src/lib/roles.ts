@@ -28,7 +28,7 @@ export function getUserRoleFromEmail(email: string | null | undefined): UserRole
  */
 export async function getUserRoleFromRPC(supabase: SupabaseClient): Promise<UserRole | null> {
   try {
-    const { data, error } = await supabase.rpc('get_user_role');
+    const { data, error } = await supabase.schema('public').rpc('get_user_role');
     if (error || !data) return null;
     const role = String(data).toLowerCase();
     if (role === 'admin' || role === 'manager' || role === 'user') {

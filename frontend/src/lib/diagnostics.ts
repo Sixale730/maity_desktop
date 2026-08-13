@@ -56,6 +56,7 @@ export function installPollDebugHelpers(): void {
       const { supabase } = await import('./supabase');
       const t0 = performance.now();
       const { data, error } = await supabase
+        .schema('maity')
         .from('omi_conversations')
         .select('*')
         .eq('id', id)

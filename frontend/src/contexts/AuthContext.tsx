@@ -185,6 +185,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       try {
         // Try to fetch existing maity.users record
         const { data, error: fetchError } = await supabase
+          .schema('maity')
           .from('users')
           .select('id, auth_id, first_name, last_name, email, status, created_at, updated_at')
           .eq('auth_id', authUser.id)
@@ -216,6 +217,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           const initialStatus = TRUSTED_DOMAINS.includes(domain) ? 'ACTIVE' : 'PENDING_APPROVAL'
 
           const { data: newUser, error: createError } = await supabase
+            .schema('maity')
             .from('users')
             .insert({
               auth_id: authUser.id,
@@ -232,6 +234,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             if (createError.code === '23505') {
               logger.debug('[Auth] Unique constraint hit (concurrent insert), re-fetching user')
               const { data: existingUser, error: refetchError } = await supabase
+                .schema('maity')
                 .from('users')
                 .select('id, auth_id, first_name, last_name, email, status, created_at, updated_at')
                 .eq('auth_id', authUser.id)

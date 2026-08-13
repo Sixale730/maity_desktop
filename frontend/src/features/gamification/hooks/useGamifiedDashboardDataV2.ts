@@ -299,7 +299,7 @@ export function useGamifiedDashboardDataV2(): GamifiedDashboardDataV2 {
     queryFn: async () => {
       const t0 = Date.now();
       void fileLogger.info('dashboard_query', 'user-streak start', { userIdSuffix: userId?.slice(-8) });
-      const { data, error } = await supabase.rpc('calculate_user_streak', { p_user_id: userId });
+      const { data, error } = await supabase.schema('public').rpc('calculate_user_streak', { p_user_id: userId });
       if (error) {
         console.warn('[Gamification] streak RPC error:', error.message);
         void fileLogger.warn('dashboard_query', 'user-streak rpc-error', {
@@ -325,7 +325,7 @@ export function useGamifiedDashboardDataV2(): GamifiedDashboardDataV2 {
     queryFn: async () => {
       const t0 = Date.now();
       void fileLogger.info('dashboard_query', 'user-xp start', { userIdSuffix: userId?.slice(-8) });
-      const { data, error } = await supabase.rpc('get_my_xp_summary');
+      const { data, error } = await supabase.schema('public').rpc('get_my_xp_summary');
       if (error) {
         console.warn('[Gamification] XP RPC error:', error.message);
         void fileLogger.warn('dashboard_query', 'user-xp rpc-error', {

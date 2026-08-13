@@ -115,7 +115,7 @@ class RecordingLogService {
 
       const results = await Promise.allSettled(
         unsynced.map((log) =>
-          supabase.rpc('insert_platform_log', {
+          supabase.schema('public').rpc('insert_platform_log', {
             p_session_id: log.session_id,
             p_platform: 'desktop',
             p_event_type: log.event_type,

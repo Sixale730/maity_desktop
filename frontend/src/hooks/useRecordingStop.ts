@@ -447,6 +447,7 @@ export function useRecordingStop(
         const { data: { session: currentSession } } = await supabase.auth.getSession();
         if (currentSession?.user) {
           const { data: userData } = await supabase
+            .schema('maity')
             .from('users')
             .select('id, auth_id, first_name, last_name, email, status, created_at, updated_at')
             .eq('auth_id', currentSession.user.id)

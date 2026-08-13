@@ -57,10 +57,30 @@ describe('roles', () => {
   });
 
   describe('getUserRoleFromRPC', () => {
-    const makeSupabase = (rpcResult: { data: unknown; error: Error | null }) =>
-      ({
-        rpc: vi.fn(async () => rpcResult),
-      }) as unknown as SupabaseClient;
+    // El stub replica el ruteo por schema de supabase-js: `.schema(x)` devuelve
+    // una superficie nueva. Antes solo tenia `.rpc`, asi que un `.schema()` en
+    // el codigo tronaba adentro del try/catch y devolvia null en silencio — el
+    // mismo modo de falla del issue #70. `lastSchema` lo hace observable.
+    let lastSchema: string | undefined;
+    const makeSupabase = (rpcResult: { data: unknown; error: Error | null }) => {
+      lastSchema = undefined;
+      const rpc = vi.fn(async () => rpcResult);
+      return {
+        rpc,
+        schema: vi.fn((name: string) => {
+          lastSchema = name;
+          return { rpc };
+        }),
+      } as unknown as SupabaseClient;
+    };
+
+    it("get_user_role se pide contra el schema 'public'", async () => {
+      // El gate de autorizacion vive en el wrapper public.get_user_role; la
+      // version maity.* no esta concedida a `authenticated` (issue web #143).
+      const supabase = makeSupabase({ data: 'admin', error: null });
+      await getUserRoleFromRPC(supabase);
+      expect(lastSchema).toBe('public');
+    });
 
     it('retorna el rol cuando la RPC devuelve "admin"', async () => {
       const supabase = makeSupabase({ data: 'admin', error: null });

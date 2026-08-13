@@ -44,6 +44,7 @@ export function SessionFeedbackModal({ open, meetingId, onSubmit }: SessionFeedb
       // server-side; client only sends business fields. Same canonical pattern
       // as platformLogger.ts → insert_platform_log.
       supabase
+        .schema('public')
         .rpc('insert_user_feedback', {
           p_feedback_type: 'session_rating',
           p_message: message.trim() || selected,

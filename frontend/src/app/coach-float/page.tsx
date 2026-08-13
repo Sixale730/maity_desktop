@@ -623,6 +623,7 @@ export default function CoachFloatPage() {
       // DEFINER y resuelve user_id/auth_id desde auth.uid() server-side;
       // el cliente solo manda datos de negocio.
       supabase
+        .schema('public')
         .rpc('insert_user_feedback', {
           p_feedback_type: 'coach_tip_feedback',
           p_message: tip.tip,

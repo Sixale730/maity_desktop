@@ -26,7 +26,15 @@ function getSupabaseClient(): SupabaseClient {
       detectSessionInUrl: false, // Desktop app — no URL-based session detection
       flowType: 'pkce', // Use PKCE: redirects with ?code= in query params instead of tokens in hash fragment
     },
-    db: { schema: 'maity' },
+    // `public` es el perimetro mediado: los clientes entran por wrappers
+    // public.* (SECURITY DEFINER) que es donde vive la autorizacion. El schema
+    // `maity` esta cerrado a los roles de cliente desde el hardening de la DB
+    // (issue web #143), asi que un .rpc() que caiga ahi devuelve 403 -- y casi
+    // todos los call sites tragan el error en silencio. Ver issue #70.
+    //
+    // Las TABLAS de maity si siguen accesibles (gobernadas por RLS): se piden
+    // con .schema('maity') EXPLICITO. No confiar en el default para eso.
+    db: { schema: 'public' },
   })
 
   return supabaseInstance

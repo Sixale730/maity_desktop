@@ -664,6 +664,7 @@ export async function getOmiConversations(userId?: string): Promise<OmiConversat
   logPoll('getOmiConversations_start', { userIdSuffix });
 
   const { data, error } = await supabase
+    .schema('maity')
     .from('omi_conversations')
     .select('*')
     .eq('user_id', userId)
@@ -935,6 +936,7 @@ export function mergeConversations(
 export async function getOmiConversation(conversationId: string): Promise<OmiConversation | null> {
   const t0 = performance.now();
   const { data, error } = await supabase
+    .schema('maity')
     .from('omi_conversations')
     .select('*')
     .eq('id', conversationId)
@@ -969,6 +971,7 @@ export async function checkAnalysisStatus(
   conversationId: string
 ): Promise<string | null> {
   const { data, error } = await supabase
+    .schema('maity')
     .from('omi_conversations')
     .select('analysis_status')
     .eq('id', conversationId)
@@ -980,6 +983,7 @@ export async function checkAnalysisStatus(
 
 export async function getOmiTranscriptSegments(conversationId: string): Promise<OmiTranscriptSegment[]> {
   const { data, error } = await supabase
+    .schema('maity')
     .from('omi_transcript_segments')
     .select('*')
     .eq('conversation_id', conversationId)
@@ -1020,6 +1024,7 @@ export async function getOmiStats(userId?: string): Promise<OmiStats | null> {
   if (!userId) return null;
 
   const { data, error } = await supabase
+    .schema('maity')
     .from('omi_conversations')
     .select('id, created_at, duration_seconds, title, emoji, communication_feedback_v4')
     .eq('user_id', userId)
@@ -1155,9 +1160,10 @@ export async function saveConversationToSupabase(
   // Ref: https://stripe.com/docs/api/idempotent_requests
   const query = data.idempotency_key
     ? supabase
+        .schema('maity')
         .from('omi_conversations')
         .upsert(row, { onConflict: 'idempotency_key', ignoreDuplicates: false })
-    : supabase.from('omi_conversations').insert(row);
+    : supabase.schema('maity').from('omi_conversations').insert(row);
 
   const { data: inserted, error } = await query.select('id').single();
 
@@ -1189,6 +1195,7 @@ export async function saveTranscriptSegments(
   }));
 
   const { error } = await supabase
+    .schema('maity')
     .from('omi_transcript_segments')
     .insert(rows);
 
@@ -1351,6 +1358,7 @@ export async function toggleActionItemCompleted(
   updatedItems[itemIndex] = { ...updatedItems[itemIndex], completed };
 
   const { error } = await supabase
+    .schema('maity')
     .from('omi_conversations')
     .update({ action_items: updatedItems })
     .eq('id', conversationId);
@@ -1377,6 +1385,7 @@ export async function updateConversationEvaluation(
   }
 
   const { error } = await supabase
+    .schema('maity')
     .from('omi_conversations')
     .update(updatePayload)
     .eq('id', conversationId);
@@ -1402,6 +1411,7 @@ export interface FormResponse {
 
 export async function getFormResponses(userId: string): Promise<FormResponse | null> {
   const { data, error } = await supabase
+    .schema('maity')
     .from('form_responses')
     .select('q5, q6, q7, q8, q9, q10, q11, q12, q13, q14, q15, q16')
     .eq('user_id', userId)
