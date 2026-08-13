@@ -396,6 +396,40 @@ impl SyncQueueRepository {
         Ok(result.rows_affected())
     }
 
+    /// Reintento manual: devuelve a 'pending' TODOS los jobs 'failed' de un
+    /// meeting, con el contador de intentos a cero y sin error pegado.
+    ///
+    /// Cubre también a los hijos marcados por `fail_dependents`
+    /// (`dependency_failed: …`): sin ellos el padre revivido volvería a
+    /// completarse y la cadena seguiría muerta a partir del segundo eslabón.
+    /// El orden de ejecución lo sigue imponiendo `depends_on` en
+    /// `get_ready_jobs`, así que revivir la cadena entera de golpe es seguro.
+    ///
+    /// Scoped por `user_id` igual que `get_ready_jobs`: revivir un job de otra
+    /// cuenta no serviría de nada (el worker nunca lo tomaría).
+    pub async fn retry_failed_for_meeting(
+        pool: &SqlitePool,
+        meeting_id: &str,
+        user_id: &str,
+    ) -> Result<u64, SqlxError> {
+        let result = sqlx::query(
+            "UPDATE sync_queue SET
+               status = 'pending',
+               attempt_count = 0,
+               next_retry_at = NULL,
+               lease_expires_at = NULL,
+               last_error = NULL,
+               updated_at = datetime('now')
+             WHERE meeting_id = ? AND user_id = ? AND status = 'failed'",
+        )
+        .bind(meeting_id)
+        .bind(user_id)
+        .execute(pool)
+        .await?;
+
+        Ok(result.rows_affected())
+    }
+
     /// Get a single job by its ID (any status)
     pub async fn get_job_by_id(
         pool: &SqlitePool,
@@ -1033,6 +1067,78 @@ mod tests {
         assert!(!SyncQueueRepository::fail_job_permanent(&pool, parent, "not_found: meeting")
             .await
             .unwrap());
+    }
+
+    // ---------- reintento manual ----------
+
+    #[tokio::test]
+    async fn retry_failed_for_meeting_revives_whole_failed_chain() {
+        let pool = setup_pool().await;
+        let (parent, child, grandchild) = enqueue_chain(&pool).await;
+
+        // Padre agota intentos → cascada: los 3 quedan 'failed'
+        SyncQueueRepository::fail_job(&pool, parent, "network: down", Some("2026-01-01 00:00:00"))
+            .await
+            .unwrap();
+        SyncQueueRepository::fail_job(&pool, parent, "network: down", Some("2026-01-01 00:00:00"))
+            .await
+            .unwrap();
+
+        let revived = SyncQueueRepository::retry_failed_for_meeting(&pool, "m1", TEST_USER)
+            .await
+            .unwrap();
+        assert_eq!(revived, 3, "padre + hijo + nieto");
+
+        for id in [parent, child, grandchild] {
+            let job = SyncQueueRepository::get_job_by_id(&pool, id).await.unwrap().unwrap();
+            assert_eq!(job.status, "pending");
+            assert_eq!(job.attempt_count, 0);
+            assert_eq!(job.next_retry_at, None);
+            assert_eq!(job.last_error, None);
+        }
+
+        // Y el padre vuelve a estar listo de inmediato
+        let ready = SyncQueueRepository::get_ready_jobs(&pool, 10, TEST_USER).await.unwrap();
+        assert_eq!(ready.len(), 1);
+        assert_eq!(ready[0].id, parent);
+    }
+
+    #[tokio::test]
+    async fn retry_failed_for_meeting_ignores_other_meetings_users_and_statuses() {
+        let pool = setup_pool().await;
+        let failed = SyncQueueRepository::enqueue(&pool, "a", "m1", "{}", 1, None, TEST_USER).await.unwrap();
+        let completed = SyncQueueRepository::enqueue(&pool, "b", "m1", "{}", 3, None, TEST_USER).await.unwrap();
+        let other_meeting = SyncQueueRepository::enqueue(&pool, "c", "m2", "{}", 1, None, TEST_USER).await.unwrap();
+        let other_user = SyncQueueRepository::enqueue(&pool, "d", "m1", "{}", 1, None, "otro-user").await.unwrap();
+
+        for id in [failed, other_meeting, other_user] {
+            sqlx::query("UPDATE sync_queue SET status = 'failed', last_error = 'boom' WHERE id = ?")
+                .bind(id)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        SyncQueueRepository::claim_job(&pool, completed, TEST_LEASE).await.unwrap();
+        SyncQueueRepository::complete_job(&pool, completed, None).await.unwrap();
+
+        let revived = SyncQueueRepository::retry_failed_for_meeting(&pool, "m1", TEST_USER)
+            .await
+            .unwrap();
+        assert_eq!(revived, 1);
+
+        assert_eq!(
+            SyncQueueRepository::get_job_by_id(&pool, completed).await.unwrap().unwrap().status,
+            "completed",
+            "un job completado no se re-encola"
+        );
+        assert_eq!(
+            SyncQueueRepository::get_job_by_id(&pool, other_meeting).await.unwrap().unwrap().status,
+            "failed"
+        );
+        assert_eq!(
+            SyncQueueRepository::get_job_by_id(&pool, other_user).await.unwrap().unwrap().status,
+            "failed"
+        );
     }
 
     #[tokio::test]

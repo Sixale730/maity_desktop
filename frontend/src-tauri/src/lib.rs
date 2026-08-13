@@ -1278,6 +1278,7 @@ pub fn run() {
             ollama::delete_ollama_model,
             ollama::get_ollama_model_context,
             api::api_get_meetings,
+            api::api_get_meetings_overview,
             api::api_search_transcripts,
             api::api_get_profile,
             api::api_save_profile,
@@ -1405,6 +1406,7 @@ pub fn run() {
             database::sync_queue_commands::sync_queue_get_job,
             database::sync_queue_commands::sync_queue_cancel_meeting,
             database::sync_queue_commands::sync_queue_get_finalize_result,
+            database::sync_queue_commands::sync_queue_retry_meeting,
             // Cloud sync: sesión Supabase viva en Rust (consumidor headless)
             cloud_sync::commands::cloud_sync_set_session,
             cloud_sync::commands::cloud_sync_clear_session,

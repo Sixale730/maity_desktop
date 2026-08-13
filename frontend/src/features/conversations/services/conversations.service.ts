@@ -547,7 +547,19 @@ export interface OmiConversation {
   idempotency_key?: string | null;
   /** Local SQLite meeting ID (present when loaded from local storage) */
   _localId?: string;
+  /** Estado REAL de la cola `sync_queue` para esta reunión (solo filas locales).
+   *  Lo calcula Rust en `api_get_meetings_overview` con prioridad
+   *  failed > in_progress > pending > completed; `none` = sin jobs.
+   *  Campo aditivo: `mergeConversations` lo descarta con el spread `{...match}`
+   *  al fusionar con la nube, que es lo correcto — ahí manda `analysis_status`. */
+  _syncState?: LocalSyncState;
+  /** `last_error` del job fallido más reciente, con su prefijo (`quota:`,
+   *  `auth:`, `network:`, `dependency_failed:`…). Solo con `_syncState='failed'`. */
+  _syncError?: string | null;
 }
+
+/** Estado agregado de la cola de sync de una reunión local. */
+export type LocalSyncState = 'pending' | 'in_progress' | 'failed' | 'completed' | 'none';
 
 export interface ActionItem {
   description: string;
@@ -689,11 +701,6 @@ export async function getOmiConversations(userId?: string): Promise<OmiConversat
 
 // ─── Local SQLite Types ────────────────────────────────────────────
 
-interface LocalMeeting {
-  id: string;
-  title: string;
-}
-
 interface LocalMeetingMetadata {
   id: string;
   title: string;
@@ -701,6 +708,18 @@ interface LocalMeetingMetadata {
   updated_at: string;
   folder_path?: string | null;
   cloud_idempotency_key?: string | null;
+}
+
+/**
+ * Fila de `api_get_meetings_overview` (Rust: `api::meetings_overview`).
+ * Trae ya agregados palabras/duración y el estado real de la cola de sync,
+ * así que la lista no necesita N llamadas de metadata ni inventar nulls.
+ */
+interface LocalMeetingOverview extends LocalMeetingMetadata {
+  words_count: number;
+  duration_seconds: number;
+  sync_state: LocalSyncState;
+  sync_error?: string | null;
 }
 
 interface LocalMeetingTranscript {
@@ -729,44 +748,40 @@ interface LocalMeetingDetails {
  */
 export async function getLocalConversations(): Promise<OmiConversation[]> {
   try {
-    const meetings = await invoke<LocalMeeting[]>('api_get_meetings', { authToken: null });
+    // UN solo invoke: `api_get_meetings_overview` ya agrega palabras, duración y
+    // estado de la cola en Rust. Antes eran `api_get_meetings` + N ×
+    // `api_get_meeting_metadata` y los agregados se hardcodeaban a null, así que
+    // la lista mostraba "0 palabras / Duración: --" con los datos ya en SQLite.
+    const meetings = await invoke<LocalMeetingOverview[]>('api_get_meetings_overview');
     if (!meetings || meetings.length === 0) return [];
 
-    // Fetch metadata in parallel to get created_at timestamps
-    const metadataResults = await Promise.allSettled(
-      meetings.map((m) => invoke<LocalMeetingMetadata>('api_get_meeting_metadata', { meetingId: m.id }))
-    );
-
-    return meetings.map((meeting, i) => {
-      const metaResult = metadataResults[i];
-      const meta = metaResult.status === 'fulfilled' ? metaResult.value : null;
-
-      return {
-        id: meeting.id,
-        user_id: null,
-        firebase_uid: null,
-        created_at: meta?.created_at ?? new Date().toISOString(),
-        started_at: meta?.created_at ?? null,
-        finished_at: null,
-        title: meeting.title || 'Sin título',
-        overview: '',
-        emoji: null,
-        category: null,
-        action_items: null,
-        events: null,
-        transcript_text: null,
-        source: 'local',
-        language: null,
-        status: null,
-        words_count: null,
-        duration_seconds: null,
-        communication_feedback: null,
-        communication_feedback_v4: null,
-        meeting_minutes_data: null,
-        idempotency_key: meta?.cloud_idempotency_key ?? null,
-        _localId: meeting.id,
-      };
-    });
+    return meetings.map((meeting) => ({
+      id: meeting.id,
+      user_id: null,
+      firebase_uid: null,
+      created_at: meeting.created_at,
+      started_at: meeting.created_at,
+      finished_at: null,
+      title: meeting.title || 'Sin título',
+      overview: '',
+      emoji: null,
+      category: null,
+      action_items: null,
+      events: null,
+      transcript_text: null,
+      source: 'local',
+      language: null,
+      status: null,
+      words_count: meeting.words_count > 0 ? meeting.words_count : null,
+      duration_seconds: meeting.duration_seconds > 0 ? meeting.duration_seconds : null,
+      communication_feedback: null,
+      communication_feedback_v4: null,
+      meeting_minutes_data: null,
+      idempotency_key: meeting.cloud_idempotency_key ?? null,
+      _localId: meeting.id,
+      _syncState: meeting.sync_state ?? 'none',
+      _syncError: meeting.sync_error ?? null,
+    }));
   } catch (err) {
     console.warn('Error fetching local conversations:', err);
     return [];

@@ -1,12 +1,15 @@
 'use client';
 
-import { useMemo } from 'react';
-import { useQuery } from '@tanstack/react-query';
-import { AudioLines, Clock, MessageSquare, ChevronRight, Sparkles, FileText, ListChecks, RefreshCw } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { invoke } from '@tauri-apps/api/core';
+import { AudioLines, Clock, MessageSquare, ChevronRight, Sparkles, FileText, ListChecks, RefreshCw, AlertTriangle } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useAuth } from '@/contexts/AuthContext';
+import { logger } from '@/lib/logger';
+import { cloudSyncWorker } from '@/services/cloudSyncWorker';
 import { getOmiConversations, getLocalConversations, mergeConversations, OmiConversation } from '../services/conversations.service';
 import { useConversationsListAutoRefresh } from '../hooks/useConversationsListAutoRefresh';
 
@@ -15,8 +18,13 @@ interface ConversationsListProps {
   selectedId?: string | null;
 }
 
+/** Estados de sync que todavía pueden cambiar solos (el loop de Rust sigue trabajando). */
+const NON_TERMINAL_SYNC_STATES = new Set(['pending', 'in_progress']);
+
 export function ConversationsList({ onSelect, selectedId }: ConversationsListProps) {
   const { maityUser } = useAuth();
+  const queryClient = useQueryClient();
+  const [retryingIds, setRetryingIds] = useState<Set<string>>(new Set());
 
   // Visibility/online safety net — invalidate the list query when the page
   // becomes visible again or the network reconnects. The Realtime push lives
@@ -27,11 +35,23 @@ export function ConversationsList({ onSelect, selectedId }: ConversationsListPro
   // Local data loads instantly from SQLite.
   // Privacy: queryKey includes maityUser?.id so the list refetches when the user changes
   // (login/logout). Rust filters by current_user_id from AppState — see CLAUDE.md.
+  //
+  // Polling floor espejo del de la nube: mientras alguna fila local tenga la
+  // cola viva (pending/in_progress) se refresca cada 10s. El camino rápido es
+  // el evento `sync-status-changed` (ver el efecto de abajo); esto solo cubre
+  // el hueco en que el webview estuvo suspendido y se perdió el evento.
+  // Se apaga solo cuando todo queda terminal (completed/failed/none).
   const { data: localConversations } = useQuery({
     queryKey: ['local-conversations', maityUser?.id],
     queryFn: () => getLocalConversations(),
     staleTime: 30_000,
     enabled: !!maityUser?.id,
+    refetchInterval: (q) => {
+      const data = q.state.data as OmiConversation[] | undefined;
+      if (!data || data.length === 0) return false;
+      const hasInFlight = data.some((c) => NON_TERMINAL_SYNC_STATES.has(c._syncState ?? 'none'));
+      return hasInFlight ? 10_000 : false;
+    },
   });
 
   // Cloud data loads in background. Polling floor: while at least one row is
@@ -56,6 +76,43 @@ export function ConversationsList({ onSelect, selectedId }: ConversationsListPro
     refetchOnReconnect: true,
   });
 
+  // El loop headless de Rust emite `cloud-sync-status-changed` en cada
+  // transición y cloudSyncWorker lo reenvía al bus DOM como
+  // `sync-status-changed`. Sin esto el badge de una fila local nunca se apaga
+  // hasta el siguiente refetch (o hasta reabrir la app).
+  useEffect(() => {
+    const onSyncStatus = () => {
+      void queryClient.invalidateQueries({ queryKey: ['local-conversations'] });
+      void queryClient.invalidateQueries({ queryKey: ['omi-conversations'] });
+    };
+    window.addEventListener('sync-status-changed', onSyncStatus);
+    return () => window.removeEventListener('sync-status-changed', onSyncStatus);
+  }, [queryClient]);
+
+  // Reintento manual de una cadena de jobs muerta: Rust revive los 'failed' del
+  // meeting (incluida la descendencia marcada por la cascada) y el nudge
+  // despierta al loop sin esperar su tick.
+  const handleRetrySync = useCallback(
+    async (meetingId: string) => {
+      setRetryingIds((prev) => new Set(prev).add(meetingId));
+      try {
+        const revived = await invoke<number>('sync_queue_retry_meeting', { meetingId });
+        logger.info('[ConversationsList] reintento de sync', { meetingId, revived });
+        cloudSyncWorker.nudge();
+      } catch (err) {
+        logger.error('[ConversationsList] fallo al reintentar sync', err);
+      } finally {
+        setRetryingIds((prev) => {
+          const next = new Set(prev);
+          next.delete(meetingId);
+          return next;
+        });
+        void queryClient.invalidateQueries({ queryKey: ['local-conversations'] });
+      }
+    },
+    [queryClient]
+  );
+
   // Merge: local shows first, cloud enriches
   const conversations = useMemo(() => {
     const local = localConversations ?? [];
@@ -73,6 +130,68 @@ export function ConversationsList({ onSelect, selectedId }: ConversationsListPro
     const mins = Math.floor(seconds / 60);
     const secs = seconds % 60;
     return `${mins}:${secs.toString().padStart(2, '0')}`;
+  };
+
+  /**
+   * Badge de sync de una fila. Solo aplica a filas LOCALES no fusionadas: si
+   * `mergeConversations` la unió con su gemela de la nube, el spread descarta
+   * `_syncState` y el estado lo cuenta `analysis_status` (derivePhase).
+   *
+   * Antes esto era `source==='local' && !communication_feedback_v4`, que es
+   * decir "sincronizando" para siempre a cualquier fila sin análisis en la
+   * nube — incluida una con el sync completo o muerto hace horas.
+   */
+  const renderSyncBadge = (conversation: OmiConversation) => {
+    if (conversation.source !== 'local') return null;
+    const state = conversation._syncState ?? 'none';
+
+    if (NON_TERMINAL_SYNC_STATES.has(state)) {
+      return (
+        <Badge variant="outline" className="text-xs gap-1 text-amber-600 border-amber-300">
+          <RefreshCw className="h-3 w-3 animate-spin" />
+          Sincronizando...
+        </Badge>
+      );
+    }
+
+    if (state !== 'failed') return null;
+
+    // Cuota agotada: no es un error del usuario ni algo que reintentar sirva de
+    // nada, así que va en ámbar y sin botón. El caso normal (finalize 200 con
+    // `analysis_status='quota_skipped'`) llega por otro lado; esto cubre los
+    // jobs legacy que murieron con el 403 `quota:`.
+    if (conversation._syncError?.startsWith('quota:')) {
+      return (
+        <Badge variant="outline" className="text-xs gap-1 text-amber-600 border-amber-300">
+          <AlertTriangle className="h-3 w-3" />
+          Cuota agotada
+        </Badge>
+      );
+    }
+
+    const meetingId = conversation._localId ?? conversation.id;
+    const isRetrying = retryingIds.has(meetingId);
+
+    return (
+      <div className="flex items-center gap-2">
+        <Badge variant="outline" className="text-xs gap-1 text-destructive border-destructive/40">
+          <AlertTriangle className="h-3 w-3" />
+          Error de sincronización
+        </Badge>
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            void handleRetrySync(meetingId);
+          }}
+          disabled={isRetrying}
+          className="text-xs px-2 py-0.5 rounded-md border border-border hover:bg-muted transition-colors disabled:opacity-50"
+          title={conversation._syncError ?? 'Reintentar sincronización'}
+        >
+          {isRetrying ? 'Reintentando...' : 'Reintentar'}
+        </button>
+      </div>
+    );
   };
 
   const formatDate = (date: string) => {
@@ -178,12 +297,7 @@ export function ConversationsList({ onSelect, selectedId }: ConversationsListPro
                     </div>
                   </div>
                   <div className="flex flex-col items-end gap-2">
-                    {conversation.source === 'local' && !conversation.communication_feedback_v4 && (
-                      <Badge variant="outline" className="text-xs gap-1 text-amber-600 border-amber-300">
-                        <RefreshCw className="h-3 w-3 animate-spin" />
-                        Sincronizando...
-                      </Badge>
-                    )}
+                    {renderSyncBadge(conversation)}
                     {conversation.category && (
                       <Badge variant="secondary" className="text-xs">
                         {conversation.category}

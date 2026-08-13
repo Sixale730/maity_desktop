@@ -250,6 +250,32 @@ pub async fn sync_queue_cancel_meeting<R: Runtime>(
         })
 }
 
+/// Reintento manual desde la lista de Conversaciones ("Error de sincronización
+/// → Reintentar"). Devuelve a 'pending' los jobs 'failed' del meeting (incluida
+/// la descendencia que murió por cascada) con los intentos a cero. El frontend
+/// debe seguir con `cloudSyncWorker.nudge()` para que el loop de Rust despierte
+/// sin esperar su tick de 5 s.
+#[tauri::command]
+pub async fn sync_queue_retry_meeting<R: Runtime>(
+    _app: AppHandle<R>,
+    state: tauri::State<'_, AppState>,
+    meeting_id: String,
+) -> Result<u64, String> {
+    // Sin sesión no hay nada que reintentar (mismo criterio de aislamiento que
+    // get_ready_jobs: el worker solo toma jobs del usuario actual).
+    let user_id = match state.current_user_id().await {
+        Some(id) => id,
+        None => return Ok(0),
+    };
+    let pool = state.db_manager.pool();
+    SyncQueueRepository::retry_failed_for_meeting(pool, &meeting_id, &user_id)
+        .await
+        .map_err(|e| {
+            error!("Failed to retry sync jobs for meeting {}: {}", meeting_id, e);
+            e.to_string()
+        })
+}
+
 #[tauri::command]
 pub async fn sync_queue_get_finalize_result<R: Runtime>(
     _app: AppHandle<R>,
