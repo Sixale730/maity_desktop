@@ -2,7 +2,6 @@ use crate::notifications::types::{Notification, NotificationPriority, Notificati
 use anyhow::{Result, anyhow};
 use log::{info as log_info, error as log_error};
 use tauri::{AppHandle, Runtime};
-use tauri_plugin_notification::NotificationExt;
 use std::time::Duration;
 
 /// Cross-platform system notification handler
@@ -27,20 +26,22 @@ impl<R: Runtime> SystemNotificationHandler<R> {
             return Ok(());
         }
 
-        // Use Tauri notification for all platforms
-        log_info!("Showing Tauri notification: {}", notification.title);
+        // Transporte único (notifications/toast.rs): resuelve el AUMID en runtime. NO usar
+        // `app_handle.notification()` directo — bajo MSIX el plugin fija un app_id ajeno y
+        // Windows descarta el toast en silencio.
+        log_info!("Showing native notification: {}", notification.title);
 
-        let builder = self.app_handle.notification().builder()
-            .title(&notification.title)
-            .body(&notification.body);
-
-        match builder.show() {
-            Ok(_) => {
-                log_info!("Successfully showed Tauri notification: {}", notification.title);
+        match crate::notifications::toast::show_native_toast(
+            &self.app_handle,
+            &notification.title,
+            &notification.body,
+        ) {
+            Ok(()) => {
+                log_info!("Successfully showed native notification: {}", notification.title);
                 Ok(())
             }
             Err(e) => {
-                log_error!("Failed to show Tauri notification: {}", e);
+                log_error!("Failed to show native notification: {}", e);
                 Err(anyhow!("Failed to show notification: {}", e))
             }
         }

@@ -288,12 +288,27 @@ Comandos via `invoke()` (Frontend->Rust), Eventos via `emit()`/`listen()` (Rust-
 - **Deepgram proxy**: `fetch_deepgram_proxy_config`, `set/get/clear_deepgram_proxy_config`, `has_valid_deepgram_proxy_config`
 - **Sync queue**: `sync_queue_enqueue`, `sync_queue_claim_job`, `sync_queue_complete_job`, `sync_queue_fail_job`, `sync_queue_get_all_statuses`, `sync_queue_cancel_meeting`, etc.
 - **Meeting detector**: `start/stop_meeting_detector`, `is_meeting_detector_running`, `get_active_meetings`, `check_for_meetings_now`, `respond_to_meeting_detection`, `set_meeting_auto_record`, etc.
-- **Notificaciones**: `get/set_notification_settings`, `show_notification`, DND status
+- **Notificaciones**: `send_native_notification` (transporte único, ver abajo), `native_notification_target` (diagnóstico), `get/set_notification_settings`, `show_notification`, DND status
 - **Logging**: `get_log_info`, `export_logs`, `open_log_directory`, `clear_old_logs`
 - **OAuth**: `start_oauth_server`, `get_pending_auth_code`, `get_pending_auth_tokens`
 - **Sistema audio**: `start_system_audio_capture_command`, `list_system_audio_devices_command`, `check_system_audio_permissions_command`, `start/stop_system_audio_monitoring`
 
 **Patron de estado**: Comandos Tauri actualizan estado Rust -> Emiten eventos -> Listeners del frontend actualizan estado React -> El contexto se propaga a los componentes.
+
+### Notificaciones nativas: transporte propio, NO el plugin de Tauri (ago-2026)
+
+> **`@tauri-apps/plugin-notification` es inutilizable bajo identidad de paquete (MSIX/Store).** Su `NotificationBuilder::show()` fija el `app_id` del toast a `config.identifier` (`com.maity.ai`) siempre que el exe no viva en `target\{debug,release}`. Eso baja a `CreateToastNotifierWithId(app_id)`: bajo MSIX el AUMID real es `Sixale.Maity_q5b9hqhck1xz0!Maity` y Windows **rechaza un AUMID ajeno**. El error se tragaba DOS veces — en Rust por el `let _ = notification.show()` dentro de un `spawn`, y en JS porque `sendNotification()` es **síncrona** y no devuelve la promesa del invoke. Síntoma: log en verde (`sendNotification RETURNED ok`), cero toast, y **ni siquiera** el fallback a toast in-app. Afectaba a TODAS las notificaciones de la Store ("Análisis listo", "Grabación lista/iniciada", recordatorio de pausa).
+
+Hoy hay un **transporte único**: `src-tauri/src/notifications/toast.rs` → `show_native_toast()`, que llama a `tauri-winrt-notification` directo (la misma crate que el plugin usa por dentro) con el `app_id` resuelto **en runtime** por `resolve_target()`, y devuelve un `Result` real.
+
+- **Frontend**: `lib/nativeNotification.ts` → `invoke('send_native_notification')`. Al ser comando propio **no pasa por el ACL de plugins**, así que también funciona desde las ventanas auxiliares (cuyas capabilities no traen `notification:default`). El `catch` ahora sí se dispara → fallback a toast in-app.
+- **Rust**: `notifications/system.rs` enruta al mismo helper (arregla las notificaciones del lifecycle de grabación).
+- **Orden de ramas de `resolve_target` (no invertir)**: (1) `is_running_under_package_identity()` → `utils::current_aumid()`; (2) dev/`target\{debug,release}` → `Toast::POWERSHELL_APP_ID`; (3) resto → `config.identifier` (NSIS). El check de identidad va **primero** porque `current_aumid()` devuelve un FALLBACK hardcodeado si la API falla, y ese literal en un proceso sin empaquetar reproduce el bug en espejo.
+- **Los toasts SUENAN a propósito (ago-2026)**: `.sound(Some(Sound::Default))` emite cadena vacía (sin elemento `<audio>`) → Windows usa su sonido de notificación por defecto, en **ambos** canales. Es una decisión de producto, no un descuido. El valor previo era `.sound(None)`, que emite `<audio silent="true"/>` y replicaba el mudo histórico de notify-rust (que nunca setea `sound_name`). Para silenciar solo un tipo de notificación habría que pasarle el `NotificationType` a `show_native_toast` — hoy el sonido es uniforme. macOS sigue sin sonido explícito (usa el plugin).
+- **`actionTypeId` está muerto en desktop y siempre lo estuvo**: el plugin solo registra `notify`/`request_permission`/`is_permission_granted` fuera de mobile — `registerActionTypes`/`onAction` rechazaban en silencio, así que el botón "Abrir Maity" nunca se renderizó. Se conserva en la firma para no tocar call sites. Click-para-abrir garantizado bajo MSIX exigiría un COM activator (`windows.toastNotificationActivation` + CLSID + `INotificationActivationCallback`) → tocar `Package.appxmanifest` + nueva submission.
+- **Diagnóstico**: el `setup()` de `lib.rs` loguea `[toast] target resuelto: packaged=… mode=… app_id=…`, y Ajustes → Notificaciones tiene un botón **"Probar"** (`native_notification_target` + notificación de prueba). Es el único vector utilizable en un build release de la Store, que no trae devtools.
+
+**Regla**: toda notificación nativa nueva pasa por `sendNativeNotification` / `show_native_toast`. Nunca `@tauri-apps/plugin-notification` ni `app.notification().builder()` directo — funcionan en NSIS y fallan mudos en la Store.
 
 ### Gestion de Modelos Whisper
 

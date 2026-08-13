@@ -4,6 +4,9 @@ pub mod system;
 pub mod settings;
 pub mod commands;
 pub mod manager;
+// Transporte único de toasts nativos (AUMID resuelto en runtime). Ver toast.rs: el plugin de
+// Tauri es inutilizable bajo identidad de paquete MSIX.
+pub mod toast;
 
 // Re-export main types for easy access
 pub use types::{

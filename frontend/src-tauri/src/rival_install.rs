@@ -203,7 +203,7 @@ fn launch_detached_uninstaller(info: &RivalInstallInfo, own_pid: u32) -> Result<
     if exe.is_empty() {
         return Err("UninstallString vacío".to_string());
     }
-    let aumid = current_aumid();
+    let aumid = crate::utils::current_aumid();
 
     // Escribir el orquestador a %LOCALAPPDATA%\Maity\rival-cleanup.cmd
     let local =
@@ -234,36 +234,8 @@ fn launch_detached_uninstaller(info: &RivalInstallInfo, own_pid: u32) -> Result<
     Ok(())
 }
 
-/// AUMID de la app empaquetada en runtime (`GetCurrentApplicationUserModelId`), para
-/// relanzarnos por `shell:AppsFolder\<AUMID>`. Fallback al valor conocido si la API falla.
-#[cfg(target_os = "windows")]
-fn current_aumid() -> String {
-    use windows::core::PWSTR;
-    use windows::Win32::Foundation::{ERROR_INSUFFICIENT_BUFFER, ERROR_SUCCESS};
-    use windows::Win32::Storage::Packaging::Appx::GetCurrentApplicationUserModelId;
-
-    // PFN "sagrado" (Sixale.Maity_q5b9hqhck1xz0) + Application Id "Maity" del manifest.
-    const FALLBACK: &str = "Sixale.Maity_q5b9hqhck1xz0!Maity";
-
-    unsafe {
-        let mut len: u32 = 0;
-        if GetCurrentApplicationUserModelId(&mut len, PWSTR::null()) != ERROR_INSUFFICIENT_BUFFER {
-            return FALLBACK.to_string();
-        }
-        let mut buf = vec![0u16; len as usize];
-        if GetCurrentApplicationUserModelId(&mut len, PWSTR(buf.as_mut_ptr())) != ERROR_SUCCESS {
-            return FALLBACK.to_string();
-        }
-        // `len` incluye el terminador NUL.
-        let end = (len as usize).saturating_sub(1);
-        let s = String::from_utf16_lossy(&buf[..end]);
-        if s.is_empty() {
-            FALLBACK.to_string()
-        } else {
-            s
-        }
-    }
-}
+// `current_aumid()` vive ahora en `crate::utils` — la comparte el transporte de toasts
+// nativos (`notifications/toast.rs`), que necesita el mismo AUMID como `app_id`.
 
 /// Escapa `%` (introductor de variables de batch) en un literal a incrustar en el `.cmd`.
 #[cfg(target_os = "windows")]

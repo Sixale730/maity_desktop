@@ -265,6 +265,33 @@ export function PreferenceSettings() {
     handleUpdateNotificationSettings();
   }, [notificationsEnabled, notificationSettings, isInitialLoad, previousNotificationsEnabled, updateNotificationSettings])
 
+  /**
+   * Dispara una notificación nativa de prueba y deja en el log cómo se resolvió el AUMID.
+   *
+   * Es el ÚNICO vector de diagnóstico en un build release del MSIX: la Store no trae devtools,
+   * así que sin esto un "no me salen las notificaciones" es indiagnosticable. Ver
+   * `notifications/toast.rs` — bajo identidad de paquete el app_id debe ser el AUMID real
+   * (`Sixale.Maity_...!Maity`), no el `identifier` de la config.
+   */
+  const handleTestNotification = async () => {
+    try {
+      const target = await invoke<{ packaged: boolean; mode: string; appId: string }>(
+        'native_notification_target'
+      );
+      logger.warn(
+        `[Notif] target packaged=${target.packaged} mode=${target.mode} appId=${target.appId}`
+      );
+      const { sendNativeNotification } = await import('@/lib/nativeNotification');
+      await sendNativeNotification({
+        title: 'Notificación de prueba',
+        body: `Maity — ${target.mode} (${target.appId})`,
+      });
+    } catch (error) {
+      logger.error('Error al enviar la notificación de prueba:', error);
+      toast.error('No se pudo enviar la notificación de prueba');
+    }
+  };
+
   const handleOpenFolder = async (folderType: 'database' | 'models' | 'recordings') => {
     try {
       switch (folderType) {
@@ -323,6 +350,17 @@ export function PreferenceSettings() {
             <p className="text-sm text-muted-foreground">Habilitar o deshabilitar notificaciones de inicio y fin de reunión</p>
           </div>
           <Switch checked={notificationsEnabledValue} onCheckedChange={setNotificationsEnabled} />
+        </div>
+        <div className="mt-4 pt-4 border-t border-border flex items-center justify-between gap-4">
+          <p className="text-sm text-muted-foreground">
+            Envía una notificación de prueba del sistema para verificar que Windows/macOS las muestra.
+          </p>
+          <button
+            onClick={handleTestNotification}
+            className="shrink-0 px-3 py-2 text-sm border border-border rounded-md hover:bg-muted transition-colors text-foreground"
+          >
+            Probar
+          </button>
         </div>
       </div>
 

@@ -521,6 +521,48 @@ async fn unminimize_and_focus_main<R: Runtime>(app: AppHandle<R>) -> Result<(), 
     Ok(())
 }
 
+/// Transporte único de notificaciones nativas para el frontend. Reemplaza a
+/// `sendNotification()` de `@tauri-apps/plugin-notification`, que bajo identidad de paquete
+/// (MSIX/Store) fija el `app_id` del toast a `config.identifier` ("com.maity.ai") — un AUMID
+/// ajeno que Windows rechaza — y además traga el error dos veces (ver `notifications/toast.rs`).
+///
+/// `action_type_id` se acepta y se IGNORA a propósito: el plugin nunca soportó action buttons
+/// en desktop (`register_action_types` / `onAction` son comandos mobile-only), así que el botón
+/// "Abrir Maity" jamás se renderizó en Windows ni macOS. Se mantiene en la firma para no tocar
+/// los call sites.
+#[tauri::command]
+async fn send_native_notification<R: Runtime>(
+    app: AppHandle<R>,
+    title: String,
+    body: String,
+    action_type_id: Option<String>,
+) -> Result<(), String> {
+    let _ = action_type_id;
+
+    // `Toast::show()` bloquea ~10ms y hace activación WinRT: fuera del worker de tokio.
+    let app_for_toast = app.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        notifications::toast::show_native_toast(&app_for_toast, &title, &body)
+    })
+    .await
+    .map_err(|e| format!("join error al mostrar notificación: {}", e))?;
+
+    if let Err(ref e) = result {
+        // `warn!` y no `error!`: `rust_error_bridge` solo puentea `Level::ERROR` al frontend y
+        // a Sentry, y aquí el caller ya recibe el `Err` y hace su propio fallback in-app.
+        log::warn!("[toast] fallo al mostrar notificación nativa: {}", e);
+    }
+    result
+}
+
+/// Diagnóstico: cómo se resolvió el `app_id` del toast en este proceso. Lo consume el botón
+/// "Probar" de Ajustes → Notificaciones, único vector de diagnóstico en un build release de la
+/// Store (sin devtools).
+#[tauri::command]
+fn native_notification_target<R: Runtime>(app: AppHandle<R>) -> notifications::toast::ToastTarget {
+    notifications::toast::resolve_target(&app)
+}
+
 /// Fallback del Flujo G del plan: si el `WindowEvent::Focused(true)` no dispara con el hard
 /// navigate en Tauri 2 + Windows (a verificar en testing), el widget invoca este comando
 /// 600ms post-stop como red de seguridad. Lee el flag, si true minimiza y lo limpia. El
@@ -847,6 +889,19 @@ pub fn run() {
                         });
                     }
                 });
+            }
+
+            // Deja constancia en el log de cómo se resolvió el app_id/AUMID del toast. Sin
+            // esto, un "no me salen las notificaciones" en un build release de la Store es
+            // indiagnosticable (no hay devtools y los errores del OS no llegan al frontend).
+            {
+                let t = notifications::toast::resolve_target(&_app.handle().clone());
+                log::info!(
+                    "[toast] target resuelto: packaged={} mode={} app_id={}",
+                    t.packaged,
+                    t.mode,
+                    t.app_id
+                );
             }
 
             // Initialize notification system with proper defaults
@@ -1493,6 +1548,9 @@ pub fn run() {
             // Visibility helpers para el flujo autostart+widget (US-4)
             unminimize_and_focus_main,
             minimize_main_if_was_minimized,
+            // Transporte único de toasts nativos (AUMID resuelto en runtime, ver toast.rs)
+            send_native_notification,
+            native_notification_target,
             is_production_build,
             coach::commands::coach_chat,
             coach::trigger::coach_analyze_trigger,

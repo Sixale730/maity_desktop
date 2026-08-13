@@ -1,171 +1,72 @@
 /**
- * Native system notifications using Tauri's notification plugin.
- * Falls back to in-app toast if native notifications are unavailable.
+ * Notificaciones nativas del sistema (Windows/macOS), con fallback a toast in-app.
  *
- * Instrumented with logger.warn at every exit path so a console capture
- * reveals exactly where the flow breaks (module unavailable, permission
- * denied, sendNotification throws, etc.).
+ * NO usa `@tauri-apps/plugin-notification`. El plugin es inutilizable bajo identidad de
+ * paquete (MSIX/Microsoft Store): su `NotificationBuilder::show()` fija el `app_id` del toast
+ * a `config.identifier` ("com.maity.ai"), pero bajo MSIX el AUMID real es
+ * `Sixale.Maity_q5b9hqhck1xz0!Maity` y Windows rechaza un AUMID ajeno. Peor: el error se
+ * tragaba DOS veces — en Rust por el `let _ = notification.show()` dentro de un `spawn`, y en
+ * JS porque `sendNotification()` es SÍNCRONA y no devuelve la promesa del invoke. Resultado:
+ * log en verde, cero toast, y ni siquiera saltaba este fallback.
  *
- * `actionTypeId` (US-4 del plan autostart): si la notif se envía con un `actionTypeId`
- * registrado vía `registerNotificationActionHandler`, se añade un botón de acción "Abrir
- * Maity" y al clickearlo se invoca el handler asociado. Usado para el flow "stop con main
- * minimizada → notif → click → restaurar ventana + mostrar modal feedback".
+ * Hoy todo pasa por el comando `send_native_notification` (ver `notifications/toast.rs`), que
+ * resuelve el AUMID en runtime y devuelve un `Result` real.
  */
 
+import { invoke } from '@tauri-apps/api/core';
 import { toast } from 'sonner';
 import { logger } from '@/lib/logger';
 
-let notificationModule: typeof import('@tauri-apps/plugin-notification') | null = null;
-let listenerInitialized = false;
-const actionHandlers = new Map<string, () => void | Promise<void>>();
-// El plugin retorna un PluginListener (objeto con `.unregister()`), no una función. Guardamos
-// el listener completo y le llamamos `.unregister()` desde el cleanup. `unknown` evita acoplar
-// la API interna del plugin en la type signature pública.
-let onActionListener: { unregister: () => Promise<void> } | null = null;
-
-async function getModule() {
-  if (!notificationModule) {
-    try {
-      notificationModule = await import('@tauri-apps/plugin-notification');
-    } catch {
-      notificationModule = null;
-    }
-  }
-  return notificationModule;
-}
-
 /**
- * Registra un handler que se ejecuta cuando el usuario clickea el botón "Abrir Maity" de
- * una notif enviada con el `actionTypeId` correspondiente. La primera llamada inicializa
- * el `registerActionTypes` y el listener global `onAction` del plugin. Idempotente: re-
- * llamadas con el mismo `actionTypeId` sobrescriben el handler.
- */
-export async function registerNotificationActionHandler(
-  actionTypeId: string,
-  handler: () => void | Promise<void>,
-): Promise<void> {
-  actionHandlers.set(actionTypeId, handler);
-  await ensureListenerInitialized();
-}
-
-async function ensureListenerInitialized(): Promise<void> {
-  if (listenerInitialized) {
-    // Refrescar action types con los nuevos handlers registrados.
-    await syncRegisteredActionTypes();
-    return;
-  }
-
-  const mod = await getModule();
-  if (!mod) {
-    logger.warn('[NativeNotification] cannot init action listener: module unavailable');
-    return;
-  }
-
-  try {
-    await syncRegisteredActionTypes();
-
-    onActionListener = await mod.onAction((event) => {
-      // El `actionTypeId` de la notif clickeada nos dice qué handler invocar.
-      // Algunos OS (Windows Action Center) llaman a onAction al click directo del cuerpo,
-      // otros (macOS) solo al botón de acción. En ambos casos `event.actionTypeId` debe
-      // venir poblado porque registramos la notif con uno.
-      const typeId = event.actionTypeId;
-      if (!typeId) {
-        logger.warn('[NativeNotification] onAction without actionTypeId, ignoring');
-        return;
-      }
-      const handler = actionHandlers.get(typeId);
-      if (handler) {
-        void Promise.resolve(handler()).catch((err) =>
-          logger.warn(`[NativeNotification] handler for "${typeId}" threw:`, err),
-        );
-      } else {
-        logger.warn(`[NativeNotification] no handler registered for "${typeId}"`);
-      }
-    });
-
-    listenerInitialized = true;
-  } catch (err) {
-    logger.warn('[NativeNotification] action listener init failed:', err);
-  }
-}
-
-async function syncRegisteredActionTypes(): Promise<void> {
-  const mod = await getModule();
-  if (!mod) return;
-  try {
-    const types = Array.from(actionHandlers.keys()).map((id) => ({
-      id,
-      actions: [{ id: 'open', title: 'Abrir Maity' }],
-    }));
-    if (types.length > 0) {
-      await mod.registerActionTypes(types);
-    }
-  } catch (err) {
-    logger.warn('[NativeNotification] registerActionTypes failed:', err);
-  }
-}
-
-/**
- * Cleanup global del listener. No se llama en runtime normal — solo para tests.
- */
-export function _resetNotificationActionHandlersForTests(): void {
-  actionHandlers.clear();
-  if (onActionListener) {
-    void onActionListener.unregister();
-    onActionListener = null;
-  }
-  listenerInitialized = false;
-}
-
-/**
- * Send a native macOS/Windows notification.
- * Falls back to in-app toast if permissions denied or plugin unavailable.
+ * Muestra una notificación nativa del SO. Si el OS la rechaza, cae a un toast in-app.
  *
- * Si se pasa `actionTypeId` (registrado vía `registerNotificationActionHandler`), la
- * notif tendrá un botón "Abrir Maity"; al clickearlo se invoca el handler asociado.
+ * `actionTypeId` se acepta y se IGNORA: el plugin de Tauri nunca soportó action buttons en
+ * desktop (`register_action_types` / `onAction` solo se registran en mobile), así que el botón
+ * "Abrir Maity" jamás llegó a renderizarse en Windows ni macOS. Se mantiene en la firma para no
+ * tocar los call sites. Bajo MSIX, Windows suele activar la app por AUMID al clickear el cuerpo
+ * del toast, y `tauri_plugin_single_instance` ya restaura la ventana `main`.
  */
 export async function sendNativeNotification(opts: {
   title: string;
   body: string;
   actionTypeId?: string;
 }) {
-  logger.warn(`[NativeNotification] CALLED title="${opts.title}" actionTypeId="${opts.actionTypeId ?? ''}"`);
   try {
-    const mod = await getModule();
-    if (!mod) {
-      logger.warn('[NativeNotification] FALLBACK: plugin module unavailable, using toast');
-      toast.info(opts.title, { description: opts.body });
-      return;
-    }
-
-    let permitted = await mod.isPermissionGranted();
-    logger.warn(`[NativeNotification] isPermissionGranted=${permitted}`);
-
-    if (!permitted) {
-      const result = await mod.requestPermission();
-      logger.warn(`[NativeNotification] requestPermission result=${result}`);
-      permitted = result === 'granted';
-    }
-
-    if (permitted) {
-      logger.warn('[NativeNotification] CALLING sendNotification');
-      const payload: Parameters<typeof mod.sendNotification>[0] = {
-        title: opts.title,
-        body: opts.body,
-      };
-      if (opts.actionTypeId) {
-        payload.actionTypeId = opts.actionTypeId;
-      }
-      await mod.sendNotification(payload);
-      logger.warn('[NativeNotification] sendNotification RETURNED ok');
-    } else {
-      logger.warn('[NativeNotification] FALLBACK: permission denied, using toast');
-      toast.info(opts.title, { description: opts.body });
-    }
+    // Comando propio de la app => NO pasa por el ACL de plugins de Tauri, así que también
+    // funciona desde las ventanas auxiliares (coach-float, recording-widget, device-picker),
+    // cuyas capabilities no incluyen `notification:default`.
+    await invoke('send_native_notification', {
+      title: opts.title,
+      body: opts.body,
+      actionTypeId: opts.actionTypeId ?? null,
+    });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    logger.warn(`[NativeNotification] EXCEPTION: ${msg}`);
+    // A DIFERENCIA del camino viejo, este catch SÍ se dispara cuando el OS rechaza el toast.
+    logger.warn(`[NativeNotification] nativa falló, fallback a toast in-app: ${msg}`);
     toast.info(opts.title, { description: opts.body });
   }
+}
+
+/**
+ * No-op conservado por compatibilidad de firma.
+ *
+ * Los action buttons de notificación son mobile-only en `tauri-plugin-notification`: en
+ * desktop el plugin solo registra `notify`, `request_permission` e `is_permission_granted`, así
+ * que `registerActionTypes`/`onAction` siempre rechazaron y el handler nunca se invocó. Se deja
+ * como no-op para no tocar `layout.tsx`. Si algún día se quiere click-para-abrir garantizado
+ * bajo MSIX hace falta un COM activator (`windows.toastNotificationActivation` + CLSID +
+ * `INotificationActivationCallback`), lo que implica tocar el `Package.appxmanifest` y una
+ * nueva submission a la Store.
+ */
+export async function registerNotificationActionHandler(
+  _actionTypeId: string,
+  _handler: () => void | Promise<void>,
+): Promise<void> {
+  // no-op
+}
+
+/** No-op; se conserva para los imports existentes. */
+export function _resetNotificationActionHandlersForTests(): void {
+  // no-op
 }

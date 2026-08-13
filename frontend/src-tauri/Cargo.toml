@@ -259,6 +259,13 @@ windows = { version = "0.58", features = [
 # Lectura/escritura del registro de Windows para detectar y limpiar la instalación
 # rival (NSIS de descarga directa) cuando Maity corre bajo MSIX/Store. Ver rival_install.rs.
 winreg = "0.52"
+# Toast nativo con el AUMID resuelto EN RUNTIME (ver notifications/toast.rs). Es la MISMA
+# crate y versión que tauri-plugin-notification usa por dentro (vía notify-rust, que pide
+# "0.7"), así que Cargo unifica a un solo tauri-winrt-notification 0.7.2: cero paquetes
+# nuevos, cero unidades de compilación extra. La declaramos directa porque el plugin fija
+# el app_id del toast a `config.identifier` ("com.maity.ai") y bajo identidad de paquete
+# ese AUMID es ajeno → Windows rechaza el toast.
+tauri-winrt-notification = "0.7"
 
 # Linux-specific dependencies
 # Default: CPU-only build (no BLAS)
