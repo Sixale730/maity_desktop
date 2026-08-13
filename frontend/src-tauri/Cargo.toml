@@ -239,6 +239,12 @@ windows = { version = "0.58", features = [
     "Win32_System_Com",
     "Win32_Foundation",
     "Win32_Devices_Properties",
+    # Property store de los endpoints de audio (bluetooth_guard.rs): leer
+    # PKEY_Device_EnumeratorName para saber si un endpoint es BTHENUM/BTHLEENUM
+    # SIN activar el IAudioClient (activarlo conmutaría el headset a HFP).
+    "Win32_Devices_FunctionDiscovery",   # PKEY_Device_EnumeratorName / FriendlyName
+    "Win32_UI_Shell_PropertiesSystem",   # IPropertyStore, PROPERTYKEY
+    "Win32_System_Com_StructuredStorage",# PropVariantToStringAlloc
     "Win32_System_Threading",   # Para eventos de sincronización
     "Win32_Security",           # Para CreateEventW
     "Win32_Storage_Packaging_Appx",  # GetCurrentPackageFullName (detección MSIX/Store)

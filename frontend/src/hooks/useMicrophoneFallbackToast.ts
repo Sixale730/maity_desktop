@@ -19,6 +19,13 @@ interface MicSilencePayload {
   mode?: 'silent' | 'stalled' | string
 }
 
+interface BluetoothMicAvoidedPayload {
+  outputDevice?: string
+  bluetoothMic?: string
+  substituteMic?: string | null
+  applied?: boolean
+}
+
 function describeReason(reason?: string): string {
   switch (reason) {
     case 'not_found':
@@ -44,6 +51,7 @@ export function useMicrophoneFallbackToast(): void {
     let unlisten: UnlistenFn | undefined
     let unlistenLoopback: UnlistenFn | undefined
     let unlistenSilence: UnlistenFn | undefined
+    let unlistenBluetooth: UnlistenFn | undefined
 
     const subscribe = async () => {
       unlisten = await listen<MicrophoneFallbackPayload>(
@@ -90,6 +98,29 @@ export function useMicrophoneFallbackToast(): void {
           })
         },
       )
+      // Guardia de perfil Bluetooth (Rust, bluetooth_guard): se evitó grabar
+      // del micrófono de unos audífonos BT para no conmutarlos de A2DP a manos
+      // libres. NO se reusa `microphone-fallback` porque su copy dice "no está
+      // conectado", y aquí el headset sí lo está: el mensaje sería falso.
+      unlistenBluetooth = await listen<BluetoothMicAvoidedPayload>(
+        TauriEvent.BLUETOOTH_MIC_AVOIDED,
+        (event) => {
+          const output = event.payload?.outputDevice ?? 'tus audífonos Bluetooth'
+          if (event.payload?.applied) {
+            const substitute = event.payload?.substituteMic ?? 'otro micrófono'
+            toast.info(`Grabando con "${substitute}" para no cortar tu audio`, {
+              description: `${output} no puede reproducir en estéreo y grabar al mismo tiempo. Maity usa otro micrófono para que tu música y tus llamadas sigan sonando bien. Puedes cambiarlo en el selector de dispositivos.`,
+              duration: 10000,
+            })
+          } else {
+            const mic = event.payload?.bluetoothMic ?? 'el micrófono Bluetooth'
+            toast.warning('Sin micrófono alterno disponible', {
+              description: `Se grabará con "${mic}", así que ${output} pasará a modo manos libres y el audio sonará en mono mientras dure la grabación. Conecta un micrófono USB o usa el del equipo para evitarlo.`,
+              duration: 12000,
+            })
+          }
+        },
+      )
     }
 
     subscribe()
@@ -98,6 +129,7 @@ export function useMicrophoneFallbackToast(): void {
       unlisten?.()
       unlistenLoopback?.()
       unlistenSilence?.()
+      unlistenBluetooth?.()
     }
   }, [])
 }

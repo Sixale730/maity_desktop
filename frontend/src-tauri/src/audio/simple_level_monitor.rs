@@ -1,4 +1,7 @@
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::Mutex;
+use once_cell::sync::Lazy;
 use tauri::{AppHandle, Emitter, Runtime};
 use anyhow::Result;
 use log::{debug, error, info, warn};
@@ -20,16 +23,70 @@ pub struct AudioLevelData {
 pub struct AudioLevelUpdate {
     pub timestamp: u64,
     pub levels: Vec<AudioLevelData>,
+    /// Si el stream de micrófono está realmente abierto. Los consumidores
+    /// existentes tipan estructuralmente e ignoran campos extra.
+    pub mic_monitoring: bool,
 }
 
-// Global monitoring state using atomics (lock-free, same pattern as RecordingState).
-//
-// REFCOUNT (iter 8): el monitor es singleton — múltiples consumidores (la home
-// vía usePreviewLevels, el coach-float vía start_audio_level_monitoring) lo
-// usan en paralelo. Antes, cuando un consumidor llamaba stop_monitoring(), el
-// monitor moría globalmente y los otros consumidores se quedaban mudos. Con
-// refcount, solo se detiene cuando todos lo liberaron.
-static MONITOR_REFCOUNT: AtomicUsize = AtomicUsize::new(0);
+/// Resultado de `start_monitoring`: qué streams quedaron realmente abiertos.
+///
+/// El frontend lo necesita porque el micrófono puede NO abrirse aunque se pida
+/// (audífonos Bluetooth: abrirlo degradaría la reproducción del usuario), y la
+/// UI tiene que reflejarlo en vez de dejar barras muertas que parecen un bug.
+#[derive(Debug, Serialize, Clone, Copy)]
+#[serde(rename_all = "camelCase")]
+pub struct MonitorStartResult {
+    pub mic_active: bool,
+    pub sys_active: bool,
+}
+
+/// Registro de consumidores del monitor.
+///
+/// REGISTRO POR OWNER (ago-2026) — reemplazó a un refcount simple.
+///
+/// El monitor es singleton y lo comparten varios consumidores (la home vía
+/// `usePreviewLevels`, el selector de dispositivos, etc.). Un contador no
+/// alcanzaba porque `start` y `stop` son comandos Tauri CONCURRENTES sin orden
+/// garantizado: el cleanup de un efecto de React dispara `stop` sin esperar a
+/// que resuelva el `start` en vuelo. Cuando el `stop` ganaba la carrera veía el
+/// contador en 0, hacía no-op con un warn, y el `start` posterior dejaba el
+/// **micrófono abierto para siempre sin ningún consumidor que pudiera
+/// cerrarlo** (visto en logs de usuario: `refcount was already 0 (no-op)`).
+///
+/// Con owners nombrados, un `stop` sin `start` previo no es un error: deja un
+/// *tombstone* y el `start` correspondiente lo consume y NO abre nada. Así el
+/// stream ni siquiera llega a abrirse — mejor que abrirlo y cerrarlo 200 ms
+/// después, que en Bluetooth provoca un flap de perfil audible.
+#[derive(Default)]
+struct MonitorOwners {
+    /// owner_id → si ese consumidor quiere el stream de micrófono.
+    active: HashMap<String, bool>,
+    /// `stop` que llegaron antes que su `start` (cota FIFO para no crecer sin
+    /// límite si algún caller sólo llama `stop`).
+    tombstones: VecDeque<String>,
+}
+
+const MAX_TOMBSTONES: usize = 32;
+
+static MONITOR_OWNERS: Lazy<Mutex<MonitorOwners>> =
+    Lazy::new(|| Mutex::new(MonitorOwners::default()));
+
+/// Toma el lock recuperándose del envenenamiento: un panic en otro hilo no debe
+/// dejar el monitor inutilizable (convención del repo: nunca `.lock().unwrap()`).
+fn owners() -> std::sync::MutexGuard<'static, MonitorOwners> {
+    MONITOR_OWNERS.lock().unwrap_or_else(|poisoned| {
+        warn!("MONITOR_OWNERS envenenado; recuperando el estado");
+        poisoned.into_inner()
+    })
+}
+
+/// Señales separadas por stream: el micrófono se puede apagar dejando vivo el
+/// preview del sistema (loopback), que no toca el endpoint de captura y por lo
+/// tanto no conmuta el perfil de unos audífonos Bluetooth.
+static MIC_STREAM_ON: AtomicBool = AtomicBool::new(false);
+static SYS_STREAM_ON: AtomicBool = AtomicBool::new(false);
+/// "Hay emisor de eventos vivo" = mic || sys. Conserva el significado histórico
+/// de `is_monitoring()` para sus consumidores externos.
 static IS_MONITORING: AtomicBool = AtomicBool::new(false);
 static MIC_RMS: AtomicU32 = AtomicU32::new(0);
 static MIC_PEAK: AtomicU32 = AtomicU32::new(0);
@@ -42,42 +99,105 @@ static MIC_PEAK: AtomicU32 = AtomicU32::new(0);
 static SYS_RMS: AtomicU32 = AtomicU32::new(0);
 static SYS_PEAK: AtomicU32 = AtomicU32::new(0);
 
-/// Start real CPAL audio level monitoring for the specified input device.
-/// Spawns an OS thread to own the CPAL stream (may not be Send on all platforms)
-/// and a tokio task to emit level events every 100ms.
+/// Arranca el monitor de niveles para `owner_id`.
 ///
-/// REFCOUNT (iter 8): si ya hay un monitor corriendo (otro consumidor lo
-/// arrancó), simplemente incrementa el contador y retorna sin reiniciar el
-/// loop. Esto evita "matar" el monitor para otros consumidores. El primer
-/// caller decide qué device se monitorea — los siguientes heredan el mismo
-/// device (limitación aceptada para V8).
+/// `want_mic == false` (o un micrófono Bluetooth, ver abajo) deja vivo sólo el
+/// preview del audio del sistema. Idempotente por owner.
+///
+/// GATE BLUETOOTH: si el micrófono pedido es el de unos audífonos Bluetooth
+/// clásicos con A2DP vivo, NO se abre. Abrirlo obligaría a Windows a conmutar
+/// el headset a manos libres (mono, 16 kHz) y degradaría la música del usuario
+/// — sólo para animar unas barritas, sin estar grabando nada. Ver
+/// [`crate::audio::bluetooth_guard`].
 pub async fn start_monitoring<R: Runtime>(
     app_handle: AppHandle<R>,
+    owner_id: String,
     device_names: Vec<String>,
-) -> Result<()> {
-    let prev = MONITOR_REFCOUNT.fetch_add(1, Ordering::SeqCst);
-    if prev > 0 {
-        info!(
-            "Audio monitor already running, sharing instance (refcount {} -> {})",
-            prev, prev + 1
-        );
-        return Ok(());
-    }
-    info!(
-        "Starting audio level monitoring (refcount 0 -> 1) for devices: {:?}",
-        device_names
-    );
-
-    // Reset levels (mic + sys)
-    MIC_RMS.store(0u32, Ordering::Relaxed);
-    MIC_PEAK.store(0u32, Ordering::Relaxed);
-    SYS_RMS.store(0u32, Ordering::Relaxed);
-    SYS_PEAK.store(0u32, Ordering::Relaxed);
-
-    IS_MONITORING.store(true, Ordering::SeqCst);
-
+    want_mic: bool,
+) -> Result<MonitorStartResult> {
     let mic_device_name = device_names.first().cloned().unwrap_or_default();
 
+    // El sondeo del transporte va ANTES de tomar el lock: es I/O nativo con
+    // timeout y jamás debe correr con el mutex tomado.
+    let mic_allowed = if want_mic {
+        // Nombre vacío = default del sistema; hay que resolverlo para poder
+        // preguntar si ESE endpoint es Bluetooth.
+        let probe_name = if mic_device_name.is_empty() {
+            super::devices::default_input_device()
+                .map(|d| d.name)
+                .unwrap_or_default()
+        } else {
+            mic_device_name.clone()
+        };
+        if probe_name.is_empty() {
+            true
+        } else {
+            !super::bluetooth_guard::should_avoid_opening_mic(&probe_name).await
+        }
+    } else {
+        false
+    };
+
+    let (start_mic, start_sys, start_emitter) = {
+        let mut guard = owners();
+
+        // Un `stop` que llegó antes que este `start` (carrera del cleanup de
+        // React): se consume el tombstone y no se abre nada.
+        if let Some(pos) = guard.tombstones.iter().position(|id| id == &owner_id) {
+            guard.tombstones.remove(pos);
+            debug!("start_monitoring('{owner_id}'): tombstone consumido, no se abre nada");
+            return Ok(MonitorStartResult { mic_active: false, sys_active: false });
+        }
+
+        guard.active.insert(owner_id.clone(), mic_allowed);
+
+        let mic_needed = guard.active.values().any(|w| *w);
+        let sys_needed = !guard.active.is_empty();
+
+        let start_mic = mic_needed && !MIC_STREAM_ON.swap(true, Ordering::SeqCst);
+        let start_sys = sys_needed && !SYS_STREAM_ON.swap(true, Ordering::SeqCst);
+        let start_emitter = !IS_MONITORING.swap(true, Ordering::SeqCst);
+        (start_mic, start_sys, start_emitter)
+    };
+
+    info!(
+        "Audio level monitoring: owner='{}', mic={} (pedido={}), devices={:?}",
+        owner_id, mic_allowed, want_mic, device_names
+    );
+
+    if start_mic {
+        MIC_RMS.store(0u32, Ordering::Relaxed);
+        MIC_PEAK.store(0u32, Ordering::Relaxed);
+        spawn_mic_preview_thread(mic_device_name)?;
+    }
+
+    if start_sys {
+        SYS_RMS.store(0u32, Ordering::Relaxed);
+        SYS_PEAK.store(0u32, Ordering::Relaxed);
+        // SYS PREVIEW THREAD (iter 11) ──────────────────────────────────────
+        // Captura el output device default. Plataformas:
+        // - Windows: CPAL `build_input_stream` sobre output device → WASAPI
+        //   loopback shared mode automático ✓
+        // - Linux: CPAL puede o no exponer "monitor source" — graceful skip.
+        // - macOS (iter 12): CPAL no soporta loopback → CoreAudio tap directo.
+        // Es captura del lado RENDER: no toca el endpoint de micrófono, así que
+        // no conmuta el perfil de unos audífonos Bluetooth.
+        spawn_sys_preview_thread()?;
+    }
+
+    if start_emitter {
+        spawn_emitter_task(app_handle, device_names);
+    }
+
+    Ok(MonitorStartResult {
+        mic_active: MIC_STREAM_ON.load(Ordering::SeqCst),
+        sys_active: SYS_STREAM_ON.load(Ordering::SeqCst),
+    })
+}
+
+/// Thread dueño del stream CPAL de micrófono (los streams no son Send en todas
+/// las plataformas).
+fn spawn_mic_preview_thread(mic_device_name: String) -> Result<()> {
     // Spawn OS thread for CPAL (streams may not be Send on all platforms)
     std::thread::Builder::new()
         .name("audio-level-monitor".to_string())
@@ -106,7 +226,7 @@ pub async fn start_monitoring<R: Runtime>(
                 Some(d) => d,
                 None => {
                     error!("No input device available for monitoring");
-                    IS_MONITORING.store(false, Ordering::SeqCst);
+                    MIC_STREAM_ON.store(false, Ordering::SeqCst);
                     return;
                 }
             };
@@ -118,7 +238,7 @@ pub async fn start_monitoring<R: Runtime>(
                 Ok(c) => c,
                 Err(e) => {
                     error!("Failed to get input config for '{}': {}", device_name_actual, e);
-                    IS_MONITORING.store(false, Ordering::SeqCst);
+                    MIC_STREAM_ON.store(false, Ordering::SeqCst);
                     return;
                 }
             };
@@ -180,7 +300,7 @@ pub async fn start_monitoring<R: Runtime>(
                 }
                 _ => {
                     error!("Unsupported sample format for monitoring: {:?}", sample_format);
-                    IS_MONITORING.store(false, Ordering::SeqCst);
+                    MIC_STREAM_ON.store(false, Ordering::SeqCst);
                     return;
                 }
             };
@@ -189,41 +309,33 @@ pub async fn start_monitoring<R: Runtime>(
                 Ok(s) => s,
                 Err(e) => {
                     error!("Failed to build monitor stream: {}", e);
-                    IS_MONITORING.store(false, Ordering::SeqCst);
+                    MIC_STREAM_ON.store(false, Ordering::SeqCst);
                     return;
                 }
             };
 
             if let Err(e) = stream.play() {
                 error!("Failed to start monitor stream: {}", e);
-                IS_MONITORING.store(false, Ordering::SeqCst);
+                MIC_STREAM_ON.store(false, Ordering::SeqCst);
                 return;
             }
 
             info!("Audio monitor stream started for '{}'", device_name_actual);
 
             // Keep thread alive while monitoring — stream is dropped when we exit
-            while IS_MONITORING.load(Ordering::SeqCst) {
+            while MIC_STREAM_ON.load(Ordering::SeqCst) {
                 std::thread::sleep(std::time::Duration::from_millis(50));
             }
 
             drop(stream);
             info!("Audio monitor stream stopped for '{}'", device_name_actual);
         })?;
+    Ok(())
+}
 
-    // SYS PREVIEW THREAD (iter 11) ──────────────────────────────────────────
-    // Captura el output device default. Plataformas:
-    // - Windows: CPAL `build_input_stream` sobre output device → WASAPI loopback
-    //   shared mode automático ✓
-    // - Linux: CPAL puede o no exponer "monitor source" — graceful skip si no
-    //   soporta build_input_stream.
-    // - macOS (iter 12): CPAL no soporta loopback → usamos CoreAudio tap directo
-    //   vía `CoreAudioCapture` (mismo path que la grabación real). Esto requiere
-    //   el permiso "Audio Capture" (NSAudioCaptureUsageDescription, ya presente
-    //   en Info.plist). Si el permiso no está concedido, el tap retorna silencio
-    //   y SYS_RMS queda en 0 (graceful degrade).
-    spawn_sys_preview_thread()?;
-
+/// Task que publica los niveles al frontend cada 100 ms mientras haya algún
+/// stream vivo.
+fn spawn_emitter_task<R: Runtime>(app_handle: AppHandle<R>, device_names: Vec<String>) {
     // Spawn tokio task to poll atomics and emit Tauri events
     let emit_device_name = device_names
         .first()
@@ -246,6 +358,10 @@ pub async fn start_monitoring<R: Runtime>(
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or_default()
                     .as_millis() as u64,
+                // El mic puede estar cerrado a propósito (audífonos Bluetooth):
+                // la UI lo usa para atenuar las barras en vez de mostrarlas
+                // planas como si el micrófono estuviera roto.
+                mic_monitoring: MIC_STREAM_ON.load(Ordering::SeqCst),
                 levels: vec![
                     AudioLevelData {
                         device_name: emit_device_name.clone(),
@@ -275,8 +391,6 @@ pub async fn start_monitoring<R: Runtime>(
 
         info!("Audio level emission task ended");
     });
-
-    Ok(())
 }
 
 /// Spawn del thread que actualiza SYS_RMS/SYS_PEAK. Cross-platform wrapper.
@@ -382,7 +496,7 @@ fn spawn_sys_preview_thread() -> Result<()> {
 
             info!("Sys audio preview stream started for '{}'", device_name_actual);
 
-            while IS_MONITORING.load(Ordering::SeqCst) {
+            while SYS_STREAM_ON.load(Ordering::SeqCst) {
                 std::thread::sleep(std::time::Duration::from_millis(50));
             }
 
@@ -439,7 +553,7 @@ fn spawn_sys_preview_thread() -> Result<()> {
         const WINDOW_SIZE: usize = 1024;
         let mut window: Vec<f32> = Vec::with_capacity(WINDOW_SIZE);
 
-        while IS_MONITORING.load(Ordering::SeqCst) {
+        while SYS_STREAM_ON.load(Ordering::SeqCst) {
             match stream.next().await {
                 Some(sample) => {
                     window.push(sample);
@@ -534,36 +648,64 @@ fn compute_and_store_levels(data: &[f32], channels: u16) {
     MIC_PEAK.store(peak.to_bits(), Ordering::Relaxed);
 }
 
-/// Stop audio level monitoring.
+/// Libera al consumidor `owner_id`. Los streams sólo se cierran cuando ya nadie
+/// los necesita.
 ///
-/// REFCOUNT (iter 8): decrementa el contador. Solo detiene el loop cuando
-/// el contador llega a 0 (último consumidor liberó). Si todavía hay otros
-/// consumidores (refcount > 0 después del decrement), mantiene el monitor
-/// corriendo.
-pub async fn stop_monitoring() -> Result<()> {
-    let prev = MONITOR_REFCOUNT.load(Ordering::SeqCst);
-    if prev == 0 {
-        // Underflow defense: stop_monitoring llamado sin start_monitoring
-        // previo. No hacemos nada — refcount ya está en 0.
-        warn!("stop_monitoring called but refcount was already 0 (no-op)");
+/// Un `stop` sin `start` previo NO es un error: deja un tombstone para que el
+/// `start` en vuelo del mismo owner no abra nada (ver [`MonitorOwners`]).
+pub async fn stop_monitoring(owner_id: String) -> Result<()> {
+    let mut guard = owners();
+
+    if guard.active.remove(&owner_id).is_none() {
+        if guard.tombstones.len() >= MAX_TOMBSTONES {
+            guard.tombstones.pop_front();
+        }
+        if !guard.tombstones.iter().any(|id| id == &owner_id) {
+            guard.tombstones.push_back(owner_id.clone());
+        }
+        debug!("stop_monitoring('{owner_id}'): liberado antes del ack (tombstone)");
         return Ok(());
     }
-    let new_count = MONITOR_REFCOUNT.fetch_sub(1, Ordering::SeqCst) - 1;
-    if new_count == 0 {
-        info!("Stopping audio level monitoring (refcount 1 -> 0)");
-        IS_MONITORING.store(false, Ordering::SeqCst);
-        // Reset levels to zero (mic + sys)
+
+    let mic_needed = guard.active.values().any(|w| *w);
+    let sys_needed = !guard.active.is_empty();
+    drop(guard);
+
+    if !mic_needed && MIC_STREAM_ON.swap(false, Ordering::SeqCst) {
+        // El último valor medido quedaría congelado y las barras se verían "a
+        // media altura" para siempre.
         MIC_RMS.store(0u32, Ordering::Relaxed);
         MIC_PEAK.store(0u32, Ordering::Relaxed);
+    }
+    if !sys_needed && SYS_STREAM_ON.swap(false, Ordering::SeqCst) {
         SYS_RMS.store(0u32, Ordering::Relaxed);
         SYS_PEAK.store(0u32, Ordering::Relaxed);
-    } else {
-        info!(
-            "Audio monitor still in use by other consumers (refcount {} -> {})",
-            new_count + 1,
-            new_count
-        );
     }
+    if !mic_needed && !sys_needed {
+        info!("Stopping audio level monitoring ('{owner_id}' era el último consumidor)");
+        IS_MONITORING.store(false, Ordering::SeqCst);
+    }
+    Ok(())
+}
+
+/// Apagado incondicional: limpia el registro entero y cierra ambos streams.
+///
+/// Lo usa el hide-to-tray, que NO es un consumidor con `start` pareado — con la
+/// API por owner, llamar `stop_monitoring` ahí le robaría el slot a otro.
+pub async fn force_stop_all() -> Result<()> {
+    {
+        let mut guard = owners();
+        guard.active.clear();
+        guard.tombstones.clear();
+    }
+    MIC_STREAM_ON.store(false, Ordering::SeqCst);
+    SYS_STREAM_ON.store(false, Ordering::SeqCst);
+    IS_MONITORING.store(false, Ordering::SeqCst);
+    MIC_RMS.store(0u32, Ordering::Relaxed);
+    MIC_PEAK.store(0u32, Ordering::Relaxed);
+    SYS_RMS.store(0u32, Ordering::Relaxed);
+    SYS_PEAK.store(0u32, Ordering::Relaxed);
+    info!("Audio level monitoring detenido por completo");
     Ok(())
 }
 

@@ -99,6 +99,14 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
             }
         };
 
+    // Guardia de perfil Bluetooth ANTES de resolver el dispositivo: si el
+    // usuario escucha por audífonos BT clásicos, grabar de SU micrófono los
+    // conmuta a manos libres y le degrada la música durante toda la sesión.
+    // Va aquí y no después porque resolve_* abre el endpoint (preflight) — para
+    // entonces el perfil ya habría cambiado. No persiste nada.
+    let preferred_mic_name =
+        super::bluetooth_guard::apply_bluetooth_output_mic_override(&app, preferred_mic_name).await;
+
     // Resolve devices from preferences
     let microphone_device =
         recording_helpers::resolve_microphone_from_preference(&app, preferred_mic_name).await?;
@@ -166,6 +174,11 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
 
     // Skip transcription validation here — frontend already validated via checkTranscriptionReady()
     info!("🚀 Starting async recording initialization with custom devices");
+
+    // Misma guardia que en start_recording_with_meeting_name (ver allí el porqué
+    // de aplicarla sobre el NOMBRE, antes de resolver el endpoint).
+    let mic_device_name =
+        super::bluetooth_guard::apply_bluetooth_output_mic_override(&app, mic_device_name).await;
 
     // Parse explicit device names
     let devices =

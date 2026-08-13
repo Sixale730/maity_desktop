@@ -19,6 +19,12 @@ interface AudioLevels {
   micPeak: number;
   sysRms: number;
   sysPeak: number;
+  /**
+   * Sólo lo trae el preview (sin grabar). `false` = el micrófono está cerrado a
+   * propósito porque abrirlo degradaría el audio Bluetooth del usuario. Durante
+   * la grabación llega `undefined` y el micrófono siempre está abierto.
+   */
+  micMonitoring?: boolean;
 }
 
 interface RecordingControlsProps {
@@ -58,6 +64,11 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
   // Use global recording state context for pause state (syncs with tray operations)
   const recordingState = useRecordingState();
   const isPaused = recordingState.isPaused;
+
+  // Micrófono cerrado a propósito en reposo (audífonos Bluetooth). Sólo aplica
+  // sin grabar: durante la grabación el mic siempre está abierto y el preview
+  // no emite este campo.
+  const micIdleOff = !isRecording && audioLevels?.micMonitoring === false;
 
   const [showPlayback, setShowPlayback] = useState(false);
   const [, setRecordingPath] = useState<string | null>(null);
@@ -548,25 +559,41 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
                   {/* Dual-channel audio level bars + device selector — always visible */}
                   <div className="flex items-center gap-3 mx-4">
                     {/* Mic (user) levels */}
-                    <div className="flex items-center gap-1">
-                      <span className="text-[10px] text-[#485df4]" title="Tú (micrófono)">🎤</span>
-                      <div className="flex items-end space-x-[2px] h-6">
-                        {[0, 1, 2].map((i) => {
-                          const rms = audioLevels?.micRms ?? 0;
-                          const scale = [0.7, 1.0, 0.8][i];
-                          const h = !isPaused
-                            ? Math.max(3, Math.min(24, rms * 200 * scale))
-                            : 3;
-                          return (
-                            <div
-                              key={`mic-${i}`}
-                              className="w-[3px] rounded-full transition-all duration-100 bg-[#485df4]"
-                              style={{ height: `${h}px`, opacity: isPaused ? 0.4 : 1 }}
-                            />
-                          );
-                        })}
-                      </div>
-                    </div>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <div className="flex items-center gap-1">
+                          <span className="text-[10px] text-[#485df4]" title="Tú (micrófono)">🎤</span>
+                          <div className="flex items-end space-x-[2px] h-6">
+                            {[0, 1, 2].map((i) => {
+                              const rms = audioLevels?.micRms ?? 0;
+                              const scale = [0.7, 1.0, 0.8][i];
+                              // micIdleOff: el mic está cerrado a propósito (audífonos
+                              // Bluetooth en reposo). Se reusa el mismo lenguaje visual
+                              // del estado pausado — barras al piso y atenuadas — en vez
+                              // de inventar un tercer estado.
+                              const dimmed = isPaused || micIdleOff;
+                              const h = !dimmed
+                                ? Math.max(3, Math.min(24, rms * 200 * scale))
+                                : 3;
+                              return (
+                                <div
+                                  key={`mic-${i}`}
+                                  className="w-[3px] rounded-full transition-all duration-100 bg-[#485df4]"
+                                  style={{ height: `${h}px`, opacity: dimmed ? 0.4 : 1 }}
+                                />
+                              );
+                            })}
+                          </div>
+                        </div>
+                      </TooltipTrigger>
+                      <TooltipContent>
+                        <p>
+                          {micIdleOff
+                            ? 'Con audífonos Bluetooth, Maity abre el micrófono sólo al grabar: mantenerlo abierto los pasaría a modo manos libres y tu música sonaría en mono.'
+                            : 'Tu micrófono'}
+                        </p>
+                      </TooltipContent>
+                    </Tooltip>
                     {/* System (interlocutor) levels */}
                     <div className="flex items-center gap-1">
                       <span className="text-[10px] text-[#10b981]" title="Interlocutor (bocina)">🔊</span>

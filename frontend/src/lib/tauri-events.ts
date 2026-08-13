@@ -43,6 +43,7 @@ export const TauriEvent = {
   MICROPHONE_FALLBACK: 'microphone-fallback',
   MIC_LOOPBACK_WARNING: 'mic-loopback-warning',
   MIC_SILENCE_WARNING: 'mic-silence-warning',
+  BLUETOOTH_MIC_AVOIDED: 'bluetooth-mic-avoided',
   DEVICE_PICKER_SELECTED: 'device-picker-selected',
   SYSTEM_AUDIO_STARTED: 'system-audio-started',
   SYSTEM_AUDIO_STOPPED: 'system-audio-stopped',

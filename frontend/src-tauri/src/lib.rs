@@ -358,23 +358,21 @@ async fn save_transcript(file_path: String, content: String) -> Result<(), Strin
 #[tauri::command]
 async fn start_audio_level_monitoring<R: Runtime>(
     app: AppHandle<R>,
+    owner_id: String,
     device_names: Vec<String>,
-) -> Result<(), String> {
-    log_info!(
-        "Starting audio level monitoring for devices: {:?}",
-        device_names
-    );
-
-    audio::simple_level_monitor::start_monitoring(app, device_names)
+    want_mic: bool,
+) -> Result<audio::simple_level_monitor::MonitorStartResult, String> {
+    // El log de "arrancando" vive DENTRO de start_monitoring, después de decidir
+    // qué se abre de verdad: aquí arriba mentía cuando el arranque era un no-op
+    // compartido o cuando el micrófono quedaba vetado por Bluetooth.
+    audio::simple_level_monitor::start_monitoring(app, owner_id, device_names, want_mic)
         .await
         .map_err(|e| format!("Failed to start audio level monitoring: {}", e))
 }
 
 #[tauri::command]
-async fn stop_audio_level_monitoring() -> Result<(), String> {
-    log_info!("Stopping audio level monitoring");
-
-    audio::simple_level_monitor::stop_monitoring()
+async fn stop_audio_level_monitoring(owner_id: String) -> Result<(), String> {
+    audio::simple_level_monitor::stop_monitoring(owner_id)
         .await
         .map_err(|e| format!("Failed to stop audio level monitoring: {}", e))
 }
@@ -836,10 +834,13 @@ pub fn run() {
                             let _ = coach.close();
                         }
 
-                        // stop_monitoring es async — spawnear sin bloquear el
-                        // handler del evento de cierre.
+                        // force_stop_all y no stop_monitoring(owner): el cierre
+                        // de ventana no es un consumidor con `start` pareado, así
+                        // que liberar "a nombre de alguien" le robaría el slot a
+                        // otro y dejaría streams huérfanos. Async — se spawnea
+                        // para no bloquear el handler del evento de cierre.
                         tauri::async_runtime::spawn(async {
-                            if let Err(e) = audio::simple_level_monitor::stop_monitoring().await {
+                            if let Err(e) = audio::simple_level_monitor::force_stop_all().await {
                                 log::warn!("Failed to stop level monitor on hide: {}", e);
                             }
                             log::info!("Window hidden — idle cleanup completed");

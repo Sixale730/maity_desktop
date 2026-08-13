@@ -182,7 +182,16 @@ export function DeviceSelection({ selectedDevices, onDeviceChange, disabled = fa
         return;
       }
 
-      await invoke('start_audio_level_monitoring', { deviceNames });
+      // owner fijo: este componente es una única superficie ("Test Mic" del
+      // selector) y sus start/stop son secuenciales, no concurrentes como los
+      // del efecto de usePreviewLevels. wantMic=true porque el propósito
+      // explícito aquí es probar el micrófono; aun así Rust puede vetarlo si es
+      // Bluetooth (ver audio::bluetooth_guard).
+      await invoke('start_audio_level_monitoring', {
+        ownerId: 'device-selection',
+        deviceNames,
+        wantMic: true,
+      });
       setIsMonitoring(true);
       setShowLevels(true);
       logger.debug('Started audio level monitoring for input devices:', deviceNames);
@@ -195,7 +204,7 @@ export function DeviceSelection({ selectedDevices, onDeviceChange, disabled = fa
   // Stop audio level monitoring
   const stopAudioLevelMonitoring = async () => {
     try {
-      await invoke('stop_audio_level_monitoring');
+      await invoke('stop_audio_level_monitoring', { ownerId: 'device-selection' });
       setIsMonitoring(false);
       setAudioLevels(new Map());
       logger.debug('Stopped audio level monitoring');

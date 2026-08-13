@@ -113,7 +113,7 @@ const LOOPBACK_INPUT_MARKERS: [&str; 7] = [
 ];
 
 /// True si el nombre de un dispositivo de entrada corresponde a un loopback conocido.
-fn is_loopback_like_input(name: &str) -> bool {
+pub(crate) fn is_loopback_like_input(name: &str) -> bool {
     let lower = name.to_lowercase();
     LOOPBACK_INPUT_MARKERS.iter().any(|m| lower.contains(m))
 }

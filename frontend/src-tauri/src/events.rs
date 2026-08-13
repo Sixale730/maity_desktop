@@ -46,6 +46,12 @@ pub const MIC_LOOPBACK_WARNING: &str = "mic-loopback-warning";
 /// `{ device: string|null, silenceSecs: number, mode: "silent"|"stalled" }`.
 /// Latch: una alerta por episodio; se rearma cuando vuelve audio audible.
 pub const MIC_SILENCE_WARNING: &str = "mic-silence-warning";
+/// Se evitó grabar con el micrófono de unos audífonos Bluetooth para no
+/// conmutarlos de A2DP a HFP (ver `audio::bluetooth_guard`). Payload:
+/// `{ outputDevice: string, bluetoothMic: string, substituteMic: string|null,
+/// applied: boolean }`. `applied:false` = no había alterno y se grabará con el
+/// Bluetooth igual (el audio del usuario sonará en mono).
+pub const BLUETOOTH_MIC_AVOIDED: &str = "bluetooth-mic-avoided";
 pub const DEVICE_PICKER_SELECTED: &str = "device-picker-selected";
 pub const SYSTEM_AUDIO_STARTED: &str = "system-audio-started";
 pub const SYSTEM_AUDIO_STOPPED: &str = "system-audio-stopped";
