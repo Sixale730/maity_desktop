@@ -56,6 +56,16 @@ pub struct MeetingOverview {
     /// `auth:`, `dependency_failed:`, …). Solo presente si `sync_state=failed`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sync_error: Option<String>,
+    /// `analysis_status` que devolvió la nube en el finalize (`quota_skipped`,
+    /// `pending`, `processing`, `completed`…), leído del `result_data` del job
+    /// `finalize_conversation` completado. Aditivo: ausente cuando el finalize
+    /// todavía no corrió o la respuesta no lo traía.
+    ///
+    /// Es la ÚNICA vía por la que la lista se entera de que el plan agotó la
+    /// cuota: desde issue #132 la nube responde 200 con `quota_skipped`, así
+    /// que el job queda `completed` y el `sync_state` no dice nada al respecto.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub analysis_status: Option<String>,
 }
 
 /// Agregados de transcripción por meeting: `(words_count, duration_seconds)`.
@@ -114,19 +124,46 @@ fn rank_to_state(rank: i64) -> &'static str {
     }
 }
 
-/// Estado de sync por meeting: `(sync_state, sync_error)`.
+/// Resumen de la cola de sync de UN meeting.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SyncSummary {
+    /// `pending` | `in_progress` | `failed` | `completed` (prioridad de `SYNC_RANK_SQL`).
+    pub state: String,
+    /// `last_error` del job failed más reciente. Solo con `state == "failed"`.
+    pub error: Option<String>,
+    /// `analysis_status` que dejó el finalize completado en su `result_data`.
+    pub analysis_status: Option<String>,
+}
+
+/// `analysis_status` del `result_data` de un job finalize completado.
+///
+/// Se parsea en **Rust**, no con `json_extract` en SQL: el `result_data` es la
+/// `FinalizeResponse` serializada tal cual (shape que decide la nube) y no
+/// queremos atar la lista a que el build de SQLite traiga JSON1 habilitado.
+fn analysis_status_from_result(raw: Option<String>) -> Option<String> {
+    let parsed: serde_json::Value = serde_json::from_str(&raw?).ok()?;
+    parsed
+        .get("analysis_status")
+        .and_then(serde_json::Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+}
+
+/// Estado de sync por meeting.
 ///
 /// Una sola query agregada para TODOS los meetings del usuario (nada de N
 /// consultas por fila). El `last_error` se toma del job `failed` más reciente
 /// vía subconsulta correlacionada; solo se expone cuando el estado resultante
 /// es `failed` (un error viejo de un job que ya reintentó y completó no debe
-/// pintar la fila de rojo).
+/// pintar la fila de rojo). El `analysis_status` sale del `result_data` del
+/// job `finalize_conversation` **completado** más reciente — con esa misma
+/// pasada, sin queries extra por fila.
 pub async fn sync_states(
     pool: &SqlitePool,
     user_id: &str,
-) -> Result<HashMap<String, (String, Option<String>)>, SqlxError> {
-    // Los dos `?` se enlazan por orden de aparición: primero el de la
-    // subconsulta correlacionada, luego el del WHERE externo.
+) -> Result<HashMap<String, SyncSummary>, SqlxError> {
+    // Los tres `?` se enlazan por orden de aparición: subconsulta del error,
+    // subconsulta del finalize, y por último el WHERE externo.
     let sql = format!(
         "SELECT sq.meeting_id,
                 {rank} AS state_rank,
@@ -135,14 +172,22 @@ pub async fn sync_states(
                     AND f.user_id = ?
                     AND f.status = 'failed'
                   ORDER BY f.updated_at DESC, f.id DESC
-                  LIMIT 1) AS last_error
+                  LIMIT 1) AS last_error,
+                (SELECT r.result_data FROM sync_queue r
+                  WHERE r.meeting_id = sq.meeting_id
+                    AND r.user_id = ?
+                    AND r.job_type = 'finalize_conversation'
+                    AND r.status = 'completed'
+                  ORDER BY r.updated_at DESC, r.id DESC
+                  LIMIT 1) AS finalize_result
          FROM sync_queue sq
          WHERE sq.user_id = ?
          GROUP BY sq.meeting_id",
         rank = SYNC_RANK_SQL
     );
 
-    let rows: Vec<(String, i64, Option<String>)> = sqlx::query_as(&sql)
+    let rows: Vec<(String, i64, Option<String>, Option<String>)> = sqlx::query_as(&sql)
+        .bind(user_id)
         .bind(user_id)
         .bind(user_id)
         .fetch_all(pool)
@@ -150,10 +195,17 @@ pub async fn sync_states(
 
     Ok(rows
         .into_iter()
-        .map(|(meeting_id, rank, last_error)| {
+        .map(|(meeting_id, rank, last_error, finalize_result)| {
             let state = rank_to_state(rank);
             let error = if state == "failed" { last_error } else { None };
-            (meeting_id, (state.to_string(), error))
+            (
+                meeting_id,
+                SyncSummary {
+                    state: state.to_string(),
+                    error,
+                    analysis_status: analysis_status_from_result(finalize_result),
+                },
+            )
         })
         .collect())
 }
@@ -197,10 +249,11 @@ pub async fn api_get_meetings_overview<R: Runtime>(
         .map(|m| {
             let (words_count, duration_seconds) =
                 aggregates.get(&m.id).copied().unwrap_or((0, 0));
-            let (sync_state, sync_error) = states
-                .get(&m.id)
-                .cloned()
-                .unwrap_or_else(|| ("none".to_string(), None));
+            let summary = states.get(&m.id).cloned().unwrap_or(SyncSummary {
+                state: "none".to_string(),
+                error: None,
+                analysis_status: None,
+            });
 
             MeetingOverview {
                 id: m.id,
@@ -211,8 +264,9 @@ pub async fn api_get_meetings_overview<R: Runtime>(
                 cloud_idempotency_key: m.cloud_idempotency_key,
                 words_count,
                 duration_seconds,
-                sync_state,
-                sync_error,
+                sync_state: summary.state,
+                sync_error: summary.error,
+                analysis_status: summary.analysis_status,
             }
         })
         .collect();
@@ -339,6 +393,26 @@ mod tests {
         res.last_insert_rowid()
     }
 
+    async fn insert_finalize_result(
+        pool: &SqlitePool,
+        meeting_id: &str,
+        status: &str,
+        result_data: Option<&str>,
+    ) -> i64 {
+        let res = sqlx::query(
+            "INSERT INTO sync_queue (job_type, meeting_id, payload, status, result_data, user_id)
+             VALUES ('finalize_conversation', ?, '{}', ?, ?, ?)",
+        )
+        .bind(meeting_id)
+        .bind(status)
+        .bind(result_data)
+        .bind(TEST_USER)
+        .execute(pool)
+        .await
+        .unwrap();
+        res.last_insert_rowid()
+    }
+
     #[tokio::test]
     async fn word_count_uses_split_whitespace_semantics() {
         let pool = setup_pool().await;
@@ -394,9 +468,9 @@ mod tests {
         insert_job(&pool, "m1", "finalize_conversation", "failed", Some("quota: sin creditos")).await;
 
         let states = sync_states(&pool, TEST_USER).await.unwrap();
-        let (state, error) = states.get("m1").unwrap();
-        assert_eq!(state, "failed");
-        assert_eq!(error.as_deref(), Some("quota: sin creditos"));
+        let summary = states.get("m1").unwrap();
+        assert_eq!(summary.state, "failed");
+        assert_eq!(summary.error.as_deref(), Some("quota: sin creditos"));
     }
 
     #[tokio::test]
@@ -414,9 +488,9 @@ mod tests {
         insert_job(&pool, "m3", "b", "completed", None).await;
 
         let states = sync_states(&pool, TEST_USER).await.unwrap();
-        assert_eq!(states.get("m1").unwrap().0, "in_progress");
-        assert_eq!(states.get("m2").unwrap().0, "pending");
-        assert_eq!(states.get("m3").unwrap().0, "completed");
+        assert_eq!(states.get("m1").unwrap().state, "in_progress");
+        assert_eq!(states.get("m2").unwrap().state, "pending");
+        assert_eq!(states.get("m3").unwrap().state, "completed");
         // Un meeting sin jobs simplemente no aparece → el comando lo resuelve a "none".
         assert!(states.get("m4").is_none());
     }
@@ -429,14 +503,68 @@ mod tests {
         insert_job(&pool, "m1", "a", "failed", Some("network: timeout")).await;
         insert_job(&pool, "m1", "b", "pending", None).await;
         let states = sync_states(&pool, TEST_USER).await.unwrap();
-        assert_eq!(states.get("m1").unwrap().0, "failed", "un failed manda sobre pending");
+        assert_eq!(
+            states.get("m1").unwrap().state,
+            "failed",
+            "un failed manda sobre pending"
+        );
 
         // Sin ningún failed, no hay error que mostrar.
         let pool2 = setup_pool().await;
         insert_job(&pool2, "m2", "a", "pending", Some("network: timeout")).await;
         let states2 = sync_states(&pool2, TEST_USER).await.unwrap();
-        assert_eq!(states2.get("m2").unwrap().0, "pending");
-        assert_eq!(states2.get("m2").unwrap().1, None);
+        assert_eq!(states2.get("m2").unwrap().state, "pending");
+        assert_eq!(states2.get("m2").unwrap().error, None);
+    }
+
+    #[tokio::test]
+    async fn analysis_status_sale_del_result_data_del_finalize_completado() {
+        let pool = setup_pool().await;
+        // Caso cuota: la nube respondió 200 con quota_skipped → el job está
+        // COMPLETED (el sync no falló) y la única señal vive en result_data.
+        insert_job(&pool, "m1", "save_conversation", "completed", None).await;
+        insert_finalize_result(
+            &pool,
+            "m1",
+            "completed",
+            Some(r#"{"ok":true,"conversation_id":"c1","analysis_status":"quota_skipped","quota":{"feature":"omi_conversation","used":3,"limit":3,"period":"daily"}}"#),
+        )
+        .await;
+
+        let states = sync_states(&pool, TEST_USER).await.unwrap();
+        let summary = states.get("m1").unwrap();
+        assert_eq!(summary.state, "completed");
+        assert_eq!(summary.analysis_status.as_deref(), Some("quota_skipped"));
+    }
+
+    #[tokio::test]
+    async fn analysis_status_ausente_cuando_no_hay_finalize_utilizable() {
+        let pool = setup_pool().await;
+        // (a) finalize aún corriendo → sin result_data que leer.
+        insert_finalize_result(&pool, "m1", "in_progress", None).await;
+        // (b) finalize completado de una versión vieja: result_data sin el campo.
+        insert_finalize_result(&pool, "m2", "completed", Some(r#"{"ok":true,"conversation_id":"c2"}"#)).await;
+        // (c) result_data corrupto → se ignora, no revienta la lista.
+        insert_finalize_result(&pool, "m3", "completed", Some("no-json")).await;
+        // (d) el campo lo trae OTRO tipo de job → no cuenta.
+        sqlx::query(
+            "INSERT INTO sync_queue (job_type, meeting_id, payload, status, result_data, user_id)
+             VALUES ('save_conversation', 'm4', '{}', 'completed', '{\"analysis_status\":\"completed\"}', ?)",
+        )
+        .bind(TEST_USER)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let states = sync_states(&pool, TEST_USER).await.unwrap();
+        for id in ["m1", "m2", "m3", "m4"] {
+            assert_eq!(
+                states.get(id).unwrap().analysis_status,
+                None,
+                "meeting {} no debería exponer analysis_status",
+                id
+            );
+        }
     }
 
     #[tokio::test]

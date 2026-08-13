@@ -13,6 +13,18 @@ use serde::{Deserialize, Serialize};
 // ============================================================================
 
 /// Response from the conversations-finalize Vercel API endpoint
+///
+/// `analysis_status` y `quota` son ADITIVOS y llegan con `#[serde(default)]`
+/// porque el endpoint puede no mandarlos (versiones viejas de la web, o el
+/// caso normal en que sí hay cuota). Desde issue Sixale730/maity#132 la cuota
+/// NO gatea el finalize: la minuta se genera igual y la nube responde **200**
+/// con `analysis_status:'quota_skipped'` + un objeto `quota`
+/// (`{feature, reason, used, limit, period}`). Antes de esto el desktop tiraba
+/// esa señal a la basura — el job quedaba `completed` y el usuario nunca se
+/// enteraba de por qué no llegaba el análisis.
+///
+/// El 403 `QUOTA_EXCEEDED` (más abajo, prefijo `quota:`) es el camino LEGACY:
+/// se conserva para jobs viejos y para el reanálisis manual.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FinalizeResponse {
     pub ok: bool,
@@ -21,6 +33,16 @@ pub struct FinalizeResponse {
     pub words_count: Option<u32>,
     pub segments_count: Option<u32>,
     pub error: Option<String>,
+    /// `quota_skipped` | `pending` | `processing` | `completed` | … tal cual lo
+    /// mandó la nube. Se guarda en `result_data` y lo expone la lista vía
+    /// `api_get_meetings_overview`; `derivePhase` lo trata como terminal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub analysis_status: Option<String>,
+    /// Detalle de la cuota agotada (shape libre: `{feature, reason, used,
+    /// limit, period}`). `Value` a propósito: si la web agrega campos, viajan
+    /// hasta el `result_data` sin tocar Rust.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quota: Option<serde_json::Value>,
 }
 
 /// Body de error del ApiError de Vercel. Parseado defensivamente: todos los
@@ -196,9 +218,17 @@ pub async fn finalize_impl(
 
     if data.ok {
         info!(
-            "conversations-finalize completed: conversation={}, words={:?}, segments={:?}, discarded={:?}",
-            conversation_id, data.words_count, data.segments_count, data.discarded
+            "conversations-finalize completed: conversation={}, words={:?}, segments={:?}, discarded={:?}, analysis_status={:?}",
+            conversation_id, data.words_count, data.segments_count, data.discarded, data.analysis_status
         );
+        // 200 con cuota agotada: NO es un error (la minuta sí se generó), pero
+        // se loguea porque explica por qué la conversación se queda sin análisis.
+        if data.analysis_status.as_deref() == Some("quota_skipped") {
+            warn!(
+                "conversations-finalize omitió el análisis por cuota para {}: {:?}",
+                conversation_id, data.quota
+            );
+        }
     } else {
         warn!(
             "conversations-finalize returned ok=false: {:?}",

@@ -48,6 +48,11 @@ export interface CloudSyncStatusPayload {
   jobType: string;
   status: 'completed' | 'retrying' | 'failed';
   error?: string;
+  /** Solo en el finalize completado: `analysis_status` que devolvió la nube
+   *  (`quota_skipped` cuando el plan agotó la cuota — la minuta sí se generó).
+   *  Aditivo: los listeners que solo filtran por meetingId/jobType/status lo
+   *  ignoran sin enterarse. */
+  analysisStatus?: string;
 }
 
 /** Cadencia del stuck-watcher. Antes se colgaba del loop de 5s del ejecutor;

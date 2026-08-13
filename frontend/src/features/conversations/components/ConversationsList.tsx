@@ -10,6 +10,12 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { useAuth } from '@/contexts/AuthContext';
 import { logger } from '@/lib/logger';
 import { cloudSyncWorker } from '@/services/cloudSyncWorker';
+import {
+  ANALYSIS_FEATURE,
+  getQuotaFeature,
+  quotasActive,
+  useQuotaStatus,
+} from '@/hooks/usePlanStatus';
 import { getOmiConversations, getLocalConversations, mergeConversations, OmiConversation } from '../services/conversations.service';
 import { useConversationsListAutoRefresh } from '../hooks/useConversationsListAutoRefresh';
 
@@ -21,10 +27,27 @@ interface ConversationsListProps {
 /** Estados de sync que todavía pueden cambiar solos (el loop de Rust sigue trabajando). */
 const NON_TERMINAL_SYNC_STATES = new Set(['pending', 'in_progress']);
 
+/** Texto del badge de cuota. La minuta SÍ se genera: la cuota no gatea el
+ *  finalize (issue Sixale730/maity#132), solo el análisis V4. */
+const QUOTA_TOOLTIP =
+  'La minuta sí se genera; el análisis vuelve con tu siguiente período o con un plan superior.';
+
 export function ConversationsList({ onSelect, selectedId }: ConversationsListProps) {
   const { maityUser } = useAuth();
   const queryClient = useQueryClient();
   const [retryingIds, setRetryingIds] = useState<Set<string>>(new Set());
+
+  // Caché compartida con PlanIndicator (misma queryKey, staleTime 60s): NO
+  // agrega polling. Solo se usa para AVISAR de forma anticipada que el análisis
+  // no va a llegar; el encolado y el sync siguen exactamente igual — la cuota
+  // nunca corta el flujo, ni siquiera en UI.
+  const { data: quotaStatus } = useQuotaStatus();
+  const analysisQuotaExhausted = useMemo(() => {
+    if (!quotasActive(quotaStatus)) return false;
+    const feature = getQuotaFeature(quotaStatus, ANALYSIS_FEATURE);
+    if (!feature || !feature.enabled) return false;
+    return feature.limit !== -1 && feature.used >= feature.limit;
+  }, [quotaStatus]);
 
   // Visibility/online safety net — invalidate the list query when the page
   // becomes visible again or the network reconnects. The Realtime push lives
@@ -133,7 +156,8 @@ export function ConversationsList({ onSelect, selectedId }: ConversationsListPro
   };
 
   /**
-   * Badge de sync de una fila. Solo aplica a filas LOCALES no fusionadas: si
+   * Badge de sync de una fila. Salvo el de cuota (que vale para cualquier
+   * fila), solo aplica a filas LOCALES no fusionadas: si
    * `mergeConversations` la unió con su gemela de la nube, el spread descarta
    * `_syncState` y el estado lo cuenta `analysis_status` (derivePhase).
    *
@@ -142,15 +166,47 @@ export function ConversationsList({ onSelect, selectedId }: ConversationsListPro
    * nube — incluida una con el sync completo o muerto hace horas.
    */
   const renderSyncBadge = (conversation: OmiConversation) => {
+    // Cuota agotada según la NUBE (finalize 200 con `analysis_status`
+    // 'quota_skipped'). Va antes del guard de `source` porque aplica igual a la
+    // fila local — que lo recibe vía `api_get_meetings_overview` — y a la
+    // fusionada, donde el valor viene de `omi_conversations`.
+    if (conversation.analysis_status === 'quota_skipped') {
+      return (
+        <Badge
+          variant="outline"
+          className="text-xs gap-1 text-amber-600 border-amber-300"
+          title={QUOTA_TOOLTIP}
+        >
+          <AlertTriangle className="h-3 w-3" />
+          Cuota agotada
+        </Badge>
+      );
+    }
+
     if (conversation.source !== 'local') return null;
     const state = conversation._syncState ?? 'none';
 
     if (NON_TERMINAL_SYNC_STATES.has(state)) {
+      // El sync SÍ está ocurriendo (datos y minuta suben igual), así que
+      // "Sincronizando…" se mantiene. Cuando la caché de cuota ya dice que el
+      // período está agotado se agrega un segundo badge chico anticipando que
+      // el análisis no vendrá — sin cambiar nada del flujo de sync.
       return (
-        <Badge variant="outline" className="text-xs gap-1 text-amber-600 border-amber-300">
-          <RefreshCw className="h-3 w-3 animate-spin" />
-          Sincronizando...
-        </Badge>
+        <div className="flex items-center gap-2">
+          <Badge variant="outline" className="text-xs gap-1 text-amber-600 border-amber-300">
+            <RefreshCw className="h-3 w-3 animate-spin" />
+            Sincronizando...
+          </Badge>
+          {analysisQuotaExhausted && (
+            <Badge
+              variant="outline"
+              className="text-[10px] gap-1 text-amber-600/80 border-amber-300/60"
+              title={QUOTA_TOOLTIP}
+            >
+              Sin análisis (cuota)
+            </Badge>
+          )}
+        </div>
       );
     }
 
@@ -158,11 +214,15 @@ export function ConversationsList({ onSelect, selectedId }: ConversationsListPro
 
     // Cuota agotada: no es un error del usuario ni algo que reintentar sirva de
     // nada, así que va en ámbar y sin botón. El caso normal (finalize 200 con
-    // `analysis_status='quota_skipped'`) llega por otro lado; esto cubre los
-    // jobs legacy que murieron con el 403 `quota:`.
+    // `analysis_status='quota_skipped'`) ya se resolvió arriba; esto cubre los
+    // jobs LEGACY que murieron con el 403 `quota:`.
     if (conversation._syncError?.startsWith('quota:')) {
       return (
-        <Badge variant="outline" className="text-xs gap-1 text-amber-600 border-amber-300">
+        <Badge
+          variant="outline"
+          className="text-xs gap-1 text-amber-600 border-amber-300"
+          title={QUOTA_TOOLTIP}
+        >
           <AlertTriangle className="h-3 w-3" />
           Cuota agotada
         </Badge>

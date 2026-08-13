@@ -9,9 +9,13 @@
  * ESTADO (jul-2026):
  *  - El camino 403 QUOTA_EXCEEDED es **residual**: la web ya responde 200 al
  *    finalize con `analysis_status:'quota_skipped'` (la cuota no gatea la
- *    minuta, issue #132). No se borra porque hay jobs viejos diferidos con
- *    `last_error` `quota:` en las DBs de usuarios y porque el reanálisis manual
- *    (`reanalyzeConversation`) todavía puede toparse con él.
+ *    minuta, issue #132). Esa es HOY la señal viva: `FinalizeResponse` la
+ *    deserializa, el worker de Rust la guarda en `result_data` y la emite en
+ *    `cloud-sync-status-changed`, y `api_get_meetings_overview` la expone como
+ *    `analysis_status` para que la lista pinte "Cuota agotada". Este módulo NO
+ *    se borra porque hay jobs viejos diferidos con `last_error` `quota:` en las
+ *    DBs de usuarios y porque el reanálisis manual (`reanalyzeConversation`)
+ *    todavía puede toparse con el 403.
  *  - `parseQuotaError` / `nextQuotaRetrySqlite` tienen un **port en Rust**
  *    (`cloud_sync/worker.rs`: `quota_period` / `next_quota_retry`), que es el
  *    que decide el `next_retry_at` real desde que Rust ejecuta la cola. Si se

@@ -430,7 +430,23 @@ async fn complete<R: Runtime>(
         }
     }
 
-    emit_status(app, &job.meeting_id, &job.job_type, "completed", None);
+    // `analysisStatus` viaja en el evento como key ADITIVA para que la lista
+    // pinte "Cuota agotada" sin esperar al siguiente refetch. Los listeners
+    // actuales (`/conversations`, `useCloudSyncStatuses`, `PlanIndicator`)
+    // filtran por meetingId/jobType/status e ignoran lo demás.
+    let analysis_status = result
+        .get("analysis_status")
+        .and_then(Value::as_str)
+        .map(|s| s.to_string());
+
+    emit_status(
+        app,
+        &job.meeting_id,
+        &job.job_type,
+        "completed",
+        None,
+        analysis_status.as_deref(),
+    );
 }
 
 async fn handle_failure<R: Runtime>(
@@ -514,20 +530,22 @@ async fn handle_failure<R: Runtime>(
         }
     };
 
-    emit_status(app, &job.meeting_id, &job.job_type, status, Some(error));
+    emit_status(app, &job.meeting_id, &job.job_type, status, Some(error), None);
 }
 
 /// Puente al bus DOM del frontend: `cloudSyncWorker.ts` reenvía este evento
 /// como `CustomEvent('sync-status-changed')`. Las keys del payload son las
 /// MISMAS que emitía el ejecutor JS (`meetingId`/`jobType`/`status`), porque
 /// `useCloudSyncStatuses`, `/conversations` y `PlanIndicator` filtran por ellas.
-/// `error` es aditivo (antes no existía).
+/// `error` y `analysisStatus` son aditivos (antes no existían): se omiten
+/// cuando no aplican, así que ningún listener viejo ve keys nuevas de más.
 fn emit_status<R: Runtime>(
     app: &AppHandle<R>,
     meeting_id: &str,
     job_type: &str,
     status: &str,
     error: Option<&str>,
+    analysis_status: Option<&str>,
 ) {
     let mut payload = Map::new();
     payload.insert("meetingId".to_string(), json!(meeting_id));
@@ -535,6 +553,9 @@ fn emit_status<R: Runtime>(
     payload.insert("status".to_string(), json!(status));
     if let Some(err) = error {
         payload.insert("error".to_string(), json!(err));
+    }
+    if let Some(analysis) = analysis_status {
+        payload.insert("analysisStatus".to_string(), json!(analysis));
     }
 
     if let Err(e) = app.emit(events::CLOUD_SYNC_STATUS_CHANGED, Value::Object(payload)) {

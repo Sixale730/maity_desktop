@@ -720,6 +720,32 @@ interface LocalMeetingOverview extends LocalMeetingMetadata {
   duration_seconds: number;
   sync_state: LocalSyncState;
   sync_error?: string | null;
+  /** `analysis_status` que devolvió la nube en el finalize (leído del
+   *  `result_data` del job completado). `quota_skipped` es la señal de que el
+   *  plan agotó la cuota: el sync salió bien, lo que falta es el análisis. */
+  analysis_status?: string | null;
+}
+
+/** Valores de `analysis_status` que el resto del código sabe interpretar
+ *  (`derivePhase`, `ConversationDetail`). Un valor desconocido de la nube se
+ *  descarta en vez de propagarse: mejor `null` (fila sin señal) que un estado
+ *  que nadie sabe pintar. */
+const KNOWN_ANALYSIS_STATUSES = [
+  'pending',
+  'processing',
+  'completed',
+  'failed',
+  'skipped',
+  'quota_skipped',
+] as const;
+
+function normalizeAnalysisStatus(
+  raw: string | null | undefined
+): OmiConversation['analysis_status'] {
+  if (!raw) return null;
+  return (KNOWN_ANALYSIS_STATUSES as readonly string[]).includes(raw)
+    ? (raw as NonNullable<OmiConversation['analysis_status']>)
+    : null;
 }
 
 interface LocalMeetingTranscript {
@@ -778,6 +804,12 @@ export async function getLocalConversations(): Promise<OmiConversation[]> {
       communication_feedback_v4: null,
       meeting_minutes_data: null,
       idempotency_key: meeting.cloud_idempotency_key ?? null,
+      // Se rellena el campo REAL (no uno aditivo) a propósito: `derivePhase` y
+      // `ConversationDetail` ya saben leer `analysis_status`, y en las filas
+      // fusionadas el spread de `mergeConversations` lo pisa con el de la nube,
+      // que es la versión fresca. Un `_analysisStatus` paralelo obligaría a
+      // enseñarle el campo nuevo a cada consumidor.
+      analysis_status: normalizeAnalysisStatus(meeting.analysis_status),
       _localId: meeting.id,
       _syncState: meeting.sync_state ?? 'none',
       _syncError: meeting.sync_error ?? null,
