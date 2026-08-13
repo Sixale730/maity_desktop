@@ -126,7 +126,9 @@ winapp package "<staging>" --manifest "<staging>\Package.appxmanifest" --generat
 # Corridas siguientes: REUSAR el pfx para no re-confiar el cert en cada iteración
 winapp package "<staging>" --manifest "<staging>\Package.appxmanifest" --cert C:\maity_desktop\signing\Sixale.Maity_cert.pfx --cert-password password
 ```
-Genera `Sixale.Maity_<version>_x64.msix` en la raíz del repo. El cert de dev es solo para instalar local; **NO firmar con Certum** — Microsoft firma el MSIX al subirlo a la Store.
+⚠️ **`winapp package` escribe el `.msix` DENTRO del directorio de staging** (verificado 2026-08-13: salió en `msix_staging\Sixale.Maity_0.2.56.0_x64.msix`, NO en la raíz del repo como decía esta guía). Como el staging **ES el payload**, dejarlo ahí hace que la corrida siguiente empaquete el `.msix` anterior dentro del nuevo (paquete al doble de tamaño). **Moverlo a la raíz del repo inmediatamente después de generarlo** y confirmar que el staging quedó solo con binarios/DLLs/manifest/`Assets/`/`templates/`.
+
+El cert de dev es solo para instalar local; **NO firmar con Certum** — Microsoft firma el MSIX al subirlo a la Store.
 
 ⚠️ `--generate-cert` crea un cert NUEVO cada corrida (habría que re-confiarlo cada vez) y deja **`Sixale.Maity_cert.pfx`** en la raíz del repo (llave privada; password por defecto de winapp: `password`). Por eso: generarlo UNA vez, confiar su `.cer` una vez (§6.5) y de ahí en adelante empaquetar con `--cert`. **NO abrir el pfx para instalar el cert** (usar el `.cer` exportado), **NO commitearlo**. `/msix_staging/` y `*.msix` ya están en `.gitignore`.
 
@@ -139,6 +141,18 @@ Genera `Sixale.Maity_<version>_x64.msix` en la raíz del repo. El cert de dev es
 > `Assets/` y `templates/`:
 > ```powershell
 > Get-ChildItem <staging> -Recurse -Include *.pfx,*.cer,*.key,*.env   # debe salir vacio
+> ```
+>
+> 🔴 **Misma regla para los residuos de corridas previas — hay DOS que reaparecen solos:**
+> - **`<staging>\AppX\`** (~262 MB): lo crea `winapp run` con una copia del payload (ver Gotchas).
+>   Si sigue ahí al empaquetar, el `.msix` lleva el payload DUPLICADO.
+> - **`<staging>\Sixale.Maity_*.msix`**: lo deja el propio `winapp package` (ver §6).
+>
+> Ambos se acumulan en silencio — el paquete solo sale "raro de grande". Antes de cada
+> `winapp package`, el staging debe tener EXACTAMENTE: los 4 `.exe`, los 4 `.dll` del VC++
+> Runtime, `Package.appxmanifest`, `Assets/` y `templates/`. Nada más:
+> ```powershell
+> Get-ChildItem <staging> | Select-Object Name, Length   # 11 entradas, sin AppX ni .msix
 > ```
 > Y comprobar el paquete ya generado (es un zip):
 > ```powershell
