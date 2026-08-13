@@ -10,7 +10,7 @@ import type { OllamaModel } from '@/types/models';
 import type { StorageLocations, NotificationSettings } from '@/types/config';
 import { invoke } from '@tauri-apps/api/core';
 import { useAuth } from '@/contexts/AuthContext';
-import { getUserRoleFromEmail, isAdmin as checkIsAdmin } from '@/lib/roles';
+import { useUserRole } from '@/hooks/useUserRole';
 import { logger } from '@/lib/logger';
 import { stripDeviceTypeSuffix } from '@/lib/deviceName';
 import { TauriEvent } from '@/lib/tauri-events';
@@ -75,6 +75,9 @@ const ConfigContext = createContext<ConfigContextType | undefined>(undefined);
 
 export function ConfigProvider({ children }: { children: ReactNode }) {
   const { user, maityUser } = useAuth();
+  // Rol real desde la DB, no por dominio de correo (issue #68). Ver el efecto
+  // de migracion a Parakeet mas abajo: `roleKnown` decide si es seguro actuar.
+  const { isAdmin, roleKnown } = useUserRole();
   // Model configuration state
   const [modelConfig, setModelConfig] = useState<ModelConfig>({
     provider: 'ollama',
@@ -220,13 +223,18 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
   }, []);
 
   // One-time migration: set parakeet as default for ALL users (including devs with deepgram saved)
-  // After migration, non-devs are always forced to parakeet; devs can change back freely
+  // After migration, non-admins are always forced to parakeet; admins can change back freely
+  //
+  // Issue #68: esto decidia con `getUserRoleFromEmail(email)`, o sea por dominio
+  // de correo y sin consultar nunca la DB. Contra produccion ese heuristico esta
+  // mal para 8 de 249 usuarios, y aqui el error es CARO porque `forceParakeet`
+  // PERSISTE con invoke('api_save_transcript_config'): a un admin de dominio
+  // externo le pisaba su motor en cada arranque.
   useEffect(() => {
     if (!dbConfigLoaded) return; // Wait for DB config to load first
     const email = user?.email ?? maityUser?.email ?? null;
     if (!email) return;
 
-    const role = getUserRoleFromEmail(email);
     const migrationKey = 'parakeet-default-migrated-v1';
     const alreadyMigrated = typeof window !== 'undefined' && localStorage.getItem(migrationKey) === 'true';
 
@@ -245,17 +253,23 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
     };
 
     if (!alreadyMigrated) {
-      // First time after update: force parakeet for everyone (admin and non-admin)
+      // First time after update: force parakeet for everyone (admin and non-admin).
+      // Esta rama NO depende del rol, asi que corre aunque el rol siga desconocido.
       forceParakeet();
       if (typeof window !== 'undefined') {
         localStorage.setItem(migrationKey, 'true');
       }
-    } else if (!checkIsAdmin(role)) {
+    } else if (roleKnown && !isAdmin) {
       // Already migrated, but non-admin: always force Parakeet
       forceParakeet();
     }
     // Already migrated + admin: keep their saved config (can use deepgram, whisper, parakeet, etc.)
-  }, [dbConfigLoaded, user?.email, maityUser?.email, transcriptModelConfig.provider]);
+    //
+    // El guard `roleKnown` es obligatorio: con el rol desconocido (RPC en vuelo
+    // o fallida) NO se toca nada. Actuar sin saberlo le sobrescribiria la
+    // configuracion a un admin de forma permanente, porque forceParakeet
+    // persiste en disco. No hacer nada es el fallo seguro.
+  }, [dbConfigLoaded, user?.email, maityUser?.email, transcriptModelConfig.provider, roleKnown, isAdmin]);
 
   // Load model configuration on mount
   useEffect(() => {

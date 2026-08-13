@@ -1,18 +1,20 @@
-import { describe, it, expect, vi } from 'vitest';
-import {
-  ADMIN_DOMAINS,
-  getUserRoleFromEmail,
-  getUserRoleFromRPC,
-  isAdmin,
-  isManager,
-} from './roles';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { SupabaseClient } from '@supabase/supabase-js';
 
+const warnMock = vi.fn();
+vi.mock('@/lib/fileLogger', () => ({
+  fileLogger: {
+    warn: (...args: unknown[]) => warnMock(...args),
+    error: vi.fn(),
+    info: vi.fn(),
+  },
+}));
+
+import { getUserRoleFromRPC, isAdmin, isManager } from './roles';
+
 describe('roles', () => {
-  describe('ADMIN_DOMAINS', () => {
-    it('contiene los dominios internos conocidos', () => {
-      expect(ADMIN_DOMAINS).toEqual(expect.arrayContaining(['asertio.mx', 'maity.cloud']));
-    });
+  beforeEach(() => {
+    warnMock.mockReset();
   });
 
   describe('isAdmin / isManager', () => {
@@ -29,30 +31,15 @@ describe('roles', () => {
     });
   });
 
-  describe('getUserRoleFromEmail', () => {
-    it('retorna "user" para null/undefined/empty', () => {
-      expect(getUserRoleFromEmail(null)).toBe('user');
-      expect(getUserRoleFromEmail(undefined)).toBe('user');
-      expect(getUserRoleFromEmail('')).toBe('user');
-    });
-
-    it('retorna "admin" para dominios internos', () => {
-      expect(getUserRoleFromEmail('alice@asertio.mx')).toBe('admin');
-      expect(getUserRoleFromEmail('bob@maity.cloud')).toBe('admin');
-    });
-
-    it('es case-insensitive en el dominio', () => {
-      expect(getUserRoleFromEmail('ALICE@ASERTIO.MX')).toBe('admin');
-      expect(getUserRoleFromEmail('Bob@Maity.Cloud')).toBe('admin');
-    });
-
-    it('retorna "user" para dominios externos', () => {
-      expect(getUserRoleFromEmail('charlie@gmail.com')).toBe('user');
-      expect(getUserRoleFromEmail('dave@asertio.com')).toBe('user');
-    });
-
-    it('retorna "user" si el email no tiene @', () => {
-      expect(getUserRoleFromEmail('notanemail')).toBe('user');
+  describe('sin heuristico por dominio de correo (issue #68)', () => {
+    it('el modulo ya NO exporta ADMIN_DOMAINS ni getUserRoleFromEmail', async () => {
+      // Contrastado contra produccion, ese heuristico estaba mal para 8 de 249
+      // usuarios: degradaba a 2 admins y 4 managers de dominio externo, y le
+      // regalaba admin a 2 cuentas internas que no lo son. Reintroducirlo —
+      // aunque sea "solo para un caso"— es la regresion que este test bloquea.
+      const mod = await import('./roles');
+      expect(mod).not.toHaveProperty('ADMIN_DOMAINS');
+      expect(mod).not.toHaveProperty('getUserRoleFromEmail');
     });
   });
 
@@ -62,7 +49,7 @@ describe('roles', () => {
     // el codigo tronaba adentro del try/catch y devolvia null en silencio — el
     // mismo modo de falla del issue #70. `lastSchema` lo hace observable.
     let lastSchema: string | undefined;
-    const makeSupabase = (rpcResult: { data: unknown; error: Error | null }) => {
+    const makeSupabase = (rpcResult: { data: unknown; error: unknown }) => {
       lastSchema = undefined;
       const rpc = vi.fn(async () => rpcResult);
       return {
@@ -85,6 +72,7 @@ describe('roles', () => {
     it('retorna el rol cuando la RPC devuelve "admin"', async () => {
       const supabase = makeSupabase({ data: 'admin', error: null });
       expect(await getUserRoleFromRPC(supabase)).toBe('admin');
+      expect(warnMock).not.toHaveBeenCalled();
     });
 
     it('retorna el rol cuando la RPC devuelve "manager"', async () => {
@@ -97,28 +85,35 @@ describe('roles', () => {
       expect(await getUserRoleFromRPC(supabase)).toBe('admin');
     });
 
-    it('retorna null si data es null', async () => {
-      const supabase = makeSupabase({ data: null, error: null });
-      expect(await getUserRoleFromRPC(supabase)).toBeNull();
-    });
+    // Las cuatro ramas de fallo devuelven null Y DEJAN RASTRO. Antes colapsaban
+    // todas a `null` sin loguear nada, y por eso #70 vivio meses en produccion
+    // sin una sola señal.
+    const failureCases: Array<[string, { data: unknown; error: unknown }, string]> = [
+      ['data es null', { data: null, error: null }, 'no-role'],
+      ['hay error', { data: null, error: { code: '42501', message: 'denied' } }, 'rpc-error'],
+      ['valor desconocido', { data: 'superuser', error: null }, 'unrecognized'],
+    ];
 
-    it('retorna null si hay error', async () => {
-      const supabase = makeSupabase({ data: null, error: new Error('boom') });
-      expect(await getUserRoleFromRPC(supabase)).toBeNull();
-    });
+    for (const [nombre, resultado, reason] of failureCases) {
+      it(`retorna null y loguea reason='${reason}' si ${nombre}`, async () => {
+        const supabase = makeSupabase(resultado);
+        expect(await getUserRoleFromRPC(supabase)).toBeNull();
+        expect(warnMock).toHaveBeenCalledTimes(1);
+        expect(warnMock.mock.calls[0][2]).toMatchObject({ reason });
+      });
+    }
 
-    it('retorna null para valores desconocidos', async () => {
-      const supabase = makeSupabase({ data: 'superuser', error: null });
-      expect(await getUserRoleFromRPC(supabase)).toBeNull();
-    });
-
-    it('retorna null si la RPC lanza excepción', async () => {
+    it("retorna null y loguea reason='exception' si la RPC lanza", async () => {
       const supabase = {
-        rpc: vi.fn(async () => {
-          throw new Error('network');
-        }),
+        schema: vi.fn(() => ({
+          rpc: vi.fn(async () => {
+            throw new Error('network');
+          }),
+        })),
       } as unknown as SupabaseClient;
+
       expect(await getUserRoleFromRPC(supabase)).toBeNull();
+      expect(warnMock.mock.calls[0][2]).toMatchObject({ reason: 'exception' });
     });
   });
 });

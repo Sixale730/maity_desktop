@@ -31,7 +31,7 @@ const TABS = [
 export default function SettingsPage() {
   const router = useRouter();
   const { transcriptModelConfig, setTranscriptModelConfig } = useConfig();
-  const { isAdmin } = useUserRole();
+  const { isAdmin, loading: roleLoading } = useUserRole();
 
   const visibleTabs = useMemo(() =>
     isAdmin ? TABS : TABS.filter(t => t.value === 'general' || t.value === 'recording' || t.value === 'plan'),
@@ -72,12 +72,17 @@ export default function SettingsPage() {
     }
   }, []);
 
-  // Reset activeTab if it's not in visibleTabs
+  // Reset activeTab if it's not in visibleTabs.
+  // El guard de roleLoading es necesario desde #68: ahora `isAdmin` es false
+  // mientras la RPC esta en vuelo, asi que sin el, un admin que entre por
+  // deep-link a una pestaña de admin seria expulsado a General antes de que
+  // resuelva el rol.
   useEffect(() => {
+    if (roleLoading) return;
     if (!visibleTabs.some(t => t.value === activeTab)) {
       setActiveTab('general');
     }
-  }, [visibleTabs, activeTab]);
+  }, [visibleTabs, activeTab, roleLoading]);
 
   // Update underline position when active tab changes
   useLayoutEffect(() => {

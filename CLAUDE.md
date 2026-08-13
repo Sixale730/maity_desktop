@@ -484,7 +484,7 @@ Stack de providers (de exterior a interior):
 | `usePaginatedTranscripts` | Lazy-load de segmentos de transcripcion |
 | `useCloudSyncStatuses` | Estado de sync cloud por conversacion |
 | `useParakeetAutoDownload` | Auto-descarga de modelos Parakeet |
-| `useUserRole` | Rol de usuario (developer vs regular) |
+| `useUserRole` | Rol de usuario (`admin`/`manager`/`user`) desde la DB, fail-closed |
 | `useNetworkStatus` | Deteccion online/offline |
 | `useUpdateCheck` | Verificar actualizaciones de la app |
 | `usePermissionCheck` | Verificar permisos de dispositivos |
@@ -513,7 +513,7 @@ Stack de providers (de exterior a interior):
 | Archivo | Proposito |
 |---------|-----------|
 | `deepgram.ts` | `getDeepgramProxyConfig()` — obtener proxy config de Vercel API |
-| `roles.ts` | `getUserRole()`, `isDeveloper()`, `DEVELOPER_DOMAINS` |
+| `roles.ts` | `getUserRoleFromRPC()`, `isAdmin()`, `isManager()`, tipo `UserRole` |
 | `supabase.ts` | Cliente Supabase proxy |
 | `analytics.ts` | Analytics tracking |
 | `canary.ts` | Estado y config de modelos Canary |
@@ -791,11 +791,29 @@ detectaba **procesos abiertos**, no reuniones, con reglas laxas. Reglas actuales
 > (`CapabilityAccessManager` en Windows) y deteccion de Google Meet (hoy los
 > `browser_patterns` son codigo muerto; requiere leer titulos de ventana del navegador).
 
-## Sistema de Roles (Developer vs Usuario Regular)
+## Sistema de Roles: `admin` / `manager` / `user`, siempre desde la DB (ago-2026)
 
-- **Developers**: Emails con dominio `@asertio.mx` o `@maity.cloud` -> interfaz completa
-- **Usuarios regulares**: Interfaz restringida (sin Gamificacion/Conversaciones en sidebar, settings limitados). NO estan forzados a Deepgram — transcriben con los motores locales igual que los developers.
-- Archivos: `lib/roles.ts`, `hooks/useUserRole.ts`, `Sidebar/index.tsx`, `settings/page.tsx`, `ConfigContext.tsx`
+El rol lo decide **la base de datos**, nunca el dominio del correo. `lib/roles.ts` → `getUserRoleFromRPC()` llama a `public.get_user_role` (wrapper SECURITY DEFINER; la version `maity.*` no esta concedida a `authenticated` — ver la seccion del cliente Supabase). El enum en la DB es exactamente `admin|manager|user` y el trigger `maity_users_ensure_role` le pone `'user'` a toda alta nueva, asi que **un NULL de esa RPC ya es una anomalia real**, no el caso normal.
+
+**`useUserRole` es fail-closed (issue #68).** Hasta ago-2026 hacia `rpcRole ?? getUserRoleFromEmail(email)`, o sea que **cualquier** fallo de la RPC repartia UI de admin a `@asertio.mx`/`@maity.cloud` y degradaba en silencio a todos los demas. No era teorico: #70 dejo esa misma RPC en 403 desde el 13-ago 05:00 UTC, asi que el fallback fue el **camino principal** de todo el desktop, no la excepcion.
+
+Reglas, todas deliberadas:
+
+- **`ADMIN_DOMAINS` y `getUserRoleFromEmail` se eliminaron por completo**, no se "invirtieron a `user`". Contrastado contra produccion, el heuristico estaba mal para **8 de 249 usuarios**: 2 admins y 4 managers de dominio externo (los degradaba a `user`) y 2 cuentas internas que NO son admin (les regalaba `admin`). Hay un test que falla si alguien vuelve a exportarlos.
+- **`role` es `UserRole | null`**: `null` = **desconocido**, jamas "es user". `roleKnown` los distingue. `isAdmin` es `false` mientras carga **y** si la RPC falla. El intercambio es a proposito: un fallo ahora **esconde** UI de admin en vez de regalarla.
+- **`ConfigContext` NO actua con el rol desconocido.** Su migracion a Parakeet **persiste** (`invoke('api_save_transcript_config')`), asi que forzar sin saber el rol le pisaria la configuracion a un admin de forma permanente. La rama de estado estable esta gateada con `roleKnown && !isAdmin`; la migracion one-time no depende del rol y corre igual.
+- **El reset de pestaña en `settings/page.tsx` va gateado con `!roleLoading`** — si no, un admin que entre por deep-link a una pestaña de admin sale expulsado a General antes de que resuelva la RPC.
+- **Los fallos se loguean con `fileLogger`, no con `platformLogger`**: este ultimo es *el mismo* una RPC de Supabase, asi que si `get_user_role` falla por sesion/RLS/403, `insert_platform_log` falla por lo mismo y la señal se pierde justo cuando importa.
+- **Dedupe de la RPC in-flight** en `useUserRole` (llaveado por email): hay tres consumidores y cada uno monta su propio efecto. Colapsa llamadas concurrentes, **no** cachea el resultado — un fallo transitorio no debe quedar pegado toda la sesion.
+
+**Alcance: visibilidad de UI, no acceso a datos.** Del lado servidor manda RLS. Consumidores reales: `settings/page.tsx` (pestañas Transcripcion/Resumen/Pipeline + badge Admin + boton de preview), `components/transcript/TranscriptSettings.tsx` (opcion Canary) y `contexts/ConfigContext.tsx`. La ruta `app/dev/dashboard-v1/page.tsx` **no tiene guard propio**: el gate vive solo en el boton que enlaza.
+
+> **El Sidebar NO filtra nada por rol.** `components/Sidebar/index.tsx` no importa `useUserRole` ni `roles.ts`; pinta Inicio/Conversaciones/Notas/Tareas/Chat para todos, y Gamificacion ni siquiera aparece ahi (vive embebida en `app/page.tsx`). Este documento afirmaba lo contrario hasta ago-2026.
+
+- Archivos: `lib/roles.ts`, `hooks/useUserRole.ts`, `settings/page.tsx`, `components/transcript/TranscriptSettings.tsx`, `ConfigContext.tsx`
+- Pendiente: espejar el arreglo en el repo movil (mismo bug con la misma lista de dominios).
+
+> **Codigo muerto eliminado en el mismo cambio:** `AuthContext` insertaba en `maity.users` desde el cliente. Esa tabla **no tiene ninguna policy de INSERT** (verificado: 3 de SELECT y 1 de UPDATE), asi que siempre fallaba con `42501` — el alta funciona por el trigger `on_auth_user_created`, no por ese insert. Con el se fue `TRUSTED_DOMAINS`, una **tercera** copia de la lista de dominios que decidia `ACTIVE` vs `PENDING_APPROVAL`, y la rama de refetch tras `23505`, que solo existia para una carrera de ese insert imposible. La rama `PGRST116` pasa a reintento acotado (3 intentos, 300/600/1200 ms): si la fila no esta, solo puede ser timing del trigger.
 
 ## Restricciones Importantes
 

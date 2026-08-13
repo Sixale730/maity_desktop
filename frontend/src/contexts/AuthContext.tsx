@@ -176,6 +176,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       return
     }
 
+    const USER_COLUMNS = 'id, auth_id, first_name, last_name, email, status, created_at, updated_at'
+    /** Backoff del reintento por PGRST116. Ver la nota de abajo. */
+    const RETRY_DELAYS_MS = [300, 600, 1200]
+
+    const fetchRow = () =>
+      supabase
+        .schema('maity')
+        .from('users')
+        .select(USER_COLUMNS)
+        .eq('auth_id', authUser.id)
+        .single()
+
     const doFetch = async () => {
       setMaityUserError(null)
       const t0 = Date.now()
@@ -184,15 +196,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       })
       try {
         // Try to fetch existing maity.users record
-        const { data, error: fetchError } = await supabase
-          .schema('maity')
-          .from('users')
-          .select('id, auth_id, first_name, last_name, email, status, created_at, updated_at')
-          .eq('auth_id', authUser.id)
-          .single()
+        const first = await fetchRow()
+        let fetchError = first.error
 
-        if (data) {
-          setMaityUser(data as MaityUser)
+        if (first.data) {
+          setMaityUser(first.data as MaityUser)
           void fileLogger.info('auth_context', 'fetchOrCreateMaityUser ok', {
             path: 'fetch',
             durationMs: Date.now() - t0,
@@ -200,82 +208,32 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           return
         }
 
-        // If not found (PGRST116 = no rows), create a new record
-        if (fetchError && fetchError.code === 'PGRST116') {
-          const fullName =
-            authUser.user_metadata?.full_name ||
-            authUser.user_metadata?.name ||
-            authUser.email?.split('@')[0] ||
-            ''
-          const nameParts = fullName.split(' ')
-          const firstName = nameParts[0] || ''
-          const lastName = nameParts.slice(1).join(' ') || null
-
-          const email = authUser.email || ''
-          const domain = email.split('@')[1]?.toLowerCase() || ''
-          const TRUSTED_DOMAINS = ['asertio.mx', 'maity.cloud']
-          const initialStatus = TRUSTED_DOMAINS.includes(domain) ? 'ACTIVE' : 'PENDING_APPROVAL'
-
-          const { data: newUser, error: createError } = await supabase
-            .schema('maity')
-            .from('users')
-            .insert({
-              auth_id: authUser.id,
-              first_name: firstName,
-              last_name: lastName,
-              email: authUser.email || null,
-              status: initialStatus,
-            })
-            .select('id, auth_id, first_name, last_name, email, status, created_at, updated_at')
-            .single()
-
-          if (createError) {
-            // Handle unique constraint violation (concurrent insert race)
-            if (createError.code === '23505') {
-              logger.debug('[Auth] Unique constraint hit (concurrent insert), re-fetching user')
-              const { data: existingUser, error: refetchError } = await supabase
-                .schema('maity')
-                .from('users')
-                .select('id, auth_id, first_name, last_name, email, status, created_at, updated_at')
-                .eq('auth_id', authUser.id)
-                .single()
-
-              if (existingUser) {
-                setMaityUser(existingUser as MaityUser)
-                void fileLogger.info('auth_context', 'fetchOrCreateMaityUser ok', {
-                  path: 'refetch-after-23505',
-                  durationMs: Date.now() - t0,
-                })
-                return
-              }
-              if (refetchError) {
-                console.error('[Auth] Failed to re-fetch after unique constraint:', refetchError)
-                setMaityUserError('No se pudo cargar tu cuenta. Verifica tu conexión e intenta de nuevo.')
-                void fileLogger.error('auth_context', 'fetchOrCreateMaityUser fail', {
-                  path: 'refetch-after-23505',
-                  code: refetchError.code,
-                  durationMs: Date.now() - t0,
-                })
-                return
-              }
+        // PGRST116 = no rows. La fila la crea el trigger `on_auth_user_created`
+        // sobre auth.users, asi que no encontrarla solo puede ser timing —
+        // reintentar acotado y rendirse.
+        //
+        // Aqui vivia un INSERT desde el cliente que era CODIGO MUERTO (issue
+        // #68): maity.users no tiene NINGUNA policy de INSERT (verificado
+        // contra produccion: 3 de SELECT y 1 de UPDATE), asi que siempre
+        // fallaba con 42501. El alta funcionaba por el trigger, no por esto.
+        // Con el se fue TRUSTED_DOMAINS —tercera copia de la lista de dominios,
+        // que decidia ACTIVE vs PENDING_APPROVAL— y la rama de refetch tras
+        // 23505, que solo existia para una carrera de ese insert imposible.
+        if (fetchError?.code === 'PGRST116') {
+          for (const delay of RETRY_DELAYS_MS) {
+            await new Promise((r) => setTimeout(r, delay))
+            const retry = await fetchRow()
+            if (retry.data) {
+              setMaityUser(retry.data as MaityUser)
+              void fileLogger.info('auth_context', 'fetchOrCreateMaityUser ok', {
+                path: 'retry',
+                durationMs: Date.now() - t0,
+              })
+              return
             }
-
-            console.error('[Auth] Failed to create maity user:', createError)
-            setMaityUserError('No se pudo crear tu cuenta. Verifica tu conexión e intenta de nuevo.')
-            void fileLogger.error('auth_context', 'fetchOrCreateMaityUser fail', {
-              path: 'create',
-              code: createError.code,
-              durationMs: Date.now() - t0,
-            })
-            return
+            fetchError = retry.error
+            if (fetchError?.code !== 'PGRST116') break
           }
-
-          setMaityUser(newUser as MaityUser)
-          void fileLogger.info('auth_context', 'fetchOrCreateMaityUser ok', {
-            path: 'create',
-            durationMs: Date.now() - t0,
-          })
-          return
         }
 
         if (fetchError) {
