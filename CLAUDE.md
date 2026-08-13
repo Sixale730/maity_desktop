@@ -403,6 +403,18 @@ Reglas: NO cambiar `emailRedirectTo` a localhost/deep-link (el correo se abre "c
 - `openExternalUrl` (via `lib/planLinks.ts`) abre el navegador externo del SO via `invoke('open_external_url')`
 - Prerequisito: la web debe desplegar `/auth/handoff` (issue Sixale730/maity#133)
 - Enterprise/anual → `/agenda` interceptado en router-compat (sin patch adicional)
+- **CTA "Ver planes" dentro de la app → ruta interna `/billing/plans`, NO `PRICING_URL`.** `https://www.maity.cloud/pricing` es la landing de anónimos: a un usuario con sesión activa en el navegador lo redirige fuera. Como `layout.tsx` excluye el Sidebar en `/billing/plans`, esa página lleva un botón "Volver" (`router.back()`) que solo se pinta si `window.history.length > 1` — sin él, entrar desde dentro de la app deja al usuario atrapado; con la condición, no aparece un botón muerto en el gate de registro (que entra ahí en frío).
+
+### Recuperar el análisis de una conversación en `quota_skipped` — ago-2026
+
+Desde el issue web #138, `quota_skipped` **dejó de ser un estado sin salida**: tras un upgrade el dueño puede recuperar el V4 desde el detalle de la conversación (botón "Analizar ahora" junto a "Ver planes").
+
+Camino: `ConversationDetail.tsx` → `retryAnalysisCloud` (`conversations.service.ts`) → comando `retry_analysis_cloud` (`src-tauri/src/api/retry_analysis.rs`) → `POST /api/conversations { action: 'retry_analysis', conversation_id }`.
+
+- **NO colgar este botón de `reanalyzeMutation` / `reanalyzeConversation`.** Ese camino llama a `action: 'finalize'`, que re-despacha **también la minuta** (pisando una que el usuario pudo regenerar a mano) y no pasa por `decideRetryPlan`, la política del servidor que decide qué despachar y **cobra la unidad** al recuperar desde `quota_skipped`. Por eso son dos mutaciones separadas.
+- **El botón se pinta siempre y el 403 se maneja** — no se consulta la cuota antes. Contrato del endpoint: **202** `{status:'processing'}` (despachado, cobra 1 unidad, solo `communication`), **403** `QUOTA_EXCEEDED` si el plan sigue agotado, **200** `{skipped:"not retryable from status=..."}` si la fila ya está `completed`/`skipped`.
+- **`quota_skipped` sigue siendo terminal en `derivePhase`** y `AnalysisStatusBanner` lo sigue silenciando — es el estado de reposo correcto. Lo que reanuda el polling es el `onMutate` que escribe `analysis_status:'processing'` optimistamente en la caché: `refetchInterval` de `useConversationLive` es una **función**, TanStack la re-evalúa tras cada escritura y un row no-terminal devuelve el piso de 3 s. Si el retry termina en 403, el refetch devuelve la fila a `quota_skipped` y el polling se apaga solo.
+- **El 403 de cuota se detecta por el campo `error`, no `code`.** `ApiError.send()` de la web responde `{ error: 'QUOTA_EXCEEDED', message, details }`; hasta ago-2026 `finalize.rs` leía `code` (inexistente) y clasificaba TODO 403 de cuota como problema de ownership → el usuario veía "No tienes permiso para analizar esta conversación". El parseo vive ahora en un único helper `api::finalize::parse_quota_403` (con tests), compartido por `finalize.rs` y `retry_analysis.rs`; debe seguir devolviendo el payload con prefijo `quota:` porque es el contrato que leen `parseQuotaError` (`lib/quotaErrors.ts`) y `quota_period` (`cloud_sync/worker.rs`).
 
 ### Guardado de archivos generados (.md / .pdf / .pptx) — ago-2026
 

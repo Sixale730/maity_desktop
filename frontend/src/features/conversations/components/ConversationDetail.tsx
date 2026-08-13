@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { useRouter } from 'next/navigation';
 import Analytics from '@/lib/analytics';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft, Clock, MessageSquare, Calendar, Sparkles, X, RefreshCw, Loader2, FileText, Copy, Check } from 'lucide-react';
@@ -15,6 +16,7 @@ import {
   getOmiTranscriptSegments,
   getLocalMeetingDetail,
   reanalyzeConversation,
+  retryAnalysisCloud,
   regenerateMinutes,
   toggleActionItemCompleted,
   isAnalysisSkipped,
@@ -23,8 +25,7 @@ import {
 } from '../services/conversations.service';
 import { useConversationLive } from '../hooks/useConversationLive';
 import { derivePhase } from '../utils/derivePhase';
-import { invoke } from '@tauri-apps/api/core';
-import { markQuotaBlocked, parseQuotaError, PRICING_URL } from '@/lib/quotaErrors';
+import { markQuotaBlocked, parseQuotaError } from '@/lib/quotaErrors';
 import { AnalysisStatusBanner } from './AnalysisStatusBanner';
 import { SessionFeedbackModal } from '@/components/recording/SessionFeedbackModal';
 import { TranscriptSection } from './analysis';
@@ -102,6 +103,14 @@ export function ConversationDetail({ conversation: initialConversation, onClose,
   const [feedbackMeetingId, setFeedbackMeetingId] = useState<string | null>(null);
   const queryClient = useQueryClient();
   const { maityUser } = useAuth();
+  const router = useRouter();
+
+  /** CTA de planes: ruta INTERNA, no la landing pública. `/pricing` en
+   * maity.cloud es la página de anónimos — a un usuario con sesión activa en
+   * el navegador lo redirige fuera y aterriza en cualquier lado. */
+  const goToPlans = useCallback(() => {
+    router.push('/billing/plans');
+  }, [router]);
 
   // Si la grabacion recien terminada apunta a esta conversation, mostrar
   // modal de feedback como overlay sin bloquear el polling de evaluacion.
@@ -212,14 +221,70 @@ export function ConversationDetail({ conversation: initialConversation, onClose,
           description: quota.message,
           action: {
             label: 'Ver planes',
-            onClick: () => {
-              void invoke('open_external_url', { url: PRICING_URL });
-            },
+            onClick: goToPlans,
           },
         });
         return;
       }
       toast.error('Error al analizar', {
+        description: error.message.replace(/^[a-z_]+:/i, ''),
+      });
+    },
+  });
+
+  /**
+   * Recuperación del análisis V4 de una conversación que se quedó en
+   * `quota_skipped` (issue #69 / web #138).
+   *
+   * Mutación SEPARADA de `reanalyzeMutation` a propósito: esta pega a
+   * `action: 'retry_analysis'`, que desde este estado cobra la unidad del plan
+   * vigente y despacha SOLO `communication`. Colgar el botón de
+   * `reanalyzeMutation` (que llama a `finalize`) regeneraría también la minuta,
+   * pisando una que el usuario pudo rehacer a mano.
+   *
+   * `quota_skipped` sólo existe en filas cloud — para `isLocalOnly` la fase es
+   * `idle`/`polling` —, así que no hace falta rama local.
+   */
+  const retryAnalysisMutation = useMutation({
+    mutationFn: () => retryAnalysisCloud(conversation.id),
+    onMutate: () => {
+      // Esto es lo que REANUDA el polling: `refetchInterval` de
+      // useConversationLive es una función que TanStack re-evalúa tras cada
+      // escritura de caché, y un row `processing` ya no es fase terminal.
+      queryClient.setQueryData<OmiConversation>(['omi-conversation', conversationId], (old) =>
+        old ? { ...old, analysis_status: 'processing' as const } : old,
+      );
+    },
+    onSuccess: (result) => {
+      queryClient.invalidateQueries({ queryKey: ['omi-conversation', conversationId] });
+      if (result.skipped) {
+        // 200 no-retryable: la fila ya estaba completed/skipped. El refetch de
+        // arriba deja la UI en su estado real; no hay nada que anunciar.
+        toast.info('Esta conversación ya no necesita análisis');
+        return;
+      }
+      // Limpia el badge "Cuota agotada" de la lista sin recargar.
+      queryClient.invalidateQueries({ queryKey: ['omi-conversations'] });
+      completedToastedRef.current = null;
+      toast.info('Análisis en curso. Te avisaremos cuando esté listo.');
+    },
+    onError: (error: Error) => {
+      // Revierte el `processing` optimista con la verdad del servidor.
+      queryClient.invalidateQueries({ queryKey: ['omi-conversation', conversationId] });
+
+      const quota = parseQuotaError(error.message);
+      if (quota) {
+        markQuotaBlocked(conversationId, quota.period);
+        toast('Análisis no disponible en tu plan', {
+          description: quota.message,
+          action: {
+            label: 'Ver planes',
+            onClick: goToPlans,
+          },
+        });
+        return;
+      }
+      toast.error('No se pudo reintentar el análisis', {
         description: error.message.replace(/^[a-z_]+:/i, ''),
       });
     },
@@ -536,7 +601,11 @@ export function ConversationDetail({ conversation: initialConversation, onClose,
             })()
           ) : phase === 'quota_skipped' ? (
             /* Cuota del plan agotada: la minuta existe, solo falta el análisis V4.
-             * Sin botón Reintentar — re-disparar solo volvería a rechazarse. */
+             * `quota_skipped` YA NO es un callejón sin salida (web #138): con un
+             * plan que tenga cuota, "Analizar ahora" recupera el V4 cobrando la
+             * unidad. Si el plan sigue agotado el servidor responde 403 y el
+             * onError pinta el mensaje de cuota — por eso el botón se muestra
+             * siempre en vez de consultar la cuota antes. */
             <Card>
               <CardContent className="p-12 text-center">
                 <Sparkles className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
@@ -545,14 +614,25 @@ export function ConversationDetail({ conversation: initialConversation, onClose,
                   Alcanzaste tu límite diario de análisis. La minuta de esta reunión está
                   disponible en su pestaña — el análisis detallado vuelve mañana o con Maity Pro.
                 </p>
-                <Button
-                  className="mt-4"
-                  onClick={() => {
-                    void invoke('open_external_url', { url: PRICING_URL });
-                  }}
-                >
-                  Ver planes
-                </Button>
+                <div className="mt-4 flex items-center justify-center gap-2">
+                  {/* Sin gate por `canAnalyze`: ese flag exige tener los segments
+                    * cargados, irrelevante aquí porque el servidor lee la
+                    * transcripción de Supabase. */}
+                  {retryAnalysisMutation.isPending ? (
+                    <Button disabled>
+                      <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                      Analizando...
+                    </Button>
+                  ) : (
+                    <Button onClick={() => retryAnalysisMutation.mutate()}>
+                      <RefreshCw className="h-4 w-4 mr-2" />
+                      Analizar ahora
+                    </Button>
+                  )}
+                  <Button variant="outline" onClick={goToPlans}>
+                    Ver planes
+                  </Button>
+                </div>
               </CardContent>
             </Card>
           ) : analysisSkipped ? (

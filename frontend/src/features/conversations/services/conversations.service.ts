@@ -1238,6 +1238,61 @@ export async function regenerateMinutes(
   return result.meeting_minutes_data;
 }
 
+/**
+ * Resultado de `retryAnalysisCloud`.
+ * `status === 'processing'` → el análisis quedó despachado (202).
+ * `skipped` → la fila ya estaba `completed`/`skipped`, no-op del servidor (200).
+ */
+export interface RetryAnalysisResult {
+  status?: string;
+  skipped?: string;
+}
+
+/**
+ * Re-dispara el análisis en la nube vía `POST /api/conversations
+ * { action: 'retry_analysis' }` (a través de Rust, sin CORS).
+ *
+ * Es el camino para recuperar el análisis V4 de una conversación que se quedó
+ * en `quota_skipped` porque el plan no daba: desde ese estado el servidor
+ * **cobra la unidad** del plan vigente y despacha SOLO `communication` — la
+ * minuta ya existe y regenerarla pisaría una que el usuario pudo rehacer a
+ * mano (issues Sixale730/maity#138 y #69 de este repo).
+ *
+ * NO confundir con `reanalyzeConversation`, que llama a `finalize`: ese camino
+ * re-despacha también la minuta y no pasa por la política de cobro
+ * (`decideRetryPlan`) del servidor.
+ *
+ * Un 403 por cuota agotada llega como `Error('quota:{json}')` — parsearlo con
+ * `parseQuotaError` de `@/lib/quotaErrors`.
+ */
+export async function retryAnalysisCloud(
+  conversationId: string
+): Promise<RetryAnalysisResult> {
+  const { invoke } = await import('@tauri-apps/api/core');
+
+  const { data: { session } } = await supabase.auth.getSession();
+  if (!session?.access_token) {
+    throw new Error('No hay sesión activa. Por favor inicia sesión de nuevo.');
+  }
+
+  const result = await invoke<{
+    ok: boolean;
+    conversation_id?: string;
+    status?: string;
+    skipped?: string;
+    error?: string;
+  }>('retry_analysis_cloud', {
+    conversationId,
+    accessToken: session.access_token,
+  });
+
+  if (!result.ok) {
+    throw new Error(result.error || 'No se pudo reintentar el análisis');
+  }
+
+  return { status: result.status, skipped: result.skipped };
+}
+
 export async function reanalyzeConversation(
   conversationId: string,
   _transcriptText: string, // No longer used — finalize reads segments from Supabase

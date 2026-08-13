@@ -1514,6 +1514,9 @@ pub fn run() {
             api::finalize::finalize_conversation_cloud,
             // Conversations regenerate meeting minutes (cloud)
             api::regenerate_minutes::regenerate_minutes_cloud,
+            // Conversations retry analysis (cloud) — recupera el V4 de una
+            // grabación que se quedó en quota_skipped tras un upgrade de plan
+            api::retry_analysis::retry_analysis_cloud,
             // OAuth localhost server
             auth_server::start_oauth_server,
             auth_server::get_pending_auth_code,

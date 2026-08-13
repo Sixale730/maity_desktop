@@ -27,6 +27,15 @@
  *    ejecutable del contrato de formato SQLite.
  */
 
+/**
+ * Landing PÚBLICA de precios, para abrir en el navegador externo.
+ *
+ * OJO: es la página de anónimos — a un usuario con sesión activa en el
+ * navegador lo redirige fuera de ella. Dentro de la app el destino correcto de
+ * un CTA "Ver planes" es la ruta interna **`/billing/plans`** (así lo hace
+ * `ConversationDetail.tsx`). Esta constante queda para los avisos que no
+ * tienen un router a mano.
+ */
 export const PRICING_URL = 'https://www.maity.cloud/pricing';
 
 export interface QuotaErrorInfo {

@@ -4,6 +4,7 @@ pub mod endpoints;
 pub mod finalize;
 pub mod meetings_overview;
 pub mod regenerate_minutes;
+pub mod retry_analysis;
 
 pub use models::*;
 pub use client::*;
