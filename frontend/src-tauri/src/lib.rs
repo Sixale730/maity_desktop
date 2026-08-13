@@ -38,6 +38,7 @@ pub mod api;
 pub mod audio;
 pub mod auth_server;
 pub mod builtin_ai;
+pub mod cloud_sync;
 pub mod coach;
 pub mod console_utils;
 pub mod database;
@@ -615,6 +616,13 @@ pub fn run() {
         .manage(summary::summary_engine::ModelManagerState(Arc::new(tokio::sync::Mutex::new(None))))
         .manage(Arc::new(RwLock::new(meeting_detector::MeetingDetector::new())) as meeting_detector::commands::MeetingDetectorState)
         .manage(Arc::new(RwLock::new(scheduled_recording::ScheduledRecordingService::new())) as scheduled_recording::commands::ScheduledRecordingState)
+        // Sesión Supabase para el sync headless. `manage` PROPIO a propósito:
+        // NO puede vivir dentro de `AppState`, que se re-`manage`a en
+        // `database/commands.rs` (la sesión se perdería en ese reemplazo).
+        // Se registra aquí, en el builder, y no dentro de `setup()`: el setup
+        // bloquea inicializando la DB y el frontend podría invocar
+        // `cloud_sync_set_session` antes de que termine → `state()` panic.
+        .manage(cloud_sync::CloudSyncState::new())
         .setup(|_app| {
             log::info!("Application setup starting");
 
@@ -1386,6 +1394,10 @@ pub fn run() {
             database::sync_queue_commands::sync_queue_get_job,
             database::sync_queue_commands::sync_queue_cancel_meeting,
             database::sync_queue_commands::sync_queue_get_finalize_result,
+            // Cloud sync: sesión Supabase viva en Rust (consumidor headless)
+            cloud_sync::commands::cloud_sync_set_session,
+            cloud_sync::commands::cloud_sync_clear_session,
+            cloud_sync::commands::cloud_sync_nudge,
             whisper_engine::commands::open_models_folder,
             // Onboarding commands
             onboarding::get_onboarding_status,

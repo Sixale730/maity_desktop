@@ -6,17 +6,20 @@ let supabaseInstance: SupabaseClient<any, any, any> | null = null
 // Check if we're in a browser environment (not during SSG/SSR build)
 const _isBrowser = typeof window !== 'undefined'
 
+// Credenciales de producción de Supabase (seguras para cliente - la seguridad viene de RLS)
+// Las variables de entorno pueden usarse para override en desarrollo.
+// Exportadas porque Rust también las necesita: `cloud_sync_set_session` siembra
+// url + anon key en el proceso nativo para que el consumidor de sync pueda
+// refrescar la sesión con la ventana oculta (ver cloud_sync/session.rs).
+export const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://nhlrtflkxoojvhbyocet.supabase.co'
+export const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'sb_publishable_9gJhm89FHYgH68xrW21Iqg_zuKXnFnq'
+
 function getSupabaseClient(): SupabaseClient {
   if (supabaseInstance) {
     return supabaseInstance
   }
 
-  // Credenciales de producción de Supabase (seguras para cliente - la seguridad viene de RLS)
-  // Las variables de entorno pueden usarse para override en desarrollo
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://nhlrtflkxoojvhbyocet.supabase.co'
-  const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'sb_publishable_9gJhm89FHYgH68xrW21Iqg_zuKXnFnq'
-
-  supabaseInstance = createClient(supabaseUrl, supabaseAnonKey, {
+  supabaseInstance = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
     auth: {
       persistSession: true,
       autoRefreshToken: true,

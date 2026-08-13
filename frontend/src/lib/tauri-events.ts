@@ -79,6 +79,14 @@ export const TauriEvent = {
   COACH_GGUF_DOWNLOAD_ERROR: 'coach-gguf-download-error',
   MEETING_METRICS: 'meeting-metrics',
 
+  // ── Cloud sync (sesión Supabase viva en Rust) ─────────────────────────────
+  // Rust refrescó el par de tokens headless; AuthContext lo propaga a
+  // supabase-js con setSession (el refresh_token rota: sin propagar, el
+  // siguiente refresh del cliente JS daría invalid_grant → logout espontáneo).
+  CLOUD_SESSION_REFRESHED: 'cloud-session-refreshed',
+  // El refresh_token murió (invalid_grant); Rust ya limpió su copia.
+  CLOUD_SESSION_EXPIRED: 'cloud-session-expired',
+
   // ── Meeting detector ──────────────────────────────────────────────────────
   MEETING_DETECTED: 'meeting-detected',
   START_RECORDING_FROM_DETECTOR: 'start-recording-from-detector',

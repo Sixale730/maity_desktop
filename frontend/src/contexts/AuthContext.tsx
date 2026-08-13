@@ -1,7 +1,7 @@
 'use client'
 
 import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react'
-import { supabase } from '@/lib/supabase'
+import { supabase, SUPABASE_URL, SUPABASE_ANON_KEY } from '@/lib/supabase'
 import type { Session, User } from '@supabase/supabase-js'
 import type { MaityUser } from '@/types/auth'
 import { invoke } from '@tauri-apps/api/core'
@@ -75,6 +75,36 @@ function extractTokensFromUrl(url: string): { accessToken: string; refreshToken:
   }
 }
 
+/**
+ * Siembra en Rust la sesión Supabase (URL + anon key + par de tokens + maityUser.id).
+ *
+ * El consumidor de `sync_queue` corre headless en Rust porque WebView2 suspende
+ * el JS de la ventana oculta en el tray; para hablar con PostgREST y con el
+ * finalize necesita su propia copia de la sesión y poder refrescarla solo.
+ *
+ * `userId` es SIEMPRE el `maityUser.id` (schema `maity`), nunca el `auth.users.id`:
+ * es el id con el que están escritos los jobs de `sync_queue` y las filas de
+ * `maity.*`. Best-effort: si falla, el sync headless simplemente difiere jobs.
+ */
+async function seedCloudSession(session: Session, maityUserId: string): Promise<void> {
+  try {
+    const expiresAt =
+      session.expires_at ?? Math.floor(Date.now() / 1000) + (session.expires_in ?? 3600)
+    await invoke('cloud_sync_set_session', {
+      payload: {
+        supabaseUrl: SUPABASE_URL,
+        anonKey: SUPABASE_ANON_KEY,
+        accessToken: session.access_token,
+        refreshToken: session.refresh_token,
+        expiresAt,
+        userId: maityUserId,
+      },
+    })
+  } catch (err) {
+    logger.warn('[Auth] cloud_sync_set_session falló (el sync headless quedará en pausa):', err)
+  }
+}
+
 const AUTH_REQUEST_TIMEOUT_MS = 30_000
 
 function withTimeout<T>(promise: Promise<T>, label: string): Promise<T> {
@@ -114,8 +144,28 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       invoke('clear_current_user').catch((err) => {
         logger.error('[Auth] Failed to clear current_user in Rust AppState:', err)
       })
+      // El maityUser puede desaparecer sin pasar por signOut (SIGNED_OUT venido
+      // de otra pestaña/proceso, sesión revocada): la sesión cloud de Rust se
+      // limpia aquí también, no solo en signOut. Idempotente.
+      invoke('cloud_sync_clear_session').catch((err) => {
+        logger.warn('[Auth] cloud_sync_clear_session falló:', err)
+      })
     }
   }, [maityUser?.id])
+
+  // Siembra la sesión Supabase en Rust (cloud_sync). Va en un efecto propio y
+  // NO dentro del handler de onAuthStateChange porque ahí el maityUser todavía
+  // puede no estar resuelto (`fetchOrCreateMaityUser` corre después del
+  // setSession), y el id que Rust necesita es el de `maity.users`, no el de auth.
+  // Al depender del access_token, este mismo efecto cubre los tres casos:
+  // login (SIGNED_IN → maityUser resuelto), restauración de sesión al arrancar,
+  // y cada TOKEN_REFRESHED de supabase-js (que actualiza `session` vía
+  // onAuthStateChange y vuelve a disparar esto con el par nuevo).
+  useEffect(() => {
+    if (!maityUser?.id || !session?.access_token || !session?.refresh_token) return
+    void seedCloudSession(session, maityUser.id)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- se re-siembra por cambio de par de tokens, no por identidad del objeto session
+  }, [maityUser?.id, session?.access_token, session?.refresh_token, session?.expires_at])
 
   // Fetch or create the maity.users record for the authenticated user
   const fetchOrCreateMaityUser = useCallback(async (authUser: User) => {
@@ -488,6 +538,44 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, [processAuthTokens])
 
+  // Puente Rust → supabase-js: Rust refresca la sesión por su cuenta cuando la
+  // ventana está oculta (sync headless). El refresh_token de Supabase ROTA en
+  // cada uso, así que si no adoptamos el par nuevo aquí, supabase-js se queda
+  // con el viejo y su siguiente refresh da invalid_grant → logout espontáneo.
+  useEffect(() => {
+    const unlistenRefreshed = listen<{
+      accessToken: string
+      refreshToken: string
+      expiresAt: number
+    }>(TauriEvent.CLOUD_SESSION_REFRESHED, async (event) => {
+      try {
+        const { error: setError } = await supabase.auth.setSession({
+          access_token: event.payload.accessToken,
+          refresh_token: event.payload.refreshToken,
+        })
+        if (setError) {
+          logger.warn('[Auth] setSession desde cloud-session-refreshed falló:', setError)
+        } else {
+          logger.debug('[Auth] Par de tokens adoptado desde el refresh de Rust')
+        }
+      } catch (err) {
+        logger.warn('[Auth] Error procesando cloud-session-refreshed:', err)
+      }
+    })
+
+    // Rust ya limpió su copia; NO forzamos logout de la UI: supabase-js tiene su
+    // propio ciclo de refresh y puede seguir vivo. El sync headless queda en
+    // pausa hasta la próxima siembra.
+    const unlistenExpired = listen(TauriEvent.CLOUD_SESSION_EXPIRED, () => {
+      logger.warn('[Auth] Rust reporta cloud-session-expired: sync headless en pausa')
+    })
+
+    return () => {
+      unlistenRefreshed.then((fn) => fn()).catch(() => {})
+      unlistenExpired.then((fn) => fn()).catch(() => {})
+    }
+  }, [])
+
   // Helper: process PKCE auth code (shared by listener and polling fallback)
   const processAuthCode = useCallback(async (code: string) => {
     if (isHandlingCallback.current) return
@@ -805,6 +893,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         // nunca bloquea el logout.
         await invoke('logout_cleanup').catch((err) => {
           logger.warn('[Auth] logout_cleanup failed:', err)
+        })
+
+        // Cortar el sync headless: sin sesión en Rust, el consumidor difiere
+        // jobs en vez de intentarlos con el token de la cuenta que se va.
+        await invoke('cloud_sync_clear_session').catch((err) => {
+          logger.warn('[Auth] cloud_sync_clear_session falló:', err)
         })
 
         isHandlingCallback.current = false

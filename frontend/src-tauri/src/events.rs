@@ -82,6 +82,17 @@ pub const COACH_GGUF_DOWNLOAD_COMPLETE: &str = "coach-gguf-download-complete";
 pub const COACH_GGUF_DOWNLOAD_ERROR: &str = "coach-gguf-download-error";
 pub const MEETING_METRICS: &str = "meeting-metrics";
 
+// ── Cloud sync (sesión Supabase viva en Rust) ───────────────────────────────
+/// Rust refrescó el par de tokens por su cuenta (la ventana puede estar oculta
+/// en el tray). El frontend DEBE propagarlo con `supabase.auth.setSession`: el
+/// refresh_token de Supabase rota, así que sin esto el cliente JS se quedaría
+/// con el viejo y su próximo refresh daría `invalid_grant` → logout espontáneo.
+/// Payload: `{ accessToken: string, refreshToken: string, expiresAt: number }`.
+pub const CLOUD_SESSION_REFRESHED: &str = "cloud-session-refreshed";
+/// El refresh_token dejó de ser válido (`invalid_grant`); Rust ya limpió su
+/// copia de la sesión y no volverá a intentar hasta una nueva siembra. Payload: `{}`.
+pub const CLOUD_SESSION_EXPIRED: &str = "cloud-session-expired";
+
 // ── Meeting detector ────────────────────────────────────────────────────────
 pub const MEETING_DETECTED: &str = "meeting-detected";
 pub const START_RECORDING_FROM_DETECTOR: &str = "start-recording-from-detector";
