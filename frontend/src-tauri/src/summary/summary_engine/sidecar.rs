@@ -8,9 +8,15 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Context, Result};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, ChildStdin, ChildStdout};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
+use tokio::process::Child;
 use tokio::sync::{Mutex, RwLock};
+
+/// Handles de I/O del helper como trait objects. En producción son
+/// `ChildStdin`/`ChildStdout`; en tests, mitades de un `tokio::io::duplex`.
+/// Es el único seam que permite probar la política de timeouts sin proceso real.
+type SidecarStdin = Box<dyn AsyncWrite + Send + Unpin>;
+type SidecarStdout = BufReader<Box<dyn AsyncRead + Send + Unpin>>;
 
 // Windows-specific extension for process creation (may be needed for future enhancements)
 #[cfg(target_os = "windows")]
@@ -59,11 +65,17 @@ pub fn supervision_counters() -> (u64, u64, u64) {
 
 /// Timeouts consecutivos antes de presumir proceso colgado y reiniciarlo.
 const TIMEOUT_STRIKES_BEFORE_RESTART: u32 = 3;
-/// Piso del timeout efectivo mientras el helper no confirma ids (ventana fría
-/// post-spawn: cargar el GGUF tarda 50-90s en CPU). Un timeout corto de caller
-/// (tip=30s) mataba el proceso a media carga del modelo — logs jul-2026: 84%
-/// de los spawns terminaban en kill, recargando 2.4 GB cada ~38s.
+/// Piso del timeout efectivo mientras el helper no ha respondido su PRIMER
+/// Generate desde el spawn (ventana fría: cargar el GGUF tarda 50-90s en CPU).
+/// Un timeout corto de caller (tip=30s) mataba el proceso a media carga del
+/// modelo — logs jul-2026: 84% de los spawns terminaban en kill, recargando
+/// 2.4 GB cada ~38s. Ojo: esta ventana es INDEPENDIENTE de `ids_confirmed`
+/// (ago-2026): el handshake confirma ids al spawn, cuando el modelo aún no
+/// cargó, así que atarla a los ids la haría desaparecer.
 const COLD_START_TIMEOUT: Duration = Duration::from_secs(120);
+/// Timeout del handshake de capacidades al spawn. Seguro y corto: el helper
+/// responde `ping` sin tocar el modelo (aún no hay GGUF cargado).
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 /// Máximo de spawns dentro de `RESTART_WINDOW` antes de entrar en cooldown.
 const MAX_RESTARTS_PER_WINDOW: usize = 3;
 const RESTART_WINDOW: Duration = Duration::from_secs(120);
@@ -74,6 +86,18 @@ const RESTART_COOLDOWN: Duration = Duration::from_secs(300);
 // Sidecar State Management
 // ============================================================================
 
+/// Resultado del handshake de capacidades al spawn (`probe_capabilities`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum HandshakeOutcome {
+    /// Pong con `id`: helper moderno, correlación confirmada.
+    IdsConfirmed,
+    /// Pong sin `id`: helper legacy real (binario anterior al protocolo de ids).
+    PongWithoutId,
+    /// Ni pong: timeout, pipe cerrado o respuesta ilegible. Correlación NO
+    /// confirmada — se aplica la política conservadora, sin acusar "legacy".
+    NoResponse(String),
+}
+
 /// Sidecar process manager with keep-alive and health monitoring
 #[derive(Clone)]
 pub struct SidecarManager {
@@ -81,10 +105,10 @@ pub struct SidecarManager {
     child_process: Arc<Mutex<Option<Child>>>,
 
     /// Stdin writer for sending requests
-    stdin_writer: Arc<Mutex<Option<ChildStdin>>>,
+    stdin_writer: Arc<Mutex<Option<SidecarStdin>>>,
 
     /// Stdout reader for receiving responses
-    stdout_reader: Arc<Mutex<Option<BufReader<ChildStdout>>>>,
+    stdout_reader: Arc<Mutex<Option<SidecarStdout>>>,
 
     /// Last activity timestamp
     last_activity: Arc<RwLock<Instant>>,
@@ -110,11 +134,20 @@ pub struct SidecarManager {
     /// Timeouts consecutivos de requests (se resetea en cada éxito y cada spawn).
     consecutive_timeouts: Arc<AtomicU32>,
 
-    /// True cuando el helper de este proceso demostró soportar ids de correlación
-    /// (respondió con `id`). Con un helper legacy (binario viejo sin ids) el
-    /// timeout conserva el comportamiento anterior (kill) porque sin ids no hay
-    /// forma de distinguir una respuesta tardía huérfana de la siguiente.
+    /// True cuando el helper de este proceso demostró soportar ids de correlación.
+    /// Se NEGOCIA al spawn con `probe_capabilities()` (ping → pong con `id`, sin
+    /// tocar el modelo), no se infiere del primer Generate: un helper moderno
+    /// cuyo primer request expiraba en la carga fría del GGUF era indistinguible
+    /// de uno viejo y recibía la política más agresiva (kill al primer timeout).
+    /// Con un helper sin correlación confirmada el timeout conserva el
+    /// comportamiento anterior (kill) porque sin ids no hay forma de distinguir
+    /// una respuesta tardía huérfana de la siguiente.
     ids_confirmed: Arc<AtomicBool>,
+
+    /// True cuando el helper ya respondió su primer Generate desde este spawn
+    /// (modelo caliente). Gobierna la ventana fría (`COLD_START_TIMEOUT`);
+    /// separado de `ids_confirmed` a propósito — ver el doc de esa constante.
+    model_warm: Arc<AtomicBool>,
 
     /// Serializa spawns: `ensure_running` era check-then-act sin lock y dos
     /// llamadas concurrentes spawneaban DOS procesos (visto en logs jul-2026,
@@ -184,11 +217,43 @@ impl SidecarManager {
             idle_timeout_secs,
             consecutive_timeouts: Arc::new(AtomicU32::new(0)),
             ids_confirmed: Arc::new(AtomicBool::new(false)),
+            model_warm: Arc::new(AtomicBool::new(false)),
             spawn_lock: Arc::new(Mutex::new(())),
             restart_history: Arc::new(Mutex::new(Vec::new())),
             cooldown_until: Arc::new(Mutex::new(None)),
             spawn_epoch: Arc::new(AtomicU64::new(0)),
         })
+    }
+
+    /// Manager sobre handles de I/O inyectados y sin proceso hijo. Solo para
+    /// tests: permite ejercitar handshake, ventana fría y política de strikes
+    /// contra un helper falso (`tokio::io::duplex`) sin binario ni GGUF.
+    #[cfg(test)]
+    fn with_fake_io(
+        reader: impl AsyncRead + Send + Unpin + 'static,
+        writer: impl AsyncWrite + Send + Unpin + 'static,
+    ) -> Self {
+        let stdout: SidecarStdout = BufReader::new(Box::new(reader));
+        let stdin: SidecarStdin = Box::new(writer);
+        Self {
+            child_process: Arc::new(Mutex::new(None)),
+            stdin_writer: Arc::new(Mutex::new(Some(stdin))),
+            stdout_reader: Arc::new(Mutex::new(Some(stdout))),
+            last_activity: Arc::new(RwLock::new(Instant::now())),
+            is_healthy: Arc::new(AtomicBool::new(true)),
+            should_shutdown: Arc::new(AtomicBool::new(false)),
+            active_request_count: Arc::new(AtomicUsize::new(0)),
+            helper_binary_path: PathBuf::new(),
+            current_model_path: Arc::new(RwLock::new(Some(PathBuf::from("fake.gguf")))),
+            idle_timeout_secs: models::DEFAULT_IDLE_TIMEOUT_SECS,
+            consecutive_timeouts: Arc::new(AtomicU32::new(0)),
+            ids_confirmed: Arc::new(AtomicBool::new(false)),
+            model_warm: Arc::new(AtomicBool::new(false)),
+            spawn_lock: Arc::new(Mutex::new(())),
+            restart_history: Arc::new(Mutex::new(Vec::new())),
+            cooldown_until: Arc::new(Mutex::new(None)),
+            spawn_epoch: Arc::new(AtomicU64::new(0)),
+        }
     }
 
     /// Resolve the path to llama-helper binary
@@ -435,9 +500,10 @@ impl SidecarManager {
         // Shutdown existing process if running
         self.shutdown().await?;
 
-        // Estado por-proceso: el nuevo proceso aún no demostró soportar ids
+        // Estado por-proceso: el nuevo proceso aún no negoció ids ni cargó modelo
         self.consecutive_timeouts.store(0, Ordering::SeqCst);
         self.ids_confirmed.store(false, Ordering::SeqCst);
+        self.model_warm.store(false, Ordering::SeqCst);
 
         log::info!("Spawning llama-helper sidecar");
         log::info!("Model path: {}", model_path.display());
@@ -480,12 +546,12 @@ impl SidecarManager {
 
         {
             let mut stdin_lock = self.stdin_writer.lock().await;
-            *stdin_lock = Some(stdin);
+            *stdin_lock = Some(Box::new(stdin));
         }
 
         {
             let mut stdout_lock = self.stdout_reader.lock().await;
-            *stdout_lock = Some(BufReader::new(stdout));
+            *stdout_lock = Some(BufReader::new(Box::new(stdout)));
         }
 
         // Update state
@@ -502,6 +568,11 @@ impl SidecarManager {
         // del session-summary del coach revela los respawns durante grabación.
         SIDECAR_RESTARTS_TOTAL.fetch_add(1, Ordering::Relaxed);
         log::info!("Sidecar spawned successfully");
+
+        // Handshake de capacidades ANTES de los loops y del warmup: con el pipe
+        // aún vacío, el ping es la única conversación en vuelo y su pong decide
+        // la política de timeouts de forma determinista (no inferida).
+        self.probe_capabilities().await;
 
         // Start background tasks (el epoch invalida los loops de spawns previos)
         let epoch = self.spawn_epoch.fetch_add(1, Ordering::SeqCst) + 1;
@@ -560,11 +631,12 @@ impl SidecarManager {
             stdin.flush().await.context("Failed to flush stdin")?;
         }
 
-        // Ventana fría: mientras el helper no confirme ids (recién spawneado,
-        // el modelo puede seguir cargando y el helper es FIFO), el timeout
-        // efectivo se estira a COLD_START_TIMEOUT para que el primer request
-        // espere la carga en vez de matarla a la mitad.
-        let effective_timeout = if self.ids_confirmed.load(Ordering::SeqCst) {
+        // Ventana fría: mientras el helper no haya respondido su primer Generate
+        // (recién spawneado, el modelo puede seguir cargando y el helper es
+        // FIFO), el timeout efectivo se estira a COLD_START_TIMEOUT para que el
+        // primer request espere la carga en vez de matarla a la mitad. NO
+        // depende de `ids_confirmed`: el handshake confirma ids en el spawn.
+        let effective_timeout = if self.model_warm.load(Ordering::SeqCst) {
             timeout
         } else {
             timeout.max(COLD_START_TIMEOUT)
@@ -575,6 +647,8 @@ impl SidecarManager {
             Ok(Ok(response)) => {
                 self.update_activity().await;
                 self.consecutive_timeouts.store(0, Ordering::SeqCst);
+                // Primer Generate respondido ⇒ modelo caliente, fin de la ventana fría.
+                self.model_warm.store(true, Ordering::SeqCst);
                 Ok(response)
             }
             Ok(Err(e)) => Err(e),
@@ -606,11 +680,12 @@ impl SidecarManager {
                         // sujeto a presupuesto de reinicios + backoff.
                     }
                 } else {
-                    // Helper legacy sin ids: sin correlación no se puede drenar la
+                    // Helper sin correlación confirmada por handshake (pong sin id o
+                    // sin respuesta al spawn): sin ids no se puede drenar la
                     // respuesta tardía, el kill sigue siendo la única forma de
                     // sanear el pipe (comportamiento anterior).
                     log::error!(
-                        "Request timeout after {:?} con helper legacy (sin ids) — shutting down sidecar",
+                        "Request timeout after {:?} con helper sin correlación confirmada por handshake — shutting down sidecar",
                         effective_timeout
                     );
                     crate::logging::mem_sampler::snapshot_now("sidecar-timeout-legacy");
@@ -739,20 +814,23 @@ impl SidecarManager {
         Ok(())
     }
 
-    /// Send ping to keep sidecar alive
-    async fn send_ping(&self) -> Result<()> {
-        let ping_id = REQUEST_SEQ.fetch_add(1, Ordering::Relaxed);
-        let request = serde_json::json!({"type": "ping", "id": ping_id}).to_string();
-        let timeout = Duration::from_secs(5);
+    /// Request interno (ping, handshake): inyecta `id`, escribe y lee con
+    /// correlación. A diferencia de `send_request`, NO incrementa
+    /// `active_request_count` (bloquearía el graceful shutdown), NO aplica la
+    /// ventana fría ni la política de strikes, y NO marca `model_warm`.
+    async fn send_internal(
+        &self,
+        mut request: serde_json::Map<String, serde_json::Value>,
+        timeout: Duration,
+    ) -> Result<serde_json::Value> {
+        let request_id = REQUEST_SEQ.fetch_add(1, Ordering::Relaxed);
+        request.insert("id".to_string(), serde_json::json!(request_id));
+        let payload = serde_json::Value::Object(request).to_string();
 
-        // Note: We don't use send_request here to avoid incrementing active_request_count
-        // for internal health checks, as that would prevent graceful shutdown
-
-        // Write request
         {
             let mut stdin_lock = self.stdin_writer.lock().await;
             if let Some(stdin) = stdin_lock.as_mut() {
-                stdin.write_all(request.as_bytes()).await?;
+                stdin.write_all(payload.as_bytes()).await?;
                 stdin.write_all(b"\n").await?;
                 stdin.flush().await?;
             } else {
@@ -764,14 +842,55 @@ impl SidecarManager {
         // de una respuesta huérfana (de un generate abandonado por timeout)
         // leería esa respuesta, fallaría el health check y marcaría el sidecar
         // unhealthy → respawn innecesario con el modelo caliente.
-        let response = tokio::time::timeout(timeout, self.read_matching_response(ping_id)).await??;
+        let response =
+            tokio::time::timeout(timeout, self.read_matching_response(request_id)).await??;
+        Ok(serde_json::from_str(&response)?)
+    }
 
-        let resp: serde_json::Value = serde_json::from_str(&response)?;
+    /// Send ping to keep sidecar alive
+    async fn send_ping(&self) -> Result<()> {
+        let mut req = serde_json::Map::new();
+        req.insert("type".to_string(), serde_json::json!("ping"));
+        let resp = self.send_internal(req, HANDSHAKE_TIMEOUT).await?;
         if resp.get("type").and_then(|t| t.as_str()) == Some("pong") {
             Ok(())
         } else {
-            Err(anyhow!("Unexpected ping response: {}", response))
+            Err(anyhow!("Unexpected ping response: {}", resp))
         }
+    }
+
+    /// Handshake de capacidades al spawn (negociación explícita, no inferencia).
+    ///
+    /// Un ping correlacionado con timeout corto: el helper responde `pong` sin
+    /// tocar el modelo. Pong CON id ⇒ `ids_confirmed=true` (lo pone
+    /// `read_matching_response`) y aplica la política de strikes. Pong SIN id ⇒
+    /// helper legacy de verdad. Sin respuesta ⇒ no confirmado (honesto): la
+    /// política de kill se aplica, pero el log ya no acusa "legacy" a un helper
+    /// moderno cuyo primer Generate expiró en la carga fría del GGUF.
+    async fn probe_capabilities(&self) -> HandshakeOutcome {
+        let outcome = match self.send_ping().await {
+            Ok(()) if self.ids_confirmed.load(Ordering::SeqCst) => HandshakeOutcome::IdsConfirmed,
+            Ok(()) => HandshakeOutcome::PongWithoutId,
+            Err(e) => HandshakeOutcome::NoResponse(e.to_string()),
+        };
+        match &outcome {
+            HandshakeOutcome::IdsConfirmed => {
+                log::info!("Sidecar handshake: ids confirmados (pong con id) — política de strikes activa");
+            }
+            HandshakeOutcome::PongWithoutId => {
+                log::warn!(
+                    "Sidecar handshake: pong sin id — helper legacy, política kill-al-primer-timeout"
+                );
+            }
+            HandshakeOutcome::NoResponse(reason) => {
+                log::warn!(
+                    "Sidecar handshake sin respuesta en {:?} — correlación no confirmada ({})",
+                    HANDSHAKE_TIMEOUT,
+                    reason
+                );
+            }
+        }
+        outcome
     }
 
     /// Gracefully shutdown the sidecar
@@ -988,5 +1107,188 @@ impl Drop for SidecarManager {
         // — p. ej. el clon del warmup lo activaba al terminar el warmup.
         // El shutdown real lo orquesta SidecarPool::shutdown_all / shutdown().
         log::debug!("SidecarManager clone dropped");
+    }
+}
+
+// ============================================================================
+// Tests: handshake, ventana fría y política de strikes contra un helper falso
+// ============================================================================
+//
+// El helper falso vive al otro lado de un `tokio::io::duplex`. Con
+// `start_paused = true` los timeouts (5 s del handshake, 120 s de la ventana
+// fría) se auto-avanzan cuando no hay tareas listas, así que los tests corren
+// en milisegundos sin cambiar las constantes de producción.
+#[cfg(test)]
+mod handshake_tests {
+    use super::*;
+    use tokio::io::{duplex, split, AsyncBufReadExt, BufReader, DuplexStream};
+
+    /// Comportamiento del helper falso.
+    #[derive(Clone, Copy)]
+    enum FakeMode {
+        /// Helper moderno: pong con id, generate con id.
+        Modern,
+        /// Helper legacy: pong SIN id, generate SIN id.
+        Legacy,
+        /// No responde nada (pero mantiene el pipe abierto).
+        Mute,
+        /// Responde ping con id; se traga TODOS los generate.
+        PingOnly,
+        /// Responde ping con id y SOLO el primer generate; los demás los traga.
+        FirstGenerateOnly,
+    }
+
+    /// Corre el helper falso hasta que el pipe se cierre. Devuelve la task para
+    /// que el test la mantenga viva (si se dropea el stream, el manager ve EOF).
+    fn spawn_fake_helper(server: DuplexStream, mode: FakeMode) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            let (rd, mut wr) = split(server);
+            let mut lines = BufReader::new(rd).lines();
+            let mut generates_answered = 0u32;
+            while let Ok(Some(line)) = lines.next_line().await {
+                let req: serde_json::Value = match serde_json::from_str(&line) {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                };
+                let kind = req.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                let id = req.get("id").and_then(|i| i.as_u64());
+                let reply: Option<serde_json::Value> = match (mode, kind) {
+                    (FakeMode::Mute, _) => None,
+                    (FakeMode::Legacy, "ping") => Some(serde_json::json!({"type": "pong"})),
+                    (FakeMode::Legacy, "generate") => {
+                        Some(serde_json::json!({"type": "response", "text": "ok"}))
+                    }
+                    (_, "ping") => Some(serde_json::json!({"type": "pong", "id": id})),
+                    (FakeMode::Modern, "generate") => {
+                        Some(serde_json::json!({"type": "response", "text": "ok", "id": id}))
+                    }
+                    (FakeMode::FirstGenerateOnly, "generate") if generates_answered == 0 => {
+                        generates_answered += 1;
+                        Some(serde_json::json!({"type": "response", "text": "ok", "id": id}))
+                    }
+                    _ => None,
+                };
+                if let Some(reply) = reply {
+                    let mut bytes = reply.to_string().into_bytes();
+                    bytes.push(b'\n');
+                    if wr.write_all(&bytes).await.is_err() {
+                        break;
+                    }
+                    let _ = wr.flush().await;
+                }
+            }
+        })
+    }
+
+    /// Manager con I/O falsa + task del helper falso.
+    fn manager_with(mode: FakeMode) -> (SidecarManager, tokio::task::JoinHandle<()>) {
+        let (client, server) = duplex(4096);
+        let (rd, wr) = split(client);
+        let manager = SidecarManager::with_fake_io(rd, wr);
+        let helper = spawn_fake_helper(server, mode);
+        (manager, helper)
+    }
+
+    fn generate_request() -> String {
+        serde_json::json!({"type": "generate", "prompt": "hola", "max_tokens": 1}).to_string()
+    }
+
+    #[tokio::test]
+    async fn pong_con_id_confirma_ids() {
+        let (m, _helper) = manager_with(FakeMode::Modern);
+        assert_eq!(m.probe_capabilities().await, HandshakeOutcome::IdsConfirmed);
+        assert!(m.ids_confirmed.load(Ordering::SeqCst));
+        // El handshake no calienta el modelo: la ventana fría sigue armada.
+        assert!(!m.model_warm.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn pong_sin_id_es_legacy_honesto() {
+        let (m, _helper) = manager_with(FakeMode::Legacy);
+        assert_eq!(m.probe_capabilities().await, HandshakeOutcome::PongWithoutId);
+        assert!(!m.ids_confirmed.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn sin_respuesta_no_confirma_y_el_primer_timeout_mata() {
+        let (m, _helper) = manager_with(FakeMode::Mute);
+        let outcome = m.probe_capabilities().await;
+        assert!(matches!(outcome, HandshakeOutcome::NoResponse(_)), "{outcome:?}");
+        assert!(!m.ids_confirmed.load(Ordering::SeqCst));
+        assert!(m.is_healthy(), "el handshake fallido no mata por sí solo");
+
+        // Sin correlación confirmada, el PRIMER timeout de request aplica el kill
+        // (política conservadora: sin ids no se puede drenar la respuesta tardía).
+        let (timeouts_before, _, _) = supervision_counters();
+        let err = m
+            .send_request(generate_request(), Duration::from_secs(1))
+            .await
+            .expect_err("debe expirar");
+        assert!(err.to_string().contains("timed out"), "{err}");
+        assert!(!m.is_healthy(), "kill al primer timeout con helper no confirmado");
+        assert!(m.stdin_writer.lock().await.is_none(), "handles limpiados por shutdown");
+        assert!(supervision_counters().0 >= timeouts_before + 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn con_ids_confirmados_tres_strikes_antes_de_reiniciar() {
+        let (m, _helper) = manager_with(FakeMode::PingOnly);
+        assert_eq!(m.probe_capabilities().await, HandshakeOutcome::IdsConfirmed);
+        let (timeouts_before, _, _) = supervision_counters();
+
+        for strike in 1..=TIMEOUT_STRIKES_BEFORE_RESTART {
+            let res = m.send_request(generate_request(), Duration::from_secs(1)).await;
+            assert!(res.is_err(), "strike {strike}: el generate nunca se responde");
+            if strike < TIMEOUT_STRIKES_BEFORE_RESTART {
+                assert!(m.is_healthy(), "strike {strike}: proceso vivo, sin shutdown");
+                assert_eq!(m.consecutive_timeouts.load(Ordering::SeqCst), strike);
+                assert!(m.stdin_writer.lock().await.is_some());
+            } else {
+                assert!(!m.is_healthy(), "strike {strike}: reinicio controlado (shutdown)");
+                assert_eq!(m.consecutive_timeouts.load(Ordering::SeqCst), 0);
+                assert!(m.stdin_writer.lock().await.is_none());
+            }
+        }
+        // Los contadores son proceso-globales y otros tests corren en paralelo:
+        // asertar por delta mínimo, no por igualdad.
+        assert!(
+            supervision_counters().0 >= timeouts_before + TIMEOUT_STRIKES_BEFORE_RESTART as u64
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn ventana_fria_se_conserva_aunque_ids_esten_confirmados() {
+        // (i) Con ids confirmados pero SIN Generate respondido, un timeout de
+        // caller de 1 s se estira al piso frío de 120 s (el modelo puede estar
+        // cargando detrás de este request en la cola FIFO del helper).
+        let (m, _helper) = manager_with(FakeMode::PingOnly);
+        assert_eq!(m.probe_capabilities().await, HandshakeOutcome::IdsConfirmed);
+        let t0 = tokio::time::Instant::now();
+        let res = m.send_request(generate_request(), Duration::from_secs(1)).await;
+        assert!(res.is_err());
+        assert!(
+            t0.elapsed() >= COLD_START_TIMEOUT,
+            "expiró a los {:?}: la ventana fría desapareció al confirmar ids",
+            t0.elapsed()
+        );
+        assert!(m.is_healthy(), "strike 1 con ids confirmados no mata");
+
+        // (ii) Tras el primer Generate respondido, el timeout es el del caller.
+        let (m2, _helper2) = manager_with(FakeMode::FirstGenerateOnly);
+        assert_eq!(m2.probe_capabilities().await, HandshakeOutcome::IdsConfirmed);
+        m2.send_request(generate_request(), Duration::from_secs(1))
+            .await
+            .expect("el primer generate se responde");
+        assert!(m2.model_warm.load(Ordering::SeqCst));
+        let t1 = tokio::time::Instant::now();
+        let res = m2.send_request(generate_request(), Duration::from_secs(1)).await;
+        assert!(res.is_err());
+        assert!(
+            t1.elapsed() < Duration::from_secs(2),
+            "modelo caliente: debe expirar al segundo, no a los 120 s ({:?})",
+            t1.elapsed()
+        );
+        assert!(m2.is_healthy(), "strike 1: sin shutdown");
+        assert_eq!(m2.consecutive_timeouts.load(Ordering::SeqCst), 1);
     }
 }

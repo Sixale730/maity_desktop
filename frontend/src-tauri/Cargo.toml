@@ -281,6 +281,9 @@ futures-channel = "0.3.31"
 
 [dev-dependencies]
 tempfile = "3.3.0"
+# `start_paused` en tests del sidecar (handshake / ventana fría / strikes) —
+# resolver 2: la feature NO se filtra al build normal.
+tokio = { version = "1.32.0", features = ["test-util"] }
 infer = "0.15"
 criterion = { version = "0.5.1", features = ["async_tokio"] }
 memory-stats = "1.0"
