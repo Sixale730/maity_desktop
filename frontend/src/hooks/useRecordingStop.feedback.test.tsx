@@ -115,6 +115,8 @@ vi.mock('@tauri-apps/plugin-store', () => ({
   Store: { load: vi.fn(async () => ({ get: vi.fn(async () => 1) })) },
 }));
 
+import { invoke } from '@tauri-apps/api/core';
+import { toast } from 'sonner';
 import { useRecordingStop } from './useRecordingStop';
 
 describe('useRecordingStop — feedback no bloqueante', () => {
@@ -197,5 +199,88 @@ describe('useRecordingStop — feedback no bloqueante', () => {
     expect(elapsed).toBeLessThan(3000);
     // Hard navigate: exactamente 1 asignacion a window.location.href.
     expect(locationHrefHistory).toHaveLength(1);
+  });
+});
+
+/**
+ * Regresión del incidente del piloto Dingler (ago-2026): una grabación que
+ * termina con 0 transcripts NO significa "no hubo reunión". Si el modelo STT
+ * nunca cargó, el audio igual se grabó en .checkpoints/ — y marcar la reunión
+ * como savedToSQLite=true borra el único puntero a esos bytes, perdiéndola en
+ * silencio. Los checkpoints son el WAL de la grabación: no se truncan antes de
+ * que exista la copia durable.
+ */
+describe('useRecordingStop — 0 transcripts con audio en disco', () => {
+  const invokeMock = vi.mocked(invoke);
+  const originalTranscripts = transcriptsRef.current;
+
+  beforeEach(() => {
+    markMeetingAsSavedMock.mockReset();
+    markMeetingAsSavedMock.mockResolvedValue(undefined);
+    vi.mocked(toast.info).mockReset();
+    sessionStorage.clear();
+    sessionStorage.setItem('last_recording_folder_path', 'C:/meetings/reunion-1');
+    // La grabación no produjo transcripts (modelo STT ausente).
+    transcriptsRef.current = [];
+  });
+
+  afterEach(() => {
+    transcriptsRef.current = originalTranscripts;
+    invokeMock.mockImplementation(async () => 1);
+    sessionStorage.clear();
+  });
+
+  function mockCheckpoints(result: boolean | Error) {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === 'has_audio_checkpoints') {
+        if (result instanceof Error) throw result;
+        return result;
+      }
+      return 1;
+    });
+  }
+
+  it('NO marca la reunión como guardada cuando hay checkpoints de audio', async () => {
+    mockCheckpoints(true);
+    const { result } = renderHook(() => useRecordingStop(vi.fn()));
+
+    await act(async () => {
+      await result.current.handleRecordingStop(true);
+    });
+
+    // La invariante: sin esto, useTranscriptRecovery filtra la reunión por
+    // savedToSQLite y el audio queda huérfano para siempre.
+    expect(markMeetingAsSavedMock).not.toHaveBeenCalled();
+    // La ruta debe sobrevivir: el diálogo de recuperación la necesita.
+    expect(sessionStorage.getItem('last_recording_folder_path')).toBe('C:/meetings/reunion-1');
+    // Y el usuario tiene que enterarse, o el fix es invisible.
+    expect(toast.info).toHaveBeenCalled();
+  });
+
+  it('SÍ marca la reunión como guardada cuando no hay nada que recuperar', async () => {
+    mockCheckpoints(false);
+    const { result } = renderHook(() => useRecordingStop(vi.fn()));
+
+    await act(async () => {
+      await result.current.handleRecordingStop(true);
+    });
+
+    expect(markMeetingAsSavedMock).toHaveBeenCalled();
+    expect(sessionStorage.getItem('last_recording_folder_path')).toBeNull();
+    expect(toast.info).not.toHaveBeenCalled();
+  });
+
+  it('fail-safe: si no se puede comprobar el audio, preserva la reunión', async () => {
+    mockCheckpoints(new Error('IPC caído'));
+    const { result } = renderHook(() => useRecordingStop(vi.fn()));
+
+    await act(async () => {
+      await result.current.handleRecordingStop(true);
+    });
+
+    // Equivocarse hacia "preservar" cuesta un diálogo de más; equivocarse al
+    // revés cuesta la reunión entera.
+    expect(markMeetingAsSavedMock).not.toHaveBeenCalled();
+    expect(sessionStorage.getItem('last_recording_folder_path')).toBe('C:/meetings/reunion-1');
   });
 });

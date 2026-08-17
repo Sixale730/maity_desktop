@@ -380,26 +380,71 @@ export function useRecordingStop(
           throw saveError;
         }
       } else {
-        // No save needed — CRITICAL: log why
-        if (isCallApi && transcriptsRef.current.length === 0) {
-          recordingLogService.log('save_skipped_no_transcripts', {
-            is_call_api: isCallApi,
-            transcript_count: 0,
-          }, 'skipped');
+        // No save needed — CRITICAL: log why.
+        //
+        // 0 transcripts NO significa "no hubo reunión". Si el motor STT nunca
+        // cargó (modelo ausente o corrupto), el audio SÍ se grabó y vive en
+        // .checkpoints/ — incremental_saver.rs lo escribe cada 30s pase lo que
+        // pase. Esos checkpoints son el write-ahead log de la grabación, y la
+        // invariante de todo WAL es no truncarlo antes de que exista la copia
+        // durable. Marcar savedToSQLite=true aquí borra el único puntero al
+        // audio y la reunión se pierde en silencio, con los bytes intactos en
+        // disco (piloto Dingler, ago-2026: 4 reuniones perdidas así).
+        const folderPath = sessionStorage.getItem('last_recording_folder_path');
+        let hasRecoverableAudio = false;
 
-          // Clean up sessionStorage (no ghost to delete — meeting was never inserted)
-          sessionStorage.removeItem('early_meeting_id');
-          sessionStorage.removeItem('last_recording_folder_path');
-          sessionStorage.removeItem('last_recording_meeting_name');
+        if (transcriptsRef.current.length === 0 && folderPath) {
+          try {
+            hasRecoverableAudio = await invoke<boolean>('has_audio_checkpoints', {
+              meetingFolder: folderPath,
+            });
+          } catch (error) {
+            // Fail-safe: si no se puede comprobar, asumir que SÍ hay audio.
+            // Equivocarse hacia aquí cuesta un diálogo de recuperación de más;
+            // equivocarse al revés cuesta la reunión entera.
+            hasRecoverableAudio = true;
+            logger.warn('[RecordingStop] No se pudo verificar checkpoints; se preserva la reunión:', error);
+          }
         }
 
-        // Mark IndexedDB meeting as saved when there's nothing useful to recover.
-        // Without this, empty/cancelled sessions stay flagged savedToSQLite=false
-        // and the recovery dialog appears on the next cold start with nothing to
-        // offer the user.
-        if (transcriptsRef.current.length === 0) {
+        if (isCallApi && transcriptsRef.current.length === 0) {
+          recordingLogService.log(
+            hasRecoverableAudio ? 'save_deferred_audio_only' : 'save_skipped_no_transcripts',
+            {
+              is_call_api: isCallApi,
+              transcript_count: 0,
+              has_audio: hasRecoverableAudio,
+            },
+            'skipped',
+          );
+
+          // Clean up sessionStorage (no ghost to delete — meeting was never inserted).
+          // OJO: 'last_recording_folder_path' solo se limpia cuando NO hay audio
+          // que recuperar — el diálogo de recuperación necesita esa ruta.
+          sessionStorage.removeItem('early_meeting_id');
+          sessionStorage.removeItem('last_recording_meeting_name');
+          if (!hasRecoverableAudio) {
+            sessionStorage.removeItem('last_recording_folder_path');
+          }
+        }
+
+        // Marcar como guardada SOLO cuando no queda nada útil que recuperar.
+        // Con audio en disco, savedToSQLite sigue en false para que
+        // useTranscriptRecovery lo ofrezca en el próximo arranque.
+        if (transcriptsRef.current.length === 0 && !hasRecoverableAudio) {
           await markMeetingAsSaved();
         }
+
+        if (hasRecoverableAudio) {
+          // Sin esto el fix es invisible: el usuario seguiría creyendo que su
+          // reunión desapareció.
+          toast.info('Reunión guardada sin transcripción', {
+            description:
+              'No se generó texto, pero el audio quedó guardado. Podrás recuperarlo al reiniciar Maity.',
+            duration: 8000,
+          });
+        }
+
         setStatus(RecordingStatus.IDLE);
       }
 
