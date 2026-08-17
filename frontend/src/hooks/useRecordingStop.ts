@@ -451,8 +451,10 @@ export function useRecordingStop(
       setIsMeetingActive(false);
       setIsRecordingDisabled(false);
 
-      // Sync recording logs to cloud (fire-and-forget)
-      recordingLogService.syncToCloud();
+      // El sync del outbox a la nube lo hace la drenadora NATIVA
+      // (logging/telemetry/drain.rs), que sobrevive al webview suspendido y a
+      // la navegación dura de la rama de guardado — el syncToCloud() de JS que
+      // vivía aquí solo llegaba a ejecutarse en la rama de 0 transcripts.
     } catch (error) {
       console.error('Error in handleRecordingStop:', error);
       setStatus(RecordingStatus.ERROR, error instanceof Error ? error.message : 'Unknown error');

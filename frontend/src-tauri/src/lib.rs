@@ -958,6 +958,12 @@ pub fn run() {
             // no toca la cola.
             cloud_sync::worker::spawn(_app.handle().clone());
 
+            // Drenadora nativa del outbox de telemetría (recording_logs →
+            // maity.platform_logs). Mismo racional que el worker de arriba: el
+            // sync de JS moría con el webview suspendido; el ÚNICO drenador es
+            // este (single-writer — syncToCloud() del frontend se eliminó).
+            logging::telemetry::drain::spawn(_app.handle().clone());
+
             // Set models directories (always set, even if engines won't be initialized)
             whisper_engine::commands::set_models_directory(&_app.handle());
             parakeet_engine::commands::set_models_directory(&_app.handle());

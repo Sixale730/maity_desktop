@@ -15,4 +15,5 @@
 //! con la ventana oculta y los eventos se pierden. Outbox + drenadora nativa.
 
 pub mod context;
+pub mod drain;
 pub mod emit;
