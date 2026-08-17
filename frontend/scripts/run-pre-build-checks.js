@@ -1,7 +1,10 @@
 #!/usr/bin/env node
 // Pre-build checks. Runs BEFORE tauri:build / tauri:build:debug.
 // Currently: state-access lint (fast, ~1s) + providers-tree lint (fast, <100ms)
-// + tauri-events lint (fast, <1s).
+// + tauri-events lint (fast, <1s) + migrations LF/checksum + vitest (~45s).
+//
+// Orden deliberado: los checks BARATOS van primero para fallar rápido; la suite
+// de vitest va al final porque es la más lenta (~45s) y la que menos veces falla.
 //
 // To skip (NOT recommended), use: pnpm run tauri:build:debug:skip-checks
 
@@ -122,3 +125,50 @@ if (migrationsResult.status !== 0) {
 }
 
 console.log('[pre-build] OK: migrations check passed');
+
+// Vitest al final: es el check más lento (~45s). Va DENTRO del pre-build (y no
+// como paso manual) porque los tests de invariantes — layout.test.ts con
+// PROVIDER_INVARIANTS, los guards de arranque, la preservación de audio sin
+// transcripts — solo previenen regresiones si el build los ejecuta. Una suite
+// que nadie corre es documentación, no una red de seguridad.
+console.log('[pre-build] Running vitest suite...');
+
+// Mismo patrón que resolveBash(): preferir el entrypoint .mjs (ejecutable con
+// `node`, sin shell) y caer al shim de node_modules/.bin sólo si no está.
+function resolveVitest() {
+    const mjs = path.join(__dirname, '..', 'node_modules', 'vitest', 'vitest.mjs');
+    if (fs.existsSync(mjs)) return { cmd: process.execPath, args: [mjs, 'run'], shell: false };
+
+    const binName = process.platform === 'win32' ? 'vitest.CMD' : 'vitest';
+    const bin = path.join(__dirname, '..', 'node_modules', '.bin', binName);
+    if (fs.existsSync(bin)) return { cmd: bin, args: ['run'], shell: process.platform === 'win32' };
+
+    return null;
+}
+
+const vitest = resolveVitest();
+
+if (!vitest) {
+    console.error('');
+    console.error('[pre-build] FAIL: no se encontró vitest en node_modules.');
+    console.error('  Corre `pnpm install` en frontend/ antes de buildear.');
+    process.exit(1);
+}
+
+const testResult = spawnSync(vitest.cmd, vitest.args, {
+    stdio: 'inherit',
+    shell: vitest.shell,
+    cwd: path.join(__dirname, '..'),
+});
+
+if (testResult.status !== 0) {
+    console.error('');
+    console.error('[pre-build] FAIL: la suite de vitest falló.');
+    console.error('  Estos tests blindan invariantes que ya causaron incidentes en producción');
+    console.error('  (orden de providers, guards de arranque, no descartar audio sin transcripts).');
+    console.error('  Corre `pnpm test` para ver el detalle.');
+    console.error('  Escape hatch: pnpm run tauri:build:debug:skip-checks');
+    process.exit(1);
+}
+
+console.log('[pre-build] OK: vitest suite passed');
