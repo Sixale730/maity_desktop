@@ -26,10 +26,35 @@ import { listen } from '@tauri-apps/api/event'
 import { platformLogger } from '@/lib/platformLogger'
 import { TauriEvent } from '@/lib/tauri-events'
 
-export const MAX_ERROR_REPORTS_PER_SESSION = 20
 export const MIN_REPORT_GAP_MS = 2_000
 
 export type ErrorSource = 'window' | 'unhandledrejection' | 'error-boundary' | 'db-init' | 'rust'
+
+/**
+ * Presupuesto POR FUENTE (anti noisy-neighbor): antes las 5 fuentes compartían
+ * un cap de 20 y un render-loop de React se comía el cupo entero, tirando los
+ * ERROR de Rust que ya pagaron la barrera del puente (#60). Ahora cada fuente
+ * agota solo lo suyo.
+ */
+export const SOURCE_BUDGETS: Record<ErrorSource, number> = {
+  window: 8,
+  unhandledrejection: 8,
+  'error-boundary': 5,
+  'db-init': 3,
+  rust: 20,
+}
+
+/** Fuentes futuras no listadas: presupuesto conservador. */
+export const DEFAULT_SOURCE_BUDGET = 5
+
+/** Contadores monótonos por sesión de ventana, para el err_budget del heartbeat. */
+export interface ErrorBudgetStats {
+  sent: number
+  dropped_dedup: number
+  dropped_cap: number
+  dropped_gap: number
+  sent_by_source: Record<string, number>
+}
 
 /** Payload del evento `rust-error` (logging/rust_error_bridge.rs). */
 export interface RustErrorPayload {
@@ -72,34 +97,66 @@ export function normalizeError(error: unknown): NormalizedError {
 }
 
 /**
- * Rate-limit + dedup por sesión. Estado puro, exportado para unit tests.
- * Los excedentes se DESCARTAN sin cola: una tormenta de render-loop no debe
- * convertirse en 20 RPCs en un segundo.
+ * Rate-limit + dedup por sesión, con presupuesto POR FUENTE y contadores de
+ * descarte. Estado puro, exportado para unit tests. Los excedentes se
+ * DESCARTAN sin cola: una tormenta de render-loop no debe convertirse en N
+ * RPCs en un segundo.
+ *
+ * El dedup mira lo ENVIADO (`sentKeys`), no lo visto: antes un error
+ * descartado por el gap de 2 s quedaba marcado como visto y su siguiente
+ * ocurrencia jamás se enviaba — se perdía el primer error de cada ráfaga.
  */
 export class ErrorReportLimiter {
   private sent = 0
   private lastSentAt = 0
   private readonly seen = new Map<string, number>()
+  private readonly sentKeys = new Set<string>()
+  private readonly sentBySource = new Map<string, number>()
+  private droppedDedup = 0
+  private droppedCap = 0
+  private droppedGap = 0
 
   constructor(
-    private readonly maxPerSession = MAX_ERROR_REPORTS_PER_SESSION,
+    private readonly budgets: Record<string, number> = SOURCE_BUDGETS,
     private readonly minGapMs = MIN_REPORT_GAP_MS,
   ) {}
 
   /** true si este error debe ENVIARSE. Siempre cuenta la ocurrencia local. */
-  shouldReport(key: string, now = Date.now()): boolean {
-    const count = (this.seen.get(key) ?? 0) + 1
-    this.seen.set(key, count)
-    if (count > 1) return false
-    if (this.sent >= this.maxPerSession) return false
-    if (this.lastSentAt !== 0 && now - this.lastSentAt < this.minGapMs) return false
+  shouldReport(source: string, key: string, now = Date.now()): boolean {
+    this.seen.set(key, (this.seen.get(key) ?? 0) + 1)
+    if (this.sentKeys.has(key)) {
+      this.droppedDedup += 1
+      return false
+    }
+    const budget = this.budgets[source] ?? DEFAULT_SOURCE_BUDGET
+    if ((this.sentBySource.get(source) ?? 0) >= budget) {
+      this.droppedCap += 1
+      return false
+    }
+    if (this.lastSentAt !== 0 && now - this.lastSentAt < this.minGapMs) {
+      this.droppedGap += 1
+      return false
+    }
     this.sent += 1
     this.lastSentAt = now
+    this.sentKeys.add(key)
+    this.sentBySource.set(source, (this.sentBySource.get(source) ?? 0) + 1)
     return true
   }
 
   occurrences(key: string): number {
     return this.seen.get(key) ?? 0
+  }
+
+  /** Invariante: sent + Σdropped == intentos que llegaron al limiter. */
+  stats(): ErrorBudgetStats {
+    return {
+      sent: this.sent,
+      dropped_dedup: this.droppedDedup,
+      dropped_cap: this.droppedCap,
+      dropped_gap: this.droppedGap,
+      sent_by_source: Object.fromEntries(this.sentBySource),
+    }
   }
 }
 
@@ -108,6 +165,11 @@ const startedAt = Date.now()
 let installed = false
 let reporting = false
 let seq = 0
+
+/** Contadores del limiter de esta ventana, para el err_budget del heartbeat. */
+export function getErrorTelemetryStats(): ErrorBudgetStats {
+  return limiter.stats()
+}
 
 export function reportCaughtError(
   source: ErrorSource,
@@ -121,7 +183,7 @@ export function reportCaughtError(
   try {
     const norm = normalizeError(error)
     const key = buildErrorKey(norm.name, norm.message)
-    if (!limiter.shouldReport(key)) return
+    if (!limiter.shouldReport(source, key)) return
 
     seq += 1
     const message = truncateStr(norm.message, 500)

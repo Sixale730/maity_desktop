@@ -37,8 +37,8 @@
 //! - Los panics no pasan por tracing (fuera de alcance; ver issue #60).
 
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
-use std::collections::BTreeSet;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::collections::{BTreeMap, BTreeSet};
 
 use tauri::Emitter;
 use tokio::sync::mpsc;
@@ -67,14 +67,49 @@ pub struct RustErrorPayload {
     pub ts_ms: u64,
 }
 
+/// Contadores del limiter para el `err_budget` del heartbeat. Monótonos por
+/// proceso (en SQL: `max()` por sesión y luego sumar). Invariante:
+/// `sent + dropped_dedup + dropped_cap + dropped_gap == intentos que llegaron
+/// al limiter` (`dropped_channel` se cuenta aparte, post-limiter).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct BridgeBudget {
+    pub sent: u64,
+    pub dropped_dedup: u64,
+    pub dropped_cap: u64,
+    pub dropped_gap: u64,
+    pub dropped_channel: u64,
+    /// Ocurrencias que NO se enviaron (dedup incluido) — el denominador que un
+    /// limiter mudo hacía invisible: "20 errores" podía significar 20 o 20.000.
+    pub suppressed_total: u64,
+    /// Top 3 claves más repetidas (conteos; la clave ya viene truncada a 120).
+    pub top_suppressed: Vec<SuppressedEntry>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SuppressedEntry {
+    pub key: String,
+    pub count: u64,
+}
+
 /// Dedup + cap + gap, con estado propio (no estático) para que los tests usen
-/// instancias frescas. En producción vive dentro del único `RustErrorLayer`.
+/// instancias frescas. En producción vive dentro del único `RustErrorLayer` y
+/// se registra en `GLOBAL_LIMITER` para el snapshot del heartbeat.
 struct BridgeLimiter {
     max_per_process: usize,
     min_gap_ms: u64,
     sent: AtomicUsize,
     last_sent_ms: AtomicU64,
-    seen: Mutex<BTreeSet<String>>,
+    dropped_dedup: AtomicU64,
+    dropped_cap: AtomicU64,
+    dropped_gap: AtomicU64,
+    /// Ocurrencias por clave (rollup de suprimidos). Antes era un `BTreeSet`
+    /// sin conteo: dedup permanente pero mudo.
+    seen: Mutex<BTreeMap<String, u64>>,
+    /// Claves ya ENVIADAS. Separado de `seen` a propósito: un drop por cap/gap
+    /// no debe envenenar el dedup — antes, un error descartado por el gap de
+    /// 2 s quedaba marcado como visto y su siguiente ocurrencia jamás se
+    /// enviaba (se perdía el PRIMER error de cada ráfaga).
+    sent_keys: Mutex<BTreeSet<String>>,
 }
 
 impl BridgeLimiter {
@@ -84,31 +119,91 @@ impl BridgeLimiter {
             min_gap_ms,
             sent: AtomicUsize::new(0),
             last_sent_ms: AtomicU64::new(0),
-            seen: Mutex::new(BTreeSet::new()),
+            dropped_dedup: AtomicU64::new(0),
+            dropped_cap: AtomicU64::new(0),
+            dropped_gap: AtomicU64::new(0),
+            seen: Mutex::new(BTreeMap::new()),
+            sent_keys: Mutex::new(BTreeSet::new()),
         }
     }
 
-    /// true si este error debe enviarse. Dedup permanente por
-    /// `target:message[..120]`; los repetidos jamás se reenvían.
+    /// true si este error debe enviarse. Dedup por `target:message[..120]`
+    /// sobre lo ENVIADO; cada descarte incrementa su contador.
     fn allows(&self, target: &str, message: &str, now_ms: u64) -> bool {
         let key = format!("{}:{}", target, truncate_chars(message, 120));
         {
             let Ok(mut seen) = self.seen.lock() else { return false };
-            if !seen.insert(key) {
+            *seen.entry(key.clone()).or_insert(0) += 1;
+        }
+        {
+            let Ok(sent_keys) = self.sent_keys.lock() else { return false };
+            if sent_keys.contains(&key) {
+                self.dropped_dedup.fetch_add(1, Ordering::Relaxed);
                 return false;
             }
         }
         if self.sent.load(Ordering::Relaxed) >= self.max_per_process {
+            self.dropped_cap.fetch_add(1, Ordering::Relaxed);
             return false;
         }
         let last = self.last_sent_ms.load(Ordering::Relaxed);
         if last != 0 && now_ms.saturating_sub(last) < self.min_gap_ms {
+            self.dropped_gap.fetch_add(1, Ordering::Relaxed);
             return false;
         }
         self.sent.fetch_add(1, Ordering::Relaxed);
         self.last_sent_ms.store(now_ms, Ordering::Relaxed);
+        if let Ok(mut sent_keys) = self.sent_keys.lock() {
+            sent_keys.insert(key);
+        }
         true
     }
+
+    fn budget(&self, dropped_channel: u64) -> BridgeBudget {
+        let sent = self.sent.load(Ordering::Relaxed) as u64;
+        let (top_suppressed, occurrences_total) = match self.seen.lock() {
+            Ok(seen) => {
+                let total: u64 = seen.values().sum();
+                let mut entries: Vec<(&String, &u64)> = seen.iter().collect();
+                entries.sort_by(|a, b| b.1.cmp(a.1));
+                (
+                    entries
+                        .into_iter()
+                        .take(3)
+                        .map(|(key, count)| SuppressedEntry {
+                            key: key.clone(),
+                            count: *count,
+                        })
+                        .collect(),
+                    total,
+                )
+            }
+            Err(_) => (Vec::new(), 0),
+        };
+        BridgeBudget {
+            sent,
+            dropped_dedup: self.dropped_dedup.load(Ordering::Relaxed),
+            dropped_cap: self.dropped_cap.load(Ordering::Relaxed),
+            dropped_gap: self.dropped_gap.load(Ordering::Relaxed),
+            dropped_channel,
+            suppressed_total: occurrences_total.saturating_sub(sent),
+            top_suppressed,
+        }
+    }
+}
+
+/// El limiter de producción, para el snapshot del heartbeat. Lo puebla
+/// `make_layer()`; los layers de test usan instancias propias y no lo tocan.
+static GLOBAL_LIMITER: OnceLock<Arc<BridgeLimiter>> = OnceLock::new();
+/// Descartes por canal lleno (post-limiter, pre-drenadora).
+static DROPPED_CHANNEL: AtomicU64 = AtomicU64::new(0);
+
+/// Snapshot de contadores para `get_health_snapshot` (None si el layer de
+/// producción nunca se creó — p. ej. el fallback `fmt::init()` de main.rs).
+pub fn budget_snapshot() -> Option<BridgeBudget> {
+    GLOBAL_LIMITER
+        .get()
+        .map(|limiter| limiter.budget(DROPPED_CHANNEL.load(Ordering::Relaxed)))
 }
 
 /// Truncado seguro por caracteres (no parte UTF-8 a la mitad).
@@ -178,12 +273,18 @@ impl<S: Subscriber> Layer<S> for RustErrorLayer {
             return;
         }
         // try_send: jamás bloquea. Canal lleno o drenadora ausente → drop
-        // silencioso (el error ya está en maity.log).
-        let _ = self.tx.try_send(RustErrorPayload {
-            target: target.to_string(),
-            message: visitor.message,
-            ts_ms: now_ms(),
-        });
+        // contado (el error ya está en maity.log; el contador delata el hueco).
+        if self
+            .tx
+            .try_send(RustErrorPayload {
+                target: target.to_string(),
+                message: visitor.message,
+                ts_ms: now_ms(),
+            })
+            .is_err()
+        {
+            DROPPED_CHANNEL.fetch_add(1, Ordering::Relaxed);
+        }
     }
 }
 
@@ -197,10 +298,10 @@ pub fn make_layer() -> RustErrorLayer {
     if let Ok(mut slot) = PENDING_RX.lock() {
         *slot = Some(rx);
     }
-    RustErrorLayer {
-        tx,
-        limiter: Arc::new(BridgeLimiter::new(MAX_REPORTS_PER_PROCESS, MIN_GAP_MS)),
-    }
+    let limiter = Arc::new(BridgeLimiter::new(MAX_REPORTS_PER_PROCESS, MIN_GAP_MS));
+    // Registrar para el err_budget del heartbeat (ignora un doble make_layer).
+    let _ = GLOBAL_LIMITER.set(limiter.clone());
+    RustErrorLayer { tx, limiter }
 }
 
 /// Arranca la task drenadora con el AppHandle (desde `setup()` de lib.rs,
@@ -291,11 +392,31 @@ mod tests {
     fn limiter_dedup_cap_y_gap() {
         let lim = BridgeLimiter::new(3, 2_000);
         assert!(lim.allows("t", "a", 10_000));
-        assert!(!lim.allows("t", "a", 20_000), "dedup permanente por key");
+        assert!(!lim.allows("t", "a", 20_000), "dedup por key ya ENVIADA");
         assert!(!lim.allows("t", "b", 10_500), "dentro del gap de 2s");
-        assert!(lim.allows("t", "b2", 13_000));
+        // Fix del envenenamiento: el drop por gap NO marca la key como enviada,
+        // así que la siguiente ocurrencia de "b" sí sale.
+        assert!(lim.allows("t", "b", 13_000), "gap-drop no envenena el dedup");
         assert!(lim.allows("t", "c", 16_000));
         assert!(!lim.allows("t", "d", 30_000), "cap de 3 alcanzado");
+
+        // Contadores: 3 enviados, 1 dedup (a), 1 gap (b@10500), 1 cap (d).
+        let budget = lim.budget(0);
+        assert_eq!(budget.sent, 3);
+        assert_eq!(budget.dropped_dedup, 1);
+        assert_eq!(budget.dropped_gap, 1);
+        assert_eq!(budget.dropped_cap, 1);
+        // Invariante: sent + Σdropped == intentos que llegaron al limiter (6).
+        assert_eq!(
+            budget.sent + budget.dropped_dedup + budget.dropped_gap + budget.dropped_cap,
+            6
+        );
+        // suppressed_total = ocurrencias no enviadas; top incluye a "t:a" (2 ocurrencias).
+        assert_eq!(budget.suppressed_total, 3);
+        assert!(budget
+            .top_suppressed
+            .iter()
+            .any(|e| e.key == "t:a" && e.count == 2));
     }
 
     #[test]

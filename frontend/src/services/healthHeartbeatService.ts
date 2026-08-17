@@ -22,6 +22,7 @@
  */
 import { invoke } from '@tauri-apps/api/core'
 import { createSubscriptionGroup } from '@/lib/tauriSubscribe'
+import { getErrorTelemetryStats } from '@/lib/errorTelemetry'
 
 import { platformLogger } from '@/lib/platformLogger'
 import { supabase } from '@/lib/supabase'
@@ -65,6 +66,8 @@ interface HealthSnapshot {
   peaks: SessionPeaks
   phase: string
   lag_seconds: number
+  /** Contadores del puente Rust ERROR→telemetría (BridgeBudget de Rust). */
+  err_budget: Record<string, unknown> | null
 }
 
 /** Payload completo de `transcription-lag-update` (worker.rs emite 6 campos). */
@@ -203,6 +206,13 @@ class HealthHeartbeatService {
         // demás dimensiones estáticas viven SOLO en device.profile — que esta
         // excepción no sea la puerta de las otras ocho.
         performance_tier: this.deviceProfile?.performance_tier ?? null,
+        // Lo que los limiters DESCARTAN (monótonos por sesión: en SQL, max()
+        // por sesión y sumar). Sin esto un limiter agotado es indistinguible
+        // de "no pasó nada".
+        err_budget: {
+          rust: snapshot.err_budget,
+          webview: getErrorTelemetryStats(),
+        },
       })
     } catch {
       // Fire-and-forget: un fallo de snapshot/red no debe tocar la app.

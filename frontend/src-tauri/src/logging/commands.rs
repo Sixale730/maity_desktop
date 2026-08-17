@@ -324,6 +324,11 @@ pub struct HealthSnapshot {
     pub peaks: SessionPeaks,
     pub phase: &'static str,
     pub lag_seconds: u64,
+    /// Contadores del puente Rust ERROR→telemetría (monótonos por proceso):
+    /// hace visible lo que el limiter DESCARTA — sin esto, "20 errores" podía
+    /// significar 20 o 20.000. None si el layer nunca se creó (fallback
+    /// `fmt::init()` de main.rs).
+    pub err_budget: Option<super::rust_error_bridge::BridgeBudget>,
 }
 
 /// Métricas de salud en UNA invocación IPC: memoria por proceso, fase de
@@ -348,6 +353,7 @@ pub async fn get_health_snapshot() -> Result<HealthSnapshot, String> {
         peaks: mem_sampler::session_peaks(),
         phase: crate::audio::recording_phase::current_phase().as_str(),
         lag_seconds: crate::audio::transcription::worker::transcription_lag_seconds(),
+        err_budget: super::rust_error_bridge::budget_snapshot(),
     })
 }
 
@@ -454,6 +460,7 @@ mod health_snapshot_tests {
             },
             phase: "recording",
             lag_seconds: 3,
+            err_budget: None,
         };
 
         let v = serde_json::to_value(&snapshot).expect("HealthSnapshot serializable");
@@ -480,6 +487,7 @@ mod health_snapshot_tests {
             },
             phase: "idle",
             lag_seconds: 0,
+            err_budget: None,
         };
 
         let v = serde_json::to_value(&snapshot).expect("serializable");

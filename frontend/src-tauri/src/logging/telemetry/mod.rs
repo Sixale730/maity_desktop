@@ -18,4 +18,5 @@ pub mod catalog;
 pub mod context;
 pub mod drain;
 pub mod emit;
+pub mod panics;
 pub mod recording_session;

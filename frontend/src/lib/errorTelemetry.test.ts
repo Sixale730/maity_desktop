@@ -22,37 +22,72 @@ import {
 
 describe('ErrorReportLimiter', () => {
   it('envía la primera ocurrencia y dedupea las repetidas', () => {
-    const limiter = new ErrorReportLimiter(20, 0)
-    expect(limiter.shouldReport('a')).toBe(true)
-    expect(limiter.shouldReport('a')).toBe(false)
-    expect(limiter.shouldReport('a')).toBe(false)
+    const limiter = new ErrorReportLimiter({ window: 20 }, 0)
+    expect(limiter.shouldReport('window', 'a')).toBe(true)
+    expect(limiter.shouldReport('window', 'a')).toBe(false)
+    expect(limiter.shouldReport('window', 'a')).toBe(false)
     expect(limiter.occurrences('a')).toBe(3)
   })
 
-  it('keys distintas cuentan por separado hasta el cap', () => {
-    const limiter = new ErrorReportLimiter(3, 0)
-    expect(limiter.shouldReport('a')).toBe(true)
-    expect(limiter.shouldReport('b')).toBe(true)
-    expect(limiter.shouldReport('c')).toBe(true)
-    expect(limiter.shouldReport('d')).toBe(false)
+  it('keys distintas cuentan por separado hasta el cap de la fuente', () => {
+    const limiter = new ErrorReportLimiter({ window: 3 }, 0)
+    expect(limiter.shouldReport('window', 'a')).toBe(true)
+    expect(limiter.shouldReport('window', 'b')).toBe(true)
+    expect(limiter.shouldReport('window', 'c')).toBe(true)
+    expect(limiter.shouldReport('window', 'd')).toBe(false)
     // Excedente descartado, no encolado: sigue bloqueado.
-    expect(limiter.shouldReport('e')).toBe(false)
+    expect(limiter.shouldReport('window', 'e')).toBe(false)
   })
 
   it('anti-burst: respeta el gap mínimo entre envíos', () => {
-    const limiter = new ErrorReportLimiter(20, 2000)
-    expect(limiter.shouldReport('a', 1000)).toBe(true)
-    expect(limiter.shouldReport('b', 2000)).toBe(false)
-    expect(limiter.shouldReport('c', 3100)).toBe(true)
+    const limiter = new ErrorReportLimiter({ window: 20 }, 2000)
+    expect(limiter.shouldReport('window', 'a', 1000)).toBe(true)
+    expect(limiter.shouldReport('window', 'b', 2000)).toBe(false)
+    expect(limiter.shouldReport('window', 'c', 3100)).toBe(true)
   })
 
   it('el cap cuenta envíos, no ocurrencias', () => {
-    const limiter = new ErrorReportLimiter(2, 0)
-    expect(limiter.shouldReport('a')).toBe(true)
-    limiter.shouldReport('a')
-    limiter.shouldReport('a')
-    expect(limiter.shouldReport('b')).toBe(true)
-    expect(limiter.shouldReport('c')).toBe(false)
+    const limiter = new ErrorReportLimiter({ window: 2 }, 0)
+    expect(limiter.shouldReport('window', 'a')).toBe(true)
+    limiter.shouldReport('window', 'a')
+    limiter.shouldReport('window', 'a')
+    expect(limiter.shouldReport('window', 'b')).toBe(true)
+    expect(limiter.shouldReport('window', 'c')).toBe(false)
+  })
+
+  it('presupuesto POR FUENTE: window agotado no bloquea a rust (anti noisy-neighbor)', () => {
+    const limiter = new ErrorReportLimiter({ window: 1, rust: 2 }, 0)
+    expect(limiter.shouldReport('window', 'w1')).toBe(true)
+    expect(limiter.shouldReport('window', 'w2')).toBe(false)
+    // El render-loop de React ya no se come el cupo de los ERROR de Rust (#60)
+    expect(limiter.shouldReport('rust', 'r1')).toBe(true)
+    expect(limiter.shouldReport('rust', 'r2')).toBe(true)
+    expect(limiter.shouldReport('rust', 'r3')).toBe(false)
+  })
+
+  it('un drop por gap NO envenena el dedup: la siguiente ocurrencia sale', () => {
+    const limiter = new ErrorReportLimiter({ window: 20 }, 2000)
+    expect(limiter.shouldReport('window', 'a', 1000)).toBe(true)
+    expect(limiter.shouldReport('window', 'b', 1500)).toBe(false)
+    // Antes 'b' quedaba marcado como visto y jamás se enviaba (se perdía el
+    // primer error de cada ráfaga). Hoy el dedup mira lo ENVIADO.
+    expect(limiter.shouldReport('window', 'b', 4000)).toBe(true)
+  })
+
+  it('stats: sent + Σdropped == intentos, con desglose por causa', () => {
+    const limiter = new ErrorReportLimiter({ window: 2 }, 2000)
+    limiter.shouldReport('window', 'a', 1000) // sent
+    limiter.shouldReport('window', 'a', 1100) // dedup
+    limiter.shouldReport('window', 'b', 1200) // gap (aún dentro de 2s)
+    limiter.shouldReport('window', 'b', 4000) // sent (el gap-drop no envenenó)
+    limiter.shouldReport('window', 'c', 7000) // cap (window: 2 agotado)
+    const stats = limiter.stats()
+    expect(stats.sent).toBe(2)
+    expect(stats.dropped_dedup).toBe(1)
+    expect(stats.dropped_gap).toBe(1)
+    expect(stats.dropped_cap).toBe(1)
+    expect(stats.sent + stats.dropped_dedup + stats.dropped_gap + stats.dropped_cap).toBe(5)
+    expect(stats.sent_by_source).toEqual({ window: 2 })
   })
 })
 

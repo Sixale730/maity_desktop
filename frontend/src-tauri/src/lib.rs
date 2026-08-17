@@ -980,6 +980,17 @@ pub fn run() {
             // este (single-writer — syncToCloud() del frontend se eliminó).
             logging::telemetry::drain::spawn(_app.handle().clone());
 
+            // Panics → outbox: hook encadenado (el de main.rs sigue mandando a
+            // tracing + Sentry) que escribe a un .jsonl síncrono; los panics
+            // del proceso ANTERIOR se importan aquí y la drenadora los sube.
+            logging::telemetry::panics::install(_app.handle());
+            {
+                let app_for_panics = _app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    logging::telemetry::panics::import_pending(&app_for_panics).await;
+                });
+            }
+
             // Set models directories (always set, even if engines won't be initialized)
             whisper_engine::commands::set_models_directory(&_app.handle());
             parakeet_engine::commands::set_models_directory(&_app.handle());
