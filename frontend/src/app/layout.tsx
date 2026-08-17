@@ -452,6 +452,23 @@ function AppContent({ children }: { children: React.ReactNode }) {
       })
   }, [])
 
+  // `modelGateActive` se calculaba UNA sola vez por sesión: si la descarga de
+  // Parakeet terminaba con el gate arriba, el usuario se quedaba mirando el gate
+  // (o el error) hasta reiniciar la app. Re-evaluar al terminar (COMPLETE levanta
+  // el gate en vivo) o fallar (ERROR lo re-arma si el modelo sigue sin estar) la
+  // descarga. El check es LECTURA (`parakeet_has_available_models`): no arranca
+  // ni cancela descargas — el gate sigue siendo pasivo. Durante el onboarding
+  // técnico no corre: ahí el gate está diferido a propósito y lo evalúa
+  // `handleOnboardingComplete`.
+  useEffect(() => {
+    if (showOnboarding) return
+    const subs = createSubscriptionGroup()
+    const recheck = () => { void checkModelAvailability() }
+    subs.on(TauriEvent.PARAKEET_MODEL_DOWNLOAD_COMPLETE, recheck)
+    subs.on(TauriEvent.PARAKEET_MODEL_DOWNLOAD_ERROR, recheck)
+    return () => subs.dispose()
+  }, [showOnboarding])
+
   // Disable context menu in production
   useEffect(() => {
     if (process.env.NODE_ENV === 'production') {
