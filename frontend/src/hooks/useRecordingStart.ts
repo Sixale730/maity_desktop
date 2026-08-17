@@ -22,6 +22,7 @@ import { getDeepgramProxyConfig, hasValidCachedProxyConfig, DeepgramError } from
 import type { DeepgramErrorType } from '@/lib/deepgram';
 import { logger } from '@/lib/logger';
 import { TauriEvent } from '@/lib/tauri-events';
+import { DEFAULT_TRANSCRIPTION_PROVIDER } from '@/lib/transcription-providers';
 
 
 interface UseRecordingStartReturn {
@@ -87,7 +88,20 @@ export function useRecordingStart(
 
   // Check if transcription is ready based on selected provider
   const checkTranscriptionReady = useCallback(async (): Promise<TranscriptionReadyResult> => {
-    const provider = transcriptModelConfig?.provider || 'deepgram';
+    // Config sin cargar NO es "usa el default": es "todavía no sé cuál motor
+    // validar". Adoptar un default aquí hacía que la app validara un proveedor
+    // distinto del que iba a transcribir y autorizara grabaciones que nunca
+    // producirían texto. Fail-closed: sin config, no se graba.
+    if (!transcriptModelConfig?.provider) {
+      logger.debug('[recording] transcriptModelConfig aún no cargó — no se autoriza grabar');
+      return {
+        ready: false,
+        isDownloading: false,
+        error: 'La configuración de transcripción aún no ha cargado. Intenta de nuevo en unos segundos.',
+      };
+    }
+
+    const provider = transcriptModelConfig.provider;
     logger.debug(`Checking transcription readiness for provider: ${provider}`);
 
     try {
@@ -218,8 +232,15 @@ export function useRecordingStart(
         }
 
         default:
-          console.warn(`Unknown provider: ${provider}, defaulting to ready`);
-          return { ready: true, isDownloading: false };
+          // Fail-closed: un proveedor que no sabemos verificar no puede
+          // autorizar una grabación. Antes esto devolvía ready:true, así que
+          // cualquier valor inesperado de config abría paso a grabar sin motor.
+          console.error(`Unknown transcription provider: ${provider}`);
+          return {
+            ready: false,
+            isDownloading: false,
+            error: `Proveedor de transcripción desconocido: ${provider}`,
+          };
       }
     } catch (error) {
       console.error('Failed to check transcription readiness:', error);
@@ -243,7 +264,7 @@ export function useRecordingStart(
       meeting_title: title,
       mic_device: selectedDevices?.micDevice || null,
       system_device: selectedDevices?.systemDevice || null,
-      provider: transcriptModelConfig?.provider || 'deepgram',
+      provider: transcriptModelConfig?.provider || DEFAULT_TRANSCRIPTION_PROVIDER,
       trigger,
     }, 'success');
 
@@ -347,7 +368,7 @@ export function useRecordingStart(
     isStartingRef.current = true;
 
     try {
-      const provider = transcriptModelConfig?.provider || 'deepgram';
+      const provider = transcriptModelConfig?.provider || DEFAULT_TRANSCRIPTION_PROVIDER;
       logger.debug(`handleRecordingStart called - checking ${provider} transcription status`);
 
       const transcriptionStatus = await checkTranscriptionReady();
@@ -376,40 +397,47 @@ export function useRecordingStart(
     const checkAutoStartRecording = async () => {
       if (typeof window !== 'undefined') {
         const shouldAutoStart = sessionStorage.getItem('autoStartRecording');
-        if (shouldAutoStart === 'true' && !isRecording && !isAutoStarting) {
+        // Guard SÍNCRONO (ref), no `isAutoStarting`: el estado de React se
+        // aplica en el siguiente render, así que dos disparos en el mismo tick
+        // pasaban ambos el if. Ver el comentario del guard en handleDirectStart.
+        if (shouldAutoStart === 'true' && !isRecording && !isStartingRef.current) {
+          isStartingRef.current = true;
           logger.debug('Auto-starting recording from navigation...');
           setIsAutoStarting(true);
           sessionStorage.removeItem('autoStartRecording');
 
-          const transcriptionStatus = await checkTranscriptionReady();
-          if (!transcriptionStatus.ready) {
-            handleTranscriptionNotReady(transcriptionStatus, 'sidebar_auto');
-            setIsAutoStarting(false);
-            return;
-          }
-
           try {
+            const transcriptionStatus = await checkTranscriptionReady();
+            if (!transcriptionStatus.ready) {
+              handleTranscriptionNotReady(transcriptionStatus, 'sidebar_auto');
+              return;
+            }
+
             await startRecordingFlow('auto_start');
           } catch (error) {
             console.error('Failed to auto-start recording:', error);
             recordingLogService.log('recording_start_failed', null, 'error', error instanceof Error ? error.message : String(error));
             setStatus(RecordingStatus.ERROR, error instanceof Error ? error.message : 'Failed to auto-start recording');
+            setIsRecording(false);
             Analytics.trackButtonClick('start_recording_error', 'sidebar_auto');
           } finally {
             setIsAutoStarting(false);
+            isStartingRef.current = false;
           }
         }
       }
     };
 
     checkAutoStartRecording();
+    // `isAutoStarting` ya no es dependencia: el guard es isStartingRef (síncrono),
+    // así que el efecto no necesita re-correr cuando cambia el estado transitorio.
   }, [
     isRecording,
-    isAutoStarting,
     checkTranscriptionReady,
     handleTranscriptionNotReady,
     startRecordingFlow,
     setStatus,
+    setIsRecording,
   ]);
 
   // Listen for recording trigger from meeting detector (Tauri event).
@@ -418,12 +446,12 @@ export function useRecordingStart(
   // desuscribía y resuscribía al MISMO evento en cada render. Ahora monta una
   // sola vez y lee todo del latest-ref.
   const detectorLatest = useRef({
-    isRecording, isAutoStarting, checkTranscriptionReady,
-    handleTranscriptionNotReady, startRecordingFlow, setStatus,
+    isRecording, checkTranscriptionReady,
+    handleTranscriptionNotReady, startRecordingFlow, setStatus, setIsRecording,
   });
   detectorLatest.current = {
-    isRecording, isAutoStarting, checkTranscriptionReady,
-    handleTranscriptionNotReady, startRecordingFlow, setStatus,
+    isRecording, checkTranscriptionReady,
+    handleTranscriptionNotReady, startRecordingFlow, setStatus, setIsRecording,
   };
 
   useEffect(() => {
@@ -433,27 +461,30 @@ export function useRecordingStart(
       try {
         subs.on<string>(TauriEvent.START_RECORDING_FROM_DETECTOR, async (event) => {
           const {
-            isRecording, isAutoStarting, checkTranscriptionReady,
-            handleTranscriptionNotReady, startRecordingFlow, setStatus,
+            isRecording, checkTranscriptionReady,
+            handleTranscriptionNotReady, startRecordingFlow, setStatus, setIsRecording,
           } = detectorLatest.current;
           const meetingName = event.payload;
           logger.debug(`Meeting detector triggered recording: "${meetingName}"`);
 
-          if (isRecording || isAutoStarting) {
+          // Guard SÍNCRONO: `isAutoStarting` viene del latest-ref pero sigue
+          // siendo estado de React (valor del último render). isStartingRef se
+          // escribe en el mismo tick, así que dos eventos seguidos no pasan los dos.
+          if (isRecording || isStartingRef.current) {
             logger.debug('Recording already in progress, ignoring detector event');
             return;
           }
 
+          isStartingRef.current = true;
           setIsAutoStarting(true);
 
-          const transcriptionStatus = await checkTranscriptionReady();
-          if (!transcriptionStatus.ready) {
-            handleTranscriptionNotReady(transcriptionStatus, 'meeting_detector');
-            setIsAutoStarting(false);
-            return;
-          }
-
           try {
+            const transcriptionStatus = await checkTranscriptionReady();
+            if (!transcriptionStatus.ready) {
+              handleTranscriptionNotReady(transcriptionStatus, 'meeting_detector');
+              return;
+            }
+
             await startRecordingFlow('meeting_detector', meetingName);
             toast.success('Grabacion iniciada', {
               description: `Reunion: ${meetingName}`,
@@ -464,6 +495,7 @@ export function useRecordingStart(
             recordingLogService.log('recording_start_failed', null, 'error', error instanceof Error ? error.message : String(error));
             const errorMsg = error instanceof Error ? error.message : String(error);
             setStatus(RecordingStatus.ERROR, errorMsg);
+            setIsRecording(false);
 
             if (errorMsg.includes('microphone') || errorMsg.includes('mic') || errorMsg.includes('input')) {
               toast.error('Microfono No Disponible', {
@@ -488,6 +520,7 @@ export function useRecordingStart(
             }
           } finally {
             setIsAutoStarting(false);
+            isStartingRef.current = false;
           }
         });
       } catch (error) {
@@ -503,31 +536,41 @@ export function useRecordingStart(
   // Listen for direct recording trigger from sidebar when already on home page
   useEffect(() => {
     const handleDirectStart = async () => {
-      if (isRecording || isAutoStarting) {
+      // Guard SÍNCRONO (ref), NO `isAutoStarting`.
+      //
+      // `isAutoStarting` es estado de React: `setIsAutoStarting(true)` no se ve
+      // hasta el siguiente render, así que dos clics rápidos en el botón del
+      // Sidebar disparaban dos veces este handler con el guard todavía en false.
+      // Ambos llegaban al backend y el segundo chocaba contra StartGate::acquire()
+      // ("Recording start already in progress") dejando la UI en ERROR mientras
+      // el backend grababa de verdad. El estado de React no es un mutex.
+      if (isRecording || isStartingRef.current) {
         logger.debug('Recording already in progress, ignoring direct start event');
         return;
       }
+      isStartingRef.current = true;
 
-      const provider = transcriptModelConfig?.provider || 'deepgram';
+      const provider = transcriptModelConfig?.provider || DEFAULT_TRANSCRIPTION_PROVIDER;
       logger.debug(`Direct start from sidebar - checking ${provider} transcription status`);
       setIsAutoStarting(true);
 
-      const transcriptionStatus = await checkTranscriptionReady();
-      if (!transcriptionStatus.ready) {
-        handleTranscriptionNotReady(transcriptionStatus, 'sidebar_direct');
-        setIsAutoStarting(false);
-        return;
-      }
-
       try {
+        const transcriptionStatus = await checkTranscriptionReady();
+        if (!transcriptionStatus.ready) {
+          handleTranscriptionNotReady(transcriptionStatus, 'sidebar_direct');
+          return;
+        }
+
         await startRecordingFlow('sidebar_direct');
       } catch (error) {
         console.error('Failed to start recording from sidebar:', error);
         recordingLogService.log('recording_start_failed', null, 'error', error instanceof Error ? error.message : String(error));
         setStatus(RecordingStatus.ERROR, error instanceof Error ? error.message : 'Failed to start recording from sidebar');
+        setIsRecording(false);
         Analytics.trackButtonClick('start_recording_error', 'sidebar_direct');
       } finally {
         setIsAutoStarting(false);
+        isStartingRef.current = false;
       }
     };
 
@@ -536,13 +579,16 @@ export function useRecordingStart(
     return () => {
       window.removeEventListener('start-recording-from-sidebar', handleDirectStart);
     };
+    // `isAutoStarting` fuera de deps: el guard real es isStartingRef (síncrono),
+    // así que re-suscribir el listener en cada cambio del transitorio solo
+    // generaba churn de add/removeEventListener.
   }, [
     isRecording,
-    isAutoStarting,
     checkTranscriptionReady,
     handleTranscriptionNotReady,
     startRecordingFlow,
     setStatus,
+    setIsRecording,
     transcriptModelConfig,
   ]);
 

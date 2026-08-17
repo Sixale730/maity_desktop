@@ -14,7 +14,7 @@ import { TauriEvent } from '@/lib/tauri-events';
 import { invoke } from '@tauri-apps/api/core';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { toast } from 'sonner';
-import { useRecordingState } from '@/contexts/RecordingStateContext';
+import { useRecordingState, RecordingStatus } from '@/contexts/RecordingStateContext';
 import { useAuth } from '@/contexts/AuthContext';
 import { useQuery } from '@tanstack/react-query';
 import { getOmiConversations } from '@/features/conversations';
@@ -53,7 +53,12 @@ const Sidebar: React.FC = () => {
   } = useSidebar();
 
   // Get recording state from RecordingStateContext (single source of truth)
-  const { isRecording } = useRecordingState();
+  const { isRecording, status } = useRecordingState();
+  // El transitorio STARTING también bloquea el botón: sin esto queda clicable
+  // durante todo el arranque y el usuario dispara dos veces. El guard REAL contra
+  // el doble arranque es isStartingRef en useRecordingStart (síncrono); esto es
+  // la mitad visible, para que el botón no invite al segundo clic.
+  const isStartingRecording = status === RecordingStatus.STARTING;
   const { maityUser } = useAuth();
   const syncStatuses = useCloudSyncStatuses();
 
@@ -526,8 +531,8 @@ const Sidebar: React.FC = () => {
             <TooltipTrigger asChild>
               <button
                 onClick={handleRecordingToggle}
-                disabled={isRecording}
-                className={`p-2 ${isRecording ? 'bg-[#ff0050] cursor-not-allowed' : 'bg-[#ff0050] hover:bg-[#cc0040]'} rounded-full transition-colors duration-150 shadow-sm`}
+                disabled={isRecording || isStartingRecording}
+                className={`p-2 ${isRecording || isStartingRecording ? 'bg-[#ff0050] cursor-not-allowed' : 'bg-[#ff0050] hover:bg-[#cc0040]'} rounded-full transition-colors duration-150 shadow-sm`}
                 aria-label={isRecording ? "Grabación en progreso" : "Iniciar grabación"}
               >
                 {isRecording ? (
