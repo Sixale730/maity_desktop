@@ -1530,6 +1530,7 @@ pub fn run() {
             logging::commands::log_frontend_event,
             logging::commands::clear_old_logs,
             logging::commands::get_health_snapshot,
+            logging::commands::get_device_profile,
             // Guardado de artefactos generados (.md/.pdf/.pptx) con dialogo nativo
             file_export::save_artifact_file,
             file_export::get_export_preferences,

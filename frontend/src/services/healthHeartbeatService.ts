@@ -88,6 +88,19 @@ export function shouldEmitHeartbeat(phase: string, msSinceLastEmit: number): boo
   return msSinceLastEmit >= emitEvery - HEARTBEAT_TOLERANCE_MS
 }
 
+/** Espejo de logging/commands.rs::DeviceProfile (Rust). */
+interface DeviceProfile {
+  cpu_cores: number
+  gpu_type: string
+  has_gpu_acceleration: boolean
+  memory_gb: number
+  performance_tier: string
+  os: string
+  os_version: string | null
+  arch: string
+  build_channel: string
+}
+
 class HealthHeartbeatService {
   private active = false
   private intervalId: ReturnType<typeof setInterval> | null = null
@@ -97,6 +110,9 @@ class HealthHeartbeatService {
   private startedAt = 0
   private lastEmitAt = 0
   private seq = 0
+  /** Cache del perfil estático + latch de emisión (1× por sesión de proceso). */
+  private deviceProfile: DeviceProfile | null = null
+  private deviceProfileEmitted = false
 
   async start(): Promise<void> {
     if (this.active) return
@@ -144,6 +160,22 @@ class HealthHeartbeatService {
 
       const snapshot = await invoke<HealthSnapshot>('get_health_snapshot')
       if (!this.active) return
+
+      // device.profile: los atributos ESTÁTICOS (gpu, RAM, os_version, arch,
+      // canal) se emiten UNA vez por sesión, aquí — post-gate de sesión, así
+      // el evento no se pierde en un 401 pre-login. Antes esos datos solo
+      // viajaban en coach.session_summary: una usuaria que nunca abre el
+      // coach era invisible para el análisis de hardware.
+      if (!this.deviceProfileEmitted) {
+        try {
+          this.deviceProfile = await invoke<DeviceProfile>('get_device_profile')
+          void platformLogger.log('device.profile', { ...this.deviceProfile })
+          this.deviceProfileEmitted = true
+        } catch {
+          // Sin perfil no se bloquea el heartbeat; se reintenta al próximo tick.
+        }
+      }
+
       if (reason === 'interval' && !shouldEmitHeartbeat(snapshot.phase, Date.now() - this.lastEmitAt)) {
         return
       }
@@ -166,6 +198,11 @@ class HealthHeartbeatService {
         peaks: snapshot.peaks,
         lag_seconds: snapshot.lag_seconds,
         queue,
+        // Excepción deliberada de cardinalidad: tier viaja en CADA beat porque
+        // es el slice-by más frecuente ("¿la fuga es solo en tier Low?"). Las
+        // demás dimensiones estáticas viven SOLO en device.profile — que esta
+        // excepción no sea la puerta de las otras ocho.
+        performance_tier: this.deviceProfile?.performance_tier ?? null,
       })
     } catch {
       // Fire-and-forget: un fallo de snapshot/red no debe tocar la app.

@@ -372,6 +372,58 @@ pub async fn clear_old_logs(keep_count: Option<usize>) -> Result<usize, String> 
     Ok(deleted)
 }
 
+/// Perfil estático del equipo — *resource attributes* (OTel): se emiten UNA vez
+/// por sesión como `device.profile`, no en cada heartbeat (repetirlos ×469
+/// beats es peso muerto). Excepción deliberada: `performance_tier` viaja
+/// también en el heartbeat porque es el slice-by más frecuente.
+#[derive(Debug, serde::Serialize)]
+pub struct DeviceProfile {
+    pub cpu_cores: u8,
+    pub gpu_type: &'static str,
+    pub has_gpu_acceleration: bool,
+    pub memory_gb: u8,
+    pub performance_tier: &'static str,
+    pub os: &'static str,
+    pub os_version: Option<String>,
+    pub arch: &'static str,
+    /// `store` (MSIX con identidad de paquete) o `direct` (NSIS/dev) — permite
+    /// segmentar incidentes por canal de distribución.
+    pub build_channel: &'static str,
+}
+
+#[tauri::command]
+pub fn get_device_profile() -> DeviceProfile {
+    use crate::audio::hardware_detector::{GpuType, HardwareProfile, PerformanceTier};
+
+    let hw = HardwareProfile::detect();
+    DeviceProfile {
+        cpu_cores: hw.cpu_cores,
+        gpu_type: match hw.gpu_type {
+            GpuType::None => "none",
+            GpuType::Metal => "metal",
+            GpuType::Cuda => "cuda",
+            GpuType::Vulkan => "vulkan",
+            GpuType::OpenCL => "opencl",
+        },
+        has_gpu_acceleration: hw.has_gpu_acceleration,
+        memory_gb: hw.memory_gb,
+        performance_tier: match hw.performance_tier {
+            PerformanceTier::Low => "low",
+            PerformanceTier::Medium => "medium",
+            PerformanceTier::High => "high",
+            PerformanceTier::Ultra => "ultra",
+        },
+        os: std::env::consts::OS,
+        os_version: sysinfo::System::os_version(),
+        arch: std::env::consts::ARCH,
+        build_channel: if crate::utils::is_running_under_package_identity() {
+            "store"
+        } else {
+            "direct"
+        },
+    }
+}
+
 #[cfg(test)]
 mod health_snapshot_tests {
     use super::*;
