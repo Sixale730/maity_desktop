@@ -14,6 +14,8 @@
 //! nativa NO emite al webview para que otro la suba — WebView2 suspende el JS
 //! con la ventana oculta y los eventos se pierden. Outbox + drenadora nativa.
 
+pub mod catalog;
 pub mod context;
 pub mod drain;
 pub mod emit;
+pub mod recording_session;

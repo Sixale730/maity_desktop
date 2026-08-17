@@ -76,7 +76,8 @@ export class RecordingService {
     micDeviceName: string | null,
     systemDeviceName: string | null,
     meetingName: string,
-    recordingMode: 'conversation' | 'presentation' = 'conversation'
+    recordingMode: 'conversation' | 'presentation' = 'conversation',
+    trigger?: string
   ): Promise<void> {
     // Claves en camelCase: el comando Rust no usa rename_all, así que Tauri 2
     // espera micDeviceName/systemDeviceName/... — con snake_case las claves no
@@ -86,7 +87,10 @@ export class RecordingService {
       micDeviceName,
       systemDeviceName,
       meetingName,
-      recordingMode
+      recordingMode,
+      // Quién arranca (manual/auto_start/meeting_detector/sidebar_direct):
+      // Rust lo persiste en el evento recording_started del embudo.
+      trigger: trigger ?? null
     });
   }
 

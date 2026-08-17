@@ -258,15 +258,12 @@ export function useRecordingStart(
   ) => {
     const title = meetingNameOverride || generateMeetingTitle();
 
-    // Start logging session
+    // Start logging session. El evento `recording_started` ya NO se emite aquí:
+    // lo emite Rust desde el embudo (initialize_recording), que también cubre
+    // tray y jornada headless — emitirlo en ambos lados daba 2 filas por
+    // grabación manual. El session de JS sigue vivo para los eventos de
+    // guardado (sqlite_save_*, save_skipped/deferred, cloud_sync_*).
     recordingLogService.startSession();
-    recordingLogService.log('recording_started', {
-      meeting_title: title,
-      mic_device: selectedDevices?.micDevice || null,
-      system_device: selectedDevices?.systemDevice || null,
-      provider: transcriptModelConfig?.provider || DEFAULT_TRANSCRIPTION_PROVIDER,
-      trigger,
-    }, 'success');
 
     // Generate meeting ID in frontend (no DB insert — meeting created atomically when saving transcripts)
     const meetingId = `meeting-${crypto.randomUUID()}`;
@@ -306,7 +303,8 @@ export function useRecordingStart(
       selectedDevices?.micDevice || null,
       selectedDevices?.systemDevice || null,
       title,
-      effectiveMode
+      effectiveMode,
+      trigger
     );
     logger.debug('Backend recording started successfully');
 
@@ -381,7 +379,6 @@ export function useRecordingStart(
       await startRecordingFlow('manual');
     } catch (error) {
       console.error('Failed to start recording:', error);
-      recordingLogService.log('recording_start_failed', null, 'error', error instanceof Error ? error.message : String(error));
       setStatus(RecordingStatus.ERROR, error instanceof Error ? error.message : 'Failed to start recording');
       setIsRecording(false);
       Analytics.trackButtonClick('start_recording_error', 'home_page');
@@ -416,7 +413,6 @@ export function useRecordingStart(
             await startRecordingFlow('auto_start');
           } catch (error) {
             console.error('Failed to auto-start recording:', error);
-            recordingLogService.log('recording_start_failed', null, 'error', error instanceof Error ? error.message : String(error));
             setStatus(RecordingStatus.ERROR, error instanceof Error ? error.message : 'Failed to auto-start recording');
             setIsRecording(false);
             Analytics.trackButtonClick('start_recording_error', 'sidebar_auto');
@@ -492,7 +488,6 @@ export function useRecordingStart(
             });
           } catch (error) {
             console.error('Failed to start recording from meeting detector:', error);
-            recordingLogService.log('recording_start_failed', null, 'error', error instanceof Error ? error.message : String(error));
             const errorMsg = error instanceof Error ? error.message : String(error);
             setStatus(RecordingStatus.ERROR, errorMsg);
             setIsRecording(false);
@@ -556,7 +551,6 @@ export function useRecordingStart(
         await startRecordingFlow('sidebar_direct');
       } catch (error) {
         console.error('Failed to start recording from sidebar:', error);
-        recordingLogService.log('recording_start_failed', null, 'error', error instanceof Error ? error.message : String(error));
         setStatus(RecordingStatus.ERROR, error instanceof Error ? error.message : 'Failed to start recording from sidebar');
         setIsRecording(false);
         Analytics.trackButtonClick('start_recording_error', 'sidebar_direct');

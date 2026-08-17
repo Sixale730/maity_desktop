@@ -186,10 +186,9 @@ export function useRecordingStop(
     setIsRecordingDisabled(true);
     const stopStartTime = Date.now();
 
-    // Log recording stopped
-    recordingLogService.log('recording_stopped', {
-      transcript_count: transcriptsRef.current.length,
-    }, 'success');
+    // `recording_stopped` lo emite Rust (stop_recording_reporting) con la
+    // duración real — cubre también el stop headless de jornada/tray. El
+    // transcript_count sigue viajando en los eventos de guardado de abajo.
 
     let wallClockDuration: number | null = null;
 

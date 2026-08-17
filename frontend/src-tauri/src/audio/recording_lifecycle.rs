@@ -54,13 +54,48 @@ pub fn is_recording_active() -> bool {
 
 /// Start recording with default devices (loads preferences for device resolution)
 pub async fn start_recording<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
-    start_recording_with_meeting_name(app, None).await
+    start_recording_with_meeting_name(app, None, None).await
 }
 
-/// Start recording with default devices and optional meeting name
+/// Telemetría (G1): un arranque fallido SIEMPRE deja rastro en el outbox —
+/// incluye el `Err` del StartGate (el doble-clic que dejaba la UI muerta en 5
+/// usuarias del piloto) y cualquier fallo de resolución de dispositivos o del
+/// embudo. El id de sesión es efímero: un start rechazado no debe pisar el
+/// slot de la grabación VIVA.
+async fn emit_start_failed<R: Runtime>(app: &AppHandle<R>, trigger: Option<&str>, error: &str) {
+    crate::logging::telemetry::emit::emit_event(
+        app,
+        &crate::logging::telemetry::recording_session::new_id(),
+        crate::logging::telemetry::catalog::RECORDING_START_FAILED,
+        serde_json::json!({ "trigger": trigger.unwrap_or("command") }),
+        Some("error"),
+        Some(error),
+        None,
+    )
+    .await;
+}
+
+/// Start recording with default devices and optional meeting name.
+///
+/// `trigger` declara QUIÉN arranca (tray/scheduler/frontend) — obligatorio en
+/// la firma a propósito: un entrypoint nuevo no compila sin declararlo.
 pub async fn start_recording_with_meeting_name<R: Runtime>(
     app: AppHandle<R>,
     meeting_name: Option<String>,
+    trigger: Option<String>,
+) -> Result<(), String> {
+    let result =
+        start_with_meeting_name_impl(app.clone(), meeting_name, trigger.clone()).await;
+    if let Err(e) = &result {
+        emit_start_failed(&app, trigger.as_deref(), e).await;
+    }
+    result
+}
+
+async fn start_with_meeting_name_impl<R: Runtime>(
+    app: AppHandle<R>,
+    meeting_name: Option<String>,
+    trigger: Option<String>,
 ) -> Result<(), String> {
     info!(
         "Starting recording with default devices, meeting: {:?}",
@@ -102,24 +137,27 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
         super::bluetooth_guard::apply_bluetooth_output_mic_override(&app, preferred_mic_name).await;
 
     // Resolve devices from preferences
+    let preferred_mic_for_labels = preferred_mic_name.clone();
+    let preferred_sys_for_labels = preferred_system_name.clone();
     let microphone_device =
         recording_helpers::resolve_microphone_from_preference(&app, preferred_mic_name).await?;
     let system_device =
         recording_helpers::resolve_system_audio_from_preference(&app, preferred_system_name).await;
 
-    // Nombres RESUELTOS (post-fallbacks y preflight de endpoint) para el evento:
-    // el frontend debe ver de dónde se graba de verdad, no un eco del input.
-    let mic_label = microphone_device
-        .as_ref()
-        .map(|d| d.name.clone())
-        .unwrap_or_else(|| "Default Microphone".to_string());
-    let sys_label = system_device
-        .as_ref()
-        .map(|d| d.name.clone())
-        .unwrap_or_else(|| "Default System Audio".to_string());
+    // Nombres RESUELTOS (post-fallbacks y preflight de endpoint) para el evento
+    // y la telemetría: el frontend debe ver de dónde se graba de verdad, no un
+    // eco del input. `*_source` distingue preferencia honrada / default / fallback.
+    let device_labels = recording_helpers::resolve_device_labels(
+        preferred_mic_for_labels.as_deref(),
+        microphone_device.as_ref(),
+        preferred_sys_for_labels.as_deref(),
+        system_device.as_ref(),
+    );
+    let mic_label = device_labels.mic.clone();
+    let sys_label = device_labels.sys.clone();
 
     // Initialize recording with resolved devices (comitea el gate al activar la sesión)
-    recording_helpers::initialize_recording(&app, microphone_device, system_device, meeting_name, auto_save, start_gate).await?;
+    recording_helpers::initialize_recording(&app, microphone_device, system_device, meeting_name, auto_save, start_gate, trigger, device_labels).await?;
 
     // Emit success event
     app.emit(events::RECORDING_STARTED, serde_json::json!({
@@ -146,16 +184,41 @@ pub async fn start_recording_with_devices<R: Runtime>(
     app: AppHandle<R>,
     mic_device_name: Option<String>,
     system_device_name: Option<String>,
+    trigger: Option<String>,
 ) -> Result<(), String> {
-    start_recording_with_devices_and_meeting(app, mic_device_name, system_device_name, None).await
+    start_recording_with_devices_and_meeting(app, mic_device_name, system_device_name, None, trigger)
+        .await
 }
 
-/// Start recording with specific devices and optional meeting name
+/// Start recording with specific devices and optional meeting name.
+/// `trigger`: ver `start_recording_with_meeting_name`.
 pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
     app: AppHandle<R>,
     mic_device_name: Option<String>,
     system_device_name: Option<String>,
     meeting_name: Option<String>,
+    trigger: Option<String>,
+) -> Result<(), String> {
+    let result = start_with_devices_and_meeting_impl(
+        app.clone(),
+        mic_device_name,
+        system_device_name,
+        meeting_name,
+        trigger.clone(),
+    )
+    .await;
+    if let Err(e) = &result {
+        emit_start_failed(&app, trigger.as_deref(), e).await;
+    }
+    result
+}
+
+async fn start_with_devices_and_meeting_impl<R: Runtime>(
+    app: AppHandle<R>,
+    mic_device_name: Option<String>,
+    system_device_name: Option<String>,
+    meeting_name: Option<String>,
+    trigger: Option<String>,
 ) -> Result<(), String> {
     info!(
         "Starting recording with specific devices: mic={:?}, system={:?}, meeting={:?}",
@@ -194,21 +257,20 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
         }
     };
 
-    // Nombres RESUELTOS (post-fallbacks y preflight de endpoint) para el evento:
-    // el frontend debe ver de dónde se graba de verdad, no un eco del input.
-    let mic_label = devices
-        .microphone
-        .as_ref()
-        .map(|d| d.name.clone())
-        .unwrap_or_else(|| "Default Microphone".to_string());
-    let sys_label = devices
-        .system_audio
-        .as_ref()
-        .map(|d| d.name.clone())
-        .unwrap_or_else(|| "Default System Audio".to_string());
+    // Nombres RESUELTOS (post-fallbacks y preflight de endpoint) para el evento
+    // y la telemetría. La preferencia aquí es el nombre EXPLÍCITO que pidió el
+    // caller: si el resuelto difiere, el source honesto es `fallback`.
+    let device_labels = recording_helpers::resolve_device_labels(
+        mic_device_name.as_deref(),
+        devices.microphone.as_ref(),
+        system_device_name.as_deref(),
+        devices.system_audio.as_ref(),
+    );
+    let mic_label = device_labels.mic.clone();
+    let sys_label = device_labels.sys.clone();
 
     // Initialize recording with explicit devices (comitea el gate al activar la sesión)
-    recording_helpers::initialize_recording(&app, devices.microphone, devices.system_audio, meeting_name, auto_save, start_gate).await?;
+    recording_helpers::initialize_recording(&app, devices.microphone, devices.system_audio, meeting_name, auto_save, start_gate, trigger, device_labels).await?;
 
     // Emit success event
     app.emit(events::RECORDING_STARTED, serde_json::json!({
@@ -288,6 +350,31 @@ pub async fn stop_recording_reporting<R: Runtime>(
         "🕒 Captured wall-clock recording duration: {:?}s (before manager teardown)",
         captured_duration_seconds
     );
+
+    // Telemetría (G1): recording_stopped desde Rust — cubre también el stop de
+    // jornada/tray con el webview suspendido. El transcript_count no vive aquí:
+    // lo aportan los eventos de guardado del frontend cuando existe webview.
+    {
+        let recording_session_id = crate::logging::telemetry::recording_session::take()
+            .unwrap_or_else(crate::logging::telemetry::recording_session::new_id);
+        let app_for_telemetry = app.clone();
+        let payload = serde_json::json!({
+            "duration_seconds": captured_duration_seconds,
+            "recording_session_id": recording_session_id,
+        });
+        tauri::async_runtime::spawn(async move {
+            crate::logging::telemetry::emit::emit_event(
+                &app_for_telemetry,
+                &recording_session_id,
+                crate::logging::telemetry::catalog::RECORDING_STOPPED,
+                payload,
+                Some("success"),
+                None,
+                None,
+            )
+            .await;
+        });
+    }
 
     // Emit shutdown progress to frontend
     let _ = app.emit(

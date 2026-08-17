@@ -152,6 +152,7 @@ fn toggle_recording_handler<R: Runtime>(app: &AppHandle<R>) {
             match crate::audio::recording_commands::start_recording_with_meeting_name(
                 app_clone.clone(),
                 None, // meeting_name: uses default "Meeting DD/MM HH:MM"
+                Some("tray".to_string()),
             )
             .await
             {

@@ -462,6 +462,7 @@ async fn evaluate_tick<R: Runtime>(
             match crate::audio::recording_commands::start_recording_with_meeting_name(
                 app.clone(),
                 Some(meeting_name),
+                Some("scheduler".to_string()),
             )
             .await
             {
@@ -756,6 +757,7 @@ async fn rotate_scheduled<R: Runtime>(
     match crate::audio::recording_commands::start_recording_with_meeting_name(
         app.clone(),
         Some(new_name),
+        Some("scheduler_rotation".to_string()),
     )
     .await
     {

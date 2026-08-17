@@ -414,6 +414,8 @@ pub async fn initialize_recording<R: Runtime>(
     meeting_name: Option<String>,
     auto_save: bool,
     start_gate: super::recording_phase::StartGate,
+    trigger: Option<String>,
+    device_labels: DeviceLabels,
 ) -> Result<(), String> {
     // ── Mediación completa ────────────────────────────────────────────────
     // Estas dos validaciones viven AQUÍ y no en los callers porque esta función
@@ -457,7 +459,7 @@ pub async fn initialize_recording<R: Runtime>(
             now.format("%Y-%m-%d_%H-%M-%S")
         )
     });
-    manager.set_meeting_name(Some(effective_meeting_name));
+    manager.set_meeting_name(Some(effective_meeting_name.clone()));
 
     // Set up error callback. Si `session_stopped=true`, el struct ya detuvo la
     // captura internamente (error fatal o acumulación de errores): propagar el
@@ -500,6 +502,39 @@ pub async fn initialize_recording<R: Runtime>(
     info!("🔍 Comiteando fase Recording y reseteando SPEECH_DETECTED_EMITTED");
     start_gate.commit()?;
     reset_speech_detected_flag();
+
+    // Telemetría del embudo (G1): recording_started se emite AQUÍ, post-commit,
+    // porque este es el chokepoint de los dos start paths — tray, scheduler y
+    // frontend quedan instrumentados sin tocar a los callers, y un entrypoint
+    // nuevo no compila sin declarar su trigger. Emisor Rust ⇒ la jornada
+    // headless (el modo dominante, invisible hasta este ciclo) también cuenta.
+    // Spawn para no sumar el insert SQLite a la latencia del arranque.
+    {
+        let recording_session_id = crate::logging::telemetry::recording_session::begin();
+        let app_for_telemetry = app.clone();
+        let payload = serde_json::json!({
+            "meeting_title": effective_meeting_name,
+            "mic_device": device_labels.mic,
+            "mic_source": device_labels.mic_source,
+            "system_device": device_labels.sys,
+            "sys_source": device_labels.sys_source,
+            "trigger": trigger.as_deref().unwrap_or("command"),
+            "recording_session_id": recording_session_id,
+            "auto_save": auto_save,
+        });
+        tauri::async_runtime::spawn(async move {
+            crate::logging::telemetry::emit::emit_event(
+                &app_for_telemetry,
+                &recording_session_id,
+                crate::logging::telemetry::catalog::RECORDING_STARTED,
+                payload,
+                Some("success"),
+                None,
+                None,
+            )
+            .await;
+        });
+    }
 
     // Spawn audio level emission task — polls RecordingState atomics every 100ms
     {
@@ -710,5 +745,47 @@ pub fn classify_device_type(device_name: &str) -> &'static str {
         "Bluetooth"
     } else {
         "Wired"
+    }
+}
+
+/// Etiquetas RESUELTAS de los dispositivos de una grabación, con la dimensión
+/// que el `mic_device: null` histórico hacía imposible responder: ¿el usuario
+/// ELIGIÓ este dispositivo, o cayó el default / un fallback?
+pub struct DeviceLabels {
+    pub mic: String,
+    pub mic_source: &'static str,
+    pub sys: String,
+    pub sys_source: &'static str,
+}
+
+/// `source`: `preference` (la preferencia del usuario se honró tal cual),
+/// `system_default` (no había preferencia), `fallback` (había preferencia pero
+/// se resolvió OTRO dispositivo — desconexión, re-enumeración, sustituto BT).
+fn device_source(preferred: Option<&str>, resolved: Option<&str>) -> &'static str {
+    match (preferred, resolved) {
+        (None, _) => "system_default",
+        (Some(p), Some(r)) if p == r => "preference",
+        (Some(_), _) => "fallback",
+    }
+}
+
+/// Nombres truncados a 64 chars: son dimensión de telemetría, no identidad.
+fn truncate_label(name: &str) -> String {
+    name.chars().take(64).collect()
+}
+
+pub fn resolve_device_labels(
+    preferred_mic: Option<&str>,
+    mic: Option<&Arc<super::devices::AudioDevice>>,
+    preferred_sys: Option<&str>,
+    sys: Option<&Arc<super::devices::AudioDevice>>,
+) -> DeviceLabels {
+    let mic_name = mic.map(|d| d.name.as_str());
+    let sys_name = sys.map(|d| d.name.as_str());
+    DeviceLabels {
+        mic: truncate_label(mic_name.unwrap_or("Default Microphone")),
+        mic_source: device_source(preferred_mic, mic_name),
+        sys: truncate_label(sys_name.unwrap_or("Default System Audio")),
+        sys_source: device_source(preferred_sys, sys_name),
     }
 }
