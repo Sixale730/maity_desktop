@@ -12,6 +12,7 @@ pub mod permissions;
 
 // NEW: Device detection and diagnostics for adaptive buffering
 pub mod device_detection;
+pub mod device_errors;  // Clasificación de errores de dispositivo por HRESULT (locale-independiente)
 pub mod diagnostics;
 pub mod ffmpeg_mixer;  // NEW: FFmpeg-style adaptive audio mixer
 

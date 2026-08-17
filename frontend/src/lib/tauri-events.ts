@@ -43,6 +43,15 @@ export const TauriEvent = {
   MICROPHONE_FALLBACK: 'microphone-fallback',
   MIC_LOOPBACK_WARNING: 'mic-loopback-warning',
   MIC_SILENCE_WARNING: 'mic-silence-warning',
+  /**
+   * Falla clasificada al abrir un dispositivo de captura.
+   * Payload: `AudioDeviceErrorPayload` (ver abajo).
+   *
+   * Ramificar SIEMPRE por `code`, nunca por substring de `raw`: Windows
+   * traduce sus mensajes de error, así que un `includes('microphone')`
+   * funciona en inglés y falla en español.
+   */
+  AUDIO_DEVICE_ERROR: 'audio-device-error',
   BLUETOOTH_MIC_AVOIDED: 'bluetooth-mic-avoided',
   DEVICE_PICKER_SELECTED: 'device-picker-selected',
   SYSTEM_AUDIO_STARTED: 'system-audio-started',
@@ -148,3 +157,28 @@ export const TauriEvent = {
 
 /** Nombre de evento Tauri válido (uno de los valores de TauriEvent). */
 export type TauriEventName = (typeof TauriEvent)[keyof typeof TauriEvent]
+
+/** Acción de remediación sugerida por Rust para un error de dispositivo. */
+export type AudioDeviceRemediation =
+  | 'open_microphone_privacy_settings'
+  | 'open_device_picker'
+
+/**
+ * Payload de `TauriEvent.AUDIO_DEVICE_ERROR`.
+ *
+ * Espejo de `audio::device_errors::AudioDeviceErrorPayload` (Rust).
+ * `raw` es el texto del sistema, ya localizado: sirve para logs y reportes,
+ * nunca para decidir. La lógica va por `code`.
+ */
+export interface AudioDeviceErrorPayload {
+  code:
+    | 'mic_permission_denied'
+    | 'mic_not_found'
+    | 'mic_in_use'
+    | 'mic_format_unsupported'
+    | 'audio_unknown'
+  userMessage: string
+  actionable: boolean
+  remediation: AudioDeviceRemediation | null
+  raw: string
+}

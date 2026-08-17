@@ -46,6 +46,15 @@ pub const MIC_LOOPBACK_WARNING: &str = "mic-loopback-warning";
 /// `{ device: string|null, silenceSecs: number, mode: "silent"|"stalled" }`.
 /// Latch: una alerta por episodio; se rearma cuando vuelve audio audible.
 pub const MIC_SILENCE_WARNING: &str = "mic-silence-warning";
+/// Falla clasificada al abrir un dispositivo de captura. Payload:
+/// `{ code: string, userMessage: string, actionable: boolean,
+/// remediation: "open_microphone_privacy_settings"|"open_device_picker"|null,
+/// raw: string }`.
+///
+/// El `code` sale de `audio::device_errors`, que clasifica por HRESULT y NO por
+/// el mensaje del sistema (Windows lo traduce). La UI debe ramificar por `code`
+/// —nunca por substring de `raw`— y ofrecer `remediation` como acción.
+pub const AUDIO_DEVICE_ERROR: &str = "audio-device-error";
 /// Se evitó grabar con el micrófono de unos audífonos Bluetooth para no
 /// conmutarlos de A2DP a HFP (ver `audio::bluetooth_guard`). Payload:
 /// `{ outputDevice: string, bluetoothMic: string, substituteMic: string|null,

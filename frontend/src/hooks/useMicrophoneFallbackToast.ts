@@ -1,7 +1,10 @@
 import { useEffect } from 'react'
+import { invoke } from '@tauri-apps/api/core'
 import { createSubscriptionGroup } from '@/lib/tauriSubscribe'
 import { toast } from 'sonner'
 import { TauriEvent } from '@/lib/tauri-events'
+import type { AudioDeviceErrorPayload } from '@/lib/tauri-events'
+import { logger } from '@/lib/logger'
 
 interface MicrophoneFallbackPayload {
   requested?: string
@@ -116,6 +119,42 @@ export function useMicrophoneFallbackToast(): void {
               duration: 12000,
             })
           }
+        },
+      )
+      // Falla clasificada al abrir un dispositivo de captura (Rust,
+      // audio::device_errors). Un SOLO listener cubre los cuatro caminos de
+      // arranque: antes el toast de "micrófono no disponible" vivía únicamente
+      // dentro del listener del meeting-detector, y los otros tres se conformaban
+      // con un setStatus(ERROR) genérico.
+      //
+      // Se ramifica por `code`, NUNCA por el texto de `raw`: Windows traduce sus
+      // mensajes de error, así que un match por substring en inglés no dispara
+      // en una máquina en español — que es justo donde ocurrió el incidente.
+      subs.on<AudioDeviceErrorPayload>(
+        TauriEvent.AUDIO_DEVICE_ERROR,
+        (event) => {
+          const payload = event.payload
+          if (!payload) return
+
+          const canOpenPrivacy =
+            payload.remediation === 'open_microphone_privacy_settings'
+
+          toast.error(payload.userMessage, {
+            description: canOpenPrivacy
+              ? 'Actívalo en Configuración → Privacidad → Micrófono y vuelve a intentar.'
+              : payload.raw,
+            duration: 15000,
+            action: canOpenPrivacy
+              ? {
+                  label: 'Abrir configuración',
+                  onClick: () => {
+                    invoke('open_microphone_privacy_settings').catch((err) => {
+                      logger.warn('[audio] no se pudo abrir la privacidad del micrófono:', err)
+                    })
+                  },
+                }
+              : undefined,
+          })
         },
       )
     }

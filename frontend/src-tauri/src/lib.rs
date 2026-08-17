@@ -1322,6 +1322,8 @@ pub fn run() {
             audio::recording_commands::cancel_pending_transcription,
             // Playback device detection (Bluetooth warning)
             audio::recording_commands::get_active_audio_output,
+            // Remediación de permisos de micrófono (Windows/macOS)
+            audio::device_errors::open_microphone_privacy_settings,
             // Audio recovery commands (for transcript recovery feature)
             audio::incremental_saver::recover_audio_from_checkpoints,
             audio::incremental_saver::cleanup_checkpoints,

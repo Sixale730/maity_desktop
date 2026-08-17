@@ -497,27 +497,19 @@ export function useRecordingStart(
             setStatus(RecordingStatus.ERROR, errorMsg);
             setIsRecording(false);
 
-            if (errorMsg.includes('microphone') || errorMsg.includes('mic') || errorMsg.includes('input')) {
-              toast.error('Microfono No Disponible', {
-                description: 'Verifica que tu microfono este conectado y con permisos.',
-                duration: 6000,
-              });
-            } else if (errorMsg.includes('system audio') || errorMsg.includes('speaker') || errorMsg.includes('output')) {
-              toast.error('Audio del Sistema No Disponible', {
-                description: 'Verifica que un dispositivo de audio virtual este instalado y configurado.',
-                duration: 6000,
-              });
-            } else if (errorMsg.includes('permission')) {
-              toast.error('Permiso Requerido', {
-                description: 'Otorga permisos de grabacion en Configuracion del Sistema.',
-                duration: 6000,
-              });
-            } else {
-              toast.error('Error al iniciar grabacion', {
-                description: errorMsg,
-                duration: 5000,
-              });
-            }
+            // Los errores de DISPOSITIVO ya no se clasifican aquí: Rust los
+            // clasifica por HRESULT y emite AUDIO_DEVICE_ERROR, que
+            // useMicrophoneFallbackToast convierte en un toast con remediación
+            // para los cuatro caminos de arranque a la vez.
+            //
+            // El match por substring que vivía aquí ('microphone', 'permission')
+            // era locale-dependiente: Windows traduce sus mensajes, así que
+            // nunca disparaba en las máquinas en español del piloto. Este toast
+            // queda sólo para lo que NO es un error de dispositivo.
+            toast.error('Error al iniciar grabacion', {
+              description: errorMsg,
+              duration: 5000,
+            });
           } finally {
             setIsAutoStarting(false);
             isStartingRef.current = false;
