@@ -1445,6 +1445,8 @@ pub fn run() {
             database::commands::get_recording_logs,
             database::commands::get_unsynced_recording_logs,
             database::commands::mark_recording_logs_synced,
+            // Telemetria: contexto canonico (install_id + session de proceso + version)
+            logging::telemetry::context::get_telemetry_context,
             database::commands::get_database_directory,
             database::commands::open_database_folder,
             database::commands::save_user_feedback,

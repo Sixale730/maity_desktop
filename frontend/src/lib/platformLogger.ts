@@ -13,6 +13,7 @@
 import { getVersion } from '@tauri-apps/api/app'
 
 import { supabase } from '@/lib/supabase'
+import { buildCtx } from '@/lib/telemetryContext'
 
 export type PlatformLogStatus = 'success' | 'error' | 'timeout' | 'skipped'
 
@@ -40,7 +41,7 @@ class PlatformLogger {
   private static instance: PlatformLogger
   private sessionId: string
   private appVersion: string | null = null
-  private appVersionPromise: Promise<string> | null = null
+  private appVersionPromise: Promise<string | null> | null = null
 
   private constructor() {
     this.sessionId = this.generateSessionId()
@@ -48,15 +49,20 @@ class PlatformLogger {
 
   /**
    * Versión de la app con cache perezosa y single-flight: el burst de arranque
-   * (app.open + nav.page_view) no dispara N getVersion(). Fuera de Tauri
-   * (dev en browser) degrada a 'unknown'.
+   * (app.open + nav.page_view) no dispara N getVersion(). Fuera de Tauri (dev
+   * en browser) resuelve a null y NO cachea el fallo — un NULL honesto es
+   * analizable; el viejo centinela 'unknown' ordenaba por encima de '0.2.56'
+   * en cualquier max() por versión.
    */
-  private resolveAppVersion(): Promise<string> {
+  private resolveAppVersion(): Promise<string | null> {
     if (this.appVersion) return Promise.resolve(this.appVersion)
     if (!this.appVersionPromise) {
       this.appVersionPromise = getVersion()
         .then((v) => (this.appVersion = v))
-        .catch(() => (this.appVersion = 'unknown'))
+        .catch(() => {
+          this.appVersionPromise = null
+          return null
+        })
     }
     return this.appVersionPromise
   }
@@ -89,11 +95,15 @@ class PlatformLogger {
     try {
       const userAgent =
         typeof navigator !== 'undefined' ? navigator.userAgent : null
+      // Envelope ctx (identidad de proceso desde Rust). Si no resuelve (dev en
+      // browser), el evento sale sin ctx — jamás bloquea ni inventa valores.
+      const ctx = await buildCtx()
+      const payload = ctx ? { ...(data ?? {}), ctx } : (data ?? null)
       await supabase.schema('public').rpc('insert_platform_log', {
         p_session_id: this.sessionId,
         p_platform: 'desktop',
         p_event_type: eventType,
-        p_event_data: data ?? null,
+        p_event_data: payload,
         p_status: status ?? null,
         p_error: error ?? null,
         p_meeting_id: (data?.meeting_id as string) ?? null,

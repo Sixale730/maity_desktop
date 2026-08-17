@@ -11,8 +11,8 @@
 
 import { invoke } from '@tauri-apps/api/core';
 import { logger } from '@/lib/logger';
-import { getVersion } from '@tauri-apps/api/app';
 import { supabase } from '@/lib/supabase';
+import { buildCtx, getTelemetryContext } from '@/lib/telemetryContext';
 
 interface RecordingLog {
   id: number;
@@ -68,18 +68,24 @@ class RecordingLogService {
         return;
       }
 
+      // app_version desde el contexto nativo (jamás 'unknown': si no resuelve,
+      // viaja null — un NULL honesto es analizable, un centinela no).
       if (!this.appVersion) {
-        try {
-          this.appVersion = await getVersion();
-        } catch {
-          this.appVersion = 'unknown';
-        }
+        this.appVersion = (await getTelemetryContext())?.app_version ?? null;
       }
+
+      // Envelope ctx + el id de grabación como campo del payload: ctx.session_id
+      // es el de PROCESO (joinea con heartbeats); session-… queda en la columna
+      // session_id (serie histórica) y en recording_session_id.
+      const ctx = await buildCtx();
+      const merged: Record<string, unknown> = { ...(eventData ?? {}) };
+      merged.recording_session_id = this.sessionId;
+      if (ctx) merged.ctx = ctx;
 
       await invoke('log_recording_event', {
         sessionId: this.sessionId,
         eventType,
-        eventData: eventData ? JSON.stringify(eventData) : null,
+        eventData: JSON.stringify(merged),
         status: status ?? null,
         error: error ?? null,
         meetingId: this.meetingId,
