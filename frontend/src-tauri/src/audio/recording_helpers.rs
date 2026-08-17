@@ -284,8 +284,13 @@ pub async fn resolve_microphone_from_preference<R: Runtime>(
                     Ok(Some(Arc::new(device)))
                 }
                 Err(e) => {
-                    error!("❌ No default microphone available");
-                    Err(format!("No microphone device available: {}", e))
+                    // Clasificar + avisar al usuario con una remediación, en vez
+                    // de morir en el log. Este es el error que dejó a dos
+                    // usuarias del piloto con cero grabaciones sin saber por qué.
+                    Err(report_device_error(
+                        app,
+                        format!("No microphone device available: {}", e),
+                    ))
                 }
             }
         }
@@ -410,6 +415,27 @@ pub async fn initialize_recording<R: Runtime>(
     auto_save: bool,
     start_gate: super::recording_phase::StartGate,
 ) -> Result<(), String> {
+    // ── Mediación completa ────────────────────────────────────────────────
+    // Estas dos validaciones viven AQUÍ y no en los callers porque esta función
+    // es el embudo común de los dos start paths (recording_lifecycle.rs L120 y
+    // L201). Antes sólo las corría `start_recording_with_meeting_name`
+    // (tray/scheduler); el camino del botón "Grabar" las saltaba con un
+    // comentario explícito que decía "el frontend ya validó".
+    //
+    // Delegar un invariante del backend al frontend funciona hasta que aparece
+    // un segundo camino de entrada. Cuando eso pasó, la app dejó grabar sin
+    // motor de transcripción: las usuarias grabaron reuniones completas que
+    // terminaron con 0 transcripts (piloto Dingler, ago-2026). El frontend es
+    // entrada de usuario, no autoridad.
+    //
+    // Seguro respecto a la máquina de fases: el `StartGate` ya fue adquirido por
+    // el caller y su `Drop` revierte Starting→Idle si no se hace commit, así que
+    // un `?` temprano aquí no deja la fase atascada.
+    if !crate::state::has_session(app).await {
+        return Err("No hay sesión activa; inicia sesión para grabar".to_string());
+    }
+    validate_transcription_ready(app).await?;
+
     // Preflight: embudo común de ambos start paths — cubre preferencia, default
     // del OS y dispositivos explícitos.
     warn_if_loopback_mic(app, &microphone_device);
@@ -627,6 +653,30 @@ fn register_transcript_listener<R: Runtime>(app: &AppHandle<R>) {
             warn!("⚠️ Failed to store transcript listener ID (lock poisoned): {}", e);
         }
     }
+}
+
+/// Clasifica un error de dispositivo de audio, lo emite al frontend como evento
+/// accionable y devuelve el texto crudo para que el caller lo siga propagando.
+///
+/// El punto es que la UI reciba un `code` estable en vez de un mensaje del
+/// sistema: Windows traduce sus errores, así que ramificar por substring
+/// funciona en la máquina del desarrollador y falla en la del usuario. Ver
+/// `audio::device_errors`.
+pub fn report_device_error<R: Runtime>(app: &AppHandle<R>, raw: impl Into<String>) -> String {
+    let raw = raw.into();
+    let classified = super::device_errors::classify_device_error(&raw);
+
+    error!(
+        "❌ Error de dispositivo de audio [{}]: {}",
+        classified.code(),
+        raw
+    );
+
+    if let Err(e) = app.emit(events::AUDIO_DEVICE_ERROR, classified.to_payload(raw.clone())) {
+        warn!("No se pudo emitir {}: {}", events::AUDIO_DEVICE_ERROR, e);
+    }
+
+    raw
 }
 
 /// Validate that transcription models are ready before starting recording.

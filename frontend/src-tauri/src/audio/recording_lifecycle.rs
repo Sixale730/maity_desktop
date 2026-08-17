@@ -67,21 +67,15 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
         meeting_name
     );
 
-    // Gate de sesión para los entrypoints NATIVOS (tray, scheduler): estos
-    // caminos no pasan por el AuthGate de React, así que sin este check la app
-    // grababa sin usuario logueado (y el guardado fallaba en silencio después).
-    if !crate::state::has_session(&app).await {
-        return Err("No hay sesión activa; inicia sesión para grabar".to_string());
-    }
+    // El gate de sesión y la validación del motor de transcripción viven ahora
+    // en `recording_helpers::initialize_recording` — el embudo común de los dos
+    // start paths. Tenerlos aquí dejaba sin cubrir el camino del botón "Grabar".
 
     // Idle→Starting en una sola CAS: gate + "¿ya grabando?" son la misma operación.
     // El gate viaja hasta initialize_recording, que lo comitea (Starting→Recording)
     // en el punto exacto donde la sesión queda activa. Drop sin commit → Idle.
     let start_gate = StartGate::acquire()?;
     info!("🔍 Fase: {:?} (gate de arranque adquirido)", recording_phase::current_phase());
-
-    // Validate transcription model
-    recording_helpers::validate_transcription_ready(&app).await?;
 
     info!("🚀 Starting async recording initialization");
 
@@ -172,7 +166,10 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
     let start_gate = StartGate::acquire()?;
     info!("🔍 Fase: {:?} (gate de arranque adquirido)", recording_phase::current_phase());
 
-    // Skip transcription validation here — frontend already validated via checkTranscriptionReady()
+    // La validación de sesión y de motor de transcripción corre en
+    // `initialize_recording` (embudo común), no aquí. Antes este camino la
+    // saltaba confiando en el `checkTranscriptionReady()` del frontend, y esa
+    // confianza fue exactamente por donde se colaron las grabaciones sin motor.
     info!("🚀 Starting async recording initialization with custom devices");
 
     // Misma guardia que en start_recording_with_meeting_name (ver allí el porqué
