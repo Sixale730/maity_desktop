@@ -1217,14 +1217,17 @@ pub fn run() {
                     return;
                 }
 
-                // Start the detector if enabled in settings
+                // Start the detector if enabled in settings — salvo que el
+                // kill-switch global esté activo (meeting_detector::DETECTOR_KILL_SWITCH).
                 let settings = detector.get_settings().await;
-                if settings.enabled {
+                if meeting_detector::detector::should_start(settings.enabled) {
                     if let Err(e) = detector.start(app_for_detector.clone()).await {
                         log::error!("Failed to start meeting detector: {}", e);
                     } else {
                         log::info!("Meeting detector started successfully");
                     }
+                } else if meeting_detector::DETECTOR_KILL_SWITCH {
+                    log::info!("[meeting-detector] deshabilitado por kill-switch; no se arranca");
                 } else {
                     log::info!("Meeting detector is disabled in settings, not starting");
                 }

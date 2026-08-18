@@ -23,7 +23,6 @@ import { UpdateCheckProvider } from '@/components/updates/UpdateCheckProvider'
 import { RecordingPostProcessingProvider } from '@/contexts/RecordingPostProcessingProvider'
 import { ErrorBoundary } from '@/components/shared/ErrorBoundary'
 import { ChunkErrorRecovery } from '@/components/shared/ChunkErrorRecovery'
-import { MeetingDetectionDialog } from '@/components/meeting-detection/MeetingDetectionDialog'
 import { RivalInstallDialog } from '@/components/rival-install/RivalInstallDialog'
 import { ScheduledRecordingIndicator } from '@/components/scheduled-recording/ScheduledRecordingIndicator'
 import { ScheduledRecordingSetupGate } from '@/components/scheduled-recording/ScheduledRecordingSetupGate'
@@ -514,8 +513,10 @@ function AppContent({ children }: { children: React.ReactNode }) {
                         (bolita colapsable). Se eliminó DownloadProgressToastProvider para no
                         duplicar UI (antes salían toasts arriba + widget abajo a la vez). */}
 
-                    {/* Meeting detection dialog - listens for meeting-detected events */}
-                    <MeetingDetectionDialog />
+                    {/* Meeting detector APAGADO (ago-2026): el kill-switch en Rust
+                        (meeting_detector::DETECTOR_KILL_SWITCH) impide que el loop arranque,
+                        así que <MeetingDetectionDialog /> ya no se monta. El componente sigue
+                        en components/meeting-detection/ por si se reactiva. */}
 
                     {/* Aviso de instalación duplicada (Store ⇄ descarga directa): si Maity
                         corre bajo MSIX y detecta la copia NSIS rival, ofrece quitarla.

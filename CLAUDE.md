@@ -748,7 +748,9 @@ La transcripcion en la nube usa Deepgram a traves de un Cloudflare Worker proxy.
 - Reconexion despues de expirar el JWT (>5 min) fallara gracefully
 - Usuario debe estar autenticado con Supabase (login con Google)
 
-## Meeting Detector (Auto-Record)
+## Meeting Detector (Auto-Record) — DESHABILITADO por kill-switch (ago-2026)
+
+> **Estado actual: APAGADO.** Aun con el rediseño anti-falsos-positivos de jul-2026 seguía disparando diálogos que no correspondían a reuniones reales, así que se apagó por completo con `meeting_detector::DETECTOR_KILL_SWITCH = true` (`src-tauri/src/meeting_detector/mod.rs`). El único choke point es `MeetingDetector::start()` (por ahí pasan el auto-start del `setup()` de `lib.rs` y el comando `start_meeting_detector`): con el flag activo retorna `Ok(())` sin arrancar el loop, y `is_meeting_detector_running` devuelve `false`. Es **independiente de `settings.enabled`** (el JSON en disco de usuarios existentes trae `enabled: true` y pisaría un cambio de default; `test_default_settings` sigue afirmando `true`). `<MeetingDetectionDialog />` ya **no se monta** en `app/layout.tsx` (el componente sigue en `components/meeting-detection/`); el listener de `start-recording-from-detector` en `useRecordingStart.ts` queda inerte. **NO borrar el módulo**: `scheduled_recording/service.rs` reutiliza su `ProcessMonitor`. Para reactivar: flag a `false` + volver a montar el diálogo. La pestaña "Reuniones" de `components/settings/SettingTabs.tsx` es código muerto (nadie importa `SettingTabs`; el settings real es `app/settings/page.tsx`).
 
 Detecta Zoom, Teams y Google Meet en ejecucion. Puede auto-iniciar grabacion.
 

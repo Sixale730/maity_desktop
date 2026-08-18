@@ -81,6 +81,13 @@ impl MeetingDetector {
 
     /// Start the background monitoring task
     pub async fn start<R: Runtime + 'static>(&mut self, app_handle: AppHandle<R>) -> Result<()> {
+        if super::DETECTOR_KILL_SWITCH {
+            // No se toca `is_running` ni se spawnea nada: así
+            // `is_meeting_detector_running` devuelve `false` de forma consistente.
+            info!("[meeting-detector] deshabilitado por kill-switch; no se arranca");
+            return Ok(());
+        }
+
         let (tx, rx) = mpsc::channel::<DetectorCommand>(32);
         self.command_tx = Some(tx);
 
@@ -346,5 +353,32 @@ async fn persist_app_action<R: Runtime>(
     };
     if let Err(e) = save_settings(app_handle, &updated).await {
         error!("Failed to persist meeting app choice: {}", e);
+    }
+}
+
+/// Decide si el detector debe arrancar al inicio de la app: el kill-switch
+/// global manda sobre la preferencia del usuario (`settings.enabled`).
+pub(crate) fn should_start(enabled_in_settings: bool) -> bool {
+    !super::DETECTOR_KILL_SWITCH && enabled_in_settings
+}
+
+#[cfg(test)]
+mod kill_switch_tests {
+    use super::should_start;
+
+    #[test]
+    fn kill_switch_overrides_user_setting() {
+        // Mientras el kill-switch esté activo, ni siquiera `enabled: true`
+        // (el default y lo que traen los JSON en disco) arranca el detector.
+        assert!(!should_start(true));
+        assert!(!should_start(false));
+    }
+
+    #[test]
+    fn kill_switch_is_on() {
+        // Documenta el estado deliberado (ago-2026). Si alguien lo apaga a
+        // propósito, este test es el recordatorio de volver a montar
+        // <MeetingDetectionDialog /> en app/layout.tsx.
+        assert!(super::super::DETECTOR_KILL_SWITCH);
     }
 }
