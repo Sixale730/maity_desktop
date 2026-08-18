@@ -14,28 +14,18 @@ import { getVersion } from '@tauri-apps/api/app'
 
 import { supabase } from '@/lib/supabase'
 import { buildCtx } from '@/lib/telemetryContext'
+import type { TelemetryEventName } from '@/lib/telemetry-events'
 
 export type PlatformLogStatus = 'success' | 'error' | 'timeout' | 'skipped'
 
-/** Known event types — extensible via `string` union */
-export type PlatformEventType =
-  | 'app.open'
-  | 'app.close'
-  | 'health.heartbeat'
-  | 'nav.page_view'
-  | 'app.start'
-  | 'app.error'
-  | 'meeting.start'
-  | 'meeting.end'
-  | 'meeting.save'
-  | 'recording.start'
-  | 'recording.stop'
-  | 'recording.save'
-  | 'recording.error'
-  | 'sync.start'
-  | 'sync.complete'
-  | 'sync.error'
-  | (string & {})
+/**
+ * Nombres catalogados (`lib/telemetry-events.ts`, espejo de catalog.rs) con
+ * autocompletado; el `(string & {})` conserva el passthrough de
+ * `Analytics.track` (analítica de producto, fuera del contrato). El lint
+ * pre-build (`lint-telemetry.js`) es quien exige que los literales de los
+ * call sites estén catalogados — el tipo solo ayuda, no obliga.
+ */
+export type PlatformEventType = TelemetryEventName | (string & {})
 
 class PlatformLogger {
   private static instance: PlatformLogger

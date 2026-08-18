@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 // Pre-build checks. Runs BEFORE tauri:build / tauri:build:debug.
 // Currently: state-access lint (fast, ~1s) + providers-tree lint (fast, <100ms)
-// + tauri-events lint (fast, <1s) + migrations LF/checksum + llama-helper
-// provenance (cargo cacheado, ~s; la primera vez compila llama.cpp) + vitest (~45s).
+// + tauri-events lint (fast, <1s) + telemetry lint + tauri-acl lint (fast, <1s)
+// + migrations LF/checksum + llama-helper provenance (cargo cacheado, ~s; la
+// primera vez compila llama.cpp) + vitest (~45s).
 //
 // Orden deliberado: los checks BARATOS van primero para fallar rápido; la suite
 // de vitest va al final porque es la más lenta (~45s) y la que menos veces falla.
@@ -17,6 +18,8 @@ const REPO_ROOT = path.resolve(__dirname, '..', '..');
 const LINT_SCRIPT = path.join(REPO_ROOT, 'scripts', 'lint-state-access.sh');
 const PROVIDERS_TREE_SCRIPT = path.join(__dirname, 'lint-providers-tree.js');
 const TAURI_EVENTS_SCRIPT = path.join(__dirname, 'lint-tauri-events.js');
+const TELEMETRY_SCRIPT = path.join(__dirname, 'lint-telemetry.js');
+const TAURI_ACL_SCRIPT = path.join(__dirname, 'lint-tauri-acl.js');
 const VERIFY_HELPER_SCRIPT = path.join(__dirname, 'verify-helper-binary.js');
 // On Windows, bash (Git Bash/MINGW) treats backslashes as escapes, mangling
 // `C:\maity_desktop\...` into `C:maity_desktop...`. Forward slashes work on
@@ -110,6 +113,44 @@ if (eventsResult.status !== 0) {
 }
 
 console.log('[pre-build] OK: tauri-events lint passed');
+
+console.log('[pre-build] Running telemetry lint...');
+const telemetryResult = spawnSync(process.execPath, [TELEMETRY_SCRIPT], {
+    stdio: 'inherit',
+    shell: false,
+});
+
+if (telemetryResult.status !== 0) {
+    console.error('');
+    console.error('[pre-build] FAIL: telemetry lint failed.');
+    console.error('  El contrato de telemetría vive en docs/TELEMETRIA.md: evento nuevo =');
+    console.error('  3 entradas (lib/telemetry-events.ts + catalog.rs + fila en el doc).');
+    console.error('  Single writer: insert_platform_log solo desde platformLogger.ts y drain.rs.');
+    console.error('  Escape por línea: // telemetry-allow: <razón>');
+    console.error('  Escape hatch: pnpm run tauri:build:debug:skip-checks');
+    process.exit(1);
+}
+
+console.log('[pre-build] OK: telemetry lint passed');
+
+console.log('[pre-build] Running tauri-acl lint...');
+const aclResult = spawnSync(process.execPath, [TAURI_ACL_SCRIPT], {
+    stdio: 'inherit',
+    shell: false,
+});
+
+if (aclResult.status !== 0) {
+    console.error('');
+    console.error('[pre-build] FAIL: tauri-acl lint failed.');
+    console.error('  El código ejerce un permiso que la capability de esa ventana no declara');
+    console.error('  (tauri.conf.json → app.security.capabilities). El caso invisible:');
+    console.error('  onCloseRequested sin preventDefault() destruye la ventana → allow-destroy.');
+    console.error('  Escape por línea: // acl-allow: <razón>');
+    console.error('  Escape hatch: pnpm run tauri:build:debug:skip-checks');
+    process.exit(1);
+}
+
+console.log('[pre-build] OK: tauri-acl lint passed');
 
 console.log('[pre-build] Running migrations LF/checksum check...');
 const migrationsResult = spawnSync(process.execPath, [path.join(__dirname, 'verify-migrations-lf.js')], {

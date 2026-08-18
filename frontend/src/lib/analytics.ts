@@ -17,12 +17,6 @@ export interface AnalyticsProperties {
   [key: string]: string;
 }
 
-export interface DeviceInfo {
-  platform: string;
-  os_version: string;
-  architecture: string;
-}
-
 export interface UserSession {
   session_id: string;
   user_id: string;
@@ -38,9 +32,13 @@ export class Analytics {
   static async disable(): Promise<void> { /* no-op */ }
   static async isEnabled(): Promise<boolean> { return false; }
 
-  /** Mantiene el dual-emit a Supabase platform_logs (no es PostHog). */
+  /**
+   * Mantiene el dual-emit a Supabase platform_logs (no es PostHog).
+   * Analítica de producto (UI): FUERA del catálogo de telemetría a propósito —
+   * `docs/TELEMETRIA.md` la documenta como una sola fila de passthrough.
+   */
   static async track(eventName: string, properties?: AnalyticsProperties): Promise<void> {
-    void platformLogger.log(eventName, properties);
+    void platformLogger.log(eventName, properties); // telemetry-allow: passthrough legacy de Analytics.track (analitica de producto, fuera del catalogo)
   }
 
   static async identify(userId: string, _properties?: AnalyticsProperties): Promise<void> {
@@ -80,14 +78,9 @@ export class Analytics {
     if (ua.includes('linux')) return 'linux';
     return 'unknown';
   }
-  static async getOSVersion(): Promise<string> { return 'unknown'; }
-  static async getDeviceInfo(): Promise<DeviceInfo> {
-    return {
-      platform: await this.getPlatform(),
-      os_version: 'unknown',
-      architecture: 'unknown',
-    };
-  }
+  // getOSVersion/getDeviceInfo eliminados (ago-2026): devolvían 'unknown' en
+  // campos de versión y no tenían consumidores. La versión de OS real viaja en
+  // `device.profile` (Rust, `get_device_profile`), nunca como centinela.
 
   static async calculateDaysSince(_dateKey: string): Promise<number | null> { return null; }
   static async updateMeetingCount(): Promise<void> { /* no-op */ }

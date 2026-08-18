@@ -1,9 +1,21 @@
 # Telemetría y diagnóstico remoto — inventario completo
 
-> Última actualización: 2026-07-31 (ciclo issues #60/#62/#64: puente Rust
-> ERROR→DB, gates de ventanas aux, telemetría de db-init).
+> Última actualización: 2026-08-17 (ciclo v0.2.57 "fail-closed": contrato `ctx`
+> + `install_id`, drenadora nativa única, ciclo de vida de grabación desde Rust,
+> `device.profile`, contadores de descarte, panics, y este doc pasa a ser
+> **contrato ejecutable** — lo verifica `frontend/scripts/lint-telemetry.js`).
 > Pregunta que responde este doc: **"¿qué información tenemos para diagnosticar
 > un problema en producción sin pedirle nada al usuario?"**
+
+> **Regla de oro (ago-2026): evento nuevo = 3 entradas.** Una constante en
+> `frontend/src/lib/telemetry-events.ts`, su gemela en
+> `src-tauri/src/logging/telemetry/catalog.rs` y una fila (con el nombre entre
+> backticks) en la tabla de abajo. `lint-telemetry.js` falla el build si falta
+> alguna, si un call site de `platformLogger.log`/`recordingLogService.log` usa
+> un nombre no catalogado, si un evento nuevo no lleva punto (`app.error`, no
+> `app_error`; los snake_case históricos van marcados `// legacy` y NO se
+> renombran), si `insert_platform_log` se invoca fuera de los dos writers, si un
+> campo de versión dice `'unknown'`, o si una capability pierde `core:app:default`.
 
 ## Los tres niveles (pirámide de observabilidad)
 
@@ -22,15 +34,50 @@ diagnosticar remotamente. Los logs completos siguen siendo bajo demanda
 
 ## Nivel 1-2: `maity.platform_logs` (Supabase)
 
-**Pipeline:** frontend `platformLogger` (`frontend/src/lib/platformLogger.ts`)
-→ RPC `insert_platform_log` (SECURITY DEFINER; resuelve `user_id` desde
-`maity.users WHERE auth_id = auth.uid()`; traga excepciones — nunca rompe la
-app) → tabla `maity.platform_logs`.
+**Pipeline (dos writers, y solo dos):**
+1. **JS directo:** `platformLogger` (`frontend/src/lib/platformLogger.ts`) →
+   RPC `public.insert_platform_log` (SECURITY DEFINER; resuelve `user_id` desde
+   `maity.users WHERE auth_id = auth.uid()`; traga excepciones — nunca rompe la
+   app) → tabla `maity.platform_logs`. Lo usan `app.*`, `nav.*`, `health.*`,
+   `device.profile`, `coach.session_summary` y el passthrough de `Analytics.track`.
+2. **Outbox nativo (store-and-forward):** `telemetry::emit` (Rust) y
+   `recordingLogService.log` (JS, vía comando) escriben al outbox SQLite
+   `recording_logs` — cero red en el camino caliente, sobrevive crash,
+   suspensión y **webview cerrado** (jornada/tray). La **única drenadora es
+   `logging/telemetry/drain.rs`**: tick 30 s + `Notify`, `get_unsynced_logs(50)`
+   → `get_valid_token` (sin sesión ⇒ diferir sin quemar intentos) → POST al
+   mismo RPC → solo 2xx marca `synced_to_cloud`. `syncToCloud()` de JS se
+   eliminó (ago-2026): dos drenadores = filas duplicadas.
 
-Columnas útiles: `user_id`, `session_id` (`desktop-<ts>-<rand>`, uno por
-proceso/ventana), `platform` (`'desktop'` | web), `event_type`, `event_data`
-(jsonb), `status`, `error`, `app_version` (**lleno desde este ciclo** — antes
-el desktop mandaba null), `device_info` (userAgent), `created_at`.
+Columnas útiles: `user_id`, `session_id`, `platform` (`'desktop'` | web),
+`event_type`, `event_data` (jsonb, con el envelope `ctx` de abajo), `status`,
+`error`, `app_version`, `device_info` (userAgent), `created_at` (hora de
+inserción — el momento real del evento es `ctx.occurred_at`).
+
+### Contrato `ctx` (envelope obligatorio en todo evento, ago-2026)
+
+```jsonc
+"ctx": { "install_id": "<uuid v4>", "app_version": "0.2.57", "session_id": "proc-…",
+         "emitter": "rust|webview", "window": "main|coach-float|recording-widget|device-picker|null",
+         "occurred_at": "<iso>", "schema": 1 }
+```
+
+- `install_id`: UUID v4 **aleatorio** persistido en el store `telemetry.json`
+  (no derivado de hardware). Si el store se corrompe se regenera y el evento
+  lleva `install_id_regenerated`. **Backfill:** las instalaciones existentes
+  generan el suyo en el primer arranque post-0.2.57 — el corte en la serie NO
+  es churn.
+- `app_version`: de `app.package_info()` en Rust; si no resuelve **se omite la
+  clave** (NULL honesto). Nunca `'unknown'` (lint d): un centinela ordena por
+  encima de `'0.2.56'` en `max()` y esconde el NULL.
+- `session_id`: **id de PROCESO** (`proc-…`), el mismo para heartbeats y eventos
+  de grabación (antes había dos: `desktop-…` vs `session-…`, imposibles de
+  joinear). El id de la grabación viaja como `recording_session_id` en el payload.
+- `emitter`: `rust` para lo que nace en el chokepoint nativo (jornada, tray,
+  scheduler); `webview` para React. Es la dimensión que hace auditable el modo
+  dominante de uso (antes mary tenía 9 conversaciones y 0 `recording_started`).
+- Fuente única: comando `get_telemetry_context` + `lib/telemetryContext.ts`
+  (cache + single-flight); funciona en las 4 ventanas (comando propio, sin ACL).
 
 > **Gotcha de auth (verificado jul-31)**: sin sesión Supabase el RPC devuelve
 > **401 y el evento se pierde en silencio** — el rol `anon` no tiene USAGE
@@ -40,17 +87,54 @@ el desktop mandaba null), `device_info` (userAgent), `created_at`.
 > con un perfil sin sesión: el request sale, el server lo rechaza — verificar
 > con intercepción de red, no con la tabla.
 
-### Eventos que emite el desktop
+### Eventos que emite el desktop (inventario = catálogo; lo verifica el lint)
+
+Los nombres marcados **legacy** conservan el snake_case del emisor JS original
+para no romper la serie histórica; los eventos nuevos son dot-namespaced.
+
+**Ciclo de vida de grabación — emisor Rust** (`recording_helpers::initialize_recording`
+y `recording_lifecycle`, el chokepoint que comparten UI, tray, scheduler y
+rotación; `trigger: Option<String>` baja por toda la cadena de firmas, así que
+un entrypoint nuevo no compila sin declarar su trigger). Van al outbox y los
+drena `drain.rs`; en el payload: `trigger` (`ui|tray|scheduler|scheduler_rotation|meeting_detector`),
+`recording_session_id`, `mic_device`/`mic_source` y `sys_device`/`sys_source`
+(`preference|system_default|fallback`, truncados a 64).
+
+| event_type | Cuándo | Payload clave |
+|---|---|---|
+| `recording_started` (legacy) | POST-commit del `StartGate` en `initialize_recording` | trigger, dispositivos reales, `recording_session_id` |
+| `recording_start_failed` (legacy) | `Err` de cualquiera de los dos start paths (incluido el `StartGate` ocupado) | trigger, `error` |
+| `recording_stopped` (legacy) | `stop_recording_reporting()` | duración, trigger, `recording_session_id` |
+
+**App / salud — emisor `platformLogger` (JS) salvo donde se indica.**
 
 | event_type | Quién lo emite | Cuándo | Payload clave |
 |---|---|---|---|
-| `app.open` / `app.close` | `layout.tsx` | arranque / cierre de la ventana | — |
+| `app.open` / `app.close` | `layout.tsx` (`AppContent`) | arranque / cierre de la ventana main | — |
 | `nav.page_view` | `usePageViewTracker` | cada navegación | ruta |
+| `device.profile` | `healthHeartbeatService.start()` (comando `get_device_profile`) | **1× por sesión** | `cpu_cores`, `gpu_type`, `memory_gb`, `os`, `os_version`, `arch`, `build_channel`, `performance_tier` — *resource attributes*, NO se repiten en cada heartbeat (ver cardinalidad abajo) |
+| `health.heartbeat` | `healthHeartbeatService` | cada 5 min activo / 15 min idle + start/stop de grabación | ver abajo (+ `err_budget`, `performance_tier`) |
 | `coach.session_summary` | `useCoachMetricsTelemetry` (evento Rust `coach-metrics`) | al cerrar sesión de coach | métricas LLM + sidecar (timeouts, restarts, breaker) + picos de RAM + tier |
-| `health.heartbeat` | `healthHeartbeatService` | cada 5 min activo / 15 min idle + start/stop de grabación | ver abajo |
-| `app.error` | `errorTelemetry` | error no manejado / boundary | ver abajo |
-| eventos de `recordingLogService` | sync del ciclo de vida de grabación | al sincronizar | por-grabación |
-| `Analytics.track(...)` | stub de PostHog (`lib/analytics.ts`) | call-sites legacy | passthrough a platform_logs |
+| `app.error` | `errorTelemetry` (JS) y **`telemetry/panics.rs` (Rust, `source:"rust-panic"`)** | error no manejado / boundary / panic (al outbox; se drena en el siguiente arranque) | ver abajo |
+
+**Guardado post-grabación — emisor `recordingLogService` (JS → outbox `recording_logs`).**
+Todos legacy. Payload común: `recording_session_id`, `meeting_id`, `is_call_api`.
+
+| event_type | Cuándo |
+|---|---|
+| `meeting_id_generated` | al arrancar (`useRecordingStart`) |
+| `buffer_flush_completed` | flush de 500 ms al detener |
+| `sqlite_save_attempted` / `sqlite_save_succeeded` / `sqlite_save_failed` | guardado local (`useRecordingStop`) |
+| `save_deferred_audio_only` | 0 transcripts **pero hay checkpoints de audio**: la reunión se PRESERVA para el diálogo de recuperación (fix alejandra, ago-2026) |
+| `save_skipped_no_transcripts` | 0 transcripts y sin audio: nada que ofrecer |
+| `cloud_sync_enqueued` / `cloud_sync_enqueue_failed` | encolado en la sync queue offline-first |
+
+**Fuera del catálogo (a propósito):** `Analytics.track(...)` (`lib/analytics.ts`,
+stub de PostHog) es analítica de producto de la UI (`coach_float.*`,
+`preferences_viewed`, `microphone_selected`, …) con passthrough a
+`platform_logs`; se documenta como esta única fila y el lint lo exime con
+`// telemetry-allow:`. Si algún día se quiere inventariar, entra por la regla de
+3 entradas.
 
 ### `health.heartbeat` (nuevo, jul-2026)
 
@@ -111,8 +195,35 @@ Fuentes (`frontend/src/lib/errorTelemetry.ts`):
   `fmt::init()` de main.rs no lleva el layer; eventos pre-listener se pierden
   del lado remoto (persisten en maity.log); los panics no pasan por tracing.
 
-Presupuesto: máx 20 envíos/sesión/ventana, dedup por `name:message[:120]`,
-gap mínimo 2s, truncado (message 500 / stack 1500 / componentStack 1000).
+- `rust-panic` (ago-2026, ciclo v0.2.57): `telemetry/panics.rs` encadena un
+  `panic::set_hook` al de main.rs (que sigue en Sentry) y escribe el panic a un
+  `.jsonl` **síncrono** en disco (el proceso se muere; nada de red ni tracing
+  dentro del hook — regla anti-reentrada); en el siguiente arranque se importa
+  al outbox y `drain.rs` lo sube como `app.error` con `source:"rust-panic"`.
+
+**Presupuesto por fuente, no compartido (ago-2026):** `window 8 ·
+unhandledrejection 8 · error-boundary 5 · db-init 3 · rust 20`. Antes era un
+cupo único de 20 y un render-loop de React se lo comía tirando los ERROR de
+Rust que ya habían pagado la barrera de #60 (anti *noisy neighbor*). Dedup por
+`name:message[:120]`, gap mínimo 2s, truncado (message 500 / stack 1500 /
+componentStack 1000).
+
+**Los limiters ya no son mudos:** `BridgeLimiter` (Rust) y `ErrorReportLimiter`
+(JS) exponen `{sent, dropped_dedup, dropped_cap, dropped_gap, dropped_channel}`
+— invariante `sent + Σdropped == intentos` — y viajan como `err_budget` en cada
+`health.heartbeat` (contadores **monótonos por sesión** → en SQL, `max()` por
+sesión y luego sumar). El dedup de Rust pasó de `BTreeSet` a `BTreeMap<String,u32>`
+y publica `{top_suppressed ×3, suppressed_total}` (conteos, no texto). Gotcha
+arreglado: el dedup miraba lo VISTO, no lo ENVIADO — un drop por gap
+envenenaba el dedup y el primer error de cada ráfaga se perdía para siempre.
+
+**Cardinalidad (`device.profile` vs heartbeat):** las dimensiones estáticas
+(`cpu_cores`, `gpu_type`, `memory_gb`, `os_version`, `arch`, `build_channel`)
+van SOLO en `device.profile` (1×/sesión) — repetirlas ×469 heartbeats es peso
+muerto. Excepción deliberada: `performance_tier` va en ambos (4 valores, es el
+slice-by más frecuente: "¿la fuga es solo en tier Low?"). Que no sea la puerta
+para las otras 8. Beneficio: antes esos datos solo viajaban en
+`coach.session_summary` — una usuaria que nunca abre el coach era invisible.
 `ErrorTelemetryInitializer` se monta FUERA de ErrorBoundary/AuthGate
 (invariante en `layout.test.ts`) para capturar errores pre-auth y sobrevivir
 al fallback del boundary; solo la ventana principal lo monta (las aux hacen
@@ -182,14 +293,41 @@ group by 1, 2 order by sesiones desc limit 20;
 3. `coach.session_summary` → ¿sidecar_restarts/breaker_opens altos?
 4. Solo si falta detalle: pedirle el Export ZIP (nivel 3) y leer `[METRIC]`.
 
+## Prevención: los lints del pre-build (ago-2026)
+
+| Script (`frontend/scripts/`) | Qué impide |
+|---|---|
+| `lint-telemetry.js` | (a) `insert_platform_log` fuera de `platformLogger.ts`/`drain.rs`; (b) catálogo TS ≠ Rust (incl. marcador `legacy`); (c) evento nuevo sin punto; (d) `'unknown'` en campos de versión; (e) capability sin `core:app:default`; (f) evento del catálogo sin fila en este doc; (g) `platformLogger.log`/`recordingLogService.log` con literal no catalogado o argumento dinámico. Escape por línea `// telemetry-allow: <razón>` (solo a/d/g). |
+| `lint-tauri-acl.js` | Drift entre lo que el código **ejerce** y lo que la ACL **declara**, por ventana: `onCloseRequested` ⇒ `core:window:allow-destroy` (la librería llama `destroy()` si el handler no hace `preventDefault()` — el eslabón invisible que produjo los `app.error` de ACL en 13 usuarias); `.close()` ⇒ `allow-close`; `getVersion()` ⇒ `core:app:default`; `confirm(`/`alert(` ⇒ `dialog:allow-confirm`/`allow-message`. La ventana de un archivo se resuelve por *reachability de imports* desde `app/<aux>/page.tsx`; el root `layout.tsx` es solo-`main` (early-return aux antes de `AppContent`, invariante en `layout.test.ts`). Escape `// acl-allow: <razón>`. |
+| `lint-tauri-events.js` | Espejo `events.rs` ↔ `tauri-events.ts` y cero literales inline en `emit`/`listen`. |
+| `verify-helper-binary.js` | Sidecar `llama-helper` bundleado ≠ código (SHA-256 vs `cargo build`); ver CLAUDE.md § Gemma. El smoke post-build además le habla (`{"type":"version","id":1}`). |
+| `layout.test.ts` (vitest) | `ErrorTelemetryInitializer` fuera de `AuthGate`/`AuthProvider`/`ErrorBoundary`/`DbInitErrorGate` (identidad y captura pre-login/pre-DB); `UpdateCheckProvider` fuera del auth gate; early-return aux antes de `AppContent`. |
+
 ## Lo que NO existe todavía
 
 - **Bundle de incidente con consentimiento** (#61): subir el tail del log
   rotativo a Supabase Storage al detectar crash/umbral de RAM. El patrón
   canal→drenadora de `rust_error_bridge.rs` es la base para emitir el evento
   desde los warnings del `mem_sampler`.
-- **Panics a la nube**: los panics no pasan por tracing → el puente `rust`
-  no los ve (quedan en maity.log y en Sentry si está activo).
+- **`probe_microphone_access` (B4 del ciclo v0.2.57, diferido a propósito):**
+  probe honesta que abre y suelta un input stream corto para detectar el
+  micrófono denegado ANTES de grabar. Iría en onboarding/ajustes/`usePermissionCheck`,
+  **nunca** en `initialize_recording` (un `build_input_stream` extra en el
+  arranque toca el pipeline de audio). Hoy el diagnóstico llega al fallar el
+  stream real (`AUDIO_DEVICE_ERROR` tipado por HRESULT + toast con "Abrir
+  configuración").
+- **Versión del helper en la nube:** desde 0.2.57 `sidecar.rs` loguea
+  `Sidecar helper vX (protocol N)` al spawn (nivel 3, local). Subirla a
+  `coach.session_summary` sería una línea más; no se hizo para no ampliar el
+  payload sin una pregunta concreta que responder.
+- **`Analytics.track` fuera del catálogo** (ver inventario): entra por la regla
+  de 3 entradas el día que se quiera analizar.
+
+Resueltos en el ciclo ago-2026 (v0.2.57): panics a la nube (`rust-panic`,
+arriba); ciclo de vida de grabación desde Rust con `trigger` y dispositivo real
+(el punto ciego principal: la jornada arranca headless); `app_version` honesto
+(`'unknown'` fuera; NULL cuando no resuelve); `session_id` único de proceso;
+drenadora nativa única; contadores de descarte y presupuesto por fuente.
 
 Resueltos en el ciclo jul-31: Rust ERROR→DB (#60, puente `rust-error`); gate
 de ventanas aux en initializers (#62 — el "triple worker" no existía, era la

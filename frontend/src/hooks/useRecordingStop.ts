@@ -408,7 +408,7 @@ export function useRecordingStop(
 
         if (isCallApi && transcriptsRef.current.length === 0) {
           recordingLogService.log(
-            hasRecoverableAudio ? 'save_deferred_audio_only' : 'save_skipped_no_transcripts',
+            hasRecoverableAudio ? 'save_deferred_audio_only' : 'save_skipped_no_transcripts', // telemetry-allow: ternario de dos literales catalogados
             {
               is_call_api: isCallApi,
               transcript_count: 0,

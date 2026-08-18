@@ -97,7 +97,7 @@ pub async fn import_pending<R: Runtime>(app: &AppHandle<R>) {
         super::emit::emit_event(
             app,
             super::context::process_session_id(),
-            "app.error",
+            super::catalog::APP_ERROR,
             payload,
             Some("error"),
             Some(&message),

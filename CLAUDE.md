@@ -636,6 +636,8 @@ La píldora de grabación y el banner "no se detectó micrófono" (`app/page.tsx
 
 Inventario completo en **`docs/TELEMETRIA.md`**: pirámide de 3 niveles — (1) `health.heartbeat` (RAM por proceso vía `get_health_snapshot`, cada 5 min activo / 15 min idle) y eventos a Supabase `maity.platform_logs` vía `platformLogger`; (2) `app.error` con rate-limit (handlers globales + ErrorBoundary, `lib/errorTelemetry.ts`); (3) logs completos SOLO locales (`[METRIC] mem-sample` cada 30s + export ZIP manual). Los logs crudos NO van a la nube (volumen/privacidad — decisión jul-2026). El doc incluye las queries SQL de análisis y el runbook de fugas de RAM.
 
+**El doc es contrato ejecutable (ago-2026):** evento nuevo = 3 entradas — `lib/telemetry-events.ts` + `logging/telemetry/catalog.rs` + fila en el doc — verificadas por `scripts/lint-telemetry.js` en el pre-build (single writer de `insert_platform_log`, catálogo espejo con marcador `legacy`, naming dot-namespaced, sin `'unknown'` en versiones, `core:app:default` en toda capability). `scripts/lint-tauri-acl.js` cruza además los call sites que exigen permiso (`onCloseRequested` ⇒ `allow-destroy`, `confirm`/`alert`, `getVersion`) contra las capabilities POR VENTANA (reachability de imports desde `app/<aux>/page.tsx`). Escapes: `// telemetry-allow:` / `// acl-allow:`.
+
 ## Depuracion
 
 ```bash

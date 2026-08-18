@@ -35,9 +35,9 @@ const PROVIDER_INVARIANTS: ProviderInvariant[] = [
   },
   {
     component: 'ErrorTelemetryInitializer',
-    mustNotBeDescendantOf: ['AuthGate', 'AuthProvider', 'ErrorBoundary'],
+    mustNotBeDescendantOf: ['AuthGate', 'AuthProvider', 'ErrorBoundary', 'DbInitErrorGate'],
     reason:
-      'La telemetria de errores debe capturar errores pre-auth y seguir viva cuando ErrorBoundary desmonta el arbol al mostrar su fallback. Dentro de cualquiera de esos gates, los errores mas valiosos (los que tumban la app o pasan antes del login) jamas llegarian a platform_logs.',
+      'La telemetria de errores debe capturar errores pre-auth y seguir viva cuando ErrorBoundary desmonta el arbol al mostrar su fallback. Dentro de cualquiera de esos gates, los errores mas valiosos (los que tumban la app o pasan antes del login) jamas llegarian a platform_logs. DbInitErrorGate incluido (ago-2026): los app.error de db-init son justo los que reporta — con el gate mostrando su fallback, el initializer desmontado no reportaria nada (el presupuesto db-init=3 del ErrorReportLimiter existe para ellos).',
   },
 ];
 
@@ -136,6 +136,27 @@ describe('layout.tsx provider tree invariants', () => {
       }
     });
   }
+
+  // Premisa del lint de ACL (scripts/lint-tauri-acl.js): el root layout se
+  // atribuye SOLO a la ventana main porque las rutas aux hacen early-return
+  // ANTES de montar AppContent (donde viven onCloseRequested, app.open, etc.).
+  // Si alguien mueve ese return debajo del primer <AppContent, los call sites
+  // del root layout correrian tambien en coach-float/recording-widget/
+  // device-picker con capabilities que no los declaran.
+  it('el early-return de rutas aux precede al primer <AppContent dentro de RootLayout', () => {
+    // Anclado a RootLayout: AppContent tambien llama isAuxWindowPath para su
+    // propio gate, y esa ocurrencia (anterior en el archivo) no es la premisa.
+    const rootLayoutStart = source.indexOf('function RootLayout');
+    expect(rootLayoutStart, 'function RootLayout no encontrada en layout.tsx').toBeGreaterThan(-1);
+    const auxReturn = source.indexOf('isAuxWindowPath(pathname)', rootLayoutStart);
+    const firstAppContent = source.indexOf('<AppContent', rootLayoutStart);
+    expect(auxReturn, 'isAuxWindowPath(pathname) no encontrado en RootLayout').toBeGreaterThan(-1);
+    expect(firstAppContent, '<AppContent no encontrado en RootLayout').toBeGreaterThan(-1);
+    expect(
+      auxReturn,
+      'El early-return de rutas aux debe evaluarse ANTES de montar AppContent — es la premisa con la que lint-tauri-acl.js atribuye el root layout solo a la ventana main.',
+    ).toBeLessThan(firstAppContent);
+  });
 
   it('comentario MARKER critico sigue presente en layout.tsx', () => {
     expect(
