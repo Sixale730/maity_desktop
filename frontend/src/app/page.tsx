@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { motion } from 'framer-motion';
 import { invoke } from '@tauri-apps/api/core';
 import { RecordingControls } from '@/components/recording/RecordingControls';
@@ -10,6 +10,7 @@ import { usePermissionCheck } from '@/hooks/usePermissionCheck';
 import { useRecordingState, RecordingStatus } from '@/contexts/RecordingStateContext';
 import { useTranscripts } from '@/contexts/TranscriptContext';
 import { useConfig } from '@/contexts/ConfigContext';
+import { useAuth } from '@/contexts/AuthContext';
 import { StatusOverlays } from '@/app/_components/StatusOverlays';
 import Analytics from '@/lib/analytics';
 import { SettingsModals } from './_components/SettingsModal';
@@ -87,11 +88,18 @@ export default function Home() {
     isRecovering: _isRecovering,
     checkForRecoverableTranscripts,
     recoverMeeting,
+    autoRecoverAll,
     loadMeetingTranscripts,
     deleteRecoverableMeeting
   } = useTranscriptRecovery();
 
   const router = useRouter();
+  const { maityUser } = useAuth();
+  const startupChecksRanRef = useRef(false);
+  // El diálogo NO debe abrirse mientras la auto-recuperación está en curso:
+  // `checkForRecoverableTranscripts` llena `recoverableMeetings` ANTES de que
+  // `autoRecoverAll` las vacíe una a una.
+  const [autoRecoveryDone, setAutoRecoveryDone] = useState(false);
 
   useEffect(() => {
     // Track page view
@@ -105,8 +113,14 @@ export default function Home() {
   // `coach_float_set_size`. Sin este useEffect dejamos de tener el doble
   // open que causaba la ventana redundante con el recording-widget.
 
-  // Startup recovery check — runs once on mount only
+  // Startup recovery check — runs once, but only when the session is ready.
+  // Gate por `maityUser`: `api_save_transcript` (lo que usa la auto-recuperación)
+  // exige `current_user_id` en el AppState de Rust, y ese IPC (`set_current_user`)
+  // lo dispara AuthContext al cargar `maityUser`. Con `[]` pelado corríamos antes.
   useEffect(() => {
+    if (!maityUser?.id || startupChecksRanRef.current) return;
+    startupChecksRanRef.current = true;
+
     const performStartupChecks = async () => {
       try {
         // 1. Clean up old meetings (7+ days)
@@ -123,19 +137,54 @@ export default function Home() {
           console.warn('Failed to clean up saved meetings:', error);
         }
 
-        // 3. Check for recoverable meetings on startup
-        await checkForRecoverableTranscripts();
+        // 3. Check for recoverable meetings on startup (borra fantasmas sin transcripts)
+        const candidates = await checkForRecoverableTranscripts();
+        if (candidates.length === 0) {
+          setAutoRecoveryDone(true);
+          return;
+        }
+
+        // 4. Recuperación automática (ago-2026): se guardan solas y se avisa con
+        //    UN toast. Las que fallan quedan en `recoverableMeetings` y abren el
+        //    diálogo de siempre como red de seguridad.
+        const { recovered } = await autoRecoverAll(candidates);
+        setAutoRecoveryDone(true);
+        if (recovered.length === 1) {
+          const [only] = recovered;
+          toast.success('Reunión recuperada', {
+            description: only.title,
+            action: {
+              label: 'Ver',
+              onClick: () => router.push(`/conversations?localId=${only.savedMeetingId}&source=local`),
+            },
+            duration: 10000,
+          });
+        } else if (recovered.length > 1) {
+          toast.success(`Se recuperaron ${recovered.length} reuniones interrumpidas`, {
+            action: {
+              label: 'Ver conversaciones',
+              onClick: () => router.push('/conversations'),
+            },
+            duration: 10000,
+          });
+        }
+        if (recovered.length > 0) {
+          await refetchMeetings();
+        }
       } catch (error) {
         console.error('Failed to perform startup checks:', error);
+        setAutoRecoveryDone(true);
       }
     };
 
     performStartupChecks();
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [maityUser?.id]);
 
   // Watch for recoverable meetings changes and show dialog once per session
+  // (tras la auto-recuperación solo quedan aquí las que FALLARON).
   useEffect(() => {
+    if (!autoRecoveryDone) return;
     if (recoverableMeetings.length > 0) {
       const shownThisSession = sessionStorage.getItem('recovery_dialog_shown');
       if (!shownThisSession) {
@@ -143,7 +192,7 @@ export default function Home() {
         sessionStorage.setItem('recovery_dialog_shown', 'true');
       }
     }
-  }, [recoverableMeetings]);
+  }, [recoverableMeetings, autoRecoveryDone]);
 
   // Handle recovery with toast notifications and navigation
   const handleRecovery = async (meetingId: string) => {

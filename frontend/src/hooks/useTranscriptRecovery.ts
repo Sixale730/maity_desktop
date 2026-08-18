@@ -9,6 +9,7 @@ import { useState, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { indexedDBService, MeetingMetadata, StoredTranscript } from '@/services/indexedDBService';
 import { storageService } from '@/services/storageService';
+import { logger } from '@/lib/logger';
 
 interface AudioRecoveryStatus {
   status: string; // "success" | "partial" | "failed" | "none"
@@ -18,14 +19,43 @@ interface AudioRecoveryStatus {
   message: string;
 }
 
+export interface RecoveredMeetingSummary {
+  /** id del registro IndexedDB (origen) */
+  meetingId: string;
+  /** id de la reunión ya guardada en SQLite (destino) */
+  savedMeetingId: string;
+  title: string;
+}
+
+export interface AutoRecoverResult {
+  recovered: RecoveredMeetingSummary[];
+  /** Candidatas que fallaron y quedan en `recoverableMeetings` para el diálogo. */
+  failed: MeetingMetadata[];
+}
+
 export interface UseTranscriptRecoveryReturn {
   recoverableMeetings: MeetingMetadata[];
   isLoading: boolean;
   isRecovering: boolean;
-  checkForRecoverableTranscripts: () => Promise<void>;
+  /** Devuelve las candidatas encontradas (además de dejarlas en `recoverableMeetings`). */
+  checkForRecoverableTranscripts: () => Promise<MeetingMetadata[]>;
   recoverMeeting: (meetingId: string) => Promise<{ success: boolean; audioRecoveryStatus?: AudioRecoveryStatus | null; meetingId?: string }>;
+  /** Recupera en serie todas las candidatas (o las que se pasen). */
+  autoRecoverAll: (candidates?: MeetingMetadata[]) => Promise<AutoRecoverResult>;
   loadMeetingTranscripts: (meetingId: string) => Promise<StoredTranscript[]>;
   deleteRecoverableMeeting: (meetingId: string) => Promise<void>;
+}
+
+/**
+ * `api_save_transcript` rechaza guardar sin usuario logueado en el AppState de
+ * Rust (`set_current_user` es un IPC que AuthContext dispara al cargar
+ * `maityUser`; puede llegar después del arranque de la página). Un fallo así es
+ * transitorio: la reunión debe quedar SIN marcar para reintentar en el
+ * siguiente arranque, no ir al diálogo como "fallida".
+ */
+export function isTransientNoUserError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? '');
+  return /no user logged in/i.test(message);
 }
 
 export function useTranscriptRecovery(): UseTranscriptRecoveryReturn {
@@ -36,7 +66,7 @@ export function useTranscriptRecovery(): UseTranscriptRecoveryReturn {
   /**
    * Check for recoverable meetings in IndexedDB
    */
-  const checkForRecoverableTranscripts = useCallback(async () => {
+  const checkForRecoverableTranscripts = useCallback(async (): Promise<MeetingMetadata[]> => {
     setIsLoading(true);
     try {
       const meetings = await indexedDBService.getAllMeetings();
@@ -61,7 +91,7 @@ export function useTranscriptRecovery(): UseTranscriptRecoveryReturn {
       const cutoffTime = Date.now() - (7 * 24 * 60 * 60 * 1000);
       const secondsAgo = Date.now() - (15 * 1000);
 
-      const recentMeetings = meetings.filter(m => {
+      const unsavedMeetings = meetings.filter(m => {
         if (m.savedToSQLite) return false; // Already recovered — skip
         // Skip the currently-active recording (scheduled/tray/manual) — it's not "interrupted".
         if (activeFolderPath && m.folderPath === activeFolderPath) return false;
@@ -69,6 +99,29 @@ export function useTranscriptRecovery(): UseTranscriptRecoveryReturn {
         const isOldEnough = m.lastUpdated < secondsAgo; // Older than 15 seconds
         return isWithinRetention && isOldEnough;
       });
+
+      // Fantasmas (ago-2026): el registro IndexedDB se crea al ARRANCAR cada
+      // grabación con transcriptCount=0 (TranscriptContext, `recording-started`),
+      // así que una grabación abortada a los 5 s, un segmento de jornada en
+      // silencio (finalize_segment_native devuelve None → nunca se marca guardado)
+      // o una grabación cuyo STT nunca cargó dejan entradas que el diálogo ofrecía
+      // como "recuperables" — y `recoverMeeting` las rechaza con 'No transcripts
+      // found'. Decisión de producto: sin transcripts NO hay nada que recuperar
+      // como reunión, incluso si hay checkpoints de audio. Se borra SOLO el
+      // registro IndexedDB; los archivos en disco (carpeta, .checkpoints/) no se
+      // tocan jamás desde aquí.
+      const ghosts = unsavedMeetings.filter(m => m.transcriptCount === 0);
+      const recentMeetings = unsavedMeetings.filter(m => m.transcriptCount > 0);
+      if (ghosts.length > 0) {
+        logger.debug(`[recovery] descartando ${ghosts.length} registro(s) sin transcripts`);
+        await Promise.all(
+          ghosts.map(g =>
+            indexedDBService.deleteMeeting(g.meetingId).catch(error => {
+              console.warn('[recovery] no se pudo borrar registro fantasma:', g.meetingId, error);
+            })
+          )
+        );
+      }
 
       // Verify audio checkpoint availability for each meeting
       const meetingsWithAudioStatus = await Promise.all(
@@ -96,9 +149,11 @@ export function useTranscriptRecovery(): UseTranscriptRecoveryReturn {
 
 
       setRecoverableMeetings(meetingsWithAudioStatus);
+      return meetingsWithAudioStatus;
     } catch (error) {
       console.error('Failed to check for recoverable transcripts:', error);
       setRecoverableMeetings([]);
+      return [];
     } finally {
       setIsLoading(false);
     }
@@ -230,6 +285,44 @@ export function useTranscriptRecovery(): UseTranscriptRecoveryReturn {
   }, [loadMeetingTranscripts]);
 
   /**
+   * Recuperación AUTOMÁTICA (ago-2026): en vez de pedirle al usuario que abra el
+   * diálogo, seleccione y pulse "Recuperar", se recorren en serie todas las
+   * candidatas (ya filtradas: con transcripts) y se guardan solas. Las que fallan
+   * quedan en `recoverableMeetings` — el diálogo pasa a ser solo red de seguridad.
+   *
+   * En serie y no en paralelo a propósito: cada `recoverMeeting` lanza FFmpeg
+   * (merge de checkpoints) y escribe en SQLite; N en paralelo al arranque
+   * competirían por disco/CPU justo cuando la app está cargando modelos.
+   */
+  const autoRecoverAll = useCallback(async (candidates?: MeetingMetadata[]): Promise<AutoRecoverResult> => {
+    const list = candidates ?? recoverableMeetings;
+    const recovered: RecoveredMeetingSummary[] = [];
+    const failed: MeetingMetadata[] = [];
+
+    for (const meeting of list) {
+      try {
+        const result = await recoverMeeting(meeting.meetingId);
+        if (result.success && result.meetingId) {
+          recovered.push({ meetingId: meeting.meetingId, savedMeetingId: result.meetingId, title: meeting.title });
+        } else {
+          failed.push(meeting);
+        }
+      } catch (error) {
+        if (isTransientNoUserError(error)) {
+          // Reintento en el próximo arranque; se saca de la lista para no abrir el diálogo.
+          logger.warn('[recovery] sin usuario en Rust todavía; se pospone', meeting.meetingId);
+          setRecoverableMeetings(prev => prev.filter(m => m.meetingId !== meeting.meetingId));
+        } else {
+          console.error('[recovery] auto-recuperación fallida:', meeting.meetingId, error);
+          failed.push(meeting);
+        }
+      }
+    }
+
+    return { recovered, failed };
+  }, [recoverableMeetings, recoverMeeting]);
+
+  /**
    * Delete a recoverable meeting
    */
   const deleteRecoverableMeeting = useCallback(async (meetingId: string): Promise<void> => {
@@ -248,6 +341,7 @@ export function useTranscriptRecovery(): UseTranscriptRecoveryReturn {
     isRecovering,
     checkForRecoverableTranscripts,
     recoverMeeting,
+    autoRecoverAll,
     loadMeetingTranscripts,
     deleteRecoverableMeeting
   };

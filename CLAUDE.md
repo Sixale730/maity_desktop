@@ -585,6 +585,18 @@ Fire-and-forget: sync cloud via sync_queue (background)
 ConversationDetail: muestra datos locales, poll cloud analysis
 ```
 
+### Recuperación de grabaciones interrumpidas — automática y sin fantasmas (ago-2026)
+
+Cada grabación crea al **arrancar** un registro en IndexedDB (`TranscriptContext`, `recording-started`, `transcriptCount:0, savedToSQLite:false`) que sirve de WAL para transcripts; al guardar se marca `savedToSQLite=true`. `useTranscriptRecovery` + `app/page.tsx` lo consumen en el arranque:
+
+- **Filtro de fantasmas**: un registro sin marcar con `transcriptCount === 0` (aborto temprano, segmento de jornada en silencio — `finalize_segment_native` devuelve `None` y el frontend no lo marca —, STT que nunca cargó) **se borra de IndexedDB** y no se ofrece. Decisión de producto: sin transcripts NO se recupera como reunión, **aunque haya checkpoints de audio**. El filtro **nunca** toca disco (`cleanup_checkpoints`/carpeta).
+- **Auto-recuperación**: las candidatas con transcripts se guardan solas (`autoRecoverAll`, en serie: cada una lanza FFmpeg + escribe SQLite) y sale **un** toast ("Reunión recuperada" con "Ver" / "Se recuperaron N…"). Sin auto-navegación. El diálogo `TranscriptRecovery` queda solo como **red de seguridad** para las que fallan; `page.tsx` lo gatea con `autoRecoveryDone` porque `checkForRecoverableTranscripts` llena `recoverableMeetings` ANTES de que la auto-recuperación las vacíe.
+- El arranque se gatea con `useAuth().maityUser?.id` (no `[]`): `api_save_transcript` exige `current_user_id` en Rust y ese IPC lo dispara `AuthContext` al cargar `maityUser`. Si aun así llega `no user logged in`, `isTransientNoUserError` lo trata como transitorio: se saca de la lista sin marcar → reintento en el próximo arranque, sin diálogo.
+- **`useRecordingStop` con 0 transcripts**: ya NO deja el registro sin marcar "para el diálogo" (era un callejón sin salida: `recoverMeeting` rechaza reuniones sin transcripts). Si hay checkpoints, fusiona best-effort con `recover_audio_from_checkpoints` (deja `audio.mp4` en la carpeta), marca guardada, y avisa con toast "Reunión sin transcripción" + acción **"Abrir carpeta"** (`reveal_in_folder`). Los eventos de telemetría `save_deferred_audio_only`/`save_skipped_no_transcripts` se conservan tal cual (catálogo).
+- Pendiente conocido: la carrera de `markMeetingAsSaved` en rotación de jornada (`TranscriptContext` resuelve el id por `sessionStorage`, que el nuevo segmento pisa) puede dejar un segmento con transcripts sin marcar → se auto-recupera como reunión local (posible duplicado del que Rust ya guardó).
+
+Tests: `hooks/useTranscriptRecovery.test.ts`, `hooks/useRecordingStop.feedback.test.tsx` (bloque "0 transcripts con audio en disco").
+
 ### Patron Visual: Dashboard de Gamificacion (DPI Scaling Windows)
 
 El componente `GamifiedDashboardV2.tsx` y el Card de "Mision Actual" tienen reglas estrictas — violarlas ha causado 4 regresiones documentadas (commits `5400b67`, `2b90533`, `7ed9829` + iter 2 mayo 2026).

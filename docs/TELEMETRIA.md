@@ -125,7 +125,7 @@ Todos legacy. Payload común: `recording_session_id`, `meeting_id`, `is_call_api
 | `meeting_id_generated` | al arrancar (`useRecordingStart`) |
 | `buffer_flush_completed` | flush de 500 ms al detener |
 | `sqlite_save_attempted` / `sqlite_save_succeeded` / `sqlite_save_failed` | guardado local (`useRecordingStop`) |
-| `save_deferred_audio_only` | 0 transcripts **pero hay checkpoints de audio**: la reunión se PRESERVA para el diálogo de recuperación (fix alejandra, ago-2026) |
+| `save_deferred_audio_only` | 0 transcripts **pero hay checkpoints de audio**. Desde ago-2026 (2ª iteración) ya NO se difiere al diálogo de recuperación: se fusiona el audio en `audio.mp4` best-effort, se marca el registro guardado y se avisa con toast "Abrir carpeta". El nombre se conserva por catálogo (`legacy`) |
 | `save_skipped_no_transcripts` | 0 transcripts y sin audio: nada que ofrecer |
 | `cloud_sync_enqueued` / `cloud_sync_enqueue_failed` | encolado en la sync queue offline-first |
 

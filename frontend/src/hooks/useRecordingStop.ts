@@ -384,11 +384,16 @@ export function useRecordingStop(
         // 0 transcripts NO significa "no hubo reunión". Si el motor STT nunca
         // cargó (modelo ausente o corrupto), el audio SÍ se grabó y vive en
         // .checkpoints/ — incremental_saver.rs lo escribe cada 30s pase lo que
-        // pase. Esos checkpoints son el write-ahead log de la grabación, y la
-        // invariante de todo WAL es no truncarlo antes de que exista la copia
-        // durable. Marcar savedToSQLite=true aquí borra el único puntero al
-        // audio y la reunión se pierde en silencio, con los bytes intactos en
-        // disco (piloto Dingler, ago-2026: 4 reuniones perdidas así).
+        // pase (piloto Dingler, ago-2026: 4 reuniones perdidas así).
+        //
+        // Hasta ago-2026 aquí se dejaba savedToSQLite=false "para que el diálogo
+        // de recuperación lo ofreciera al reiniciar". Era un callejón sin salida:
+        // `recoverMeeting` rechaza reuniones sin transcripts, y el diálogo se
+        // llenaba de entradas irrecuperables. Decisión de producto: una grabación
+        // sin transcripts NO se recupera como reunión. Lo que SÍ se conserva es
+        // el audio: se fusionan los checkpoints en `audio.mp4` aquí mismo (la
+        // misma operación que haría `finalize()`), se marca el registro como
+        // guardado, y se le dice al usuario dónde quedó con "Abrir carpeta".
         const folderPath = sessionStorage.getItem('last_recording_folder_path');
         let hasRecoverableAudio = false;
 
@@ -398,11 +403,23 @@ export function useRecordingStop(
               meetingFolder: folderPath,
             });
           } catch (error) {
-            // Fail-safe: si no se puede comprobar, asumir que SÍ hay audio.
-            // Equivocarse hacia aquí cuesta un diálogo de recuperación de más;
-            // equivocarse al revés cuesta la reunión entera.
+            // Fail-safe: si no se puede comprobar, asumir que SÍ hay audio y
+            // avisar dónde está la carpeta — cuesta un toast de más, nunca la reunión.
             hasRecoverableAudio = true;
-            logger.warn('[RecordingStop] No se pudo verificar checkpoints; se preserva la reunión:', error);
+            logger.warn('[RecordingStop] No se pudo verificar checkpoints; se asume audio en disco:', error);
+          }
+
+          if (hasRecoverableAudio) {
+            // Best-effort: dejar un audio.mp4 usable en la carpeta. Si FFmpeg
+            // falla, los chunks siguen en .checkpoints/ (no se borran).
+            try {
+              await invoke('recover_audio_from_checkpoints', {
+                meetingFolder: folderPath,
+                sampleRate: 48000,
+              });
+            } catch (error) {
+              logger.warn('[RecordingStop] No se pudo fusionar el audio de checkpoints:', error);
+            }
           }
         }
 
@@ -418,29 +435,28 @@ export function useRecordingStop(
           );
 
           // Clean up sessionStorage (no ghost to delete — meeting was never inserted).
-          // OJO: 'last_recording_folder_path' solo se limpia cuando NO hay audio
-          // que recuperar — el diálogo de recuperación necesita esa ruta.
           sessionStorage.removeItem('early_meeting_id');
           sessionStorage.removeItem('last_recording_meeting_name');
-          if (!hasRecoverableAudio) {
-            sessionStorage.removeItem('last_recording_folder_path');
-          }
+          sessionStorage.removeItem('last_recording_folder_path');
         }
 
-        // Marcar como guardada SOLO cuando no queda nada útil que recuperar.
-        // Con audio en disco, savedToSQLite sigue en false para que
-        // useTranscriptRecovery lo ofrezca en el próximo arranque.
-        if (transcriptsRef.current.length === 0 && !hasRecoverableAudio) {
+        // Marcar como guardada SIEMPRE que haya 0 transcripts: ya no hay diálogo
+        // que consuma un registro sin texto (useTranscriptRecovery los descarta).
+        if (transcriptsRef.current.length === 0) {
           await markMeetingAsSaved();
         }
 
-        if (hasRecoverableAudio) {
-          // Sin esto el fix es invisible: el usuario seguiría creyendo que su
-          // reunión desapareció.
-          toast.info('Reunión guardada sin transcripción', {
-            description:
-              'No se generó texto, pero el audio quedó guardado. Podrás recuperarlo al reiniciar Maity.',
-            duration: 8000,
+        if (hasRecoverableAudio && folderPath) {
+          // Sin esto el usuario creería que su reunión desapareció.
+          toast.info('Reunión sin transcripción', {
+            description: 'No se generó texto; el audio quedó en la carpeta de la grabación.',
+            action: {
+              label: 'Abrir carpeta',
+              onClick: () => {
+                invoke('reveal_in_folder', { path: folderPath }).catch(() => {});
+              },
+            },
+            duration: 10000,
           });
         }
 
