@@ -282,5 +282,7 @@ describe('suscripcion a eventos Tauri: sin listen() suelto (issue #65)', () => {
             'un listen() suelto se desregistra dos veces o se filtra al desmontar ' +
             "antes de que resuelva, y Tauri tira \"reading 'handlerId'\" (issue #65).",
     ).toEqual([]);
-  });
+    // Parsea todo src/ con el TS Compiler API (~3 s en frío, >5 s con la
+    // máquina cargada por el build). El coste es legítimo; el default de 5 s no.
+  }, 30_000);
 });

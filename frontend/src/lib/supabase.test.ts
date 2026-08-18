@@ -145,5 +145,7 @@ describe('cliente Supabase: ruteo de schema (issue #70)', () => {
         'una tabla de maity. Un .rpc() mal ruteado da 403 silencioso; un .from() ' +
         'mal ruteado da PGRST205. Ver issue #70.\n',
     ).toEqual([]);
-  });
+    // Parsea todo src/ con el TS Compiler API (~3 s en frío, >5 s con la
+    // máquina cargada por el build). El coste es legítimo; el default de 5 s no.
+  }, 30_000);
 });

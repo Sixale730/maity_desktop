@@ -23,7 +23,10 @@ export const SidebarControls: React.FC<SidebarControlsProps> = ({
   const { user, maityUser, signOut } = useAuth();
 
   useEffect(() => {
-    getVersion().then(setVersion).catch(() => setVersion('0.2.3'));
+    // Sin fallback inventado: si getVersion() falla, no se pinta la línea
+    // (el render ya tolera vacío). Un literal hardcodeado envejece y miente
+    // en capturas de pantalla de reportes.
+    getVersion().then(setVersion).catch(() => setVersion(''));
   }, []);
 
   if (isCollapsed) return null;
