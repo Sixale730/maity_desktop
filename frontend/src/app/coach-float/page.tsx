@@ -140,7 +140,7 @@ export default function CoachFloatPage() {
   const { metrics, isWaitingForAudio } = useMeetingMetrics();
   // Iter 11: cambio de "compact vs expanded" a "drawer open vs closed".
   //
-  // - drawerOpen=false → ventana 360×76 (solo barra horizontal).
+  // - drawerOpen=false → ventana 352×76 (solo barra horizontal; COACH_COMPACT_W).
   // - drawerOpen=true  → ventana 360×336 (barra + panel desplegado abajo).
   //
   // La barra superior es SIEMPRE constante (no se reemplaza por otro layout
@@ -372,6 +372,10 @@ export default function CoachFloatPage() {
     const id = setInterval(() => setPauseSecs((s) => s + 1), 1000);
     return () => clearInterval(id);
   }, [isPaused]);
+  // "M:SS" del tiempo en pausa. Iter 14: ya NO se pinta en la barra (ancho
+  // fijo, sin texto); vive en el tooltip de Reanudar y en el card Tiempo del
+  // drawer.
+  const pauseLabel = `${Math.floor(pauseSecs / 60)}:${String(pauseSecs % 60).padStart(2, '0')}`;
 
   // Sync del timer cuando llega un metric nuevo del backend (cada 3s).
   // Cuando metrics === null (recording stop), reset a 0.
@@ -659,7 +663,8 @@ export default function CoachFloatPage() {
   // ── Barra transport (siempre visible) + Drawer panel opcional ─────────
   // Layout en una sola fila: logo Maity | mic + 5 barras | sis + 5 barras |
   // (timer si graba) | botón Play/Stop icon-only | drawer toggle + close.
-  // Dimensiones 360×76. El drawer suma 260 px adicionales cuando se abre.
+  // Dimensiones 352×76 (COACH_COMPACT_W/H en coach/commands.rs). El drawer
+  // suma 344 px adicionales cuando se abre.
   const hasLiveAudio = levels.micRms > 0.005 || levels.sysRms > 0.005;
   const barsActive = recordingActive || hasLiveAudio;
   // Iter 11: layout único — barra horizontal SIEMPRE visible (76 px) + drawer
@@ -687,12 +692,11 @@ export default function CoachFloatPage() {
           // proyectaba sombra rectangular fuera del rounded del WebView2. Con
           // -4px de spread negativo, la sombra se mantiene dentro de los
           // contornos redondeados del card.
-          // En pausa se suma un ring ámbar INSET: un ring exterior sería
-          // recortado por el clipPath de la barra.
-          boxShadow:
-            recordingActive && isPaused
-              ? '0 8px 24px -4px rgba(0,0,0,0.65), inset 0 0 0 2px rgba(251,191,36,0.85)'
-              : '0 8px 24px -4px rgba(0,0,0,0.65)',
+          // Iter 14: el ring ámbar inset de pausa (a18ab08) se eliminó — se
+          // veía como un contorno amarillo sucio. El estado de pausa se
+          // comunica ahora dentro de los controles (mic/barras ámbar, halo
+          // del botón Reanudar, dot del logo), sin tocar el contenedor.
+          boxShadow: '0 8px 24px -4px rgba(0,0,0,0.65)',
         }}
         data-tauri-drag-region
       >
@@ -737,12 +741,18 @@ export default function CoachFloatPage() {
             title={selectedMic ?? 'Cambiar micrófono'}
             aria-label="Seleccionar micrófono"
           >
-            <Mic className={`w-4 h-4 transition-colors ${recordingActive ? 'text-red-400' : 'text-white/70'}`} />
+            {/* Iter 14: en pausa el mic pasa a ámbar y las barras se congelan
+                atenuadas — señal de "no está capturando" sin texto ni ancho extra. */}
+            <Mic
+              className={`w-4 h-4 transition-colors ${
+                recordingActive ? (isPaused ? 'text-amber-400' : 'text-red-400') : 'text-white/70'
+              }`}
+            />
           </button>
           <AudioBars5
             rms={levels.micRms}
-            active={barsActive}
-            color={recordingActive ? '#f87171' : 'rgba(72,93,244,0.7)'}
+            active={barsActive && !isPaused}
+            color={recordingActive ? (isPaused ? '#fbbf24' : '#f87171') : 'rgba(72,93,244,0.7)'}
           />
         </div>
 
@@ -759,8 +769,12 @@ export default function CoachFloatPage() {
           </button>
           <AudioBars5
             rms={levels.sysRms}
-            active={barsActive}
-            color={recordingActive ? 'rgb(16,185,129)' : 'rgba(16,185,129,0.7)'}
+            active={barsActive && !isPaused}
+            color={
+              recordingActive
+                ? (isPaused ? 'rgba(16,185,129,0.35)' : 'rgb(16,185,129)')
+                : 'rgba(16,185,129,0.7)'
+            }
           />
         </div>
 
@@ -769,34 +783,42 @@ export default function CoachFloatPage() {
             right-2` y se encimaba con el rojo del Stop. Moverlo aquí elimina
             el conflicto y le da al usuario el "icono grande a la derecha del
             grabar/detener" que pidió. */}
-        <div className="ml-auto flex items-center gap-1.5 pr-5">
+        {/* REGLA (iter 14): la ventana tiene ancho FIJO (COACH_COMPACT_W en
+            coach/commands.rs) y TODOS los hijos de la barra son shrink-0. La
+            barra NO admite contenido de ancho variable (texto): el chip
+            "Pausado · MM:SS" que vivía aquí sumaba ~90 px que solo podían
+            salir de aplastar los botones circulares (este era el único hijo
+            compresible) y variaba por DPI/text-scaling → en algunos equipos
+            los botones se veían deformes y el chevron recortado. El estado se
+            comunica con color/animación DENTRO de los controles. */}
+        <div className="ml-auto flex items-center gap-1.5 pr-5 shrink-0">
           {/* Reloj inline removido (iter 13): consumía espacio visual al lado
               del logo y duplicaba la info del drawer. El timer sigue visible
               en el drawer expandido cuando el user lo abre. */}
 
-          {/* Indicador "Pausado · MM:SS" — refuerzo visual del estado pausado.
-              animate-pulse: los toasts del OS se suprimen al compartir pantalla
-              (Focus Assist), así que este chip es la señal primaria de pausa. */}
-          {recordingActive && isPaused && (
-            <span className="text-[10px] font-bold uppercase tracking-wider text-amber-400 tabular-nums animate-pulse">
-              Pausado · {Math.floor(pauseSecs / 60)}:{String(pauseSecs % 60).padStart(2, '0')}
-            </span>
-          )}
-
-          {/* Pausa / Reanudar — solo mientras graba (h-9 w-9 como el resto). */}
+          {/* Pausa / Reanudar — solo mientras graba (h-9 w-9 como el resto).
+              En pausa: verde + halo ping (dentro de los 36 px del botón, no
+              afecta el flujo) para llevar el ojo a "reanudar". El tiempo en
+              pausa va al tooltip y al drawer, no a la barra. */}
           {recordingActive && (
             <button
               onClick={isPaused ? handleResume : handlePause}
               disabled={busy}
               className={
                 isPaused
-                  ? 'h-9 w-9 rounded-full bg-emerald-500 hover:bg-emerald-400 text-white disabled:opacity-50 flex items-center justify-center transition-all shadow-lg shadow-emerald-500/30'
-                  : 'h-9 w-9 rounded-full bg-white/[0.08] hover:bg-white/15 border border-white/10 text-white/75 hover:text-white disabled:opacity-50 flex items-center justify-center transition-all'
+                  ? 'relative shrink-0 h-9 w-9 rounded-full bg-emerald-500 hover:bg-emerald-400 text-white disabled:opacity-50 flex items-center justify-center transition-all shadow-lg shadow-emerald-500/30'
+                  : 'shrink-0 h-9 w-9 rounded-full bg-white/[0.08] hover:bg-white/15 border border-white/10 text-white/75 hover:text-white disabled:opacity-50 flex items-center justify-center transition-all'
               }
-              title={isPaused ? 'Reanudar grabación' : 'Pausar grabación'}
+              title={isPaused ? `Reanudar grabación · en pausa ${pauseLabel}` : 'Pausar grabación'}
               aria-label={isPaused ? 'Reanudar' : 'Pausar'}
             >
-              {isPaused ? <Play className="w-4 h-4 fill-current ml-0.5" /> : <Pause className="w-4 h-4" />}
+              {isPaused && (
+                <span
+                  className="absolute inset-0 rounded-full bg-emerald-400/40 animate-ping pointer-events-none"
+                  aria-hidden
+                />
+              )}
+              {isPaused ? <Play className="relative w-4 h-4 fill-current ml-0.5" /> : <Pause className="w-4 h-4" />}
             </button>
           )}
 
@@ -807,8 +829,8 @@ export default function CoachFloatPage() {
             disabled={busy}
             className={
               recordingActive
-                ? 'h-9 w-9 rounded-full bg-red-500 hover:bg-red-400 text-white disabled:opacity-50 flex items-center justify-center transition-all shadow-lg shadow-red-500/30'
-                : 'h-9 w-9 rounded-full bg-white hover:bg-indigo-500 text-black hover:text-white disabled:opacity-50 flex items-center justify-center transition-all'
+                ? 'shrink-0 h-9 w-9 rounded-full bg-red-500 hover:bg-red-400 text-white disabled:opacity-50 flex items-center justify-center transition-all shadow-lg shadow-red-500/30'
+                : 'shrink-0 h-9 w-9 rounded-full bg-white hover:bg-indigo-500 text-black hover:text-white disabled:opacity-50 flex items-center justify-center transition-all'
             }
             title={recordingActive ? 'Detener grabación' : 'Iniciar grabación'}
             aria-label={recordingActive ? 'Detener' : 'Grabar'}
@@ -827,7 +849,7 @@ export default function CoachFloatPage() {
               que no compita visualmente con el botón rojo de grabación. */}
           <button
             onClick={toggleDrawer}
-            className="h-9 w-9 rounded-full bg-white/[0.08] hover:bg-white/15 border border-white/10 text-white/75 hover:text-white flex items-center justify-center transition-all"
+            className="shrink-0 h-9 w-9 rounded-full bg-white/[0.08] hover:bg-white/15 border border-white/10 text-white/75 hover:text-white flex items-center justify-center transition-all"
             title={drawerOpen ? 'Cerrar panel' : 'Ver panel completo'}
             aria-label={drawerOpen ? 'Cerrar panel' : 'Abrir panel'}
           >
@@ -888,6 +910,13 @@ export default function CoachFloatPage() {
                 <div className="text-base font-bold mt-0.5 tabular-nums text-[#a8b3ff]">
                   {sessionTime}
                 </div>
+                {/* Iter 14: el tiempo en pausa vive aquí (el drawer es
+                    flex-1 min-w-0, sin problema de ancho), no en la barra. */}
+                {recordingActive && isPaused && (
+                  <div className="text-[9px] uppercase tracking-wider tabular-nums text-amber-400/80">
+                    En pausa · {pauseLabel}
+                  </div>
+                )}
               </div>
             </div>
           </div>

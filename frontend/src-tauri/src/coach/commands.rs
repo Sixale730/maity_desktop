@@ -24,14 +24,19 @@ use tracing::{info, warn};
 // La barra superior es siempre constante (76 px); el drawer se despliega
 // debajo sumando ~260 px para health/tips/talk-split.
 const COACH_FLOAT_LABEL: &str = "coach-float";
-// Modo barra-sola (iter 12): 340×76 — antes 360 (iter 11). Reducimos el ancho
-// porque el botón Play/Stop pasó a ser icon-only (sin texto "GRABAR"/"DETENER")
-// y libera ~20-30 px horizontales. La altura 76 permite que los window controls
-// no se encimen con el flujo principal.
-const COACH_COMPACT_W: f64 = 340.0;
+// Modo barra-sola (iter 14): 352×76 — antes 340 (iter 12) y 360 (iter 11).
+// El contenido de la barra es de ancho FIJO y todos sus hijos son shrink-0
+// (ver page.tsx): 20 padding + 24 gaps + 28 logo + 66 mic + 66 sistema +
+// 140 grupo derecho (3 botones de 36 + gaps + pr-5) = 344 px. Con 340 faltaban
+// 4 px (los absorbían los botones al aplastarse); 352 deja 8 px de holgura
+// para el redondeo de layout de WebView2 a DPI 125/150 %. NO volver a meter
+// texto de ancho variable en la barra ni bajar este ancho sin recalcular.
+// La altura 76 permite que los window controls no se encimen con el flujo
+// principal.
+const COACH_COMPACT_W: f64 = 352.0;
 const COACH_COMPACT_H: f64 = 76.0;
 // Modo drawer (iter 12): barra superior + panel desplegado abajo.
-// 340×420 = 76 (barra) + 344 (drawer panel). Antes era 336 total (260 panel)
+// 352×420 = 76 (barra) + 344 (drawer panel). Antes era 336 total (260 panel)
 // pero el tip card quedaba con ~100 px → tips críticos se cortaban en 2 líneas.
 // Ahora el tip card recibe ~184 px = 4-5 líneas legibles.
 const COACH_DRAWER_H: f64 = 420.0;
@@ -279,7 +284,11 @@ pub async fn open_floating_coach<R: Runtime>(
     // el mayor entre min_inner_size e inner_size — con COACH_COMPACT_H=64
     // pediríamos 64 pero Tauri lo subiría a 110 (bug visible en iter 5).
     // Bajamos a 56 para que el compact pueda renderizar a 64 lógicos.
-    .min_inner_size(280.0, 56.0)
+    // Iter 14: el ancho mínimo es el compacto. Antes 280 (< COACH_COMPACT_W):
+    // la ventana es resizable sin decoraciones y podía quedar más angosta que
+    // el contenido fijo de la barra → botones aplastados. (El legacy expanded
+    // 320 quedaría ensanchado a COACH_COMPACT_W; no tiene callers.)
+    .min_inner_size(COACH_COMPACT_W, 56.0)
     .always_on_top(true)
     .decorations(false)
     .resizable(true)
