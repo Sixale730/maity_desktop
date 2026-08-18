@@ -46,10 +46,21 @@ enum Request {
         #[serde(default)]
         id: Option<u64>,
     },
+    // Provenance del binario (ago-2026): el cliente y el smoke test del build
+    // preguntan qué helper corre. Un helper anterior a 0.1.1 responde `error`
+    // ("unknown variant `version`") SIN id — señal utilizable, no rompe nada.
+    Version {
+        #[serde(default)]
+        id: Option<u64>,
+    },
     // Sin `id`: la respuesta (Goodbye) no se correlaciona, y serde acepta
     // igualmente un `{"type":"shutdown","id":N}` (ignora campos desconocidos).
     Shutdown,
 }
+
+/// Versión del protocolo stdin/stdout: 1 = sin ids; 2 = correlación por `id`
+/// + `version`. Súbelo solo cuando cambie la forma de los mensajes.
+const PROTOCOL_VERSION: u32 = 2;
 
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -61,6 +72,12 @@ enum Response {
         id: Option<u64>,
     },
     Pong {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        id: Option<u64>,
+    },
+    Version {
+        version: &'static str,
+        protocol: u32,
         #[serde(skip_serializing_if = "Option::is_none")]
         id: Option<u64>,
     },
@@ -376,7 +393,10 @@ fn main() -> Result<()> {
                 break;
             }
             Ok(_) => {
-                let line = buffer.trim();
+                // Tolerar un BOM UTF-8 inicial: Windows PowerShell 5.1 lo antepone
+                // al pipear a un exe nativo con $OutputEncoding UTF-8 (lo vio el
+                // smoke test del build); sin esto serde falla en "line 1 column 1".
+                let line = buffer.trim().trim_start_matches('\u{feff}');
                 if line.is_empty() {
                     continue;
                 }
@@ -440,6 +460,14 @@ fn main() -> Result<()> {
                     Ok(Request::Ping { id }) => {
                         state.update_activity();
                         send_response(&Response::Pong { id })?;
+                    }
+                    Ok(Request::Version { id }) => {
+                        state.update_activity();
+                        send_response(&Response::Version {
+                            version: env!("CARGO_PKG_VERSION"),
+                            protocol: PROTOCOL_VERSION,
+                            id,
+                        })?;
                     }
                     Ok(Request::Shutdown) => {
                         eprintln!("🛑 Shutdown requested");

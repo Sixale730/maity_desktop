@@ -69,6 +69,16 @@ Ejecutar `uname -s` para determinar la plataforma:
 2. Verificar que `frontend/.env` tenga `TAURI_SIGNING_PRIVATE_KEY` con valor (no vacio).
    - Si falta o esta vacio, restaurarla desde el respaldo canonico: `TAURI_SIGNING_PRIVATE_KEY` == contenido de `<repo>/signing/tauri-updater-key/maity.key` (ver seccion "Materiales de firma locales").
 
+3. Verificar la provenance del sidecar `llama-helper` (el `.exe` de `frontend/src-tauri/binaries/` esta gitignored y se copia a mano; asi se embarcaron 3 meses de helper stale en 0.2.51-0.2.53):
+   ```bash
+   cd "<repo>/frontend" && node scripts/verify-helper-binary.js
+   ```
+   - `OK` → continuar. `FAIL` (hash distinto al `cargo build -p llama-helper --release`) → regenerar y re-verificar:
+     ```bash
+     node scripts/verify-helper-binary.js --fix   # copia a src-tauri/binaries/ y a msix_staging/ si existe
+     ```
+   - El pre-build de `pnpm run tauri:build` lo vuelve a correr y **falla el build** si no coincide. La primera vez compila llama.cpp (minutos); despues es instantaneo (cargo cacheado).
+
 **En macOS:**
 1. Verificar identidad de firma:
    ```bash

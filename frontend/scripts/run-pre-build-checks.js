@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // Pre-build checks. Runs BEFORE tauri:build / tauri:build:debug.
 // Currently: state-access lint (fast, ~1s) + providers-tree lint (fast, <100ms)
-// + tauri-events lint (fast, <1s) + migrations LF/checksum + vitest (~45s).
+// + tauri-events lint (fast, <1s) + migrations LF/checksum + llama-helper
+// provenance (cargo cacheado, ~s; la primera vez compila llama.cpp) + vitest (~45s).
 //
 // Orden deliberado: los checks BARATOS van primero para fallar rápido; la suite
 // de vitest va al final porque es la más lenta (~45s) y la que menos veces falla.
@@ -16,6 +17,7 @@ const REPO_ROOT = path.resolve(__dirname, '..', '..');
 const LINT_SCRIPT = path.join(REPO_ROOT, 'scripts', 'lint-state-access.sh');
 const PROVIDERS_TREE_SCRIPT = path.join(__dirname, 'lint-providers-tree.js');
 const TAURI_EVENTS_SCRIPT = path.join(__dirname, 'lint-tauri-events.js');
+const VERIFY_HELPER_SCRIPT = path.join(__dirname, 'verify-helper-binary.js');
 // On Windows, bash (Git Bash/MINGW) treats backslashes as escapes, mangling
 // `C:\maity_desktop\...` into `C:maity_desktop...`. Forward slashes work on
 // every platform.
@@ -125,6 +127,27 @@ if (migrationsResult.status !== 0) {
 }
 
 console.log('[pre-build] OK: migrations check passed');
+
+// Provenance del sidecar: compila llama-helper (cacheado; la primera vez tarda
+// minutos por llama.cpp) y compara SHA-256 con el bundleado en src-tauri/binaries/.
+// Va antes de vitest: si falla, el mensaje sale sin esperar los ~45s de tests.
+console.log('[pre-build] Running llama-helper provenance check...');
+const helperResult = spawnSync(process.execPath, [VERIFY_HELPER_SCRIPT], {
+    stdio: 'inherit',
+    shell: false,
+});
+
+if (helperResult.status !== 0) {
+    console.error('');
+    console.error('[pre-build] FAIL: llama-helper provenance check failed.');
+    console.error('  El sidecar bundleado (gitignored, copiado a mano) no corresponde al código');
+    console.error('  de llama-helper/. Así se embarcaron 3 meses de helper stale (jul-2026).');
+    console.error('  Regenerar: node scripts/verify-helper-binary.js --fix');
+    console.error('  Escape hatch: pnpm run tauri:build:debug:skip-checks');
+    process.exit(1);
+}
+
+console.log('[pre-build] OK: llama-helper provenance check passed');
 
 // Vitest al final: es el check más lento (~45s). Va DENTRO del pre-build (y no
 // como paso manual) porque los tests de invariantes — layout.test.ts con

@@ -876,6 +876,7 @@ impl SidecarManager {
         match &outcome {
             HandshakeOutcome::IdsConfirmed => {
                 log::info!("Sidecar handshake: ids confirmados (pong con id) — política de strikes activa");
+                self.probe_version().await;
             }
             HandshakeOutcome::PongWithoutId => {
                 log::warn!(
@@ -891,6 +892,33 @@ impl SidecarManager {
             }
         }
         outcome
+    }
+
+    /// Mitad runtime de la provenance del binario: deja en el log QUÉ helper
+    /// corre (versión + protocolo). Un helper anterior a 0.1.1 responde `error`
+    /// sin id a `version` — se reporta como warn (no error: no debe cruzar el
+    /// puente ERROR→DB en cada spawn). Best-effort, nunca falla el spawn.
+    async fn probe_version(&self) {
+        let mut req = serde_json::Map::new();
+        req.insert("type".to_string(), serde_json::json!("version"));
+        match self.send_internal(req, HANDSHAKE_TIMEOUT).await {
+            Ok(resp) if resp.get("type").and_then(|t| t.as_str()) == Some("version") => {
+                log::info!(
+                    "Sidecar helper v{} (protocol {})",
+                    resp.get("version").and_then(|v| v.as_str()).unwrap_or("?"),
+                    resp.get("protocol").and_then(|p| p.as_u64()).unwrap_or(0)
+                );
+            }
+            Ok(resp) => {
+                log::warn!(
+                    "Sidecar helper sin soporte de `version` (binario < 0.1.1): {}",
+                    resp
+                );
+            }
+            Err(e) => {
+                log::warn!("Sidecar: probe de versión sin respuesta ({})", e);
+            }
+        }
     }
 
     /// Gracefully shutdown the sidecar
@@ -1158,7 +1186,14 @@ mod handshake_tests {
                     (FakeMode::Legacy, "generate") => {
                         Some(serde_json::json!({"type": "response", "text": "ok"}))
                     }
+                    // Helper viejo ante `version`: error sin id (main.rs L449-455).
+                    (FakeMode::Legacy, "version") => Some(serde_json::json!({
+                        "type": "error", "message": "Invalid request: unknown variant `version`"
+                    })),
                     (_, "ping") => Some(serde_json::json!({"type": "pong", "id": id})),
+                    (_, "version") => Some(serde_json::json!({
+                        "type": "version", "version": "fake", "protocol": 2, "id": id
+                    })),
                     (FakeMode::Modern, "generate") => {
                         Some(serde_json::json!({"type": "response", "text": "ok", "id": id}))
                     }
