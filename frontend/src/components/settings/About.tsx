@@ -39,6 +39,10 @@ export function About() {
             setUpdateInfo(info);
             if (info.available) {
                 setShowUpdateDialog(true);
+            } else if (info.channel === 'store') {
+                // Bajo MSIX la comparación es contra la última versión PUBLICADA
+                // en la Store (system_config), no contra GitHub Releases (#71).
+                toast.success('Tienes la última versión publicada en la Microsoft Store');
             } else {
                 toast.success('Estás ejecutando la última versión');
             }

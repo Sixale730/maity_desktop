@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Download, AlertCircle, Loader2 } from 'lucide-react';
+import { Download, AlertCircle, Loader2, ExternalLink, Power, Store } from 'lucide-react';
 import {
   Dialog,
   DialogContent,
@@ -10,10 +10,15 @@ import {
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { UpdateInfo, UpdateProgress } from '@/services/updateService';
+import type { RecordingState } from '@/services/recordingService';
 import { check, Update } from '@tauri-apps/plugin-updater';
-import { relaunch } from '@tauri-apps/plugin-process';
+import { exit, relaunch } from '@tauri-apps/plugin-process';
+import { invoke } from '@tauri-apps/api/core';
 import { toast } from 'sonner';
 import { logger } from '@/lib/logger';
+import { fileLogger } from '@/lib/fileLogger';
+import { openExternalUrl } from '@/lib/planLinks';
+import { STORE_UPDATES_DEEP_LINK } from '@/lib/storeChannel';
 
 interface UpdateDialogProps {
   open: boolean;
@@ -26,6 +31,12 @@ export function UpdateDialog({ open, onOpenChange, updateInfo }: UpdateDialogPro
   const [progress, setProgress] = useState<UpdateProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [update, setUpdate] = useState<Update | null>(null);
+  const [isClosingToUpdate, setIsClosingToUpdate] = useState(false);
+
+  // Canal Store (MSIX): la app SOLO avisa. No hay objeto `Update` del plugin
+  // (bajo identidad de paquete check() no aplica) y nunca se descarga nada:
+  // el updater de GitHub instalaría el setup.exe NSIS como segunda copia (#71).
+  const isStoreChannel = updateInfo?.channel === 'store';
 
   useEffect(() => {
     if (open && updateInfo?.available) {
@@ -33,6 +44,12 @@ export function UpdateDialog({ open, onOpenChange, updateInfo }: UpdateDialogPro
       setIsDownloading(false);
       setProgress(null);
       setError(null);
+      setIsClosingToUpdate(false);
+
+      if (updateInfo.channel === 'store') {
+        setUpdate(null);
+        return;
+      }
 
       // Get the update object when dialog opens
       check().then((updateResult) => {
@@ -51,6 +68,7 @@ export function UpdateDialog({ open, onOpenChange, updateInfo }: UpdateDialogPro
       setProgress(null);
       setError(null);
       setUpdate(null);
+      setIsClosingToUpdate(false);
     }
   }, [open, updateInfo]);
 
@@ -143,6 +161,46 @@ export function UpdateDialog({ open, onOpenChange, updateInfo }: UpdateDialogPro
     }
   };
 
+  /**
+   * Canal Store: abre "Descargas y actualizaciones" de la Microsoft Store. Su
+   * botón "Obtener actualizaciones" fuerza el check; la Store descarga en
+   * segundo plano y aplica el paquete cuando Maity esté cerrado.
+   */
+  const handleOpenStore = async () => {
+    void fileLogger.info('updater_dialog', 'store-open-deep-link', { version: updateInfo?.version });
+    try {
+      await openExternalUrl(STORE_UPDATES_DEEP_LINK);
+    } catch (err: unknown) {
+      console.error('Failed to open Microsoft Store:', err);
+      toast.error('No se pudo abrir la Microsoft Store: ' + (err instanceof Error ? err.message : 'Error desconocido'));
+    }
+  };
+
+  /**
+   * Canal Store: la Store NO puede reemplazar un MSIX en ejecución; el paquete
+   * se aplica al siguiente cierre. Se sale con `exit(0)` (RunEvent::Exit en
+   * lib.rs corre graceful_shutdown_before_exit como backstop), pero NUNCA con
+   * una grabación viva: una jornada de horas no debe depender de ese backstop.
+   */
+  const handleCloseToUpdate = async () => {
+    setIsClosingToUpdate(true);
+    try {
+      const state = await invoke<RecordingState>('get_recording_state');
+      if (state?.is_recording) {
+        void fileLogger.info('updater_dialog', 'store-exit-refused-recording', { phase: state.phase });
+        toast.warning('Hay una grabación en curso. Detenla antes de cerrar Maity para actualizar.');
+        return;
+      }
+      void fileLogger.info('updater_dialog', 'store-exit-to-update', { version: updateInfo?.version });
+      await exit(0);
+    } catch (err: unknown) {
+      console.error('Failed to exit for Store update:', err);
+      toast.error('No se pudo cerrar Maity: ' + (err instanceof Error ? err.message : 'Error desconocido'));
+    } finally {
+      setIsClosingToUpdate(false);
+    }
+  };
+
   const formatDate = (dateString?: string) => {
     if (!dateString) return '';
     try {
@@ -199,6 +257,11 @@ export function UpdateDialog({ open, onOpenChange, updateInfo }: UpdateDialogPro
                 <AlertCircle className="h-5 w-5 text-[#cc0040]" />
                 Error de Actualización
               </>
+            ) : isStoreChannel ? (
+              <>
+                <Store className="h-5 w-5 text-[#3a4ac3]" />
+                Actualización disponible en la Microsoft Store
+              </>
             ) : (
               <>
                 <Download className="h-5 w-5 text-[#3a4ac3]" />
@@ -211,6 +274,8 @@ export function UpdateDialog({ open, onOpenChange, updateInfo }: UpdateDialogPro
               ? 'Descargando la última versión...'
               : error
               ? 'Ocurrió un error durante la actualización'
+              : isStoreChannel
+              ? `Maity ${updateInfo.version} ya está publicada en la Microsoft Store`
               : `Una nueva versión (${updateInfo.version}) está disponible`}
           </DialogDescription>
         </DialogHeader>
@@ -234,6 +299,19 @@ export function UpdateDialog({ open, onOpenChange, updateInfo }: UpdateDialogPro
                   </div>
                 )}
               </div>
+
+              {isStoreChannel && (
+                <div className="bg-[#f5f5f6] rounded-lg p-3 space-y-1">
+                  <p className="text-sm text-[#3a3a3c]">
+                    La Microsoft Store descarga la actualización en segundo plano y la aplica
+                    cuando Maity está cerrado.
+                  </p>
+                  <p className="text-sm text-[#3a3a3c]">
+                    Abre la Store y pulsa <span className="font-medium">«Obtener actualizaciones»</span>;
+                    después cierra Maity para que se instale.
+                  </p>
+                </div>
+              )}
 
               {updateInfo.body && (
                 <div className="bg-[#f5f5f6] rounded-lg p-3 max-h-40 overflow-y-auto">
@@ -277,7 +355,30 @@ export function UpdateDialog({ open, onOpenChange, updateInfo }: UpdateDialogPro
         </div>
 
         <DialogFooter>
-          {!isDownloading && !error && (
+          {!isDownloading && !error && isStoreChannel && (
+            <>
+              <Button variant="outline" onClick={() => handleOpenChange(false)} disabled={isClosingToUpdate}>
+                Más Tarde
+              </Button>
+              <Button variant="outline" onClick={handleOpenStore} disabled={isClosingToUpdate}>
+                <ExternalLink className="h-4 w-4 mr-2" />
+                Abrir la Store
+              </Button>
+              <Button
+                onClick={handleCloseToUpdate}
+                disabled={isClosingToUpdate}
+                className="bg-[#3a4ac3] hover:bg-[#2b3892]"
+              >
+                {isClosingToUpdate ? (
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                ) : (
+                  <Power className="h-4 w-4 mr-2" />
+                )}
+                Cerrar Maity para actualizar
+              </Button>
+            </>
+          )}
+          {!isDownloading && !error && !isStoreChannel && (
             <>
               <Button variant="outline" onClick={() => handleOpenChange(false)}>
                 Más Tarde

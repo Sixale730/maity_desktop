@@ -3,6 +3,16 @@
  *
  * Handles automatic software updates using Tauri updater plugin.
  * Provides update checking, downloading, and installation functionality.
+ *
+ * Dos canales (ver `UpdateInfo.channel`):
+ * - `github`: instalación NSIS → `tauri-plugin-updater` contra `latest.json` de
+ *   GitHub Releases; descarga + instala + relaunch.
+ * - `store`: instalación MSIX (Microsoft Store) → SOLO avisa. Compara
+ *   `getVersion()` contra `maity.system_config['desktop_store_latest_version']`
+ *   y, si hay versión nueva, el `UpdateDialog` manda al usuario a la Store
+ *   (deep link) y le ofrece cerrar Maity para que la Store aplique el paquete.
+ *   Nunca descarga nada: el updater de GitHub dentro del MSIX instalaría el
+ *   setup.exe NSIS como segunda copia Win32 (issue #71).
  */
 
 import { check, Update } from '@tauri-apps/plugin-updater';
@@ -11,10 +21,16 @@ import { logger } from '@/lib/logger';
 import { fileLogger } from '@/lib/fileLogger';
 import { relaunch } from '@tauri-apps/plugin-process';
 import { getVersion } from '@tauri-apps/api/app';
+import { fetchStoreLatestVersion } from '@/lib/storeChannel';
+import { isNewerVersion, parseVersion } from '@/lib/versionCompare';
+
+export type UpdateChannel = 'github' | 'store';
 
 export interface UpdateInfo {
   available: boolean;
   currentVersion: string;
+  /** Canal por el que llegaría la actualización. `store` = solo aviso, sin descarga. */
+  channel?: UpdateChannel;
   version?: string;
   date?: string;
   body?: string;
@@ -39,7 +55,7 @@ export class UpdateService {
 
   /**
    * true cuando la app corre bajo identidad de paquete MSIX (instalada desde
-   * la Microsoft Store). Ahí las actualizaciones las gestiona la Store: si el
+   * la Microsoft Store). Ahí las actualizaciones las aplica la Store: si el
    * updater de GitHub corriera, instalaría el setup.exe NSIS como una segunda
    * copia Win32 en paralelo a la de la Store (runFullTrust lo permite).
    */
@@ -68,16 +84,7 @@ export class UpdateService {
    * @returns Promise with update information
    */
   async checkForUpdates(force = false): Promise<UpdateInfo> {
-    // Instalación Microsoft Store: la Store gestiona las actualizaciones.
-    // Aplica también a checks forzados (tray/About) — no hay nada que hacer aquí.
-    if (await this.isManagedByStore()) {
-      logger.info('[updateService] Skipping check — instalación Microsoft Store (MSIX), la Store gestiona updates');
-      void fileLogger.info('updater_service', 'skip-store-managed', { force });
-      return {
-        available: false,
-        currentVersion: await getVersion(),
-      };
-    }
+    const channel: UpdateChannel = (await this.isManagedByStore()) ? 'store' : 'github';
 
     // Prevent concurrent update checks
     if (this.updateCheckInProgress) {
@@ -92,6 +99,7 @@ export class UpdateService {
         return {
           available: false,
           currentVersion: await getVersion(),
+          channel,
         };
       }
     }
@@ -100,6 +108,11 @@ export class UpdateService {
 
     try {
       const currentVersion = await getVersion();
+
+      if (channel === 'store') {
+        return await this.checkStoreChannel(currentVersion, force);
+      }
+
       logger.info(`[updateService] Checking for updates (current: ${currentVersion}, force: ${force})`);
       const update = await check();
       // Solo marcamos cooldown cuando check() retorna sin lanzar. Si falla
@@ -112,6 +125,7 @@ export class UpdateService {
         return {
           available: true,
           currentVersion,
+          channel,
           version: update.version,
           date: update.date,
           body: update.body,
@@ -122,6 +136,7 @@ export class UpdateService {
       return {
         available: false,
         currentVersion,
+        channel,
       };
     } catch (error) {
       // Antes este catch tragaba el error con console.error que nadie miraba.
@@ -130,12 +145,56 @@ export class UpdateService {
       // en builds de release porque logger.info/debug son no-ops en prod.
       logger.error('[updateService] Update check failed', error);
       void fileLogger.error('updater_service', 'check-failed', {
+        channel,
         message: error instanceof Error ? error.message : String(error),
       });
       throw error;
     } finally {
       this.updateCheckInProgress = false;
     }
+  }
+
+  /**
+   * Canal Store: compara la versión instalada contra la última publicada en la
+   * Store (`system_config`). No descarga nada. Lanza en errores de red/RLS
+   * (los maneja el catch de `checkForUpdates`, igual que la rama GitHub).
+   */
+  private async checkStoreChannel(currentVersion: string, force: boolean): Promise<UpdateInfo> {
+    logger.info(`[updateService] Canal Store (MSIX): comparando ${currentVersion} contra system_config (force: ${force})`);
+    const lookup = await fetchStoreLatestVersion();
+
+    if (lookup.status === 'no-session') {
+      // Sin sesión no hay lectura posible (RLS exige `authenticated`). NO se
+      // marca cooldown: el re-check al volver al foreground (force=false) debe
+      // poder correr en cuanto el usuario inicie sesión.
+      logger.info('[updateService] Canal Store: sin sesión Supabase, se reintenta más tarde');
+      void fileLogger.info('updater_service', 'store-check-skipped', { reason: 'no-session', force });
+      return { available: false, currentVersion, channel: 'store' };
+    }
+
+    this.lastCheckTime = Date.now();
+
+    if (lookup.status === 'missing') {
+      logger.warn('[updateService] Canal Store: system_config sin desktop_store_latest_version (falta el seed)');
+      void fileLogger.warn('updater_service', 'store-check-skipped', { reason: 'missing-key', force });
+      return { available: false, currentVersion, channel: 'store' };
+    }
+
+    if (parseVersion(lookup.version) === null) {
+      logger.warn(`[updateService] Canal Store: valor inválido en system_config: "${lookup.version}"`);
+      void fileLogger.warn('updater_service', 'store-check-skipped', { reason: 'invalid-remote', remote: lookup.version, force });
+      return { available: false, currentVersion, channel: 'store' };
+    }
+
+    if (isNewerVersion(lookup.version, currentVersion)) {
+      logger.info(`[updateService] Store update available: ${lookup.version} (current: ${currentVersion})`);
+      void fileLogger.info('updater_service', 'store-update-available', { currentVersion, remote: lookup.version, force });
+      return { available: true, currentVersion, channel: 'store', version: lookup.version };
+    }
+
+    logger.info(`[updateService] Store: ${currentVersion} ya es la última publicada (remota: ${lookup.version})`);
+    void fileLogger.info('updater_service', 'store-up-to-date', { currentVersion, remote: lookup.version, force });
+    return { available: false, currentVersion, channel: 'store' };
   }
 
   /**

@@ -227,7 +227,7 @@ Maity se distribuye por **dos canales en paralelo** desde un mismo código fuent
 
 | Canal | Artefacto | Firma | SmartScreen | Updates |
 |---|---|---|---|---|
-| Microsoft Store | `.msix` | **Microsoft** (re-firma al subir) | ✅ Ninguno | Las gestiona la Store |
+| Microsoft Store | `.msix` | **Microsoft** (re-firma al subir) | ✅ Ninguno | Las aplica la Store; la app solo **avisa** (ver "Go-live" abajo) |
 | GitHub Releases | `.exe` NSIS | Certum/SimplySign | ⚠️ Sí (hasta ganar reputación) | Tauri updater (minisign) |
 
 ### No se puede auto-hospedar el MSIX
@@ -242,6 +242,25 @@ Página de producto:  https://apps.microsoft.com/detail/9NTKJ5X6230F
 Deep link (Windows): ms-windows-store://pdp/?ProductId=9NTKJ5X6230F
 CLI:                 winget install 9NTKJ5X6230F --source msstore
 ```
+(En código estas constantes viven en `frontend/src/lib/storeChannel.ts`.)
+
+### Go-live: avisar a los usuarios que hay versión nueva (`desktop_store_latest_version`) — #71
+
+La Store **no** reemplaza un MSIX que está corriendo (descarga en background y aplica al siguiente cierre) y el updater de GitHub está apagado bajo identidad de paquete. Desde ago-2026 la app **avisa** ella misma: `updateService` (rama `channel: 'store'`) compara `getVersion()` contra la fila `maity.system_config['desktop_store_latest_version']` y, si hay versión mayor, abre el `UpdateDialog` con "Abrir la Store" (`ms-windows-store://downloadsandupdates`) y "Cerrar Maity para actualizar" (se niega con grabación viva). **No descarga nada.**
+
+- **NO se usa el `latest.json` de GitHub**: sigue al canal NSIS, que va DETRÁS de la Store (ago-2026: GitHub v0.2.52 vs Store 0.2.57) → diría "al día" para siempre.
+- **Bumpear la fila SOLO cuando Partner Center marque la submission como publicada** ("En la Store"), nunca al enviarla: la certificación tarda días y avisar antes manda al usuario a una Store que aún no tiene la versión.
+- `public.admin_update_system_config` **no sirve** (es UPDATE-only con whitelist `billing_%`/`rate_limit_%`). Se hace con SQL directo (Supabase MCP `execute_sql` o SQL editor, rol postgres):
+
+```sql
+insert into maity.system_config (key, value, description)
+values ('desktop_store_latest_version', '0.2.58',
+        'Última versión de Maity Desktop publicada en la Microsoft Store. Bumpear SOLO cuando Partner Center la marque como publicada. La lee updateService bajo MSIX (#71).')
+on conflict (key) do update set value = excluded.value, updated_at = now();
+```
+
+- Verificación post-go-live (criterio del issue): `select app_version, count(distinct user_id) from maity.platform_logs where event_type = 'app.open' and created_at > now() - interval '1 day' group by 1;` — los usuarios deben converger a la nueva versión en ≤1 día hábil.
+- Chicken-and-egg: el aviso existe desde la versión que lo incluye; los usuarios en versiones anteriores necesitan el workaround manual una última vez (cerrar Maity → Store → Biblioteca → "Obtener actualizaciones" → reabrir).
 
 ### ⚠️ Los dos canales NO comparten los datos (CORREGIDO 2026-07-27)
 
