@@ -24,6 +24,8 @@
 *.mp4
 *.pkg
 *.dmg
+# staging del .pkg de Mac App Store (frontend/scripts/package-appstore.sh)
+/frontend/dist-appstore/
 
 # testing
 /coverage

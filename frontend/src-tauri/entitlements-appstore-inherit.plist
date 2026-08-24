@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!--
+      Entitlements para los ejecutables HIJOS del bundle de App Store (sidecar
+      llama-helper). Apple exige que un helper embebido en una app sandboxeada
+      lleve EXACTAMENTE app-sandbox + inherit y nada mas: hereda el sandbox del
+      padre. Agregarle otros entitlements hace fallar la validacion en Transporter.
+      Lo aplica scripts/package-appstore.sh.
+    -->
+    <key>com.apple.security.app-sandbox</key>
+    <true/>
+    <key>com.apple.security.inherit</key>
+    <true/>
+</dict>
+</plist>
