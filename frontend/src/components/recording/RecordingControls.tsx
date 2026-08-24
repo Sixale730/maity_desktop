@@ -79,14 +79,24 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
   const [isPausing, setIsPausing] = useState(false);
   const [isResuming, setIsResuming] = useState(false);
   const _MIN_RECORDING_DURATION = 2000; // 2 seconds minimum recording time
-  const [, setTranscriptionErrors] = useState(0);
   const [isValidatingModel] = useState(false);
 
   // Circuit breaker: only stop recording after several consecutive transcription
   // errors. Single transient errors (a chunk that timed out, a temporary GPU
   // hiccup) shouldn't tear down a 10-min meeting. Actionable errors (model not
   // loaded, missing permissions) bypass the threshold and stop immediately.
+  //
+  // El contador es un useRef, NO useState, a proposito — no lo "modernices".
+  // handleErrorEvent decide en el MISMO tick en que llega el evento, y con
+  // useState eso solo funcionaba por la optimizacion "eager state" de React
+  // (ejecutar el updater durante el dispatch), que React solo aplica cuando el
+  // fiber esta limpio de lanes pendientes. A partir del segundo error el
+  // updater ya no corria en el dispatch, el flag quedaba en false y el breaker
+  // NUNCA disparaba: ni a los 5 transitorios, ni ante un actionable posterior a
+  // uno transitorio. Un ref es sincrono y no depende de internals de React.
+  // Su valor no se renderiza, asi que no hace falta estado.
   const TRANSCRIPTION_ERROR_THRESHOLD = 5;
+  const errorCountRef = useRef(0);
   const stoppedByErrorRef = useRef(false);
 
   // Global guard: prevents ANY action while another is in progress (prevents deadlocks from rapid clicking)
@@ -120,7 +130,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
   // Reset error counter and breaker when a new recording starts
   useEffect(() => {
     if (isRecording) {
-      setTranscriptionErrors(0);
+      errorCountRef.current = 0;
       stoppedByErrorRef.current = false;
     }
   }, [isRecording]);
@@ -312,20 +322,14 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
       Analytics.trackTranscriptionError(errorMessage);
       setIsProcessing(false);
 
-      let shouldStop = false;
-      let finalCount = 0;
-      setTranscriptionErrors(prev => {
-        finalCount = prev + 1;
-        if (isActionable || finalCount >= TRANSCRIPTION_ERROR_THRESHOLD) {
-          shouldStop = true;
-        }
-        logger.debug(
-          `Transcription error ${finalCount}/${TRANSCRIPTION_ERROR_THRESHOLD}` +
-          (isActionable ? ' (actionable)' : '') +
-          (shouldStop ? ' — stopping' : '')
-        );
-        return finalCount;
-      });
+      const finalCount = (errorCountRef.current += 1);
+      const shouldStop = isActionable || finalCount >= TRANSCRIPTION_ERROR_THRESHOLD;
+
+      logger.debug(
+        `Transcription error ${finalCount}/${TRANSCRIPTION_ERROR_THRESHOLD}` +
+        (isActionable ? ' (actionable)' : '') +
+        (shouldStop ? ' — stopping' : '')
+      );
 
       if (!shouldStop) return;
       if (stoppedByErrorRef.current) {
