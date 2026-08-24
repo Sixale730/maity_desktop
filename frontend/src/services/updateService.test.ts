@@ -153,7 +153,13 @@ describe('UpdateService — logging visible y resultados', () => {
     // política de la Store de actualizar solo por su canal. Por eso bajo MSIX
     // NUNCA se llama a check(): solo se compara contra system_config y se avisa.
     beforeEach(() => {
-      invokeMock.mockResolvedValue(true);
+      // Consciente del comando a proposito: `mockResolvedValue(true)` haria que
+      // TAMBIEN `is_mac_app_store_build` respondiera true, y el gate de macOS
+      // (que sale antes de resolver canal) se comeria estos casos. Un mock que
+      // responde true a todo no puede distinguir que gate se disparo.
+      invokeMock.mockImplementation((cmd: string) =>
+        Promise.resolve(cmd === 'is_running_under_package_identity'),
+      );
     });
 
     it('avisa (available + channel store) cuando la Store publicó una versión mayor, sin tocar el plugin', async () => {
@@ -242,6 +248,27 @@ describe('UpdateService — logging visible y resultados', () => {
       // Un fallo no envenena el cooldown: el siguiente intento puede reintentar.
       expect(service.wasCheckedRecently()).toBe(false);
     });
+  });
+
+  it('salta el check en un build de Mac App Store, aunque no haya identidad MSIX', async () => {
+    // Apple prohíbe que una app de la Store se auto-actualice (guideline 2.4.5),
+    // y bajo sandbox el updater no podría escribir en /Applications de todos
+    // modos. El gate debe dispararse con la señal de macOS SOLA: en una Mac,
+    // `is_running_under_package_identity` siempre devuelve false.
+    invokeMock.mockImplementation((cmd: string) =>
+      Promise.resolve(cmd === 'is_mac_app_store_build'),
+    );
+
+    const result = await service.checkForUpdates(true);
+
+    expect(invokeMock).toHaveBeenCalledWith('is_mac_app_store_build');
+    expect(checkMock).not.toHaveBeenCalled();
+    expect(result).toEqual({ available: false, currentVersion: '0.2.35' });
+    expect(fileLoggerMock.info).toHaveBeenCalledWith(
+      'updater_service',
+      'skip-store-managed',
+      expect.objectContaining({ force: true }),
+    );
   });
 
   it('fail-open: si la detección de package identity falla, el check procede (instalación clásica)', async () => {

@@ -30,6 +30,41 @@ pub fn is_running_under_package_identity() -> bool {
     }
 }
 
+/// true cuando la app corre como build de Mac App Store.
+///
+/// Apple prohibe que una app de la Store se auto-actualice (guideline 2.4.5):
+/// las actualizaciones las gestiona la Store. Es el equivalente macOS de
+/// `is_running_under_package_identity`, que solo detecta MSIX en Windows.
+///
+/// Dos señales, en este orden:
+///
+/// 1. **Sandbox** (`APP_SANDBOX_CONTAINER_ID`). La Store exige `app-sandbox`
+///    y los builds de Developer ID no lo llevan, asi que basta para distinguir
+///    los dos canales. Va primero porque es la unica que funciona al probar el
+///    `.pkg` localmente — una copia instalada a mano NO trae recibo.
+/// 2. **Recibo de la Store** (`Contents/_MASReceipt/receipt`). Solo existe en
+///    copias que la App Store instalo de verdad. Es la señal canonica en
+///    produccion, pero llega tarde para la prueba local.
+#[tauri::command]
+pub fn is_mac_app_store_build() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        if std::env::var_os("APP_SANDBOX_CONTAINER_ID").is_some() {
+            return true;
+        }
+        // current_exe = Maity.app/Contents/MacOS/Maity -> subir dos niveles a Contents/
+        std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().and_then(|p| p.parent()).map(|c| c.to_path_buf()))
+            .map(|contents| contents.join("_MASReceipt").join("receipt").exists())
+            .unwrap_or(false)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        false
+    }
+}
+
 /// AUMID de la app empaquetada en runtime (`GetCurrentApplicationUserModelId`). Fallback al
 /// valor conocido si la API falla.
 ///

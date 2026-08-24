@@ -52,12 +52,18 @@ export class UpdateService {
   private lastCheckTime: number | null = null;
   private readonly CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
   private storeCheckPromise: Promise<boolean> | null = null;
+  private masCheckPromise: Promise<boolean> | null = null;
 
   /**
    * true cuando la app corre bajo identidad de paquete MSIX (instalada desde
    * la Microsoft Store). Ahí las actualizaciones las aplica la Store: si el
    * updater de GitHub corriera, instalaría el setup.exe NSIS como una segunda
    * copia Win32 en paralelo a la de la Store (runFullTrust lo permite).
+   *
+   * NO incluir aquí el build de Mac App Store: esto selecciona el canal
+   * `store`, que compara contra `desktop_store_latest_version` y manda al
+   * usuario a `ms-windows-store://`. En una Mac eso es un enlace roto a otra
+   * tienda. Ver `isMacAppStoreBuild()`.
    */
   async isManagedByStore(): Promise<boolean> {
     if (this.storeCheckPromise === null) {
@@ -79,11 +85,48 @@ export class UpdateService {
   }
 
   /**
+   * true cuando la app es un build de Mac App Store (sandbox o recibo `_MASReceipt`).
+   *
+   * Apple prohíbe que una app de la Store se auto-actualice (guideline 2.4.5),
+   * y bajo sandbox el updater no podría escribir en `/Applications` aunque lo
+   * intentara. A diferencia del MSIX, aquí NO se avisa dentro de la app: la
+   * App Store ya notifica al usuario por su cuenta, así que un aviso propio
+   * solo añadiría superficie de revisión sin aportar nada.
+   */
+  async isMacAppStoreBuild(): Promise<boolean> {
+    if (this.masCheckPromise === null) {
+      this.masCheckPromise = (async () => invoke<boolean>('is_mac_app_store_build'))();
+    }
+    try {
+      return await this.masCheckPromise;
+    } catch (error) {
+      // Mismo fail-open que el gate de MSIX, y sin cachear el fallo.
+      this.masCheckPromise = null;
+      logger.warn('[updateService] Mac App Store check failed — asumo instalación directa', error);
+      return false;
+    }
+  }
+
+  /**
    * Check for available updates
    * @param force Force check even if recently checked
    * @returns Promise with update information
    */
   async checkForUpdates(force = false): Promise<UpdateInfo> {
+    // Mac App Store: se sale ANTES de resolver canal. No hay canal propio
+    // porque no hay nada que hacer — la App Store notifica al usuario por su
+    // cuenta y Apple prohíbe auto-actualizarse (guideline 2.4.5). Ojo: NO
+    // reutilizar el canal `store`, que es exclusivo del MSIX y mandaría a un
+    // deep link `ms-windows-store://` desde una Mac.
+    if (await this.isMacAppStoreBuild()) {
+      logger.info('[updateService] Skipping check — build de Mac App Store, la App Store gestiona updates');
+      void fileLogger.info('updater_service', 'skip-store-managed', { force, platform: 'mac-app-store' });
+      return {
+        available: false,
+        currentVersion: await getVersion(),
+      };
+    }
+
     const channel: UpdateChannel = (await this.isManagedByStore()) ? 'store' : 'github';
 
     // Prevent concurrent update checks

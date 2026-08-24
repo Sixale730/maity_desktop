@@ -1625,6 +1625,9 @@ pub fn run() {
             utils::open_system_settings,
             // Deteccion de instalacion Microsoft Store (MSIX) — gatea el auto-updater
             utils::is_running_under_package_identity,
+            // Equivalente macOS: build de Mac App Store — gatea el auto-updater
+            // (Apple prohibe la auto-actualizacion, guideline 2.4.5)
+            utils::is_mac_app_store_build,
             // Deteccion/remocion de la instalacion rival (NSIS de descarga directa) cuando
             // Maity corre bajo MSIX/Store — evita la doble instalacion y el error de DB.
             rival_install::get_rival_install,
