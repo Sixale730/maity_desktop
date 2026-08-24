@@ -1,0 +1,5 @@
+# pnpm 11 exige decidir explicitamente que dependencias pueden ejecutar
+# build scripts (postinstall). unrs-resolver solo lo usa eslint-import-resolver
+# y distribuye binarios precompilados via napi, asi que no necesita compilar.
+allowBuilds:
+  unrs-resolver: false
