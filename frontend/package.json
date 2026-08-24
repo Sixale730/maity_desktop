@@ -13,6 +13,7 @@
         "tauri:build": "node scripts/run-pre-build-checks.js && node scripts/tauri-auto.js build",
         "tauri:build:debug": "node scripts/run-pre-build-checks.js && node scripts/tauri-auto.js build --debug && node scripts/run-post-build-checks.js",
         "tauri:build:store": "node scripts/stage-vcredist.js && node scripts/verify-migrations-lf.js && node scripts/verify-helper-binary.js && tauri build --no-bundle",
+        "tauri:build:appstore": "node scripts/run-pre-build-checks.js && tauri build --target universal-apple-darwin --config src-tauri/tauri.appstore.conf.json",
     "tauri:build:skip-checks": "node scripts/tauri-auto.js build",
         "tauri:build:debug:skip-checks": "node scripts/tauri-auto.js build --debug",
         "tauri:dev:cpu": "tauri dev",

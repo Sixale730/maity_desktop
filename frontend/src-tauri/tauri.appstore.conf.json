@@ -1,0 +1,13 @@
+{
+    "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
+    "bundle": {
+        "targets": ["app"],
+        "createUpdaterArtifacts": false,
+        "macOS": {
+            "signingIdentity": "Apple Distribution: Julio Alexis Gonzalez Villa (8YLD233TA2)",
+            "entitlements": "entitlements-appstore.plist",
+            "minimumSystemVersion": "12.3",
+            "hardenedRuntime": true
+        }
+    }
+}
