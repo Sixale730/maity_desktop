@@ -69,7 +69,9 @@ jobs:
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:
-          version: 8
+          # El lockfile es lockfileVersion 9.0 (pnpm 11, commit e3e46b1): con pnpm 8
+          # `pnpm install` aborta por lockfile incompatible antes de compilar nada.
+          version: 11
           run_install: false
 
       - name: Setup Node
