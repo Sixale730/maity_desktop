@@ -234,8 +234,25 @@ scripts/package-appstore.sh ~/Downloads/<perfil>.provisionprofile
       6. `productbuild --sign "3rd Party Mac Developer Installer"`.
       7. Si hay `ASC_KEY_ID` / `ASC_ISSUER_ID` / `ASC_KEY_PATH` en el entorno, valida
          con `xcrun altool --validate-app` (Xcode esta instalado) e imprime el comando
-         de subida. Sin ellos, Transporter.
-- [ ] Correrlo en cuanto exista el perfil nuevo (1.6).
+         de subida. Sin ellos, Transporter — o `altool -u $APPLE_ID -p $APPLE_PASSWORD`
+         (app-specific password) a mano, que es lo que se uso el 25-ago.
+      - **Gotcha ITMS-91109 (25-ago-2026, rechazo real de la primera entrega 0.2.57):**
+        todo archivo que entra al bundle desde una descarga (el perfil; un `ffmpeg`
+        futuro) trae `com.apple.quarantine` y `cp`/`ditto` lo preservan; `productbuild`
+        lo mete al payload como AppleDouble y Apple rechaza la entrega. El script hace
+        `xattr -cr` sobre el bundle **antes** de firmar y aborta si queda alguno.
+      - **Reintento de la misma version:** App Store Connect rechaza un segundo upload
+        con el mismo `CFBundleVersion` (ITMS-90186). `BUILD_NUMBER=0.2.57.1` fuerza solo
+        `CFBundleVersion`; `CFBundleShortVersionString` sigue siendo la del repo.
+- [x] **Hecho el 25-ago-2026 para 0.2.57.** Perfil nuevo `maityai` (creado 25-ago, cert
+      `26DAADE4…`) guardado como `frontend/src-tauri/embedded.provisionprofile` (el
+      duplicado `frontend/maityai.provisionprofile` se elimino). Con Apple ID +
+      app-specific password (`frontend/.env`), sin Transporter.app ni API key.
+      - 1a entrega (UUID `572ed854…`): **rechazada por ITMS-91109** — el perfil llevaba
+        `com.apple.quarantine` de la descarga. Ver gotcha abajo.
+      - 2a entrega (UUID `4784c98b-50e6-4ab6-b3fe-f4e29aa1065c`): VERIFY + UPLOAD
+        SUCCEEDED con el payload sin xattrs, mismo build 0.2.57 (ASC lo acepto sin
+        `BUILD_NUMBER` porque la 1a nunca llego a registrarse como build).
 
 ---
 

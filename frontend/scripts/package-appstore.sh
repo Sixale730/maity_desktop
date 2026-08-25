@@ -22,6 +22,12 @@
 # Requiere antes:  pnpm run tauri:build:appstore
 # Validacion opcional por terminal (si no, usar Transporter.app):
 #   ASC_KEY_ID=XXXX ASC_ISSUER_ID=uuid ASC_KEY_PATH=~/Downloads/AuthKey_XXXX.p8 scripts/package-appstore.sh
+# Reintento de la misma version (altool: ITMS-90186 Redundant Binary Upload):
+#   BUILD_NUMBER=0.2.57.1 scripts/package-appstore.sh   # solo cambia CFBundleVersion
+# Subida con Apple ID + app-specific password (sin API key), desde frontend/:
+#   set -a; . ./.env; set +a
+#   xcrun altool --validate-app -f dist-appstore/Maity-<ver>.pkg -t macos -u "$APPLE_ID" -p "$APPLE_PASSWORD"
+#   xcrun altool --upload-app   -f dist-appstore/Maity-<ver>.pkg -t macos -u "$APPLE_ID" -p "$APPLE_PASSWORD"
 set -euo pipefail
 
 FRONTEND_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -71,8 +77,10 @@ APP_CERT_SHA1="$(security find-identity -v -p codesigning \
 log "version $VERSION — staging en $OUT_DIR"
 rm -rf "$OUT_DIR"
 mkdir -p "$OUT_DIR"
-# ditto preserva xattrs/permisos; cp -R rompe symlinks de frameworks.
-ditto "$APP_SRC" "$APP"
+# ditto (no cp -R: rompe symlinks de frameworks). --noextattr --noqtn descarta los
+# xattrs de origen, incluidos los protegidos por SIP (com.apple.macl) que `xattr -c`
+# NO puede borrar. Ver 2b.
+ditto --noextattr --noqtn "$APP_SRC" "$APP"
 
 MAIN_BIN="$APP/Contents/MacOS/maity-desktop"
 [[ -x "$MAIN_BIN" ]] || fail "no encuentro el binario principal $MAIN_BIN"
@@ -129,8 +137,31 @@ if (( MATCH == 0 )); then
 fi
 log "OK: perfil '$PP_NAME' vigente hasta $PP_EXP y atado al cert $APP_CERT_SHA1"
 
-cp "$PROFILE" "$APP/Contents/embedded.provisionprofile"
+# Copiar SIN xattrs: el perfil viene de una descarga del navegador y trae
+# com.apple.quarantine (+ kMDItemWhereFroms, macl). `cp` los preserva.
+ditto --noextattr --noqtn "$PROFILE" "$APP/Contents/embedded.provisionprofile"
 rm -f "$PP_PLIST"
+
+# ------------------------------------- 2b. verificar xattrs ANTES de firmar (ITMS-91109)
+# Apple rechaza la entrega si algun archivo del payload lleva com.apple.quarantine
+# (productbuild lo empaqueta como AppleDouble). Rechazo real de la 1a entrega 0.2.57.
+# com.apple.macl tampoco debe viajar; `xattr -c` no lo borra (SIP), por eso las copias
+# de arriba usan ditto --noextattr. com.apple.provenance lo pone el kernel a todo
+# archivo nuevo, no se puede evitar y Apple lo tolera (el bundle procesado lo traia).
+xattr -cr "$APP" 2>/dev/null || true
+LEFT="$(find "$APP" -exec xattr {} \; 2>/dev/null | sort -u)"
+if [[ "$LEFT" == *com.apple.quarantine* || "$LEFT" == *com.apple.macl* ]]; then
+  fail "quedan xattrs prohibidos en el bundle (ITMS-91109): $LEFT"
+fi
+log "OK: bundle sin quarantine/macl (residuales tolerados: ${LEFT:-ninguno})"
+
+# Reintento sobre la misma version: App Store Connect rechaza un segundo upload con
+# el mismo CFBundleVersion (ITMS-90186 Redundant Binary Upload). BUILD_NUMBER solo
+# toca CFBundleVersion; CFBundleShortVersionString sigue siendo la version del repo.
+if [[ -n "${BUILD_NUMBER:-}" ]]; then
+  /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" "$APP/Contents/Info.plist"
+  log "CFBundleVersion forzado a $BUILD_NUMBER (CFBundleShortVersionString=$VERSION)"
+fi
 
 # ------------------------------------------- 3. re-firmar de adentro hacia afuera
 # Al incrustar el perfil cambia el bundle; hay que volver a firmar todo.
@@ -161,9 +192,13 @@ log "entitlements efectivos del .app:"
 codesign -d --entitlements :- "$APP" 2>/dev/null | sed 's/^/  /'
 
 # Sanity: sandbox activo y identificador correcto (lo primero que revisa Apple).
-codesign -d --entitlements :- "$APP" 2>/dev/null | grep -q 'com.apple.security.app-sandbox' \
+# Capturar en variable, no `| grep -q`: con pipefail, grep cierra el pipe al
+# primer match y codesign muere por SIGPIPE -> falso negativo.
+APP_ENTS="$(codesign -d --entitlements :- "$APP" 2>/dev/null)"
+[[ "$APP_ENTS" == *com.apple.security.app-sandbox* ]] \
   || fail "el .app quedo SIN app-sandbox — revisa $ENTITLEMENTS"
-codesign -dv "$APP" 2>&1 | grep -q "Identifier=$BUNDLE_ID" \
+APP_SIGN_INFO="$(codesign -dv "$APP" 2>&1)"
+[[ "$APP_SIGN_INFO" == *"Identifier=$BUNDLE_ID"* ]] \
   || fail "el .app no tiene Identifier=$BUNDLE_ID"
 
 # ----------------------------------------------------------- 4. productbuild
