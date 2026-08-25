@@ -116,8 +116,8 @@ Deben aparecer `Apple Distribution: ... (8YLD233TA2)` y
 ### 1.6 App ID y provisioning profile  **[TU]**
 
 - [ ] Verifica que el App ID `com.maity.ai` exista en *Identifiers*. Los entitlements
-      que usamos (sandbox, network client, audio-input, user-selected files) no
-      requieren capabilities especiales en el App ID.
+      que usamos (sandbox, network client, **network server**, audio-input, user-selected
+      files) no requieren capabilities especiales en el App ID.
 - [ ] *Profiles* -> **+** -> **Mac App Store** -> App ID `com.maity.ai` -> selecciona el
       certificado **Apple Distribution** nuevo -> descarga.
 - [ ] Deja el `.provisionprofile` en `~/Downloads` y avisame. Se incrusta como
@@ -323,6 +323,14 @@ La app hace cosas que el sandbox restringe. Esto es lo que puede rebotar:
 4. **Descarga de ~1.6-3 GB de modelos en runtime** — permitido, pero Apple a veces lo
    cuestiona bajo guideline 2.4.5 / 3.2.2. Documentarlo en las notas del revisor.
 5. **Updater de Tauri activo** = rechazo bajo 2.4.5(iv). Se desactiva en Fase 4.
+6. **Login social por servidor OAuth en localhost** (`auth_server.rs`, `bind` en
+   `127.0.0.1:17823`). El sandbox distingue *conectar* (`network.client`) de *escuchar*
+   (`network.server`): sin el segundo el `bind` se deniega incluso en loopback, el
+   frontend cae al fallback `maity://auth/callback` y el login muere. **Resuelto en #76**
+   (25-ago-2026): `entitlements-appstore.plist` ya trae `com.apple.security.network.server`
+   y el fallback `maity://` ya entiende el `?code=` de PKCE. Si el entitlement desaparece
+   de la firma, es lo primero que se rompe en un revisor. Diagnóstico: tras el clic en
+   "Continuar con Google", `lsof -nP -iTCP:17823 -sTCP:LISTEN` debe listar el proceso.
 
 Si la 0.2.54 quedo **aprobada** en julio, los puntos 1-3 ya estan resueltos y solo hay
 que no romperlos. **Confirmar el estado de esa build en App Store Connect antes de

@@ -10,6 +10,10 @@
     <true/>
     <key>com.apple.security.network.client</key>
     <true/>
+    <!-- Escuchar en loopback: el login social abre un servidor OAuth en 127.0.0.1:17823
+         (auth_server.rs). Sin network.server el sandbox deniega el bind y el login muere (#76). -->
+    <key>com.apple.security.network.server</key>
+    <true/>
     <key>com.apple.security.device.audio-input</key>
     <true/>
     <key>com.apple.security.files.user-selected.read-write</key>

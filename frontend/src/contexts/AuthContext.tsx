@@ -11,6 +11,12 @@ import { logger } from '@/lib/logger'
 import { fileLogger } from '@/lib/fileLogger'
 import { translateAuthError } from '@/lib/auth-errors'
 import { TauriEvent } from '@/lib/tauri-events'
+import {
+  extractQueryParams,
+  extractTokensFromUrl,
+  extractAuthCode,
+  extractAuthError,
+} from '@/lib/authCallbackUrl'
 
 interface AuthContextType {
   session: Session | null
@@ -33,46 +39,17 @@ interface AuthContextType {
 const AuthContext = createContext<AuthContextType | undefined>(undefined)
 
 // Prefijos de deep link que procesa este contexto:
-// - maity://auth/callback  → OAuth social (tokens en el fragment)
+// - maity://auth/callback  → OAuth social. Es el FALLBACK cuando `start_oauth_server` no
+//   pudo hacer bind (p. ej. sandbox de App Store sin `network.server`, puerto ocupado).
+//   Con `flowType: 'pkce'` (lib/supabase.ts) Supabase manda `?code=` en el query — NO
+//   tokens en el fragment — y también puede mandar `?error=`. El fragment
+//   `#access_token` se conserva por el flujo implícito legacy. Parsers: lib/authCallbackUrl.ts.
 // - maity://auth/confirm   → verificación de email (token_hash en el query, reenviado
 //   por la página web maity.cloud/auth/confirm; canjearlo aquí deja la sesión en el desktop)
 const AUTH_DEEP_LINK_PREFIXES = ['maity://auth/callback', 'maity://auth/confirm'] as const
 
 function isAuthDeepLink(url: string): boolean {
   return AUTH_DEEP_LINK_PREFIXES.some((prefix) => url.startsWith(prefix))
-}
-
-/** Extract query params from a deep-link URL (maity://auth/confirm?token_hash=...&type=signup). */
-function extractQueryParams(url: string): URLSearchParams {
-  const queryIndex = url.indexOf('?')
-  if (queryIndex === -1) return new URLSearchParams()
-  const hashIndex = url.indexOf('#')
-  const end = hashIndex > queryIndex ? hashIndex : url.length
-  return new URLSearchParams(url.substring(queryIndex + 1, end))
-}
-
-/**
- * Extract access_token and refresh_token from a deep-link callback URL.
- * Supabase redirects to: maity://auth/callback#access_token=...&refresh_token=...
- */
-function extractTokensFromUrl(url: string): { accessToken: string; refreshToken: string } | null {
-  try {
-    // The tokens are in the fragment (after #)
-    const hashIndex = url.indexOf('#')
-    if (hashIndex === -1) return null
-
-    const fragment = url.substring(hashIndex + 1)
-    const params = new URLSearchParams(fragment)
-    const accessToken = params.get('access_token')
-    const refreshToken = params.get('refresh_token')
-
-    if (accessToken && refreshToken) {
-      return { accessToken, refreshToken }
-    }
-    return null
-  } catch {
-    return null
-  }
 }
 
 /**
@@ -280,7 +257,35 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, [user])
 
-  // Handle a deep-link URL: OAuth tokens (auth/callback) o verificación de email (auth/confirm)
+  // Canje del `code` PKCE por sesión. SIN guard de `isHandlingCallback`: lo comparten
+  // `processAuthCode` (listener/polling del servidor localhost, que pone su propio guard)
+  // y `handleDeepLinkCallback` (que ya lo tomó al entrar; si llamara a processAuthCode
+  // vería el guard puesto y saldría sin canjear). Deps [] a propósito: solo usa setters
+  // estables y el ref de fetchOrCreateMaityUser.
+  const exchangePkceCode = useCallback(async (code: string) => {
+    logger.debug('[Auth] Processing PKCE code')
+    setError(null)
+
+    try {
+      const { data, error: sessionError } = await supabase.auth.exchangeCodeForSession(code)
+
+      if (sessionError) {
+        console.error('[Auth] Failed to exchange PKCE code for session:', sessionError)
+        setError('Failed to complete sign-in. Please try again.')
+      } else if (data.session) {
+        logger.debug('[Auth] Session established via PKCE code exchange')
+        setSession(data.session)
+        setUser(data.session.user)
+        await fetchOrCreateMaityUserRef.current(data.session.user)
+      }
+    } catch (err) {
+      console.error('[Auth] Error exchanging PKCE code:', err)
+      setError('An unexpected error occurred during sign-in.')
+    }
+  }, [])
+
+  // Handle a deep-link URL: OAuth (auth/callback: ?code= PKCE, ?error=, o tokens en el
+  // fragment) o verificación de email (auth/confirm)
   const handleDeepLinkCallback = useCallback(async (url: string) => {
     if (!isAuthDeepLink(url)) return
     if (isHandlingCallback.current) return
@@ -333,6 +338,30 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     logger.debug('[Auth] Processing OAuth callback')
     setError(null)
 
+    // El provider rechazó o el usuario canceló: Supabase redirige con ?error=… No hay
+    // nada que canjear; el detalle va al log, al usuario un mensaje fijo.
+    const authError = extractAuthError(url)
+    if (authError) {
+      console.warn('[Auth] OAuth callback returned an error:', authError)
+      setError('Sign-in was cancelled or rejected by the provider. Please try again.')
+      isHandlingCallback.current = false
+      return
+    }
+
+    // PKCE (flujo actual): el code se canjea aquí mismo — el code_verifier vive en este
+    // webview, que es el que inició signInWithOAuth. Hasta ago-2026 (#76) esta rama no
+    // existía y el fallback maity:// moría en "Failed to extract tokens".
+    const code = extractAuthCode(url)
+    if (code) {
+      try {
+        await exchangePkceCode(code)
+      } finally {
+        isHandlingCallback.current = false
+      }
+      return
+    }
+
+    // Flujo implícito (legacy): tokens en el fragment.
     const tokens = extractTokensFromUrl(url)
     if (!tokens) {
       console.error('[Auth] Failed to extract tokens from callback URL')
@@ -362,7 +391,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     } finally {
       isHandlingCallback.current = false
     }
-  }, [])
+  }, [exchangePkceCode])
 
   // Initialize auth: restore session and subscribe to changes
   useEffect(() => {
@@ -534,33 +563,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return () => subs.dispose()
   }, [])
 
-  // Helper: process PKCE auth code (shared by listener and polling fallback)
+  // Helper: process PKCE auth code from the localhost server (listener + polling fallback).
+  // Guard + canje; el canje en sí es `exchangePkceCode` (compartido con el deep link).
   const processAuthCode = useCallback(async (code: string) => {
     if (isHandlingCallback.current) return
     isHandlingCallback.current = true
-
-    logger.debug('[Auth] Processing PKCE code')
-    setError(null)
-
     try {
-      const { data, error: sessionError } = await supabase.auth.exchangeCodeForSession(code)
-
-      if (sessionError) {
-        console.error('[Auth] Failed to exchange PKCE code for session:', sessionError)
-        setError('Failed to complete sign-in. Please try again.')
-      } else if (data.session) {
-        logger.debug('[Auth] Session established via PKCE code exchange')
-        setSession(data.session)
-        setUser(data.session.user)
-        await fetchOrCreateMaityUserRef.current(data.session.user)
-      }
-    } catch (err) {
-      console.error('[Auth] Error exchanging PKCE code:', err)
-      setError('An unexpected error occurred during sign-in.')
+      await exchangePkceCode(code)
     } finally {
       isHandlingCallback.current = false
     }
-  }, [])
+  }, [exchangePkceCode])
 
   // Listen for PKCE auth code from the localhost OAuth server
   useEffect(() => {
