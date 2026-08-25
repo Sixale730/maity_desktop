@@ -817,8 +817,13 @@ pub fn run() {
             // abre automáticamente — el commit 45a4cbd lo reemplazó con el coach-float como
             // única ventana flotante de la app.
 
-            // Register deep-link scheme for OAuth callbacks
-            #[cfg(desktop)]
+            // Register deep-link scheme for OAuth callbacks.
+            // macOS queda fuera: `register()` del plugin devuelve "unsupported platform"
+            // porque ahí el esquema va en el Info.plist generado (`CFBundleURLTypes`,
+            // desde `plugins.deep-link` de tauri.conf.json) y LaunchServices lo registra
+            // al lanzar la app. Loguearlo como ERROR metía un falso `app.error` en
+            // platform_logs en cada arranque (rust_error_bridge, #78).
+            #[cfg(all(desktop, not(target_os = "macos")))]
             {
                 use tauri_plugin_deep_link::DeepLinkExt;
                 if let Err(e) = _app.deep_link().register("maity") {
@@ -827,6 +832,10 @@ pub fn run() {
                     log::info!("Deep link scheme 'maity' registered successfully");
                 }
             }
+            #[cfg(target_os = "macos")]
+            log::info!(
+                "Deep link scheme 'maity' declarado via CFBundleURLTypes (registro en runtime no aplica en macOS)"
+            );
 
             // Initialize system tray
             if let Err(e) = tray::create_tray(_app.handle()) {
