@@ -16,7 +16,14 @@ import {
   quotasActive,
   useQuotaStatus,
 } from '@/hooks/usePlanStatus';
-import { getOmiConversations, getLocalConversations, mergeConversations, OmiConversation } from '../services/conversations.service';
+import {
+  getOmiConversations,
+  getLocalConversations,
+  mergeConversations,
+  isAnalysisSkipped,
+  isFullAnalysis,
+  OmiConversation,
+} from '../services/conversations.service';
 import { useConversationsListAutoRefresh } from '../hooks/useConversationsListAutoRefresh';
 
 interface ConversationsListProps {
@@ -375,10 +382,16 @@ export function ConversationsList({ onSelect, selectedId }: ConversationsListPro
                         Tareas ({conversation.action_items.length})
                       </Badge>
                     )}
-                    {conversation.communication_feedback_v4 && (
+                    {/* Type guard, NO truthiness: el marcador skipped es un objeto (#72). */}
+                    {isFullAnalysis(conversation.communication_feedback_v4) && (
                       <Badge variant="outline" className="text-xs gap-1">
                         <Sparkles className="h-3 w-3" />
                         Análisis
+                      </Badge>
+                    )}
+                    {isAnalysisSkipped(conversation.communication_feedback_v4) && (
+                      <Badge variant="outline" className="text-xs gap-1 text-muted-foreground">
+                        Sin análisis
                       </Badge>
                     )}
                     <ChevronRight className="h-5 w-5 text-muted-foreground" />

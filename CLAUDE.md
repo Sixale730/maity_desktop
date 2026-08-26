@@ -530,10 +530,17 @@ Stack de providers (de exterior a interior):
 **Conversaciones** (`features/conversations/`):
 - `ConversationsList.tsx` — Lista local-first (SQLite primero, merge Supabase en background)
 - `ConversationDetail.tsx` — Soporta `?id=` (cloud) y `?localId=` (local), polling de analisis
-- `analysis/` — 12+ componentes de visualizacion (KPI, radar, emociones, patrones, insights)
-- `charts/` — Graficas Recharts (emocion, gauge, participacion, timeline)
+- `analysis/dashboard-v1/` — el dashboard de análisis real (hero, `TuRadarCard`/`RadarCalidad` con Chart.js, KPI, insights, hallazgos, recomendaciones, `adapter.ts` cloud V4 → shape V1). `analysis/index.ts` solo exporta `TranscriptSection`; los 10 componentes legacy de `analysis/` y los charts huérfanos (`charts/` solo conserva `GaugeChart`, usado por `minuta/MinutaGauge`) se borraron en ago-2026 (#74).
+- `AnalysisSkippedCard.tsx` — tarjeta del análisis omitido (ramifica por `reason`); `InputQualityNotice.tsx` — aviso "se analizaron X de Y min" (`calidad_insumo`); `AnalysisStatusBanner.tsx` — polling/stalled/failed
 - `minuta/` — 7 componentes de minuta de reunion (acciones, decisiones, seguimiento, efectividad)
 - `useAnalysisPolling.ts` — Hook de polling con fases: idle -> polling -> retrying -> completed
+
+> **Rúbrica 6.x del V4 en el desktop (ago-2026, #72-#74).** La web cambió el contrato del JSONB `communication_feedback_v4` el 21-ago-2026 (Sixale730/maity #142/#147). Reglas espejo, todas deliberadas:
+> 1. **"Tiene análisis" = `isFullAnalysis(v4)`, nunca truthiness.** El marcador skipped (`{status:'skipped', reason, user_words, min_required, speakers, metrics}`) es un objeto truthy: con `v4 &&` una grabación omitida lucía el badge "Análisis" en la lista y dejaba `isAnalyzing` pegado en `app/conversations/page.tsx`. Skipped es terminal (`derivePhase`). Los fallos de proveedor NO usan el marcador: escriben `null` + `analysis_status='failed'`.
+> 2. **La tarjeta skipped ramifica por `reason` y no inventa cifras** (`AnalysisSkippedCard`): `insufficient_user_words` ("no dijiste `min_required` palabras", sin default — el `?? 15` viejo estaba obsoleto, el umbral es 100) vs `no_evaluable_speech` (#147: "grabaste 60 min pero en ningún tramo de 5 min hubo conversación continua" — el bloque de jornada; en el piloto fue ~1 de cada 4 grabaciones). Reason desconocido → texto genérico. Ninguno consume cuota; la minuta sí se genera.
+> 3. **Todo agregado de puntajes pasa por `utils/scoring.ts::getCommScore`**, que devuelve `null` para skipped Y para `calidad_insumo.nivel === 'baja'` (`isLowConfidenceV4`: ruido transcrito o atribución de hablantes adivinada). Mismo predicado que `maity.team_conversation_scores` y `getNormalizedScores` de la web; NULL-safe para filas anteriores a #147. El detalle sí muestra el puntaje `baja`, con aviso ámbar (`InputQualityNotice`, leído del raw con `readCalidadInsumo` — el adapter no conserva `calidad_insumo`).
+> 4. **Un componente `null` o listado en `dimensiones_no_aplica` NUNCA se pinta como 0.** `dashboard-v1/adapter.ts` lo traduce a `calidad_global.no_aplica` (fuentes, en orden: `dimensiones_no_aplica` → `recording_mode==='presentation'` para filas pre ago-2026 → `componentes[k] === null`), `RadarCalidad` omite el eje y `TuRadarCard` explica la nota. `componentes` sigue numérico (0) para no romper KPI/Hallazgos. Tests: `adapter.test.ts`, `scoring.test.ts`, `AnalysisSkippedCard.test.tsx`, `InputQualityNotice.test.tsx`.
+> 5. `getOmiStats`/`OmiStats` se borraron: leían `resumen.puntuacion_global` y dimensiones (`emociones`, `formalidad`, `muletillas`) que 6.x no escribe. `DashboardV1Preview.tsx` (ruta admin `/dev/dashboard-v1`) sigue con niveles viejos a propósito: es fixture, no contrato.
 
 **Gamificacion** (`features/gamification/`):
 - `GamifiedDashboard.tsx` — Dashboard principal

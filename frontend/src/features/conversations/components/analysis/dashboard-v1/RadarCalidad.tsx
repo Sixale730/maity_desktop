@@ -25,6 +25,16 @@ ChartJS.register(
 
 const RADAR_COLORS = ['#10b981', '#a78bfa', '#60a5fa', '#fbbf24', '#f97316', '#f472b6'];
 
+/** Ejes del radar, en orden. Compartido con la nota de `TuRadarCard`. */
+export const RADAR_DIMENSIONES: { key: keyof CalidadGlobalV4['componentes']; label: string }[] = [
+  { key: 'claridad', label: 'Claridad' },
+  { key: 'estructura', label: 'Estructura' },
+  { key: 'persuasion', label: 'Persuasión' },
+  { key: 'proposito', label: 'Propósito' },
+  { key: 'empatia', label: 'Empatía' },
+  { key: 'adaptacion', label: 'Adaptación' },
+];
+
 export function RadarCalidad({ calidad }: { calidad: CalidadGlobalV4 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const chartRef = useRef<ChartJS | null>(null);
@@ -36,15 +46,13 @@ export function RadarCalidad({ calidad }: { calidad: CalidadGlobalV4 }) {
     if (!ctx) return;
 
     const c = calidad.componentes;
-    const labels = ['Claridad', 'Estructura', 'Persuasión', 'Propósito', 'Empatía', 'Adaptación'];
-    const values = [
-      c.claridad ?? 0,
-      c.estructura ?? 0,
-      c.persuasion ?? 0,
-      c.proposito ?? 0,
-      c.empatia ?? 0,
-      c.adaptacion ?? 0,
-    ];
+    // Un eje en 0 se lee como "fallaste ahí". Las dimensiones que no aplican
+    // (modo ponente, monólogo) se omiten del radar en vez de dibujarse como un
+    // cero real (#74).
+    const noAplica = new Set(calidad.no_aplica ?? []);
+    const ejes = RADAR_DIMENSIONES.filter((d) => !noAplica.has(d.key));
+    const labels = ejes.map((d) => d.label);
+    const values = ejes.map((d) => c[d.key] ?? 0);
 
     const config: ChartConfiguration<'radar'> = {
       type: 'radar',

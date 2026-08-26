@@ -4,7 +4,6 @@
  * Regla: mapear lo que el cloud devuelve. Lo que no venga queda undefined →
  * el sub-componente no se renderiza. Esto deja gaps visibles para iterar el prompt.
  *
- * Ver `C:/Users/jagv1/.claude/plans/snappy-growing-wirth.md` para tabla completa de mapeos.
  */
 import type {
   CommunicationFeedbackV4,
@@ -18,6 +17,17 @@ import type {
   Recomendacion,
   SubScore,
 } from './types';
+
+/** Las seis dimensiones, en el orden del radar. */
+export const DIM_KEYS = [
+  'claridad',
+  'estructura',
+  'persuasion',
+  'proposito',
+  'empatia',
+  'adaptacion',
+] as const;
+export type DimKey = (typeof DIM_KEYS)[number];
 
 const SUB_SCORE_LABELS: Record<string, string> = {
   accion: 'Acción',
@@ -95,6 +105,23 @@ export function cloudV4ToDashboardV1(rawV4: unknown): CommunicationFeedbackV4 {
   };
 
   const compRaw = asObject(cgRaw.componentes);
+  // El análisis se auto-describe (#74): el analyzer de la web estampa en el JSONB
+  // qué dimensiones no se pudieron medir (`dimensiones_no_aplica`, modo ponente
+  // y monólogo sin interlocutor). Se conserva el fallback a `recording_mode`
+  // porque los análisis anteriores a ago-2026 solo traen ese marcador, y se
+  // añade un tercer caso: un componente que llega `null` tampoco se midió —
+  // colapsarlo a 0 hacía que el radar se leyera como "sacaste cero".
+  const noAplica = new Set<string>(
+    Array.isArray(v4.dimensiones_no_aplica)
+      ? v4.dimensiones_no_aplica.filter((d): d is string => typeof d === 'string')
+      : v4.recording_mode === 'presentation'
+        ? ['empatia', 'adaptacion']
+        : [],
+  );
+  for (const key of DIM_KEYS) {
+    if (key in compRaw && compRaw[key] === null) noAplica.add(key);
+  }
+  const no_aplica = DIM_KEYS.filter((key) => noAplica.has(key));
   const calidad_global: CalidadGlobalV4 = {
     puntaje,
     componentes: {
@@ -105,6 +132,7 @@ export function cloudV4ToDashboardV1(rawV4: unknown): CommunicationFeedbackV4 {
       adaptacion: typeof compRaw.adaptacion === 'number' ? compRaw.adaptacion : 0,
       empatia: typeof compRaw.empatia === 'number' ? compRaw.empatia : 0,
     },
+    ...(no_aplica.length > 0 && { no_aplica }),
   };
 
   const preguntasRaw = asObject(radioRaw.preguntas);
@@ -149,14 +177,6 @@ export function cloudV4ToDashboardV1(rawV4: unknown): CommunicationFeedbackV4 {
     .filter((x): x is InsightItem => x !== null);
 
   const dimensiones: DimensionesV4 = {};
-  const DIM_KEYS = [
-    'claridad',
-    'estructura',
-    'persuasion',
-    'proposito',
-    'empatia',
-    'adaptacion',
-  ] as const;
   for (const key of DIM_KEYS) {
     const adapted = adaptDimension(dimsRaw[key]);
     if (adapted) dimensiones[key] = adapted;

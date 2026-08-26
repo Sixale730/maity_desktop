@@ -18,6 +18,13 @@ export interface CalidadGlobalV4 {
     adaptacion: number;
     empatia: number;
   };
+  /**
+   * Dimensiones que no se evaluaron en esta grabación (modo ponente / monólogo:
+   * empatía y adaptación no son medibles sin interlocutor). Siguen presentes en
+   * `componentes` con puntaje 0 para no romper el shape; los consumidores las
+   * OMITEN en vez de dibujarlas como un cero real (#74).
+   */
+  no_aplica?: string[];
 }
 
 export interface ResumenV4 {

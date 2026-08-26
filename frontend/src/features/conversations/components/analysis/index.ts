@@ -1,11 +1,3 @@
-export { ResumenHero } from './ResumenHero';
-export { TuRadarCard } from './TuRadarCard';
-export { EmotionProfiles } from './EmotionProfiles';
-export { KPIGrid } from './KPIGrid';
-export { PatronCard } from './PatronCard';
-export { InsightsGrid } from './InsightsGrid';
-export { HallazgosSection } from './HallazgosSection';
-export { PuertasDetalleSection } from './PuertasDetalleSection';
-export { RecomendacionesSection } from './RecomendacionesSection';
-export { RealTimelineChart } from './RealTimelineChart';
+// Solo TranscriptSection sigue vivo aquí (ago-2026, #74). El dashboard de análisis
+// vive en ./dashboard-v1/ y se importa por ruta directa desde ConversationDetail.
 export { TranscriptSection } from './TranscriptSection';

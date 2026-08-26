@@ -52,6 +52,26 @@ describe('derivePhase', () => {
     expect(derivePhase(conv, NOW)).toBe('skipped');
   });
 
+  it('returns "skipped" for the no_evaluable_speech marker (#147) even with metrics attached', () => {
+    const conv = base({
+      communication_feedback_v4: {
+        status: 'skipped',
+        reason: 'no_evaluable_speech',
+        user_words: 180,
+        min_required: 100,
+        speakers: 1,
+        metrics: { duracion_total_min: 59.7, tramos_densos_min: 0, palabras_descartadas: 63 },
+      } as never,
+      analysis_status: 'skipped',
+    });
+    expect(derivePhase(conv, NOW)).toBe('skipped');
+  });
+
+  it('returns "quota_skipped" from the status flag when the v4 is still null', () => {
+    const conv = base({ analysis_status: 'quota_skipped' });
+    expect(derivePhase(conv, NOW)).toBe('quota_skipped');
+  });
+
   it('returns "completed" from status flag when data is somehow missing', () => {
     const conv = base({ analysis_status: 'completed' });
     expect(derivePhase(conv, NOW)).toBe('completed');
@@ -105,7 +125,7 @@ describe('derivePhase', () => {
 });
 
 describe('isTerminalPhase', () => {
-  it.each(['completed', 'failed', 'skipped'] as const)('returns true for %s', (phase) => {
+  it.each(['completed', 'failed', 'skipped', 'quota_skipped'] as const)('returns true for %s', (phase) => {
     expect(isTerminalPhase(phase)).toBe(true);
   });
 

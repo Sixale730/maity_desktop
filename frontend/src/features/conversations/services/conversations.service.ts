@@ -243,6 +243,23 @@ export interface MeetingDimensionesV4 {
   adaptacion: DimensionAdaptacion;
 }
 
+/**
+ * Rúbrica 6.1 (#147): sobre qué se calculó el puntaje. Lo estampa el código de
+ * la web a partir de mediciones, nunca el modelo. Filas anteriores a ago-2026
+ * no traen la clave. `nivel === 'baja'` es la ÚNICA bandera que los consumidores
+ * miran para dejar de contar la fila en agregados (ver `isLowConfidenceV4`).
+ */
+export interface CalidadInsumo {
+  duracion_total_min: number;
+  tramos_densos_min: number;
+  tramos?: { inicio_min: number; fin_min: number }[];
+  ratio_alucinacion: number;
+  palabras_descartadas: number;
+  hablantes_detectados?: number;
+  confianza_atribucion?: 'alta' | 'baja' | null;
+  nivel: 'alta' | 'baja';
+}
+
 export interface CommunicationFeedbackV4 {
   meta: MeetingMeta;
   resumen: MeetingResumenV4;
@@ -255,15 +272,50 @@ export interface CommunicationFeedbackV4 {
   empatia: Record<string, EmpatiaProfileV4>;
   calidad_global: CalidadGlobalV4;
   recomendaciones: Recomendacion[];
+  // ─── Marcadores auto-descriptivos estampados por código (rúbrica 6.x) ───
+  /** Dimensiones que no se midieron (modo ponente / monólogo). El radar las omite. */
+  dimensiones_no_aplica?: string[];
+  /** Marcador previo a `dimensiones_no_aplica` (análisis anteriores a ago-2026). */
+  recording_mode?: 'presentation' | string;
+  calidad_insumo?: CalidadInsumo;
+  analysis_version?: string;
 }
 
 // ─── Analysis Skipped Types ─────────────────────────────────────────
 
+/**
+ * Mediciones que el gate de calidad de insumo de la web (#142/#147) deja en el
+ * marcador skipped. Son números de código, no del modelo.
+ */
+export interface AnalysisSkippedMetrics {
+  duracion_total_min: number;
+  tramos_densos_min: number;
+  tramos?: { inicio_min: number; fin_min: number }[];
+  ratio_alucinacion?: number;
+  palabras_totales?: number;
+  palabras_descartadas?: number;
+  palabras_usuario_evaluadas?: number;
+  hablantes_etiquetados?: number;
+  idioma_dominante?: string;
+}
+
+/**
+ * Marcador que la web escribe en `communication_feedback_v4` cuando decide NO
+ * analizar (antes de cobrar cuota). Dos razones conocidas:
+ * - `insufficient_user_words`: el usuario no llegó a `min_required` palabras.
+ * - `no_evaluable_speech` (#147): habló bastante en total, pero en ningún tramo
+ *   de 5 min hubo conversación continua (bloque de jornada con "mm-hmm").
+ * Los fallos de proveedor ya NO usan este marcador (escriben `null` +
+ * `analysis_status='failed'`), pero queda alguna fila legacy con
+ * `reason:'all_providers_failed'`. `speakers`/`metrics` llegan desde ago-2026.
+ */
 export interface AnalysisSkipped {
   status: 'skipped';
-  reason: string;
+  reason: 'insufficient_user_words' | 'no_evaluable_speech' | 'all_providers_failed' | (string & {});
   user_words?: number;
   min_required?: number;
+  speakers?: number;
+  metrics?: AnalysisSkippedMetrics;
 }
 
 export function isAnalysisSkipped(v4: unknown): v4 is AnalysisSkipped {
@@ -997,102 +1049,10 @@ export async function getOmiTranscriptSegments(conversationId: string): Promise<
   return data || [];
 }
 
-// Stats interfaces and functions
-export interface OmiStats {
-  totalConversations: number;
-  avgOverallScore: number;
-  totalDurationMinutes: number;
-  dimensions: {
-    claridad: number;
-    proposito: number;
-    emociones: number;
-    estructura: number;
-    persuasion: number;
-    formalidad: number;
-    muletillas: number;
-    adaptacion: number;
-  };
-  scoreHistory: { date: string; score: number }[];
-  recentConversations: { id: string; title: string; emoji: string | null; score: number; date: string }[];
-}
-
-const DIMENSION_KEYS_STATS = ['claridad', 'proposito', 'emociones', 'estructura', 'persuasion', 'formalidad', 'muletillas', 'adaptacion'] as const;
-
-const EMPTY_DIMENSIONS = { claridad: 0, proposito: 0, emociones: 0, estructura: 0, persuasion: 0, formalidad: 0, muletillas: 0, adaptacion: 0 };
-
-export async function getOmiStats(userId?: string): Promise<OmiStats | null> {
-  if (!userId) return null;
-
-  const { data, error } = await supabase
-    .schema('maity')
-    .from('omi_conversations')
-    .select('id, created_at, duration_seconds, title, emoji, communication_feedback_v4')
-    .eq('user_id', userId)
-    .eq('deleted', false)
-    .order('created_at', { ascending: true });
-
-  if (error) {
-    console.error('Error fetching omi stats:', error);
-    throw error;
-  }
-
-  if (!data || data.length === 0) {
-    return {
-      totalConversations: 0, avgOverallScore: 0, totalDurationMinutes: 0,
-      dimensions: { ...EMPTY_DIMENSIONS }, scoreHistory: [], recentConversations: [],
-    };
-  }
-
-  type StatsRow = { id: string; created_at: string; duration_seconds: number | null; title: string | null; emoji: string | null; communication_feedback_v4: CommunicationFeedbackV4 | null };
-  const rows = data as StatsRow[];
-
-  const calcAvg = (arr: number[]) =>
-    arr.length > 0 ? arr.reduce((a, b) => a + b, 0) / arr.length : 0;
-
-  // Filter conversations with V4 feedback
-  const withV4 = rows.filter((c: StatsRow) => (c.communication_feedback_v4 as CommunicationFeedbackV4 | null)?.resumen?.puntuacion_global != null);
-
-  // Overall scores
-  const overallScores = withV4.map((c: StatsRow) => c.communication_feedback_v4!.resumen.puntuacion_global as number);
-
-  // Dimension averages
-  const dimAverages = { ...EMPTY_DIMENSIONS };
-  for (const key of DIMENSION_KEYS_STATS) {
-    const scores = withV4.map((c: StatsRow) => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const dim = c.communication_feedback_v4?.dimensiones?.[key] as any;
-      return dim?.puntaje as number | undefined;
-    }).filter((s: number | undefined): s is number => s != null);
-    dimAverages[key] = Math.round(calcAvg(scores));
-  }
-
-  // Total duration
-  const totalDurationSeconds = rows.reduce((acc: number, c: StatsRow) => acc + (c.duration_seconds || 0), 0);
-
-  // Score history (last 10 with V4 scores)
-  const scoreHistory = withV4.slice(-10).map((c: StatsRow) => ({
-    date: new Date(c.created_at).toLocaleDateString('es-MX', { month: 'short', day: 'numeric' }),
-    score: c.communication_feedback_v4!.resumen.puntuacion_global as number,
-  }));
-
-  // Recent conversations (last 5)
-  const recentConversations = [...rows].reverse().slice(0, 5).map((c: StatsRow) => ({
-    id: c.id as string,
-    title: (c.title || 'Sin título') as string,
-    emoji: c.emoji as string | null,
-    score: ((c.communication_feedback_v4 as CommunicationFeedbackV4 | null)?.resumen?.puntuacion_global ?? 0) as number,
-    date: new Date(c.created_at).toLocaleDateString('es-MX', { month: 'short', day: 'numeric' }),
-  }));
-
-  return {
-    totalConversations: data.length,
-    avgOverallScore: Math.round(calcAvg(overallScores)),
-    totalDurationMinutes: Math.round(totalDurationSeconds / 60),
-    dimensions: dimAverages,
-    scoreHistory,
-    recentConversations,
-  };
-}
+// `getOmiStats`/`OmiStats` se eliminaron en ago-2026 (#74): no tenían consumidores
+// y leían `resumen.puntuacion_global` + dimensiones (`emociones`, `formalidad`,
+// `muletillas`) que la rúbrica 6.x ya no escribe → habrían devuelto ceros.
+// Para puntajes agregados usar `utils/scoring.ts::getCommScore`.
 
 // --- Save / Update interfaces and functions ---
 

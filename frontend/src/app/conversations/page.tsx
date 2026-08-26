@@ -5,7 +5,15 @@ import { useSearchParams, useRouter } from 'next/navigation';
 import { invoke } from '@tauri-apps/api/core';
 import { Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
-import { ConversationsList, ConversationDetail, OmiConversation, getOmiConversation, getLocalMeetingDetail } from '@/features/conversations';
+import {
+  ConversationsList,
+  ConversationDetail,
+  OmiConversation,
+  getOmiConversation,
+  getLocalMeetingDetail,
+  isAnalysisSkipped,
+  isFullAnalysis,
+} from '@/features/conversations';
 import { logPoll } from '@/lib/diagnostics';
 import { PRICING_URL } from '@/lib/quotaErrors';
 
@@ -216,9 +224,12 @@ function ConversationsContent() {
     // The `isAnalyzing` hint is only relevant for local-only conversations (the row may
     // not yet exist in Supabase). For cloud rows, ConversationDetail derives the phase
     // from the live Postgres data via useConversationLive.
+    // Skipped es terminal (igual que en derivePhase): un marcador skipped nunca
+    // va a convertirse en análisis, así que no hay nada que esperar.
     const isAnalyzing =
       source === 'recording' &&
-      (!selectedConversation.communication_feedback_v4 || !selectedConversation.meeting_minutes_data);
+      !isAnalysisSkipped(selectedConversation.communication_feedback_v4) &&
+      (!isFullAnalysis(selectedConversation.communication_feedback_v4) || !selectedConversation.meeting_minutes_data);
     return (
       <div className="h-full flex flex-col bg-background">
         <ConversationDetail

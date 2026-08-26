@@ -27,6 +27,8 @@ import { useConversationLive } from '../hooks/useConversationLive';
 import { derivePhase } from '../utils/derivePhase';
 import { markQuotaBlocked, parseQuotaError } from '@/lib/quotaErrors';
 import { AnalysisStatusBanner } from './AnalysisStatusBanner';
+import { AnalysisSkippedCard } from './AnalysisSkippedCard';
+import { InputQualityNotice, readCalidadInsumo } from './InputQualityNotice';
 import { SessionFeedbackModal } from '@/components/recording/SessionFeedbackModal';
 import { TranscriptSection } from './analysis';
 import { ResumenHero as ResumenHeroV1 } from './analysis/dashboard-v1/ResumenHero';
@@ -545,8 +547,12 @@ export function ConversationDetail({ conversation: initialConversation, onClose,
           ) : hasAnalysis && feedbackV4 ? (
             (() => {
               const data = cloudV4ToDashboardV1(feedbackV4);
+              // #73: sobre qué se calculó el puntaje (30 de 60 min, palabras
+              // descartadas, baja confianza). Se lee del raw: el adapter no lo conserva.
+              const calidadInsumo = readCalidadInsumo(feedbackV4Raw);
               return (
             <div className="dashboard-v1-scope space-y-4 py-2">
+              {calidadInsumo && <InputQualityNotice calidad={calidadInsumo} />}
               <ResumenHeroV1 feedback={data} />
               <TuRadarCard feedback={data} />
               <CapaLabel text="Radiografía Rápida" />
@@ -635,22 +641,9 @@ export function ConversationDetail({ conversation: initialConversation, onClose,
                 </div>
               </CardContent>
             </Card>
-          ) : analysisSkipped ? (
-            /* Analysis was skipped due to insufficient data */
-            <Card>
-              <CardContent className="p-12 text-center">
-                <MessageSquare className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
-                <h3 className="text-lg font-medium mb-2 text-foreground">Conversación muy corta para analizar</h3>
-                <p className="text-muted-foreground">
-                  {isAnalysisSkipped(feedbackV4Raw) && feedbackV4Raw.user_words != null
-                    ? `Se detectaron ${feedbackV4Raw.user_words} palabras del usuario (mínimo requerido: ${feedbackV4Raw.min_required ?? 15}).`
-                    : 'La transcripción del usuario no tiene suficientes palabras para generar un análisis significativo.'}
-                </p>
-                <p className="text-muted-foreground text-sm mt-2">
-                  La minuta de la reunión sigue disponible en la pestaña correspondiente.
-                </p>
-              </CardContent>
-            </Card>
+          ) : isAnalysisSkipped(feedbackV4Raw) ? (
+            /* La web decidió no analizar (#72): la tarjeta ramifica por `reason`. */
+            <AnalysisSkippedCard marker={feedbackV4Raw} />
           ) : (
             /* No analysis yet */
             <Card>

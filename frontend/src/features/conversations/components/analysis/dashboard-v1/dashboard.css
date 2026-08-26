@@ -51,6 +51,7 @@
 .dashboard-v1-scope .tu-radar-card { background: #13131f; border-radius: var(--radius); padding: 28px 24px 22px; margin-top: 16px; box-shadow: var(--shadow); color: #fff; }
 .dashboard-v1-scope .tu-radar-body { display: flex; align-items: center; justify-content: center; }
 .dashboard-v1-scope .tu-radar-chart-wrap { position: relative; width: 100%; max-width: 420px; margin: 0 auto; }
+.dashboard-v1-scope .tu-radar-nota { margin-top: 14px; font-size: .8rem; line-height: 1.45; opacity: .7; text-align: center; color: #fff; }
 .dashboard-v1-scope .tu-radar-badges { display: flex; gap: 12px; margin-top: 20px; flex-wrap: wrap; }
 .dashboard-v1-scope .tu-radar-badge { flex: 1; min-width: 140px; padding: 12px 16px; border-radius: 10px; text-align: center; }
 .dashboard-v1-scope .tu-radar-badge.badge-str { background: rgba(16,185,129,.12); border: 1px solid rgba(16,185,129,.3); }
