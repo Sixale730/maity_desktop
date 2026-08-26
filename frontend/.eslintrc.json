@@ -13,6 +13,9 @@
     "no-restricted-syntax": ["error", {
       "selector": "CallExpression[callee.property.name='rpc'][callee.object.name='supabase']",
       "message": "Usa supabase.schema('public').rpc(...) — un .rpc() sin schema explicito depende del default del cliente y, si apunta al schema equivocado, devuelve 403 en silencio (issue #70). Para un RPC de maity: .schema('maity').rpc(...)."
+    }, {
+      "selector": "CallExpression[callee.property.name='invoke'][callee.object.property.name='functions']",
+      "message": "No hay edge functions de Supabase para el desktop (issue #67): el token de Deepgram viene de Vercel /api/deepgram-token y el analisis de conversations-finalize. Si de verdad hace falta una, vive en el repo web con gate server-side."
     }],
     "no-restricted-imports": ["error", {
       "paths": [{

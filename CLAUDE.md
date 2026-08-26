@@ -762,6 +762,8 @@ Reglas, todas deliberadas:
 
 La transcripcion en la nube usa Deepgram a traves de un Cloudflare Worker proxy. **La API key de Deepgram nunca llega al cliente**.
 
+> **Sin edge functions de Supabase en este repo (ago-2026, #67).** Existían `deepgram-token` y `deepseek-evaluate` en `supabase/functions/`; eran código muerto (cero call sites en desktop/web/móvil, cero tráfico en el gateway) y las versiones desplegadas —subidas por dashboard, divergentes del repo— devolvían la `DEEPGRAM_API_KEY` cruda a cualquier JWT válido. Se borraron del repo; el borrado en el proyecto `nhlrtflkxoojvhbyocet`, el retiro de los secrets `DEEPGRAM_API_KEY`/`DEEPSEEK_API_KEY` y la rotación de keys son pasos operativos (runbook en el issue). **No recrear `supabase/` ni re-desplegarlas**: el token de Deepgram lo emite Vercel `/api/deepgram-token` (JWT de 5 min) y el Worker `maity-deepgram-proxy` es el único que conoce la key; el análisis va por Vercel `conversations-finalize` (`api/finalize.rs`). Una función Supabase nueva vive en el repo web, con gate server-side (`maity.fn_check_quota`/rol, nunca `users.status`). La regla `no-restricted-syntax` de `frontend/.eslintrc.json` bloquea `supabase.functions.invoke(` en `frontend/src`.
+
 **Config por defecto**: Nova-3, idioma `es-419` (espanol latinoamericano). Persiste en tabla `transcript_settings` de SQLite.
 
 **Modelos disponibles**: `nova-3` (recomendado), `nova-2`, `nova-2-phonecall`, `nova-2-meeting`
