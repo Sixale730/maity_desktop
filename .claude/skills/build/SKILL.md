@@ -130,6 +130,14 @@ Ejecutar `uname -s` para determinar la plataforma:
      - Falta slice arm64 o x86_64: `resource path 'binaries/llama-helper-<triple>' doesn't exist` durante `cargo build` por arch.
      - Falta el universal: `failed to bundle project Failed to copy external binaries: resource path 'binaries/llama-helper-universal-apple-darwin' doesn't exist` durante el bundling final.
 
+5. (macOS) El segundo sidecar, **`ffmpeg`**, NO se copia a mano: `run-pre-build-checks.js`
+   ejecuta `scripts/build-ffmpeg-macos.sh`, que compila desde la fuente oficial (SHA-256
+   pineado) un ffmpeg minimo **LGPL** y deja los tres `binaries/ffmpeg-{aarch64,x86_64,universal}-apple-darwin`
+   (issue #77; receta en `docs/THIRD-PARTY-NOTICES.md`). Primera vez ~1 min; despues sale
+   por el stamp. Si el bundling falla con `resource path 'binaries/ffmpeg-...' doesn't exist`,
+   corre el script a mano (`--force` si cambio la receta). No sustituirlo por un ffmpeg
+   de brew o prehecho: son GPL y no son distribuibles en la Mac App Store.
+
 ### Paso 0c: Limpieza pre-build (CRITICO en macOS)
 
 **En macOS** — Si un build anterior fallo a mitad del bundling del `.dmg`, deja un volumen montado en `/Volumes/dmg.XXXXX` y un archivo temporal `rw.NNN.<name>.dmg` en `target/.../bundle/macos/`. **El siguiente build fallara** con `error running bundle_dmg.sh` porque `hdiutil` no puede crear un DMG nuevo si el anterior sigue montado.

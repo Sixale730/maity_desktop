@@ -4,7 +4,7 @@ use ffmpeg_sidecar::{
     paths::sidecar_dir,
     version::ffmpeg_version,
 };
-use log::{debug, error};
+use log::{debug, error, info};
 use once_cell::sync::Lazy;
 use std::path::PathBuf;
 use which::which;
@@ -23,6 +23,24 @@ pub fn find_ffmpeg_path() -> Option<PathBuf> {
 
 fn find_ffmpeg_path_internal() -> Option<PathBuf> {
     debug!("Starting search for ffmpeg executable");
+
+    // macOS: el bundle trae su propio ffmpeg (sidecar `externalBin` de
+    // tauri.macos.conf.json, compilado LGPL por scripts/build-ffmpeg-macos.sh) en
+    // Contents/MacOS, junto al ejecutable. Va ANTES que PATH para que la app use
+    // siempre el binario pineado — también en máquinas de desarrollo con un ffmpeg de
+    // Homebrew — y para que bajo el sandbox de la App Store (donde PATH/~/.local/bin no
+    // existen ni se pueden escribir) nunca se llegue a la descarga en runtime (#77).
+    #[cfg(target_os = "macos")]
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Some(exe_folder) = exe_path.parent() {
+            let bundled = exe_folder.join(EXECUTABLE_NAME);
+            if bundled.is_file() {
+                info!("Using bundled ffmpeg: {:?}", bundled);
+                return Some(bundled);
+            }
+            debug!("No bundled ffmpeg next to the executable in {:?}", exe_folder);
+        }
+    }
 
     // Check if `ffmpeg` is in the PATH environment variable
     if let Ok(path) = which(EXECUTABLE_NAME) {

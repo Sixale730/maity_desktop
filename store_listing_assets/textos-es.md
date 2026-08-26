@@ -77,3 +77,5 @@ Retroalimentación honesta y un coach de tu lado, todos los días
 - **Short description**: `Convierte tus conversaciones reales en coaching de comunicación: claridad, persuasión y empatía, todos los días.`
 - **Search terms / keywords**: `comunicación, coach, reuniones, IA, feedback, presentaciones, minutas, calendario, productividad, transcripción`
 - **Copyright / trademark**: `© Maity AI`
+- **Aviso de terceros (Windows y Mac App Store, si la ficha tiene campo de licencias / notas del revisor)**:
+  `Incluye FFmpeg (https://ffmpeg.org), licenciado bajo LGPL v2.1 o posterior, ejecutado como proceso independiente. Detalle en docs/THIRD-PARTY-NOTICES.md del repo.`

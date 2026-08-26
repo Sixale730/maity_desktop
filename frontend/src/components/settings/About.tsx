@@ -32,6 +32,17 @@ export function About() {
         }
     };
 
+    // Aviso LGPL: el bundle embarca un ffmpeg propio (macOS: compilado por
+    // scripts/build-ffmpeg-macos.sh; Windows: ffmpeg.exe en el MSIX). La LGPL pide
+    // atribución visible y acceso a la fuente — ver docs/THIRD-PARTY-NOTICES.md.
+    const handleFfmpegClick = async () => {
+        try {
+            await invoke('open_external_url', { url: 'https://ffmpeg.org' });
+        } catch (error) {
+            console.error('Failed to open link:', error);
+        }
+    };
+
     const handleCheckForUpdates = async () => {
         setIsChecking(true);
         try {
@@ -142,6 +153,17 @@ export function About() {
             <div className="pt-2 border-t border-border text-center">
                 <p className="text-xs text-muted-foreground">
                     Creado por Maity
+                </p>
+                <p className="text-[11px] text-muted-foreground/80 mt-1">
+                    Incluye{' '}
+                    <button
+                        type="button"
+                        onClick={handleFfmpegClick}
+                        className="underline underline-offset-2 hover:text-foreground"
+                    >
+                        FFmpeg
+                    </button>
+                    {' '}(LGPL v2.1 o posterior), © FFmpeg developers
                 </p>
             </div>
             {/* Recording Logs Viewer */}

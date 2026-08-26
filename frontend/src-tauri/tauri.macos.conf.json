@@ -1,6 +1,10 @@
 {
     "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
     "bundle": {
+        "externalBin": [
+            "binaries/llama-helper",
+            "binaries/ffmpeg"
+        ],
         "macOS": {
             "minimumSystemVersion": "12.3",
             "signingIdentity": "Developer ID Application: Julio Alexis Gonzalez Villa (8YLD233TA2)",

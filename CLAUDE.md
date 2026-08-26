@@ -697,11 +697,15 @@ Tauri 2.x soporta configs por plataforma que se **mergean** con el base via JSON
 ```
 frontend/src-tauri/
 ├── tauri.conf.json              # Config BASE compartida (todas las plataformas)
-├── tauri.macos.conf.json        # Overrides para macOS (merge automatico)
+├── tauri.macos.conf.json        # Overrides para macOS (merge automatico): externalBin = llama-helper + ffmpeg
+├── tauri.appstore.conf.json     # Overrides del canal Mac App Store (se aplica ENCIMA del de macOS via --config)
 ├── entitlements.plist           # Entitlements para desarrollo/distribucion directa
 ├── entitlements-appstore.plist  # Entitlements para App Store (sandbox)
-└── Info.plist                   # Permisos macOS (NUNCA eliminar las *UsageDescription)
+├── entitlements-appstore-inherit.plist  # Solo app-sandbox + inherit: para los sidecars (llama-helper, ffmpeg)
+└── Info.plist                   # Permisos macOS (NUNCA eliminar las *UsageDescription) + ITSAppUsesNonExemptEncryption=false
 ```
+
+> **ffmpeg en macOS viaja DENTRO del bundle (ago-2026, #77).** `audio/ffmpeg.rs` lo descargaba en runtime (evermeet.cx/osxexperts.net → `~/.local/bin`, escribiendo además en `.zshrc`); bajo el sandbox de la Mac App Store eso no puede escribirse y ejecutar un binario descargado viola la guideline 2.5.2 → sin `audio.mp4` al terminar de grabar (rechazo 2.1). Hoy `frontend/scripts/build-ffmpeg-macos.sh` (lo corre `run-pre-build-checks.js` en macOS y `build-macos.yml` en CI) **compila desde la fuente oficial, pineada por SHA-256, un ffmpeg mínimo y LGPL** (`--disable-gpl --disable-nonfree`, solo lo que usan `encode.rs` e `incremental_saver.rs`: `f32le→aac/mp4` y `concat -c copy`; ~5-10 MB por slice, sin nasm) y lo deja como `binaries/ffmpeg-{aarch64,x86_64,universal}-apple-darwin`. Entra por `bundle.externalBin` de `tauri.macos.conf.json` → `Contents/MacOS/ffmpeg` en **ambos** canales macOS. Reglas: (a) **nunca `bundle.resources`** — `package-appstore.sh` solo firma con `inherit` los ejecutables de `Contents/MacOS`, y Apple no quiere código en `Resources`; (b) `find_ffmpeg_path` en macOS mira **primero** junto al ejecutable (antes que PATH), así que la descarga en runtime queda inalcanzable en macOS — no borrarla: Windows/Linux siguen usándola; (c) los binarios prehechos de terceros son GPL (libx264…) e incompatibles con los términos de la App Store — no sustituir el script por una descarga; (d) aviso de licencia en Ajustes → Acerca de y en `docs/THIRD-PARTY-NOTICES.md` (mantener en sync si cambia la receta). Windows no cambia (el MSIX copia `ffmpeg.exe` a mano, ver `store-msix`).
 
 ### Reglas CRITICAS
 

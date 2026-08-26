@@ -160,6 +160,22 @@ jobs:
           echo "Sidecars in frontend/src-tauri/binaries/:"
           ls -la frontend/src-tauri/binaries/
 
+      # ffmpeg va dentro del bundle (externalBin en tauri.macos.conf.json): compilado
+      # desde la fuente oficial con --disable-gpl, universal. Sin él no hay audio.mp4 y
+      # la App Store no admite la descarga en runtime (#77). El dir de trabajo se cachea
+      # FUERA de target/ para que rust-cache no lo limpie; el script restaura la salida
+      # desde <work>/out si el stamp coincide.
+      - name: Cache ffmpeg build (LGPL, universal)
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/maity-ffmpeg
+          key: ffmpeg-macos-${{ hashFiles('frontend/scripts/build-ffmpeg-macos.sh') }}
+
+      - name: Build ffmpeg sidecar (LGPL, universal)
+        run: |
+          FFMPEG_WORK_DIR="$HOME/.cache/maity-ffmpeg" bash frontend/scripts/build-ffmpeg-macos.sh
+          lipo -info frontend/src-tauri/binaries/ffmpeg-universal-apple-darwin
+
       - name: Build Tauri app (with code signing)
         if: ${{ github.event.inputs.sign-build == 'true' }}
         uses: tauri-apps/tauri-action@v0

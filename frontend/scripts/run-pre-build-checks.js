@@ -62,6 +62,30 @@ if (vcredistResult.status !== 0) {
 
 console.log('[pre-build] OK: VC++ Runtime staged');
 
+// macOS: ffmpeg universal LGPL como sidecar (externalBin en tauri.macos.conf.json).
+// Tiene que existir ANTES de que el bundler recoja externalBin. Sin él no se genera
+// audio.mp4 al terminar una grabación, y la App Store no admite la descarga en
+// runtime que hacía audio/ffmpeg.rs (guideline 2.5.2, issue #77). El script es
+// idempotente: si el stamp coincide sale en segundos; la primera vez compila (~min).
+if (process.platform === 'darwin') {
+    console.log('[pre-build] Building/verifying bundled ffmpeg (macOS, LGPL, universal)...');
+    const ffmpegResult = spawnSync(BASH, [path.join(__dirname, 'build-ffmpeg-macos.sh')], {
+        stdio: 'inherit',
+        shell: false,
+    });
+
+    if (ffmpegResult.status !== 0) {
+        console.error('');
+        console.error('[pre-build] FAIL: no se pudo compilar/verificar el ffmpeg bundleado.');
+        console.error('  Sin Contents/MacOS/ffmpeg la app no genera audio.mp4 (encode.rs /');
+        console.error('  incremental_saver.rs) y la App Store rechaza la descarga en runtime (2.5.2).');
+        console.error('  Revisa el log de configure/make en target/ffmpeg-macos/build-*/.');
+        process.exit(1);
+    }
+
+    console.log('[pre-build] OK: bundled ffmpeg ready');
+}
+
 console.log('[pre-build] Running state-access lint...');
 
 const result = spawnSync(BASH, [BASH_LINT_SCRIPT], {
