@@ -271,9 +271,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
       if (sessionError) {
         console.error('[Auth] Failed to exchange PKCE code for session:', sessionError)
+        void fileLogger.error('auth_context', 'pkce exchange failed', { error: sessionError.message })
         setError('Failed to complete sign-in. Please try again.')
       } else if (data.session) {
         logger.debug('[Auth] Session established via PKCE code exchange')
+        void fileLogger.info('auth_context', 'pkce exchange ok')
         setSession(data.session)
         setUser(data.session.user)
         await fetchOrCreateMaityUserRef.current(data.session.user)
@@ -343,6 +345,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const authError = extractAuthError(url)
     if (authError) {
       console.warn('[Auth] OAuth callback returned an error:', authError)
+      void fileLogger.warn('auth_context', 'oauth deep link: provider error', authError)
       setError('Sign-in was cancelled or rejected by the provider. Please try again.')
       isHandlingCallback.current = false
       return
@@ -353,6 +356,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // existía y el fallback maity:// moría en "Failed to extract tokens".
     const code = extractAuthCode(url)
     if (code) {
+      void fileLogger.info('auth_context', 'oauth deep link: pkce code branch')
       try {
         await exchangePkceCode(code)
       } finally {
@@ -365,6 +369,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const tokens = extractTokensFromUrl(url)
     if (!tokens) {
       console.error('[Auth] Failed to extract tokens from callback URL')
+      void fileLogger.error('auth_context', 'oauth deep link: no code, no error, no tokens')
       setError('Failed to complete sign-in. Please try again.')
       isHandlingCallback.current = false
       return
@@ -673,6 +678,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         logger.debug('[Auth] Localhost OAuth server started on port', port)
       } catch (serverErr) {
         console.warn('[Auth] Failed to start OAuth server, falling back to deep-link:', serverErr)
+        // Al archivo: es la señal #1 del login roto bajo sandbox (#76) y en un build
+        // de Store no hay devtools para verlo de otra forma.
+        void fileLogger.warn('auth_context', 'start_oauth_server failed, deep-link fallback', {
+          error: String(serverErr),
+        })
       }
 
       const { data, error: oauthError } = await supabase.auth.signInWithOAuth({
@@ -711,6 +721,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         logger.debug('[Auth] Localhost OAuth server started on port', port)
       } catch (serverErr) {
         console.warn('[Auth] Failed to start OAuth server, falling back to deep-link:', serverErr)
+        // Al archivo: es la señal #1 del login roto bajo sandbox (#76) y en un build
+        // de Store no hay devtools para verlo de otra forma.
+        void fileLogger.warn('auth_context', 'start_oauth_server failed, deep-link fallback', {
+          error: String(serverErr),
+        })
       }
 
       const { data, error: oauthError } = await supabase.auth.signInWithOAuth({
@@ -747,6 +762,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         logger.debug('[Auth] Localhost OAuth server started on port', port)
       } catch (serverErr) {
         console.warn('[Auth] Failed to start OAuth server, falling back to deep-link:', serverErr)
+        // Al archivo: es la señal #1 del login roto bajo sandbox (#76) y en un build
+        // de Store no hay devtools para verlo de otra forma.
+        void fileLogger.warn('auth_context', 'start_oauth_server failed, deep-link fallback', {
+          error: String(serverErr),
+        })
       }
 
       const { data, error: oauthError } = await supabase.auth.signInWithOAuth({
