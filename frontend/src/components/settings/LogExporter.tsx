@@ -3,8 +3,9 @@
 import React, { useState, useCallback } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { Button } from '@/components/ui/button'
-import { FileArchive, FolderOpen, Trash2, Loader2, HardDrive, CheckCircle2, ExternalLink } from 'lucide-react'
+import { FileArchive, FolderOpen, Trash2, Loader2, HardDrive, CheckCircle2, ExternalLink, LifeBuoy } from 'lucide-react'
 import { toast } from 'sonner'
+import { requestManualIncidentDialog } from '@/components/incident/IncidentReportDialog'
 
 interface LogInfo {
   log_directory: string | null
@@ -125,10 +126,26 @@ export function LogExporter() {
       </div>
 
       <p className="text-xs text-muted-foreground">
-        Exporta los logs de la aplicación para compartir con soporte técnico o para diagnóstico.
+        Exporta los logs de la aplicación para compartir con soporte técnico, o envía un diagnóstico
+        directo al equipo de Maity (solo texto: registro técnico, sistema y memoria; sin audio ni
+        transcripciones).
       </p>
 
       <div className="flex flex-wrap gap-2">
+        {/* Bundle de incidente con consentimiento (#61): abre el mismo diálogo
+            que los incidentes automáticos, en modo manual. La subida la hace
+            Rust (upload_incident_bundle) solo tras "Enviar". */}
+        <Button
+          onClick={requestManualIncidentDialog}
+          variant="outline"
+          size="sm"
+          className="text-xs"
+          data-testid="send-diagnostic"
+        >
+          <LifeBuoy className="h-3 w-3 mr-2" />
+          Enviar diagnóstico
+        </Button>
+
         <Button
           onClick={handleExportLogs}
           disabled={isExporting || (logInfo?.file_count === 0)}

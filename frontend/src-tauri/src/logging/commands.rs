@@ -175,8 +175,8 @@ pub async fn export_logs<R: Runtime>(
     Ok(output_path.to_string_lossy().to_string())
 }
 
-/// Generate system information for debugging
-fn generate_system_info() -> String {
+/// Generate system information for debugging (lo reusa el bundle de incidente).
+pub(super) fn generate_system_info() -> String {
     let mut info = String::new();
 
     info.push_str("=== Maity Desktop System Info ===\n\n");

@@ -78,6 +78,7 @@ pub async fn import_pending<R: Runtime>(app: &AppHandle<R>) {
         return; // no existe (arranque limpio) o ilegible
     };
 
+    let mut last_panic: Option<(String, serde_json::Value)> = None;
     for line in contents.lines().filter(|l| !l.trim().is_empty()) {
         let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) else {
             continue;
@@ -87,6 +88,7 @@ pub async fn import_pending<R: Runtime>(app: &AppHandle<R>) {
             .and_then(|m| m.as_str())
             .unwrap_or("panic")
             .to_string();
+        last_panic = Some((message.clone(), entry.clone()));
         let payload = serde_json::json!({
             "source": "rust-panic",
             "name": "RustPanic",
@@ -107,4 +109,22 @@ pub async fn import_pending<R: Runtime>(app: &AppHandle<R>) {
     }
 
     let _ = std::fs::remove_file(path);
+
+    // Bundle de incidente con consentimiento (#61): el proceso anterior murió
+    // por un panic → ofrecer enviar el tail del log (que sigue en disco, con
+    // el PANIC de main.rs al final). Se arma UNA vez por arranque con el último
+    // panic; `incident::arm` aplica el cooldown/never_ask. No se toca la
+    // cadena de hooks.
+    if let Some((message, entry)) = last_panic {
+        let payload = crate::logging::incident::IncidentPayload {
+            kind: crate::logging::incident::IncidentKind::RustPanic,
+            ts_ms: now_ms(),
+            message: format!("Maity se cerró inesperadamente: {}", message),
+            detail: serde_json::json!({
+                "location": entry.get("location").cloned().unwrap_or(serde_json::Value::Null),
+                "panic_ts_ms": entry.get("ts_ms").cloned().unwrap_or(serde_json::Value::Null),
+            }),
+        };
+        crate::logging::incident::arm(app, payload).await;
+    }
 }

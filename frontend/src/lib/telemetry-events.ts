@@ -30,6 +30,10 @@ export const TELEMETRY_EVENTS = {
   NAV_PAGE_VIEW: 'nav.page_view',
   COACH_SESSION_SUMMARY: 'coach.session_summary',
 
+  // ── Bundle de incidente con consentimiento (emisor: Rust, logging/incident.rs) ──
+  INCIDENT_DETECTED: 'incident.detected',
+  INCIDENT_BUNDLE_UPLOADED: 'incident.bundle_uploaded',
+
   // ── Guardado post-grabación (emisor: recordingLogService, outbox recording_logs) ──
   MEETING_ID_GENERATED: 'meeting_id_generated', // legacy
   BUFFER_FLUSH_COMPLETED: 'buffer_flush_completed', // legacy

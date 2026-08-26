@@ -24,6 +24,7 @@ import { RecordingPostProcessingProvider } from '@/contexts/RecordingPostProcess
 import { ErrorBoundary } from '@/components/shared/ErrorBoundary'
 import { ChunkErrorRecovery } from '@/components/shared/ChunkErrorRecovery'
 import { RivalInstallDialog } from '@/components/rival-install/RivalInstallDialog'
+import { IncidentReportDialog } from '@/components/incident/IncidentReportDialog'
 import { ScheduledRecordingIndicator } from '@/components/scheduled-recording/ScheduledRecordingIndicator'
 import { ScheduledRecordingSetupGate } from '@/components/scheduled-recording/ScheduledRecordingSetupGate'
 import { scheduledRecordingService } from '@/services/scheduledRecordingService'
@@ -560,6 +561,13 @@ function AppContent({ children }: { children: React.ReactNode }) {
                         corre bajo MSIX y detecta la copia NSIS rival, ofrece quitarla.
                         Consulta get_rival_install al montar (pull-based); solo Windows. */}
                     <RivalInstallDialog />
+
+                    {/* "¿Enviar diagnóstico a Maity?" (#61): bundle de incidente con
+                        consentimiento. Rust arma el incidente (RAM crítica sostenida,
+                        panic del arranque anterior) o Ajustes lo pide (manual); nada
+                        se sube sin el "Enviar" del usuario. Dentro de AuthGate porque
+                        la subida usa la sesión nativa. */}
+                    <IncidentReportDialog />
 
                     {/* Listener global de la grabación programada por jornada:
                         traduce los eventos del scheduler Rust (best-effort) en toasts.

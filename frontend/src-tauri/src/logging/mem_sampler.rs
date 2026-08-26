@@ -15,10 +15,21 @@ use std::time::{Duration, Instant};
 
 use log::{error, info, warn};
 use sysinfo::{Pid, ProcessesToUpdate, System};
+use tauri::{AppHandle, Runtime};
+
+use super::incident::{IncidentKind, IncidentPayload};
 
 const SAMPLE_INTERVAL: Duration = Duration::from_secs(30);
 /// Rate-limit de los warnings por condición (el sample sigue saliendo cada 30s).
 const CONDITION_WARN_EVERY: Duration = Duration::from_secs(600);
+/// Umbral de `app-rss-critical` (MB de RSS de maity-desktop).
+pub const APP_RSS_CRITICAL_MB: u64 = 4000;
+/// Umbral de `system-memory-pressure` (MB disponibles en el sistema).
+pub const SYS_AVAIL_PRESSURE_MB: u64 = 1024;
+/// Samples consecutivos bajo `SYS_AVAIL_PRESSURE_MB` para considerar la
+/// presión SOSTENIDA (2 × 30 s). Un pico de un solo tick (otra app abriendo)
+/// no amerita pedirle un diagnóstico al usuario (#61).
+pub const PRESSURE_SUSTAINED_SAMPLES: u8 = 2;
 
 // ── Picos de la sesión (los consume el session-summary del coach) ──
 static MEM_APP_PEAK_MB: AtomicU64 = AtomicU64::new(0);
@@ -93,7 +104,10 @@ pub fn collect_fresh() -> Option<MemSample> {
 }
 
 /// Arranca el sampler periódico. Llamar UNA vez desde el setup de la app.
-pub fn start() {
+/// Recibe el `AppHandle` para armar el incidente con consentimiento (#61)
+/// cuando un umbral crítico se sostiene; el emit sale de ESTA task (no de un
+/// layer de tracing), así que no hay riesgo de reentrada del subscriber.
+pub fn start<R: Runtime>(app: AppHandle<R>) {
     tauri::async_runtime::spawn(async move {
         // El System persiste entre ticks: global_cpu_usage() necesita el
         // delta respecto al refresh anterior para dar valores reales.
@@ -124,11 +138,26 @@ pub fn start() {
             sys = sys_back;
             if let Some(s) = sample {
                 log_sample("periodic", &s);
-                warn_state.check(&s);
+                let incident = warn_state.check(&s);
                 // Solo el loop periódico alimenta el cache: los snapshots de
                 // `snapshot_now` usan System fresco y su cpu_pct=0 lo contaminaría.
                 if let Ok(mut cache) = LAST_SAMPLE.lock() {
-                    *cache = Some((s, Instant::now()));
+                    *cache = Some((s.clone(), Instant::now()));
+                }
+                // Incidente con consentimiento (#61): `arm` dedupea (1 por kind
+                // por proceso + cooldown persistido), así que llamarlo en cada
+                // tick crítico es barato y correcto.
+                if let Some(kind) = incident {
+                    let payload = IncidentPayload {
+                        kind,
+                        ts_ms: std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_millis() as u64)
+                            .unwrap_or(0),
+                        message: incident_message(kind, &s),
+                        detail: serde_json::to_value(&s).unwrap_or(serde_json::Value::Null),
+                    };
+                    super::incident::arm(&app, payload).await;
                 }
             }
         }
@@ -249,10 +278,33 @@ fn log_sample(reason: &str, s: &MemSample) {
     LLAMA_PROCS_MAX.fetch_max(s.llama_procs, Ordering::Relaxed);
 }
 
+fn incident_message(kind: IncidentKind, s: &MemSample) -> String {
+    match kind {
+        IncidentKind::AppRssCritical => format!(
+            "maity-desktop en {} MB de RAM (umbral {} MB)",
+            s.app_rss_mb, APP_RSS_CRITICAL_MB
+        ),
+        IncidentKind::SystemMemoryPressure => format!(
+            "{} MB disponibles de {} MB durante ≥{} s",
+            s.sys_avail_mb,
+            s.sys_total_mb,
+            u64::from(PRESSURE_SUSTAINED_SAMPLES) * SAMPLE_INTERVAL.as_secs()
+        ),
+        other => other.as_str().to_string(),
+    }
+}
+
 /// Umbrales de alerta con rate-limit por condición.
+///
+/// Slots: 0 sidecar-pool-multiple, 1 sidecar-kv-bloat, 2 app-rss-high,
+/// 3 webview-rss-high, 4 system-memory-pressure, 5 app-rss-critical. Antes
+/// `app-rss-critical` compartía el slot 2 con `app-rss-high` vía `else if`, y
+/// un warn "high" tapaba el "critical" 10 min.
 #[derive(Default)]
 struct ConditionWarns {
-    last: [Option<Instant>; 5],
+    last: [Option<Instant>; 6],
+    /// Ticks consecutivos bajo `SYS_AVAIL_PRESSURE_MB`.
+    pressure_streak: u8,
 }
 
 impl ConditionWarns {
@@ -267,7 +319,28 @@ impl ConditionWarns {
         }
     }
 
-    fn check(&mut self, s: &MemSample) {
+    /// Detección PURA del incidente (sin cooldown: eso lo hace `incident::arm`).
+    /// `app-rss-critical` es inmediato; `system-memory-pressure` exige
+    /// `PRESSURE_SUSTAINED_SAMPLES` ticks seguidos. Prioridad al de la app:
+    /// es el que Maity puede arreglar.
+    fn detect_incident(&mut self, s: &MemSample) -> Option<IncidentKind> {
+        if s.sys_avail_mb < SYS_AVAIL_PRESSURE_MB {
+            self.pressure_streak = self.pressure_streak.saturating_add(1);
+        } else {
+            self.pressure_streak = 0;
+        }
+        if s.app_rss_mb > APP_RSS_CRITICAL_MB {
+            return Some(IncidentKind::AppRssCritical);
+        }
+        if self.pressure_streak >= PRESSURE_SUSTAINED_SAMPLES {
+            return Some(IncidentKind::SystemMemoryPressure);
+        }
+        None
+    }
+
+    /// Loguea los warnings con rate-limit y devuelve el incidente (si lo hay)
+    /// para que el loop lo arme.
+    fn check(&mut self, s: &MemSample) -> Option<IncidentKind> {
         if s.llama_procs > 2 && self.due(0) {
             warn!(
                 "[MEM] sidecar-pool-multiple: {} procesos llama-helper vivos ({} MB) — pool sin evicción u huérfanos",
@@ -280,11 +353,13 @@ impl ConditionWarns {
                 s.llama_rss_mb
             );
         }
-        if s.app_rss_mb > 4000 && self.due(2) {
-            error!(
-                "[MEM] app-rss-critical: maity-desktop en {} MB — cola llena o motores STT duplicados",
-                s.app_rss_mb
-            );
+        if s.app_rss_mb > APP_RSS_CRITICAL_MB {
+            if self.due(5) {
+                error!(
+                    "[MEM] app-rss-critical: maity-desktop en {} MB — cola llena o motores STT duplicados",
+                    s.app_rss_mb
+                );
+            }
         } else if s.app_rss_mb > 2500 && self.due(2) {
             warn!("[MEM] app-rss-high: maity-desktop en {} MB", s.app_rss_mb);
         }
@@ -294,11 +369,73 @@ impl ConditionWarns {
                 s.webview_rss_mb, s.webview_procs
             );
         }
-        if s.sys_avail_mb < 1024 && self.due(4) {
+        if s.sys_avail_mb < SYS_AVAIL_PRESSURE_MB && self.due(4) {
             error!(
                 "[MEM] system-memory-pressure: {} MB disponibles de {} MB — riesgo de swap/congelamiento",
                 s.sys_avail_mb, s.sys_total_mb
             );
         }
+        self.detect_incident(s)
+    }
+}
+
+#[cfg(test)]
+mod incident_detection_tests {
+    use super::*;
+
+    fn sample(app_rss_mb: u64, sys_avail_mb: u64) -> MemSample {
+        MemSample {
+            app_rss_mb,
+            llama_rss_mb: 0,
+            llama_procs: 0,
+            webview_rss_mb: 0,
+            webview_procs: 0,
+            ffmpeg_procs: 0,
+            sys_avail_mb,
+            sys_total_mb: 8000,
+            cpu_pct: 0.0,
+        }
+    }
+
+    #[test]
+    fn rss_critical_dispara_al_primer_sample() {
+        let mut w = ConditionWarns::default();
+        assert_eq!(w.detect_incident(&sample(APP_RSS_CRITICAL_MB, 4000)), None);
+        assert_eq!(
+            w.detect_incident(&sample(APP_RSS_CRITICAL_MB + 1, 4000)),
+            Some(IncidentKind::AppRssCritical)
+        );
+    }
+
+    #[test]
+    fn presion_de_sistema_exige_samples_consecutivos() {
+        let mut w = ConditionWarns::default();
+        assert_eq!(w.detect_incident(&sample(500, 900)), None, "primer tick: aún no");
+        assert_eq!(
+            w.detect_incident(&sample(500, 900)),
+            Some(IncidentKind::SystemMemoryPressure),
+            "segundo tick consecutivo: sostenido"
+        );
+        // Un tick sano resetea la racha
+        assert_eq!(w.detect_incident(&sample(500, 3000)), None);
+        assert_eq!(w.detect_incident(&sample(500, 900)), None);
+    }
+
+    #[test]
+    fn rss_critical_tiene_prioridad_sobre_presion() {
+        let mut w = ConditionWarns::default();
+        w.detect_incident(&sample(500, 900));
+        assert_eq!(
+            w.detect_incident(&sample(APP_RSS_CRITICAL_MB + 100, 900)),
+            Some(IncidentKind::AppRssCritical)
+        );
+    }
+
+    #[test]
+    fn incident_message_incluye_cifras() {
+        let m = incident_message(IncidentKind::AppRssCritical, &sample(4500, 900));
+        assert!(m.contains("4500"));
+        let m = incident_message(IncidentKind::SystemMemoryPressure, &sample(500, 900));
+        assert!(m.contains("900") && m.contains("8000"));
     }
 }

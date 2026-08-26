@@ -1107,7 +1107,9 @@ pub fn run() {
                 // rotativo (maity-desktop, llama-helper, WebView2, sistema).
                 // Sin esto, "la memoria no se libera" es indemostrable en campo
                 // (auditoría jul-2026: cero señales de memoria en 60 MB de logs).
-                logging::mem_sampler::start();
+                // Recibe el AppHandle para armar el incidente con consentimiento
+                // (#61) cuando app-rss-critical / system-memory-pressure se sostienen.
+                logging::mem_sampler::start(app_handle_for_config.clone());
 
                 // Preload the configured STT model into RAM so the first
                 // recording feels instant. The `*_init` calls above only
@@ -1559,6 +1561,10 @@ pub fn run() {
             logging::commands::get_device_profile,
             // Guardado de artefactos generados (.md/.pdf/.pptx) con dialogo nativo
             file_export::save_artifact_file,
+            logging::incident::take_pending_incident,
+            logging::incident::get_incident_preferences,
+            logging::incident::set_incident_preferences,
+            logging::incident::upload_incident_bundle,
             file_export::get_export_preferences,
             file_export::set_export_preferences,
             // Coach commands

@@ -2,7 +2,9 @@ import * as React from "react"
 import * as CheckboxPrimitive from "@radix-ui/react-checkbox"
 import { Check } from "lucide-react"
 
-import { cn } from "@maity/shared"
+// `@/lib/utils` como el resto de ui/: `@maity/shared` es un path alias de
+// tsconfig que vitest no resuelve, y rompía cualquier test que montara un Checkbox.
+import { cn } from "@/lib/utils"
 
 const Checkbox = React.forwardRef<
   React.ElementRef<typeof CheckboxPrimitive.Root>,

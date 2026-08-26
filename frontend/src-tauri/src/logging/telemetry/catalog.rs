@@ -31,6 +31,10 @@ pub const DEVICE_PROFILE: &str = "device.profile";
 pub const NAV_PAGE_VIEW: &str = "nav.page_view";
 pub const COACH_SESSION_SUMMARY: &str = "coach.session_summary";
 
+// ── Bundle de incidente con consentimiento (emisor: Rust, `logging/incident.rs`) ──
+pub const INCIDENT_DETECTED: &str = "incident.detected";
+pub const INCIDENT_BUNDLE_UPLOADED: &str = "incident.bundle_uploaded";
+
 // ── Guardado post-grabación (emisor: recordingLogService, outbox `recording_logs`) ──
 pub const MEETING_ID_GENERATED: &str = "meeting_id_generated"; // legacy
 pub const BUFFER_FLUSH_COMPLETED: &str = "buffer_flush_completed"; // legacy

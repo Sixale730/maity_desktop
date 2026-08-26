@@ -245,6 +245,37 @@ pathname, dedup_key, seq, session_uptime_s}` + columna `error` = message.
   (`sidecar-pool-multiple`, `app-rss-critical`, `system-memory-pressure`...).
 - **Export**: Settings → Logging → Export (`export_logs`) genera ZIP con logs +
   `system_info.txt` + `recording_lifecycle_logs.json` (SQLite).
+- **Bundle de incidente con consentimiento** (#61, ago-2026;
+  `logging/incident.rs`): la excepción CONSENTIDA a "los logs crudos no van a la
+  nube". Cuando Rust detecta un umbral crítico, un panic del proceso anterior o
+  el usuario lo pide, la main muestra "¿Enviar diagnóstico a Maity?"
+  (`components/incident/IncidentReportDialog.tsx`) y, solo si acepta, sube a
+  Supabase Storage (bucket privado `incident-bundles`, contrato en
+  `docs/incident-bundles-bucket.sql`, ruta `{auth_uid}/{YYYYMMDD-HHMMSS}-{kind}-{proc}.txt`)
+  un `.txt` con: cabecera JSON (`ctx`, `device`, último `mem-sample`, picos,
+  fase, lag) + `system_info` + **tail ≤200 KB** del log rotativo (por `seek`,
+  archivo más nuevo y, si sobra presupuesto, el anterior). Sin audio, sin
+  transcripciones, sin SQLite. **Nunca automático, nunca reintentos** (bucket
+  ausente → error corto al usuario; el ZIP local sigue disponible).
+  - Triggers (`kind`): `app-rss-critical` (>4000 MB RSS, inmediato),
+    `system-memory-pressure` (<1024 MB disponibles **sostenido 2 ticks = 60 s**;
+    un pico de un tick no pregunta), `rust-panic` (al arranque siguiente, desde
+    `panics.rs::import_pending`), `manual` (Ajustes → Diagnóstico y Soporte →
+    "Enviar diagnóstico").
+  - Dedupe (`incident::arm`): 1 prompt por `kind` por proceso + cooldown
+    **7 días** por `kind` persistido en `incident-prefs.json` + "No volver a
+    preguntar" (`never_ask`, no aplica al manual). Con 331 avisos de presión en
+    30 días (16 usuarias) sin esto el diálogo sería spam.
+  - Transporte push+pull: `incident-detected` (evento Tauri) **y** slot
+    `take_pending_incident` — WebView2 suspende el JS con la ventana oculta
+    (tray/jornada) y el push se pierde; el diálogo hace pull al montar y en
+    `visibilitychange`.
+  - Eventos: `incident.detected` (`{kind, message, detail}`, al armar — sirve
+    para medir la tasa de aceptación por ausencia del segundo) e
+    `incident.bundle_uploaded` (`{kind, object_path, bytes}`). Ambos vía el
+    outbox (`emit_event` → `drain.rs`, single-writer).
+  - Identidad: la carpeta es `auth.uid()` (claim `sub` del JWT que decodifica
+    Rust), NO `maity.users.id` — es lo que compara la policy RLS.
 
 ## Queries de análisis (listas para pegar)
 
@@ -291,7 +322,10 @@ group by 1, 2 order by sesiones desc limit 20;
    colapsa? ¿en qué `phase` crece?
 2. `app.error` de sus sesiones → ¿algo truena antes del síntoma?
 3. `coach.session_summary` → ¿sidecar_restarts/breaker_opens altos?
-4. Solo si falta detalle: pedirle el Export ZIP (nivel 3) y leer `[METRIC]`.
+4. Solo si falta detalle: pedirle el Export ZIP (nivel 3) **o** que use
+   Ajustes → "Enviar diagnóstico" (bundle en Storage
+   `incident-bundles/{auth_uid}/`, ~200 KB de tail; si el incidente fue de RAM
+   o panic probablemente ya se le ofreció solo) y leer `[METRIC]`.
 
 ## Prevención: los lints del pre-build (ago-2026)
 
@@ -305,10 +339,11 @@ group by 1, 2 order by sesiones desc limit 20;
 
 ## Lo que NO existe todavía
 
-- **Bundle de incidente con consentimiento** (#61): subir el tail del log
-  rotativo a Supabase Storage al detectar crash/umbral de RAM. El patrón
-  canal→drenadora de `rust_error_bridge.rs` es la base para emitir el evento
-  desde los warnings del `mem_sampler`.
+- **Reintentos/cola del bundle de incidente** (#61 se cerró best-effort):
+  si Storage falla (bucket ausente hasta que la web aplique
+  `docs/incident-bundles-bucket.sql`, sin red) el usuario ve el error y no se
+  reintenta. Tampoco se suben SQLite ni audio, ni hay lectura de bundles desde
+  la app.
 - **`probe_microphone_access` (B4 del ciclo v0.2.57, diferido a propósito):**
   probe honesta que abre y suelta un input stream corto para detectar el
   micrófono denegado ANTES de grabar. Iría en onboarding/ajustes/`usePermissionCheck`,

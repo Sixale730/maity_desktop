@@ -5,6 +5,7 @@
 
 pub mod file_logger;
 pub mod commands;
+pub mod incident;
 pub mod mem_sampler;
 pub mod rust_error_bridge;
 pub mod telemetry;
