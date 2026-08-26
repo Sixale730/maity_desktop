@@ -18,6 +18,12 @@
 # Uso:
 #   scripts/package-appstore.sh [perfil.provisionprofile]
 #     (default: src-tauri/embedded.provisionprofile)
+#   scripts/package-appstore.sh --sandbox-test [perfil.provisionprofile]
+#     Ademas del .app de Store, genera dist-appstore/Maity-sandbox-test.app: la misma
+#     app re-firmada con Developer ID, SIN perfil y SIN application-identifier /
+#     team-identifier, pero con app-sandbox. Es la unica forma de correr el build de
+#     Store en esta Mac (un .app Apple Distribution no arranca fuera de la Store /
+#     TestFlight — RBSRequestErrorDomain Code=5, issue #79). NO genera .pkg.
 #
 # Requiere antes:  pnpm run tauri:build:appstore
 # Validacion opcional por terminal (si no, usar Transporter.app):
@@ -46,7 +52,16 @@ APP_IDENTITY="Apple Distribution: Julio Alexis Gonzalez Villa ($TEAM_ID)"
 PKG_IDENTITY="3rd Party Mac Developer Installer: Julio Alexis Gonzalez Villa ($TEAM_ID)"
 ENTITLEMENTS="$TAURI_DIR/entitlements-appstore.plist"
 ENTITLEMENTS_INHERIT="$TAURI_DIR/entitlements-appstore-inherit.plist"
+
+SANDBOX_TEST=0
+if [[ "${1:-}" == "--sandbox-test" ]]; then
+  SANDBOX_TEST=1
+  shift
+fi
 PROFILE="${1:-$TAURI_DIR/embedded.provisionprofile}"
+# Identidad del canal directo, para la copia de prueba sandbox (misma que usa Tauri
+# para el .dmg). Se lee de la config para no duplicar el literal.
+DEV_ID_IDENTITY="$(node -p "require('$TAURI_DIR/tauri.macos.conf.json').bundle.macOS.signingIdentity")"
 
 VERSION="$(node -p "require('$TAURI_DIR/tauri.conf.json').version")"
 PKG="$OUT_DIR/Maity-$VERSION.pkg"
@@ -67,6 +82,10 @@ security find-identity -v -p codesigning | grep -Fq "$APP_IDENTITY" \
   || fail "no esta en el llavero: $APP_IDENTITY"
 security find-identity -v | grep -Fq "$PKG_IDENTITY" \
   || fail "no esta en el llavero: $PKG_IDENTITY (firma el .pkg; sin ella Transporter rechaza)"
+if (( SANDBOX_TEST )); then
+  security find-identity -v -p codesigning | grep -Fq "$DEV_ID_IDENTITY" \
+    || fail "no esta en el llavero: $DEV_ID_IDENTITY (necesaria para --sandbox-test)"
+fi
 
 # SHA-1 del cert Apple Distribution que vamos a usar (lo que lista find-identity).
 APP_CERT_SHA1="$(security find-identity -v -p codesigning \
@@ -93,6 +112,23 @@ while IFS= read -r bin; do
   fi
 done < <(find "$APP/Contents/MacOS" -type f -perm -u+x)
 log "OK: ningun binario enlaza PrivateFrameworks"
+
+# ffmpeg bundleado (#77): sidecar universal compilado LGPL por build-ffmpeg-macos.sh
+# (externalBin de tauri.macos.conf.json). Sin el, bajo sandbox no se genera audio.mp4
+# y la descarga en runtime viola 2.5.2. Se inspecciona SIN ejecutarlo (todavia lleva
+# la firma Apple Distribution de Tauri, que no corre fuera de la Store): la linea de
+# `configure` va embebida en el binario, asi que `grep -a` alcanza.
+FFMPEG_BIN="$APP/Contents/MacOS/ffmpeg"
+[[ -x "$FFMPEG_BIN" ]] || fail "falta $FFMPEG_BIN — el bundle debe traer ffmpeg.
+  Corre scripts/build-ffmpeg-macos.sh y revisa bundle.externalBin en tauri.macos.conf.json."
+FFMPEG_ARCHS="$(lipo -archs "$FFMPEG_BIN")"
+[[ "$FFMPEG_ARCHS" == *x86_64* && "$FFMPEG_ARCHS" == *arm64* ]] \
+  || fail "$FFMPEG_BIN no es universal (archs: $FFMPEG_ARCHS)"
+grep -aq -- '--disable-gpl' "$FFMPEG_BIN" || fail "ffmpeg no fue compilado con --disable-gpl"
+if grep -aqE -- '--enable-(gpl|nonfree)' "$FFMPEG_BIN"; then
+  fail "ffmpeg reporta --enable-gpl/--enable-nonfree: no distribuible en App Store"
+fi
+log "OK: ffmpeg bundleado, universal ($FFMPEG_ARCHS) y LGPL"
 
 # ------------------------------------------ 2. validar el provisioning profile
 PP_PLIST="$(mktemp -t maity-pp).plist"
@@ -167,8 +203,10 @@ fi
 # Al incrustar el perfil cambia el bundle; hay que volver a firmar todo.
 SIGN=(codesign --force --timestamp --options runtime --sign "$APP_IDENTITY")
 
-# 3a. Sidecars (externalBin -> Contents/MacOS/<nombre>) y cualquier otro ejecutable
-#     que no sea el binario principal: sandbox heredado, sin mas entitlements.
+# 3a. Sidecars (externalBin -> Contents/MacOS/<nombre>: llama-helper, ffmpeg) y
+#     cualquier otro ejecutable que no sea el binario principal: sandbox heredado,
+#     sin mas entitlements. Solo se recorre Contents/MacOS — un ejecutable en
+#     Contents/Resources NO se firmaria aqui; por eso ffmpeg entra como externalBin.
 while IFS= read -r bin; do
   [[ "$bin" == "$MAIN_BIN" ]] && continue
   log "firmando helper $(basename "$bin") (app-sandbox + inherit)"
@@ -200,6 +238,64 @@ APP_ENTS="$(codesign -d --entitlements :- "$APP" 2>/dev/null)"
 APP_SIGN_INFO="$(codesign -dv "$APP" 2>&1)"
 [[ "$APP_SIGN_INFO" == *"Identifier=$BUNDLE_ID"* ]] \
   || fail "el .app no tiene Identifier=$BUNDLE_ID"
+
+# --------------------------------------- 3d. copia de prueba bajo sandbox (#79)
+# Un .app firmado con Apple Distribution + perfil de Mac App Store solo arranca
+# instalado desde la Store/TestFlight. Para probar el sandbox en esta Mac se re-firma
+# una copia con Developer ID, sin perfil y sin los entitlements que exigen perfil
+# (application-identifier / team-identifier), conservando app-sandbox y el resto.
+# Corre en ~/Library/Containers/com.maity.ai/ como el build real.
+if (( SANDBOX_TEST )); then
+  TEST_APP="$OUT_DIR/Maity-sandbox-test.app"
+  log "generando copia de prueba sandbox: $TEST_APP"
+  rm -rf "$TEST_APP"
+  ditto --noextattr --noqtn "$APP" "$TEST_APP"
+  rm -f "$TEST_APP/Contents/embedded.provisionprofile"
+
+  TEST_ENTS="$(mktemp -t maity-sandbox-ents).plist"
+  cp "$ENTITLEMENTS" "$TEST_ENTS"
+  /usr/libexec/PlistBuddy -c "Delete :com.apple.application-identifier" "$TEST_ENTS"
+  /usr/libexec/PlistBuddy -c "Delete :com.apple.developer.team-identifier" "$TEST_ENTS"
+
+  SIGN_DEV=(codesign --force --timestamp --options runtime --sign "$DEV_ID_IDENTITY")
+  TEST_MAIN_BIN="$TEST_APP/Contents/MacOS/maity-desktop"
+  while IFS= read -r bin; do
+    [[ "$bin" == "$TEST_MAIN_BIN" ]] && continue
+    log "firmando helper $(basename "$bin") (Developer ID, app-sandbox + inherit)"
+    "${SIGN_DEV[@]}" --entitlements "$ENTITLEMENTS_INHERIT" "$bin"
+  done < <(find "$TEST_APP/Contents/MacOS" -type f -perm -u+x)
+  if [[ -d "$TEST_APP/Contents/Frameworks" ]]; then
+    while IFS= read -r lib; do
+      "${SIGN_DEV[@]}" "$lib"
+    done < <(find "$TEST_APP/Contents/Frameworks" \( -name '*.dylib' -o -name '*.framework' \) -maxdepth 1)
+  fi
+  log "firmando Maity-sandbox-test.app con $DEV_ID_IDENTITY"
+  "${SIGN_DEV[@]}" --entitlements "$TEST_ENTS" "$TEST_APP"
+  rm -f "$TEST_ENTS"
+
+  codesign --verify --deep --strict --verbose=2 "$TEST_APP" 2>&1 | sed 's/^/  /'
+  TEST_ENTS_OUT="$(codesign -d --entitlements :- "$TEST_APP" 2>/dev/null)"
+  [[ "$TEST_ENTS_OUT" == *com.apple.security.app-sandbox* ]] \
+    || fail "la copia de prueba quedo SIN app-sandbox"
+  [[ "$TEST_ENTS_OUT" != *com.apple.application-identifier* ]] \
+    || fail "la copia de prueba conserva application-identifier (no arrancaria sin perfil)"
+
+  CONTAINER="$HOME/Library/Containers/$BUNDLE_ID/Data/Library/Application Support/Maity"
+  log "LISTO (sandbox-test): $TEST_APP"
+  cat <<EOF
+  Como probar (sandbox REAL, sin pasar por la Store):
+    1. Cierra cualquier otra instancia de Maity (single-instance por bundle id).
+    2. open "$TEST_APP"
+    3. Log del contenedor: "$CONTAINER/logs/"
+    4. Login con Google -> lsof -nP -iTCP:17823 -sTCP:LISTEN debe listar maity-desktop (#76).
+    5. Graba ~30 s -> en el log "Using bundled ffmpeg: .../Contents/MacOS/ffmpeg" y
+       audio.mp4 en la carpeta de la reunion dentro del contenedor (#77).
+  Ruido esperado bajo sandbox (no es bug): "single_instance failed to listen ...
+  Operation not permitted" (el plugin usa /tmp, vetado por el sandbox).
+  NO instales el .pkg en esta Mac: no arranca y pisa /Applications/Maity.app (#79).
+EOF
+  exit 0
+fi
 
 # ----------------------------------------------------------- 4. productbuild
 log "generando $PKG"

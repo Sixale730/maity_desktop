@@ -151,11 +151,14 @@ Deben aparecer `Apple Distribution: ... (8YLD233TA2)` y
 - [ ] Rust via rustup + targets `aarch64-apple-darwin` y `x86_64-apple-darwin`
       (el bundle es universal, hacen falta los dos)
 - [ ] Node LTS + pnpm
-- [ ] `cmake`, `ffmpeg` (deps de whisper.cpp y del pipeline de audio)
+- [ ] `cmake` (dep de whisper.cpp). **`ffmpeg` ya NO se instala con brew**: el pre-build
+      lo compila desde la fuente oficial (`scripts/build-ffmpeg-macos.sh`, LGPL, universal)
+      y lo mete al bundle como sidecar — ver riesgo 0, resuelto en #77.
 - [ ] `pnpm install` en `frontend/`
 - [ ] Compilar los **3 sidecars** de `llama-helper` (arm64, x86_64 y el universal con
       `lipo`) en `frontend/src-tauri/binaries/`. Faltando cualquiera, el bundling
-      falla — ver `.claude/skills/build/SKILL.md` paso 0b.
+      falla — ver `.claude/skills/build/SKILL.md` paso 0b. Los 3 de `ffmpeg` los deja
+      solo el pre-build (`build-ffmpeg-macos.sh`; la primera vez tarda unos minutos).
 
 No requiere Xcode completo. Command Line Tools alcanza para compilar y firmar.
 
@@ -256,26 +259,90 @@ scripts/package-appstore.sh ~/Downloads/<perfil>.provisionprofile
 
 ---
 
-## FASE 5.5 — Probar el .pkg firmado ANTES de subir  **[YO + TU]**
+## FASE 5.5 — Probar el build de Store bajo sandbox ANTES de subir  **[YO + TU]**
 
-**No saltarse.** La 0.2.54 nunca se aprobo, asi que el comportamiento bajo sandbox es
-territorio inexplorado. Un crash detectado aqui cuesta una tarde; el mismo crash en
-revision cuesta 1-2 semanas por ciclo.
+**No saltarse.** Un crash detectado aqui cuesta una tarde; el mismo crash en revision
+cuesta 1-2 semanas por ciclo.
 
-- [ ] Instalar el `.pkg` en esta Mac (queda en `/Applications`, con sandbox real)
+> ⚠️ **NO instalar el `.pkg` en la Mac de desarrollo.** Un `.app` firmado con Apple
+> Distribution + perfil de Mac App Store **solo arranca instalado desde la Store o
+> TestFlight**. Verificado el 25-ago-2026 con la 0.2.57: `open -a /Applications/Maity.app`
+> → `RBSRequestErrorDomain Code=5 "Launch failed"` / `NSPOSIXErrorDomain Code=163`;
+> `spctl -a -t exec` → `rejected`. Encima, `installer` deja `/Applications/Maity.app`
+> como copia de **root** que pisa la app de trabajo (hay que `sudo rm -rf` y reinstalar
+> el `.dmg`) y que ademas **secuestra el esquema `maity://`** en LaunchServices
+> (issue #79).
+
+Hay dos vias. La rapida sirve para casi todo; la fiel es la unica que corre
+exactamente el binario que revisa Apple.
+
+### Via rapida — copia sandbox re-firmada con Developer ID (`--sandbox-test`)
+
+```bash
+pnpm run tauri:build:appstore
+scripts/package-appstore.sh --sandbox-test        # NO genera .pkg
+open frontend/dist-appstore/Maity-sandbox-test.app
+```
+
+El script copia el `.app` de Store ya firmado, le quita `embedded.provisionprofile` y
+los entitlements que exigen perfil (`application-identifier`, `team-identifier`), y lo
+re-firma con **Developer ID** conservando `app-sandbox` y el resto (`network.server`,
+`audio-input`…). Corre en `~/Library/Containers/com.maity.ai/` como el build real:
+mismo sandbox, mismos permisos TCC, mismo `llama-helper`/`ffmpeg` heredando el sandbox.
+Lo unico que NO reproduce es la instalacion como root en `/Applications` ni la
+validacion del perfil (eso lo cubre TestFlight).
+
+- [ ] Cerrar cualquier otra instancia de Maity (single-instance por bundle id) y abrir la copia
 - [ ] Ejercitar cada camino que el sandbox puede romper:
-  - [ ] Grabacion de microfono
+  - [ ] **Login con Google** → `lsof -nP -iTCP:17823 -sTCP:LISTEN` lista `maity-desktop`
+        y el log del contenedor trae `[AuthServer] Started on 127.0.0.1:17823` (#76,
+        verificado el 26-ago-2026)
+  - [ ] **Grabar ~30 s y parar** → en el log `Using bundled ffmpeg: …/Contents/MacOS/ffmpeg`
+        y `audio.mp4` en la carpeta de la reunion **dentro del contenedor**; ni un
+        `FFmpeg not found` (#77)
   - [ ] Captura de **audio del sistema** (ScreenCaptureKit + consentimiento TCC)
   - [ ] Transcripcion local (Parakeet / Whisper)
   - [ ] **Resumen con `llama-helper`** <- el mas probable de tronar, ver riesgo 1
   - [ ] Descarga de modelos en primer arranque
-  - [ ] Login y deep link `maity://`
-  - [ ] **Permisos TCC tras cambio de certificado**: instalar sobre una version firmada
+  - [ ] Deep link `maity://` con la app abierta: `open -a frontend/dist-appstore/Maity-sandbox-test.app "maity://auth/callback?error=access_denied"`
+        (con `-a`: un `open` pelon lo enruta LaunchServices a `/Applications/Maity.app`)
+  - [ ] **Permisos TCC tras cambio de certificado**: abrir sobre una version firmada
         con el cert VIEJO y confirmar que macOS NO vuelve a pedir microfono/grabacion de
         pantalla. Deberian conservarse porque el designated requirement se apoya en el
         Team ID (`8YLD233TA2`) y el bundle ID, y ninguno cambia — pero verificarlo, porque
         si se pierde, cada usuario tiene que re-conceder permisos tras actualizar.
 - [ ] Revisar crashes de sandbox en Console.app filtrando por `sandboxd` y `com.maity.ai`
+- Log del contenedor: `~/Library/Containers/com.maity.ai/Data/Library/Application Support/Maity/logs/maity.<fecha UTC>.log`
+
+**Ruido esperado bajo sandbox (no son bugs de la app):**
+- `ERROR tauri_plugin_single_instance … failed to listen to other processes - launching
+  normally: Operation not permitted` — el plugin escucha en `/tmp/com.maity.ai_si.sock`
+  y el sandbox veta `/tmp`. La app arranca igual; el deep link con la app ya abierta
+  llega por el evento de URL de macOS, no por ese socket. Pendiente: issue aparte para
+  silenciarlo bajo sandbox.
+
+### Via fiel — TestFlight para Mac
+
+Es el mismo `.pkg` que se sube a App Store Connect, instalado por Apple con su firma y
+su perfil: lo que ve el revisor, sin excepciones.
+
+1. Subir el build (Fase 6). Queda `processingState: VALID` en unos minutos.
+2. **Cifrado de exportacion**: `Info.plist` ya declara `ITSAppUsesNonExemptEncryption=false`
+   (solo TLS del sistema, exento) — sin esa clave cada build se atora en *Missing
+   Compliance* y no se puede repartir hasta contestar el cuestionario a mano.
+3. En App Store Connect → app → **TestFlight** → *Internal Testing* → **+** crear grupo
+   (p. ej. "Maity core"), agregar testers (cuentas del team en ASC; hasta 100 internos,
+   sin revision de Apple) y asignar el build. Por API (key `G384ZFBM29`, `frontend/.env`):
+   `POST /v1/betaGroups` con `isInternalGroup: true`, `POST /v1/betaGroups/{id}/relationships/builds`.
+4. En la Mac: instalar **TestFlight** desde la Mac App Store, aceptar la invitacion (correo
+   del Apple ID del tester) e instalar Maity desde ahi. Se instala en `/Applications`
+   **como usuario** (no root) y se actualiza sola con cada build nuevo.
+5. Repetir la checklist de arriba. Si algo falla aqui y no en la copia sandbox, es del
+   perfil/entitlements con identifier (riesgo 3), no del sandbox.
+
+**Antes de TestFlight**: quitar la copia root si quedo de un `.pkg` anterior
+(`sudo rm -rf /Applications/Maity.app`) — si no, TestFlight no puede instalar encima y
+el `maity://` sigue secuestrado.
 
 ## FASE 6 — Subida y revision  **[TU]**
 
@@ -297,19 +364,20 @@ revision cuesta 1-2 semanas por ciclo.
 
 La app hace cosas que el sandbox restringe. Esto es lo que puede rebotar:
 
-0. **`ffmpeg` NO viene en el bundle: se descarga en runtime** (`audio/ffmpeg.rs` →
-   `ffmpeg_sidecar`, desde evermeet.cx, y lo deja junto al ejecutable). Bajo App Store
-   esto falla dos veces: (a) `/Applications/Maity.app` es de solo lectura para la app
-   sandboxeada, asi que la descarga no puede escribirse ahi; (b) aunque cayera en el
-   contenedor, ejecutar un binario descargado y sin firmar viola la guideline **2.5.2**
-   (no descargar ni ejecutar codigo). Sin `ffmpeg` no hay `audio.mp4` al terminar una
-   grabacion — es lo que un revisor va a probar primero. El codigo YA busca
-   `Contents/Resources/ffmpeg` antes de descargar, asi que la salida es **bundlear un
-   `ffmpeg` universal (arm64+x86_64) via `bundle.resources` en
-   `tauri.appstore.conf.json`** y firmarlo con `entitlements-appstore-inherit.plist` (el
-   script ya firma todo ejecutable extra). Pendiente de decidir: fuente del binario
-   universal (~80 MB) y nota de licencia LGPL en la ficha. Verificado en el build
-   0.2.57: `Contents/Resources` solo trae `templates/` e iconos.
+0. **`ffmpeg` — RESUELTO en #77 (25-ago-2026).** Hasta la 0.2.57 se descargaba en
+   runtime (`audio/ffmpeg.rs` → `ffmpeg_sidecar`, evermeet.cx/osxexperts.net →
+   `~/.local/bin`): bajo sandbox no se puede escribir, y ejecutar un binario descargado
+   viola **2.5.2**. Sin `ffmpeg` no hay `audio.mp4` al terminar una grabacion — lo
+   primero que prueba un revisor. Ahora `scripts/build-ffmpeg-macos.sh` (pre-build)
+   compila desde la fuente oficial (SHA-256 pineado) un **ffmpeg minimo LGPL**
+   (`--disable-gpl --disable-nonfree`, solo `f32le→aac/mp4` y `concat -c copy`; ~5 MB
+   universal) y entra como **`bundle.externalBin`** (`tauri.macos.conf.json`) →
+   `Contents/MacOS/ffmpeg`, que el paso 3a de `package-appstore.sh` firma con
+   `entitlements-appstore-inherit.plist`. El script ademas exige que exista, sea
+   universal y no lleve `--enable-gpl`. **No** usar `bundle.resources`: nada firma
+   ejecutables en `Contents/Resources`. Los builds prehechos de terceros son GPL y no
+   son distribuibles en la Store. Licencia: `docs/THIRD-PARTY-NOTICES.md` + aviso en
+   Ajustes → Acerca de.
 1. **`entitlements-appstore.plist` no tiene `allow-jit` ni
    `allow-unsigned-executable-memory`**, que si estan en el `entitlements.plist` del
    canal directo. Los agrego ahi por algo — probablemente `llama-helper` / ONNX
