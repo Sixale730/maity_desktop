@@ -294,6 +294,36 @@ function RegistrationRedirect() {
 }
 
 /**
+ * Pantalla del gate de registro cuando NO se pudo determinar el estado (#66):
+ * la RPC `my_status` falló y no hay caché local que diga "completado". Antes
+ * este caso caía al main app (fail-open) y el usuario grababa sin registrarse.
+ * No redirige a /registration: a un usuario ya registrado sin red le pediría
+ * llenar el cuestionario otra vez (y el submit fallaría igual).
+ */
+function RegistrationUnverified({ onRetry }: { onRetry: () => void }) {
+  return (
+    <div
+      className="flex h-screen flex-col items-center justify-center gap-4 bg-black px-8 text-center"
+      data-testid="registration-unverified"
+    >
+      <img src="icon_128x128.png" alt="Maity" width={56} height={56} className="opacity-90" />
+      <h1 className="text-lg font-medium text-white">No pudimos verificar el estado de tu cuenta</h1>
+      <p className="max-w-md text-sm text-neutral-400">
+        Revisa tu conexión a internet e inténtalo de nuevo. Para grabar, Maity necesita confirmar
+        que tu registro está completo.
+      </p>
+      <button
+        type="button"
+        onClick={onRetry}
+        className="mt-2 rounded-md bg-[#485DF4] px-4 py-2 text-sm font-medium text-white hover:bg-[#3a4cd1]"
+      >
+        Reintentar
+      </button>
+    </div>
+  )
+}
+
+/**
  * AppContent: the main app shell (onboarding check, sidebar, etc.)
  * Rendered only when the user is authenticated.
  */
@@ -306,8 +336,16 @@ function AppContent({ children }: { children: React.ReactNode }) {
   const pathname = usePathname()
 
   // Gate de registro: solo aplica cuando el onboarding técnico ya completó
-  // y el modelo aún no bloqueó (es decir, showOnboarding===false y modelGateActive===false o 0)
-  const { registrationFormCompleted, isLoading: registrationLoading } = useRegistrationGate()
+  // y el modelo aún no bloqueó (es decir, showOnboarding===false y modelGateActive===false o 0).
+  // FAIL-CLOSED (#66): solo `=== true` deja pasar; `false` → /registration;
+  // `null` con error → RegistrationUnverified. Rust replica el gate en el
+  // embudo de grabación (registration_status.rs) — esto es UX, no autoridad.
+  const {
+    registrationFormCompleted,
+    isLoading: registrationLoading,
+    isError: registrationError,
+    refetch: refetchRegistration,
+  } = useRegistrationGate()
 
   const isRegistrationRoute = pathname === '/registration' || pathname?.startsWith('/billing/plans')
   const isSpecialRoute = isAuxWindowPath(pathname)
@@ -549,8 +587,11 @@ function AppContent({ children }: { children: React.ReactNode }) {
                            instante. NO bloquea. (ModelDownloadGate y ModelDownloadStep eliminados.)
                         2. splash (modelGateActive aún null — comprobando)
                         3. splash (registrationLoading)
-                        4. onboarding de registro (/registration) con OnboardingDownloadWidget
-                           (progreso de las descargas en la esquina)
+                        4. gate de registro FAIL-CLOSED (#66): `!== true`. Dentro: onboarding
+                           de registro (/registration) con OnboardingDownloadWidget (progreso
+                           de las descargas en la esquina), o RegistrationUnverified si la RPC
+                           falló y no hay caché local (Reintentar). Rust replica el gate en
+                           initialize_recording para tray/scheduler/floats.
                         5. gate bloqueante del modelo de transcripción (ModelDownloadGate):
                            solo Parakeet, y solo si falta en disco. Va después del registro
                            para que los 17 pasos solapen con la descarga, y antes del horario.
@@ -576,21 +617,41 @@ function AppContent({ children }: { children: React.ReactNode }) {
                     ) : registrationLoading && !isSpecialRoute && !isRegistrationRoute ? (
                       // Breve splash mientras se carga el estado de registro
                       <SplashScreen />
-                    ) : registrationFormCompleted === false && !isSpecialRoute ? (
-                      // Onboarding de registro: las descargas corren en background
-                      // mientras el usuario completa el formulario de 17 pasos.
-                      // OnboardingDownloadWidget muestra el progreso en la esquina.
-                      <>
-                        {!isRegistrationRoute && (
-                          // Redirigir sin tocar Sidebar; el gate se aplica vía efecto
-                          <RegistrationRedirect />
-                        )}
-                        {isRegistrationRoute && <>{children}</>}
-                        {/* Widget flotante: acompaña el onboarding de registro */}
-                        <OnboardingDownloadWidget />
-                        {/* Badge de cuenta activa + cerrar sesión (no hay Sidebar aquí) */}
-                        <OnboardingAccountBadge />
-                      </>
+                    ) : registrationFormCompleted !== true && !isSpecialRoute ? (
+                      // GATE DE REGISTRO — fail-closed (#66): esta rama atrapa todo lo
+                      // que NO sea "registro confirmado". Sub-estados:
+                      //   false            → onboarding de registro (17 pasos)
+                      //   null + cargando  → solo llega aquí en /registration o
+                      //                      /billing/plans (el splash de arriba las
+                      //                      excluye): se pinta la página sin Sidebar
+                      //   null + error     → RegistrationUnverified con Reintentar
+                      // Antes era `=== false`: un `null` por RPC caída pasaba al main app.
+                      registrationFormCompleted === false ? (
+                        // Las descargas corren en background mientras el usuario
+                        // completa el formulario. OnboardingDownloadWidget muestra
+                        // el progreso en la esquina.
+                        <>
+                          {!isRegistrationRoute && (
+                            // Redirigir sin tocar Sidebar; el gate se aplica vía efecto
+                            <RegistrationRedirect />
+                          )}
+                          {isRegistrationRoute && <>{children}</>}
+                          {/* Widget flotante: acompaña el onboarding de registro */}
+                          <OnboardingDownloadWidget />
+                          {/* Badge de cuenta activa + cerrar sesión (no hay Sidebar aquí) */}
+                          <OnboardingAccountBadge />
+                        </>
+                      ) : isRegistrationRoute && registrationLoading && !registrationError ? (
+                        <>
+                          {children}
+                          <OnboardingAccountBadge />
+                        </>
+                      ) : (
+                        <>
+                          <RegistrationUnverified onRetry={() => void refetchRegistration()} />
+                          <OnboardingAccountBadge />
+                        </>
+                      )
                     ) : modelGateActive && !isSpecialRoute ? (
                       // GATE BLOQUEANTE DEL MODELO DE TRANSCRIPCIÓN.
                       // Va DESPUÉS del registro (así los 17 pasos solapan con la

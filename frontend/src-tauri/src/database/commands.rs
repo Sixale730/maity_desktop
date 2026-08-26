@@ -168,6 +168,7 @@ pub async fn import_and_initialize_database(
     app.manage(AppState {
         db_manager,
         current_user_id: std::sync::Arc::new(tokio::sync::RwLock::new(None)),
+        registration_completed: std::sync::Arc::new(tokio::sync::RwLock::new(None)),
     });
 
     info!("Legacy database imported and initialized successfully");
@@ -195,6 +196,7 @@ pub async fn initialize_fresh_database(app: AppHandle) -> Result<(), String> {
     app.manage(AppState {
         db_manager: db_manager.clone(),
         current_user_id: std::sync::Arc::new(tokio::sync::RwLock::new(None)),
+        registration_completed: std::sync::Arc::new(tokio::sync::RwLock::new(None)),
     });
 
     // Set default model configuration for fresh installs
@@ -440,6 +442,20 @@ pub async fn set_current_user<R: Runtime>(
     };
     info!("[AppState] current_user_id set to {}", user_id);
 
+    // Gate de registro (#66): sembrar desde la caché monótona local para que un
+    // usuario ya registrado pueda grabar aunque la RPC `my_status` falle
+    // (arranque sin red). Solo en la transición de login — un remount de
+    // AuthContext con el mismo id no debe pisar un valor ya confirmado por la
+    // RPC (`set_registration_status`).
+    if was_logged_out {
+        let seeded = crate::registration_status::seed_from_cache(
+            &user_id,
+            &crate::registration_status::load_cache(&app),
+        );
+        *state.registration_completed.write().await = seeded;
+        info!("[AppState] registration_completed sembrado desde caché: {:?}", seeded);
+    }
+
     // El auto-open del coach-float vive AQUÍ (no en el setup de lib.rs): la
     // flotante solo aparece cuando hay usuario logueado. Respeta la pref de
     // visibilidad y el override de STARTED_AT_BOOT (ver open_coach_on_login).
@@ -462,6 +478,7 @@ pub async fn clear_current_user<R: Runtime>(
         let mut guard = state.current_user_id.write().await;
         *guard = None;
     }
+    *state.registration_completed.write().await = None;
     info!("[AppState] current_user_id cleared (logout)");
     // Sin sesión no hay coach-float. Idempotente (no-op si no existe la ventana);
     // también dispara al montar AuthContext con maityUser aún null — inofensivo.

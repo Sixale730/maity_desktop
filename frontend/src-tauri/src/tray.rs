@@ -141,6 +141,13 @@ fn toggle_recording_handler<R: Runtime>(app: &AppHandle<R>) {
                 update_tray_menu_async(&app_clone).await;
                 return;
             }
+            // Gate de registro (#66): la ventana ya quedó enfocada y el
+            // AppContent la tiene en /registration; no grabar.
+            if !crate::state::registration_completed(&app_clone).await {
+                log::info!("Tray toggle: registro incompleto — enfocando la app en vez de grabar");
+                update_tray_menu_async(&app_clone).await;
+                return;
+            }
 
             // UX-007: Start recording directly via native Rust call, bypassing the
             // webview entirely. The old approach (eval sessionStorage + location.assign)

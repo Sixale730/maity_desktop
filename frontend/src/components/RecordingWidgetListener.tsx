@@ -1,7 +1,9 @@
 'use client';
 
 import { useEffect, useRef } from 'react';
+import { toast } from 'sonner';
 import { useRecordingStart } from '@/hooks/useRecordingStart';
+import { useRegistrationGate } from '@/hooks/useRegistrationGate';
 import { useRecordingState } from '@/contexts/RecordingStateContext';
 import { useConfig } from '@/contexts/ConfigContext';
 import { TauriEvent } from '@/lib/tauri-events';
@@ -59,24 +61,54 @@ export function RecordingWidgetListener() {
     NOOP_SET_IS_RECORDING,
     undefined,
   );
+  // Gate de registro (#66): los floats viven en webviews sin AuthGate ni gate
+  // de registro, así que este listener era la puerta por la que una cuenta sin
+  // registrar grababa. Misma query key que el layout (sin fetch extra). Rust
+  // rechaza igual en `initialize_recording`; aquí solo se evita el arranque a
+  // medias del flujo React y se explica con un toast.
+  const { registrationFormCompleted } = useRegistrationGate();
 
   // Latest-ref: el efecto de abajo se suscribe UNA sola vez ([] deps) y lee
   // los valores frescos desde el ref. Antes estos cuatro iban en el dep array
   // y el listener se re-suscribía al mismo evento en cada render — issue #65.
   // Mismo patrón que RecordingControls.tsx.
-  const latest = useRef({ isRecording, selectedDevices, updateSelectedDevices, handleRecordingStart });
-  latest.current = { isRecording, selectedDevices, updateSelectedDevices, handleRecordingStart };
+  const latest = useRef({
+    isRecording,
+    selectedDevices,
+    updateSelectedDevices,
+    handleRecordingStart,
+    registrationFormCompleted,
+  });
+  latest.current = {
+    isRecording,
+    selectedDevices,
+    updateSelectedDevices,
+    handleRecordingStart,
+    registrationFormCompleted,
+  };
 
   useEffect(() => {
     return subscribeTauriEvent<WidgetStartPayload | null>(
       TauriEvent.WIDGET_REQUEST_START_RECORDING,
       (e) => {
-        const { isRecording, selectedDevices, updateSelectedDevices, handleRecordingStart } = latest.current;
+        const {
+          isRecording,
+          selectedDevices,
+          updateSelectedDevices,
+          handleRecordingStart,
+          registrationFormCompleted,
+        } = latest.current;
 
         // Guard: si ya estamos grabando, ignorar el evento. El comando Rust
         // también valida (vía la máquina de fases de grabación) pero defendemos
         // en frontend para evitar invocar handleRecordingStart con state inconsistente.
         if (isRecording) return;
+
+        // Guard de registro (fail-closed: null/desconocido también bloquea).
+        if (registrationFormCompleted !== true) {
+          toast.error('Completa tu registro en Maity para poder grabar');
+          return;
+        }
 
         // Iter 6: aplicar devices custom del payload (si vienen) ANTES de
         // que useRecordingStart lea selectedDevices. El setState es sync

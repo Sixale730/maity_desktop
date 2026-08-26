@@ -436,6 +436,13 @@ pub async fn initialize_recording<R: Runtime>(
     if !crate::state::has_session(app).await {
         return Err("No hay sesión activa; inicia sesión para grabar".to_string());
     }
+    // Gate de registro (#66): mismo embudo, misma razón. El gate de render de
+    // `layout.tsx` no cubre tray/scheduler/floats — un usuario con la UI parada
+    // en /registration grabó 21 jornadas. Fail-closed: `None` (desconocido)
+    // también bloquea; `set_current_user` siembra desde caché para el offline.
+    if !crate::state::registration_completed(app).await {
+        return Err("Completa tu registro en Maity para poder grabar".to_string());
+    }
     validate_transcription_ready(app).await?;
 
     // Preflight: embudo común de ambos start paths — cubre preferencia, default

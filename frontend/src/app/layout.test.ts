@@ -158,6 +158,25 @@ describe('layout.tsx provider tree invariants', () => {
     ).toBeLessThan(firstAppContent);
   });
 
+  // Issue #66: el gate de registro era `registrationFormCompleted === false`,
+  // así que un `null` (RPC my_status caída, arranque sin red) caía al main
+  // app y el usuario grababa sin registrarse. Debe ser FAIL-CLOSED: solo
+  // `true` pasa. El gate de Rust (initialize_recording) es la autoridad; este
+  // es el de render, y no debe volver a abrirse por accidente.
+  it('el gate de registro de AppContent es fail-closed (`!== true`, nunca `=== false` como guard externo)', () => {
+    const appContentStart = source.indexOf('function AppContent');
+    expect(appContentStart, 'function AppContent no encontrada en layout.tsx').toBeGreaterThan(-1);
+    const body = source.slice(appContentStart);
+    expect(
+      body.includes('registrationFormCompleted !== true && !isSpecialRoute'),
+      'El guard externo del gate de registro debe ser `registrationFormCompleted !== true && !isSpecialRoute`.',
+    ).toBe(true);
+    expect(
+      body.includes('registrationFormCompleted === false && !isSpecialRoute'),
+      'Regresión #66: `=== false` como guard externo deja pasar `null` (RPC caída) al main app.',
+    ).toBe(false);
+  });
+
   it('comentario MARKER critico sigue presente en layout.tsx', () => {
     expect(
       source.includes('CRITICAL: <UpdateCheckProvider> debe vivir FUERA'),

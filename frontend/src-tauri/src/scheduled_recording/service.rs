@@ -62,6 +62,8 @@ enum SkipReason {
     TranscriptionNotReady,
     RearmingNextHour,
     NoSession,
+    /// Sesión viva pero sin registro completado (o desconocido) — #66.
+    RegistrationIncomplete,
 }
 
 impl SkipReason {
@@ -71,6 +73,7 @@ impl SkipReason {
             SkipReason::TranscriptionNotReady => "transcription_not_ready",
             SkipReason::RearmingNextHour => "rearming_next_hour",
             SkipReason::NoSession => "no_session",
+            SkipReason::RegistrationIncomplete => "registration_incomplete",
         }
     }
 
@@ -86,6 +89,9 @@ impl SkipReason {
                 "Grabación de jornada detenida; se reanudará a la siguiente hora en punto."
             }
             SkipReason::NoSession => "Inicia sesión en Maity para grabar la jornada.",
+            SkipReason::RegistrationIncomplete => {
+                "Completa tu registro en Maity para grabar la jornada."
+            }
         }
     }
 }
@@ -439,6 +445,14 @@ async fn evaluate_tick<R: Runtime>(
             // grabación owned, el cierre debe poder correr igual.
             if !crate::state::has_session(app).await {
                 return (SchedulerPhase::Armed, Some(SkipReason::NoSession));
+            }
+            // Gate de registro (#66): la jornada era el camino por el que una
+            // cuenta sin registrar grababa a diario. Al completar el formulario
+            // el frontend sincroniza `set_registration_status(true)` y el
+            // siguiente tick arranca. El embudo `initialize_recording` también
+            // lo rechaza; aquí se skipea antes para no quemar un intento.
+            if !crate::state::registration_completed(app).await {
+                return (SchedulerPhase::Armed, Some(SkipReason::RegistrationIncomplete));
             }
 
             // ¿Re-arme pendiente (paro manual reciente o supresión por cierre)? No arrancar aún.

@@ -58,6 +58,7 @@ pub mod moonshine_engine;
 // jamás compilado dentro del binario hasta ahora. Expuesto dev-only vía settings.
 pub mod canary_engine;
 pub mod recording_pipeline;
+pub mod registration_status;
 pub mod rival_install;
 pub mod startup_task;
 pub mod state;
@@ -1478,6 +1479,8 @@ pub fn run() {
             // Multi-account privacy: track current Supabase user in AppState
             database::commands::set_current_user,
             database::commands::clear_current_user,
+            registration_status::set_registration_status,
+            registration_status::get_registration_status,
             // Sesión ↔ ventana: login compacto estilo Steam + cleanup de logout
             set_main_window_auth_layout,
             logout_cleanup,
