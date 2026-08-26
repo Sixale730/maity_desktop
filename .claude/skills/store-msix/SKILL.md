@@ -259,7 +259,9 @@ values ('desktop_store_latest_version', '0.2.58',
 on conflict (key) do update set value = excluded.value, updated_at = now();
 ```
 
-- Verificación post-go-live (criterio del issue): `select app_version, count(distinct user_id) from maity.platform_logs where event_type = 'app.open' and created_at > now() - interval '1 day' group by 1;` — los usuarios deben converger a la nueva versión en ≤1 día hábil.
+- **Seed inicial hecho el 2026-08-26 con `0.2.57` (#80).** Hasta ese día la fila NO existía (el aviso de #71 nunca se mostró en producción: `checkStoreChannel` devolvía "sin novedades" con `store-check-skipped reason=missing-key` en el log local). A partir de aquí el SQL de arriba solo **bumpea**; no hay que volver a hacer seed. La tabla ya tiene policy `system_config_select_public` (SELECT para `authenticated`, `qual = true`) — verificado con `set local role authenticated`.
+- Verificación post-go-live (criterio del issue): `select app_version, event_data->>'build_channel' as ch, count(distinct user_id) from maity.platform_logs where event_type = 'device.profile' and created_at > now() - interval '2 days' group by 1,2;` — los usuarios con `ch = 'store'` deben converger a la nueva versión en ≤1 día hábil. (`device.profile` distingue canal; `app.open` no.)
+- **NO probar el aviso poniendo una versión mayor a la publicada**: la fila es global — dispararía el diálogo a todos los usuarios Store reales y los mandaría a una Store que no tiene esa versión. La prueba local se hace con un MSIX de versión MENOR instalado.
 - Chicken-and-egg: el aviso existe desde la versión que lo incluye; los usuarios en versiones anteriores necesitan el workaround manual una última vez (cerrar Maity → Store → Biblioteca → "Obtener actualizaciones" → reabrir).
 
 ### ⚠️ Los dos canales NO comparten los datos (CORREGIDO 2026-07-27)
