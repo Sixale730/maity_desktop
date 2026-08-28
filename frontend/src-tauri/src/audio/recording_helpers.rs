@@ -489,11 +489,21 @@ pub async fn initialize_recording<R: Runtime>(
         }
     });
 
-    // Start recording with resolved devices
+    // Start recording with resolved devices.
+    //
+    // El fallo de aquí pasa por `report_device_error` a propósito: es donde
+    // aterriza el `0x80070005` (privacidad de micrófono denegada en Windows),
+    // porque la enumeración SÍ lista el dispositivo y es `IAudioClient::Initialize`
+    // quien lo rechaza. Hasta ago-2026 este `map_err` devolvía un String pelón,
+    // así que el caso más accionable de todos —el usuario sólo tiene que darle
+    // permiso— nunca emitía `audio-device-error` y por tanto NUNCA mostraba el
+    // toast con "Abrir configuración", aunque la remediación existe desde 0.2.57.
+    // En el piloto Dingler eso dejó a melissa con cero grabaciones sin una sola
+    // pista de por qué.
     let transcription_receiver = manager
         .start_recording(microphone_device, system_device, auto_save)
         .await
-        .map_err(|e| format!("Failed to start recording: {}", e))?;
+        .map_err(|e| report_device_error(app, format!("Failed to start recording: {}", e)))?;
 
     // Get a clone of the recording state for the level emission task
     let recording_state = manager.get_state().clone();

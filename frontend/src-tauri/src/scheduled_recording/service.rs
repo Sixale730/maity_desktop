@@ -64,6 +64,12 @@ enum SkipReason {
     NoSession,
     /// Sesión viva pero sin registro completado (o desconocido) — #66.
     RegistrationIncomplete,
+    /// El equipo no tiene micrófono. Piloto Dingler ago-2026.
+    NoInputDevice,
+    /// Windows bloquea el acceso al micrófono (privacidad del SO, `0x80070005`).
+    MicAccessDenied,
+    /// Fallo de arranque en back-off: se reintentará, pero no en este tick.
+    StartBackoff,
 }
 
 impl SkipReason {
@@ -74,6 +80,9 @@ impl SkipReason {
             SkipReason::RearmingNextHour => "rearming_next_hour",
             SkipReason::NoSession => "no_session",
             SkipReason::RegistrationIncomplete => "registration_incomplete",
+            SkipReason::NoInputDevice => "no_input_device",
+            SkipReason::MicAccessDenied => "mic_access_denied",
+            SkipReason::StartBackoff => "start_backoff",
         }
     }
 
@@ -92,6 +101,122 @@ impl SkipReason {
             SkipReason::RegistrationIncomplete => {
                 "Completa tu registro en Maity para grabar la jornada."
             }
+            // Estos dos textos son deliberadamente el `user_message()` de
+            // `AudioStartError`: una sola redacción por problema, venga del
+            // scheduler o del toast de `audio-device-error`.
+            SkipReason::NoInputDevice => "No se detectó ningún micrófono disponible.",
+            SkipReason::MicAccessDenied => {
+                "Windows está bloqueando el acceso al micrófono de Maity."
+            }
+            SkipReason::StartBackoff => {
+                "No se pudo iniciar la jornada; se reintentará más tarde."
+            }
+        }
+    }
+}
+
+// ── Back-off de arranque (piloto Dingler, ago-2026) ───────────────────────────
+//
+// El tick de 30 s reintentaba el arranque indefinidamente y etiquetaba TODO fallo
+// como `TranscriptionNotReady` ("se reintentará automáticamente"): una razón que
+// además de equivocada se auto-justificaba. Una usuaria sin micrófono generó 965
+// `recording_start_failed` en 8 h — el 27 % de `platform_logs` de todo el piloto.
+//
+// La política distingue por causa porque los dos fallos no son simétricos: sin
+// hardware no hay nada que esperar, mientras que un permiso denegado el usuario
+// SÍ lo puede conceder sin reconectar nada.
+
+/// Nº de fallos consecutivos sin micrófono antes de parar por hoy.
+/// Dos (60 s) y no uno: absorbe un hueco de enumeración durante un re-emparejamiento.
+const NO_INPUT_HALT_AFTER: u32 = 2;
+/// Nº de fallos consecutivos por permiso denegado antes de parar por hoy.
+const MIC_DENIED_HALT_AFTER: u32 = 5;
+/// Escalada para el permiso denegado, en segundos.
+const MIC_DENIED_BACKOFF_SECS: [i64; 4] = [60, 120, 300, 900];
+/// Escalada para el resto de fallos, en segundos.
+const OTHER_BACKOFF_SECS: [i64; 3] = [60, 120, 300];
+/// Cadencia del sondeo barato de enumeración mientras se está parado sin micrófono.
+const NO_INPUT_PROBE_SECS: i64 = 300;
+
+/// Causa clasificada de un fallo de arranque, a efectos de política de reintento.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StartFailureKind {
+    /// El equipo no tiene micrófono (`AudioStartError::MicNotFound`).
+    NoInputDevice,
+    /// Windows deniega el acceso (`0x80070005`).
+    MicAccessDenied,
+    /// Cualquier otra cosa (motor de transcripción no listo, etc.).
+    Other,
+}
+
+impl StartFailureKind {
+    /// Clasifica reusando `audio::device_errors`, que mira el HRESULT antes que
+    /// el texto — Windows traduce sus mensajes, así que ramificar por substring
+    /// funciona en la máquina del desarrollador y falla en la del usuario.
+    fn classify(raw: &str) -> Self {
+        use crate::audio::device_errors::AudioStartError;
+        match crate::audio::device_errors::classify_device_error(raw) {
+            AudioStartError::MicNotFound => Self::NoInputDevice,
+            AudioStartError::MicPermissionDenied => Self::MicAccessDenied,
+            _ => Self::Other,
+        }
+    }
+
+    /// Razón de omisión que ve el usuario mientras esta causa esté vigente.
+    fn skip_reason(self) -> SkipReason {
+        match self {
+            Self::NoInputDevice => SkipReason::NoInputDevice,
+            Self::MicAccessDenied => SkipReason::MicAccessDenied,
+            Self::Other => SkipReason::TranscriptionNotReady,
+        }
+    }
+}
+
+/// Estado del back-off tras uno o más fallos de arranque consecutivos.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct StartBackoff {
+    kind: StartFailureKind,
+    consecutive: u32,
+    /// Antes de este instante no se vuelve a intentar.
+    retry_at: NaiveDateTime,
+    /// `true` = no se intenta más hoy; sólo lo levanta un re-arme explícito
+    /// (`CheckNow` / guardar ajustes) o el sondeo barato de micrófono.
+    halted_for_day: bool,
+    /// Latch: ya se notificó este episodio. Evita repetir el toast nativo.
+    notified: bool,
+}
+
+/// Resultado de aplicar la política a un fallo. Función pura para poder testearla.
+fn next_backoff(
+    kind: StartFailureKind,
+    consecutive: u32,
+    now: NaiveDateTime,
+) -> (NaiveDateTime, bool) {
+    let idx = consecutive.saturating_sub(1) as usize;
+    match kind {
+        // Sin micrófono no hay nada que esperar: se para y se sondea barato.
+        StartFailureKind::NoInputDevice => {
+            if consecutive >= NO_INPUT_HALT_AFTER {
+                (now + Duration::seconds(NO_INPUT_PROBE_SECS), true)
+            } else {
+                (now, false)
+            }
+        }
+        // El permiso SÍ se puede conceder sin tocar hardware: se reintenta con
+        // escalada antes de rendirse por hoy.
+        StartFailureKind::MicAccessDenied => {
+            if consecutive >= MIC_DENIED_HALT_AFTER {
+                (start_of_next_day(now), true)
+            } else {
+                let secs = MIC_DENIED_BACKOFF_SECS[idx.min(MIC_DENIED_BACKOFF_SECS.len() - 1)];
+                (now + Duration::seconds(secs), false)
+            }
+        }
+        // Fallos transitorios: escalada corta y nunca alto (el motor puede
+        // terminar de descargarse en cualquier momento).
+        StartFailureKind::Other => {
+            let secs = OTHER_BACKOFF_SECS[idx.min(OTHER_BACKOFF_SECS.len() - 1)];
+            (now + Duration::seconds(secs), false)
         }
     }
 }
@@ -126,6 +251,12 @@ struct SchedulerShared {
     rearm_at: Arc<RwLock<Option<NaiveDateTime>>>,
     /// Límite del periodo de gracia del cierre por hora fija (None salvo en fase Grace).
     grace_deadline: Arc<RwLock<Option<NaiveDateTime>>>,
+    /// Back-off tras fallos de arranque. `None` = sin fallos pendientes.
+    ///
+    /// Deliberadamente separado de `rearm_at`: aquél produce
+    /// `SkipReason::RearmingNextHour` y lo limpia el arm de reposo, así que
+    /// reusarlo mezclaría dos mensajes distintos para el usuario.
+    start_backoff: Arc<RwLock<Option<StartBackoff>>>,
 }
 
 impl SchedulerShared {
@@ -138,6 +269,7 @@ impl SchedulerShared {
             owned_since: Arc::new(RwLock::new(None)),
             rearm_at: Arc::new(RwLock::new(None)),
             grace_deadline: Arc::new(RwLock::new(None)),
+            start_backoff: Arc::new(RwLock::new(None)),
         }
     }
 }
@@ -342,9 +474,15 @@ async fn run_scheduler_loop<R: Runtime>(
                             ));
                         }
                         *shared.settings.write().await = new_settings;
+                        // Guardar ajustes es un acto deliberado del usuario: se
+                        // interpreta como "ya lo arreglé, vuelve a intentar".
+                        *shared.start_backoff.write().await = None;
                         info!("Scheduled recording settings updated");
                     }
                     SchedulerCommand::CheckNow => {
+                        // "Evaluar ahora" es el escape hatch del alto del día:
+                        // el usuario concedió el permiso y quiere reintentar ya.
+                        *shared.start_backoff.write().await = None;
                         tick.reset();
                     }
                 }
@@ -471,6 +609,13 @@ async fn evaluate_tick<R: Runtime>(
                 return (SchedulerPhase::Armed, Some(SkipReason::ManualInProgress));
             }
 
+            // ¿Back-off tras fallos previos? Va justo ANTES del intento, que es
+            // la parte cara: sin esto, un equipo sin micrófono quema 120
+            // arranques por hora y otras tantas filas de telemetría.
+            if let Some(reason) = check_start_backoff(shared, now).await {
+                return (SchedulerPhase::Armed, Some(reason));
+            }
+
             // Arranque autónomo (ruta Rust-directa, igual que el tray).
             let meeting_name = render_segment_name(settings, now);
             match crate::audio::recording_commands::start_recording_with_meeting_name(
@@ -484,6 +629,8 @@ async fn evaluate_tick<R: Runtime>(
                     shared.owned.store(true, Ordering::SeqCst);
                     *shared.owned_since.write().await = Some(now);
                     *shared.grace_deadline.write().await = None;
+                    // Arrancó: el episodio de fallos (si lo había) se cierra.
+                    *shared.start_backoff.write().await = None;
                     if settings.notify_on_start {
                         notify_started(app).await;
                     }
@@ -504,12 +651,14 @@ async fn evaluate_tick<R: Runtime>(
                     (SchedulerPhase::Recording, None)
                 }
                 Err(e) if e.contains("already in progress") => {
-                    // Carrera: alguien arrancó justo antes. Tratar como manual.
+                    // Carrera benigna: alguien arrancó justo antes. Se trata como
+                    // manual y NO cuenta como fallo — escalarla castigaría al
+                    // usuario por usar la app.
                     (SchedulerPhase::Armed, Some(SkipReason::ManualInProgress))
                 }
                 Err(e) => {
-                    warn!("[scheduled] no se pudo iniciar la grabación: {}", e);
-                    (SchedulerPhase::Armed, Some(SkipReason::TranscriptionNotReady))
+                    let reason = record_start_failure(app, shared, &e, now).await;
+                    (SchedulerPhase::Armed, Some(reason))
                 }
             }
         }
@@ -526,6 +675,9 @@ async fn evaluate_tick<R: Runtime>(
                 }
             }
             *shared.grace_deadline.write().await = None;
+            // Fuera de ventana el episodio de fallos ya no aplica: mañana se
+            // vuelve a evaluar desde cero.
+            *shared.start_backoff.write().await = None;
             (SchedulerPhase::Idle, None)
         }
 
@@ -779,15 +931,18 @@ async fn rotate_scheduled<R: Runtime>(
             shared.owned.store(true, Ordering::SeqCst);
             *shared.owned_since.write().await = Some(now);
             *shared.grace_deadline.write().await = None;
+            *shared.start_backoff.write().await = None;
             info!("[scheduled] rotación por hora: nuevo segmento iniciado @ {}", now);
             SchedulerPhase::Recording
         }
         Err(e) => {
             // No se pudo re-arrancar (ej. transcripción no lista): soltar ownership. El próximo
-            // tick `(false, Some)` reintenta arranque inmediato (sin rearm_at), auto-sanando.
-            warn!("[scheduled] rotación: fallo al re-arrancar el segmento: {}", e);
+            // tick `(false, Some)` reintenta, pero AHORA sujeto al back-off: el
+            // "auto-sanado" sin límite era la segunda vía de la tormenta de
+            // reintentos (soltar ownership reinyecta el tick en el arm de arranque).
             shared.owned.store(false, Ordering::SeqCst);
             *shared.owned_since.write().await = None;
+            record_start_failure(app, shared, &e, now).await;
             SchedulerPhase::Armed
         }
     }
@@ -1189,6 +1344,251 @@ fn emit_skipped<R: Runtime>(app: &AppHandle<R>, reason: SkipReason) {
             "message": reason.message(),
         }),
     );
+}
+
+// ── Gestión del back-off de arranque ─────────────────────────────────────────
+
+/// ¿Hay un micrófono enumerado en el sistema?
+///
+/// Comprobación **barata a propósito**: sólo enumera, nunca abre un
+/// `build_input_stream`. Es lo que permite sondear mientras se está parado sin
+/// tocar el pipeline de audio (ver `docs/TELEMETRIA.md`, la probe honesta va en
+/// onboarding/ajustes, jamás en el camino de grabación).
+///
+/// OJO: en Windows la enumeración NO está bloqueada por la privacidad del SO, así
+/// que esto sólo sirve para el caso "no hay hardware", nunca para el `0x80070005`.
+fn has_any_input_device() -> bool {
+    crate::audio::devices::default_input_device().is_ok()
+}
+
+/// Consulta el back-off antes de intentar arrancar.
+///
+/// Devuelve `Some(reason)` para omitir este tick, o `None` para seguir adelante.
+async fn check_start_backoff(
+    shared: &SchedulerShared,
+    now: NaiveDateTime,
+) -> Option<SkipReason> {
+    // Snapshot en statement propio: el contrato de locks prohíbe sostener el
+    // guard a través de los `.await` de más abajo.
+    let backoff = *shared.start_backoff.read().await;
+    let state = backoff?;
+
+    if now < state.retry_at {
+        return Some(if state.halted_for_day {
+            state.kind.skip_reason()
+        } else {
+            SkipReason::StartBackoff
+        });
+    }
+
+    // Venció el plazo estando en alto. Sólo el caso "sin micrófono" tiene sondeo:
+    // la enumeración es barata y detecta que el usuario conectó uno. El permiso
+    // denegado no se puede sondear sin abrir un stream, así que su `retry_at` es
+    // la medianoche siguiente y vencerlo significa "día nuevo, intento nuevo".
+    if state.halted_for_day {
+        if state.kind == StartFailureKind::NoInputDevice && !has_any_input_device() {
+            // Sigue sin haber micrófono: reprograma el sondeo sin quemar un
+            // intento de arranque.
+            let mut next = state;
+            next.retry_at = now + Duration::seconds(NO_INPUT_PROBE_SECS);
+            *shared.start_backoff.write().await = Some(next);
+            return Some(state.kind.skip_reason());
+        }
+        info!(
+            "[scheduled] se levanta el alto de arranque ({:?}) y se permite un intento",
+            state.kind
+        );
+        // Se levanta el alto ⇒ episodio nuevo: la cuenta y el latch del aviso
+        // arrancan de cero. Si no, el primer fallo del día siguiente volvería a
+        // parar en seco y sin avisar.
+        *shared.start_backoff.write().await = None;
+        return None;
+    }
+
+    // Back-off normal vencido: se permite un intento más SIN limpiar el estado,
+    // para que `consecutive` siga escalando si vuelve a fallar. Lo limpia el
+    // arranque exitoso.
+    None
+}
+
+/// Registra un fallo de arranque, aplica la política y notifica UNA vez si se
+/// llega al alto del día. Devuelve la razón de omisión a reportar.
+async fn record_start_failure<R: Runtime>(
+    app: &AppHandle<R>,
+    shared: &SchedulerShared,
+    raw: &str,
+    now: NaiveDateTime,
+) -> SkipReason {
+    let kind = StartFailureKind::classify(raw);
+
+    let previous = *shared.start_backoff.read().await;
+    // Una causa distinta reinicia la cuenta y el latch: son problemas distintos
+    // y cada uno merece su propio aviso.
+    let same_kind = previous.filter(|p| p.kind == kind);
+    let consecutive = same_kind.map_or(1, |p| p.consecutive.saturating_add(1));
+    let already_notified = same_kind.is_some_and(|p| p.notified);
+
+    let (retry_at, halted_for_day) = next_backoff(kind, consecutive, now);
+    let should_notify = halted_for_day && !already_notified;
+
+    *shared.start_backoff.write().await = Some(StartBackoff {
+        kind,
+        consecutive,
+        retry_at,
+        halted_for_day,
+        notified: already_notified || should_notify,
+    });
+
+    if halted_for_day {
+        warn!(
+            "[scheduled] arranque detenido por hoy tras {} fallos consecutivos ({:?}): {}",
+            consecutive, kind, raw
+        );
+    } else {
+        warn!(
+            "[scheduled] fallo de arranque #{} ({:?}), reintento a las {}: {}",
+            consecutive,
+            kind,
+            retry_at.format("%H:%M:%S"),
+            raw
+        );
+    }
+
+    if should_notify {
+        notify_start_halted(app, kind);
+    }
+
+    kind.skip_reason()
+}
+
+/// Aviso nativo único por episodio.
+///
+/// Va por `show_native_toast` DIRECTO y no por `NotificationManager`: éste filtra
+/// por consentimiento, DND y tipo de notificación, y esto no es una cortesía sino
+/// un fallo que deja al usuario sin grabar. La jornada arranca headless, así que
+/// el toast in-app de `audio-device-error` no basta: puede no haber webview vivo.
+///
+/// El cuerpo lleva la instrucción porque un toast nativo de Windows **no puede
+/// llevar botón** en esta app (ver `lib.rs`, `action_type_id` se ignora a propósito).
+fn notify_start_halted<R: Runtime>(app: &AppHandle<R>, kind: StartFailureKind) {
+    let (title, body) = match kind {
+        StartFailureKind::NoInputDevice => (
+            "Maity no encuentra micrófono",
+            "La jornada no puede grabar. Conecta un micrófono y Maity reanudará solo.",
+        ),
+        StartFailureKind::MicAccessDenied => (
+            "Windows bloquea el micrófono",
+            "Actívalo en Configuración → Privacidad → Micrófono para que la jornada pueda grabar.",
+        ),
+        StartFailureKind::Other => return,
+    };
+
+    if let Err(e) = crate::notifications::toast::show_native_toast(app, title, body) {
+        warn!("[scheduled] no se pudo mostrar el aviso de micrófono: {}", e);
+    }
+}
+
+#[cfg(test)]
+mod backoff_tests {
+    //! Política de reintento del arranque (piloto Dingler, ago-2026).
+    //!
+    //! `next_backoff` es pura a propósito: la tormenta de 965 reintentos fue una
+    //! decisión de política, no un problema de concurrencia, y una política se
+    //! testea con una tabla — sin tokio, sin `AppHandle`, sin reloj real.
+    use super::*;
+
+    fn t(h: u32, m: u32) -> NaiveDateTime {
+        chrono::NaiveDate::from_ymd_opt(2026, 8, 25)
+            .unwrap()
+            .and_hms_opt(h, m, 0)
+            .unwrap()
+    }
+
+    #[test]
+    fn sin_microfono_para_al_segundo_fallo() {
+        let now = t(8, 40);
+        // El primero no para: absorbe un hueco de enumeración transitorio.
+        let (retry, halted) = next_backoff(StartFailureKind::NoInputDevice, 1, now);
+        assert!(!halted);
+        assert_eq!(retry, now, "el primer fallo no debe retrasar el siguiente tick");
+
+        let (retry, halted) = next_backoff(StartFailureKind::NoInputDevice, 2, now);
+        assert!(halted, "dos fallos seguidos sin micrófono ⇒ alto del día");
+        assert_eq!(retry, now + Duration::seconds(NO_INPUT_PROBE_SECS));
+    }
+
+    #[test]
+    fn permiso_denegado_escala_y_luego_para() {
+        let now = t(9, 0);
+        let esperado = [60, 120, 300, 900];
+        for (i, secs) in esperado.iter().enumerate() {
+            let consecutive = (i + 1) as u32;
+            let (retry, halted) = next_backoff(StartFailureKind::MicAccessDenied, consecutive, now);
+            assert!(!halted, "el intento {} aún no debe parar", consecutive);
+            assert_eq!(retry, now + Duration::seconds(*secs));
+        }
+        let (retry, halted) = next_backoff(StartFailureKind::MicAccessDenied, 5, now);
+        assert!(halted, "al quinto fallo se para por hoy");
+        assert_eq!(retry, start_of_next_day(now), "reintenta al día siguiente");
+    }
+
+    #[test]
+    fn otros_fallos_escalan_pero_nunca_paran() {
+        let now = t(10, 0);
+        // El motor de transcripción puede terminar de descargarse en cualquier
+        // momento: pararlo por hoy convertiría un retraso en una jornada perdida.
+        for consecutive in [1u32, 2, 3, 10, 500] {
+            let (_, halted) = next_backoff(StartFailureKind::Other, consecutive, now);
+            assert!(!halted, "Other nunca para (consecutive={})", consecutive);
+        }
+        assert_eq!(
+            next_backoff(StartFailureKind::Other, 99, now).0,
+            now + Duration::seconds(300),
+            "la escalada satura en el tope, no se desborda"
+        );
+    }
+
+    #[test]
+    fn clasificacion_de_las_dos_cadenas_del_piloto() {
+        // Las cadenas exactas que produjeron los 965 eventos.
+        assert_eq!(
+            StartFailureKind::classify(
+                "No microphone device available: No default input device found"
+            ),
+            StartFailureKind::NoInputDevice
+        );
+        // En español, como lo vio la usuaria: la clasificación es por HRESULT,
+        // así que el idioma de Windows no debe cambiar el resultado.
+        assert_eq!(
+            StartFailureKind::classify(
+                "Failed to start recording: Acceso denegado. (0x80070005)"
+            ),
+            StartFailureKind::MicAccessDenied
+        );
+        assert_eq!(
+            StartFailureKind::classify("Failed to start recording: Access is denied. (0x80070005)"),
+            StartFailureKind::MicAccessDenied
+        );
+        assert_eq!(
+            StartFailureKind::classify("Transcription engine not ready"),
+            StartFailureKind::Other
+        );
+    }
+
+    #[test]
+    fn cada_causa_tiene_su_propia_razon_de_omision() {
+        // La regresión que este cambio arregla: TODO fallo se reportaba como
+        // "el motor de transcripción no está listo; se reintentará
+        // automáticamente" — un mensaje falso que además prometía el bucle.
+        assert_eq!(
+            StartFailureKind::NoInputDevice.skip_reason().as_str(),
+            "no_input_device"
+        );
+        assert_eq!(
+            StartFailureKind::MicAccessDenied.skip_reason().as_str(),
+            "mic_access_denied"
+        );
+    }
 }
 
 #[cfg(test)]
