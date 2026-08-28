@@ -24,7 +24,7 @@ export function BackgroundDownloadStarter() {
   const {
     completed,
     parakeetDownloaded,
-    summaryModelDownloaded,
+    summaryModelReady,
     startBackgroundDownloads,
   } = useOnboarding();
   const startedRef = useRef(false);
@@ -37,14 +37,21 @@ export function BackgroundDownloadStarter() {
     }
     // Solo cuando el onboarding ya está completo (cuenta existente o recién terminada)
     if (!completed) return;
-    // Si ambos modelos ya están en disco, no hay nada que arrancar
-    if (parakeetDownloaded && summaryModelDownloaded) return;
+    // Si ya no falta nada que descargar, no hay nada que arrancar.
+    //
+    // OJO: la condición mira `summaryModelReady`, no `summaryModelDownloaded`.
+    // En tier Low el modelo de resumen no se descarga nunca, así que
+    // `summaryModelDownloaded` se queda en `false` PARA SIEMPRE: con él, este
+    // efecto llamaría a `startBackgroundDownloads` en cada arranque de la app y,
+    // como ésa función pone `isBackgroundDownloading = true` nada más entrar,
+    // el widget de descargas aparecería sin nada que descargar.
+    if (parakeetDownloaded && summaryModelReady) return;
 
     startedRef.current = true;
     // startBackgroundDownloads tiene guards internos (has_models / is_model_ready /
     // already-downloading), así que llamarlo es seguro aunque un modelo ya exista.
     void startBackgroundDownloads(true);
-  }, [completed, parakeetDownloaded, summaryModelDownloaded, pathname, startBackgroundDownloads]);
+  }, [completed, parakeetDownloaded, summaryModelReady, pathname, startBackgroundDownloads]);
 
   return null;
 }

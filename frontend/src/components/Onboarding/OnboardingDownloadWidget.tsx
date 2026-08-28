@@ -22,6 +22,7 @@ export function OnboardingDownloadWidget() {
     parakeetDownloaded,
     parakeetProgressInfo,
     summaryModelDownloaded,
+    summaryModelReady,
     summaryModelProgressInfo,
     isBackgroundDownloading,
     retryParakeetDownload,
@@ -30,8 +31,10 @@ export function OnboardingDownloadWidget() {
   // Arranca colapsado como bolita; el usuario expande al modal con un clic.
   const [expanded, setExpanded] = useState(false)
 
-  // No mostrar si todo está descargado
-  if (parakeetDownloaded && summaryModelDownloaded) return null
+  // No mostrar si ya no falta nada. `summaryModelReady`, no
+  // `summaryModelDownloaded`: en tier Low el modelo de resumen no se descarga
+  // nunca, así que el segundo se queda en `false` y el widget no se cerraría jamás.
+  if (parakeetDownloaded && summaryModelReady) return null
 
   const parakeetError =
     !parakeetDownloaded &&
@@ -54,7 +57,7 @@ export function OnboardingDownloadWidget() {
   // activa, usa esa). Sirve para el anillo de la bolita.
   const parts: number[] = []
   if (!parakeetDownloaded) parts.push(Math.min(parakeetProgressInfo.percent, 100))
-  if (!summaryModelDownloaded) parts.push(Math.min(summaryModelProgressInfo.percent, 100))
+  if (!summaryModelReady) parts.push(Math.min(summaryModelProgressInfo.percent, 100))
   const combinedPercent = parts.length
     ? Math.round(parts.reduce((a, b) => a + b, 0) / parts.length)
     : 0
@@ -194,7 +197,7 @@ export function OnboardingDownloadWidget() {
             isPreparing: parakeetPreparing,
             onRetry: () => void retryParakeetDownload(),
           })}
-        {!summaryModelDownloaded &&
+        {!summaryModelReady &&
           renderRow({
             label: 'Análisis (Gemma)',
             done: summaryModelDownloaded,

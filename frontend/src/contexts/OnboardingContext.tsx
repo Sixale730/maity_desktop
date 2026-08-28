@@ -6,6 +6,7 @@ import { createSubscriptionGroup } from '@/lib/tauriSubscribe';
 import type { PermissionStatus, OnboardingPermissions } from '@/types/onboarding';
 import { logger } from '@/lib/logger';
 import { TauriEvent } from '@/lib/tauri-events';
+import { needsSummaryModel } from '@/lib/deviceTier';
 
 const PARAKEET_MODEL = 'parakeet-tdt-0.6b-v3-int8';
 
@@ -41,6 +42,20 @@ interface OnboardingContextType {
   parakeetProgress: number;
   parakeetProgressInfo: ParakeetProgressInfo;
   summaryModelDownloaded: boolean;
+  /**
+   * ¿Este equipo necesita el modelo de resumen local? `false` en tier Low, donde
+   * el coach usa heurísticos y nada más consume el sidecar (ver `lib/deviceTier`).
+   */
+  summaryModelRequired: boolean;
+  /**
+   * Requisito satisfecho: o el modelo está en disco, o este equipo no lo necesita.
+   *
+   * Es lo que deben mirar los consumidores — `summaryModelDownloaded` describe el
+   * DISCO y en tier Low se queda en `false` para siempre, así que usarlo como
+   * condición de "falta algo" deja a `BackgroundDownloadStarter` reintentando la
+   * descarga en cada arranque y al widget mostrando una fila que nunca completa.
+   */
+  summaryModelReady: boolean;
   summaryModelProgress: number;
   summaryModelProgressInfo: SummaryModelProgressInfo;
   selectedSummaryModel: string;
@@ -82,6 +97,9 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
     speedMbps: 0,
   });
   const [summaryModelDownloaded, setSummaryModelDownloaded] = useState(false);
+  // Arranca en `true` para conservar el comportamiento histórico mientras se
+  // resuelve el tier: nunca se salta una descarga por no saber todavía.
+  const [summaryModelRequired, setSummaryModelRequired] = useState(true);
   const [summaryModelProgress, setSummaryModelProgress] = useState(0);
   const [summaryModelProgressInfo, setSummaryModelProgressInfo] = useState<SummaryModelProgressInfo>({
     percent: 0,
@@ -125,6 +143,18 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
   // seguridad.
   const parakeetKickoffRef = useRef<Promise<void> | null>(null);
   const gemmaKickoffRef = useRef<Promise<void> | null>(null);
+
+  // Tier del equipo: decide si el modelo de resumen hace falta siquiera. Se
+  // resuelve una vez (el tier está cacheado en Rust por proceso).
+  useEffect(() => {
+    let cancelled = false;
+    void needsSummaryModel().then((required) => {
+      if (!cancelled) setSummaryModelRequired(required);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Load status on mount and initialize database
   useEffect(() => {
@@ -540,10 +570,22 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
 
     if (includeGemma) {
       setTimeout(() => {
-        if (!gemmaKickoffRef.current) {
-          gemmaKickoffRef.current = startGemma();
-        }
-        void gemmaKickoffRef.current;
+        void (async () => {
+          // El tier se consulta AQUÍ y no se confía al estado de React: este
+          // arranque puede dispararse antes de que el efecto de montaje resuelva
+          // `summaryModelRequired`, y equivocarse en ese instante significa bajar
+          // 1 GB en el equipo que menos lo puede pagar. La llamada está cacheada.
+          if (!(await needsSummaryModel())) {
+            logger.debug(
+              '[OnboardingContext] tier Low: se omite la descarga de Gemma (el coach usa heurísticos)'
+            );
+            return;
+          }
+          if (!gemmaKickoffRef.current) {
+            gemmaKickoffRef.current = startGemma();
+          }
+          void gemmaKickoffRef.current;
+        })();
       }, 3000);
     }
   };
@@ -612,6 +654,8 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
         parakeetProgress,
         parakeetProgressInfo,
         summaryModelDownloaded,
+        summaryModelRequired,
+        summaryModelReady: !summaryModelRequired || summaryModelDownloaded,
         summaryModelProgress,
         summaryModelProgressInfo,
         selectedSummaryModel,

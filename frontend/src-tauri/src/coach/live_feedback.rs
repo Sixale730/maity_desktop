@@ -528,30 +528,35 @@ pub async fn start<R: Runtime + 'static>(app: AppHandle<R>) -> Result<(), String
     let endpoint = "builtin-ai-sidecar".to_string();
 
     // Resolver el modelo efectivo (tier-aware, compartido con el warmup de lib.rs
-    // vía `llama_engine::resolve_effective_tips_model`). En tier Low sin elección
-    // explícita el único candidato es el 1B: si no está en disco, los tips-LLM se
-    // apagan esta sesión y se dispara su descarga en background — nunca se cae a
-    // 4b en Low (timeouts de 30s del sidecar, logs de usuario 2026-07-10).
-    let model = match llama_engine::resolve_effective_tips_model(&app, Some(&configured_model))
-        .await
-    {
-        llama_engine::TipsResolution::Use(m) => {
-            LLM_TIPS_ENABLED.store(true, Ordering::Relaxed);
-            info!("🔍 Coach model resuelto: '{}'", m);
-            m
-        }
-        llama_engine::TipsResolution::Unavailable { preferred } => {
-            LLM_TIPS_ENABLED.store(false, Ordering::Relaxed);
-            warn!(
-                "Coach: modelo '{}' no instalado — tips LLM deshabilitados esta sesión (heurísticos y gauge siguen activos)",
+    // vía `llama_engine::resolve_effective_tips_model`).
+    //
+    // En tier Low NO se resuelve nada: los tips por LLM quedan apagados y el
+    // sidecar nunca se carga. Ver `coach::should_use_llm_tips` para el porqué —
+    // en resumen, en el piloto Dingler el LLM produjo 1 tip en dos semanas a
+    // cambio de 1.2 GB residentes, 75 reinicios y 26 aperturas de breaker en
+    // equipos que ya vivían con 74 MB libres.
+    let model = if !crate::coach::should_use_llm_tips() {
+        LLM_TIPS_ENABLED.store(false, Ordering::Relaxed);
+        info!(
+            "Coach: tier Low — tips LLM apagados esta sesión (heurísticos y gauge siguen activos); \
+             el sidecar no se carga durante la grabación"
+        );
+        configured_model.clone()
+    } else {
+        match llama_engine::resolve_effective_tips_model(&app, Some(&configured_model)).await {
+            llama_engine::TipsResolution::Use(m) => {
+                LLM_TIPS_ENABLED.store(true, Ordering::Relaxed);
+                info!("🔍 Coach model resuelto: '{}'", m);
+                m
+            }
+            llama_engine::TipsResolution::Unavailable { preferred } => {
+                LLM_TIPS_ENABLED.store(false, Ordering::Relaxed);
+                warn!(
+                    "Coach: modelo '{}' no instalado — tips LLM deshabilitados esta sesión (heurísticos y gauge siguen activos)",
+                    preferred
+                );
                 preferred
-            );
-            // No-op fuera de tier Low; en Low baja el 1B para la próxima sesión.
-            let app_dl = app.clone();
-            tokio::spawn(async move {
-                crate::coach::setup::ensure_low_tier_tips_model(&app_dl).await;
-            });
-            preferred
+            }
         }
     };
     let window_secs = cfg.as_ref().map(|c| c.context_window_secs).unwrap_or(180);

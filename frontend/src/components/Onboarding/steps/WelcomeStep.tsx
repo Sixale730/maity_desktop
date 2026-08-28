@@ -13,7 +13,13 @@ const GEMMA_SIZE_MB: Record<string, number> = {
 const PARAKEET_SIZE_MB = 600;
 
 export function WelcomeStep() {
-  const { goNext, completeOnboarding, startBackgroundDownloads, selectedSummaryModel } = useOnboarding();
+  const {
+    goNext,
+    completeOnboarding,
+    startBackgroundDownloads,
+    selectedSummaryModel,
+    summaryModelRequired,
+  } = useOnboarding();
   const [isMac, setIsMac] = useState(false);
 
   useEffect(() => {
@@ -28,7 +34,12 @@ export function WelcomeStep() {
     checkPlatform();
   }, []);
 
-  const gemmaSizeMb = GEMMA_SIZE_MB[selectedSummaryModel] ?? GEMMA_SIZE_MB['gemma3:4b'];
+  // En tier Low no se baja el modelo de análisis (el coach usa heurísticos), así
+  // que la cifra que ve el usuario tiene que reflejarlo: prometer ~1.6 GB y bajar
+  // 600 MB es tan confuso como al revés.
+  const gemmaSizeMb = summaryModelRequired
+    ? GEMMA_SIZE_MB[selectedSummaryModel] ?? GEMMA_SIZE_MB['gemma3:4b']
+    : 0;
   const totalGb = ((PARAKEET_SIZE_MB + gemmaSizeMb) / 1024).toFixed(1);
 
   // Único punto de arranque de descargas: con este botón empieza a descargar
@@ -93,8 +104,10 @@ export function WelcomeStep() {
 
         {/* Nota de descarga de modelos */}
         <p className="text-xs text-[#6a6a6d] dark:text-gray-400 text-center max-w-md mx-auto">
-          Al comenzar se descargan los modelos locales (voz + análisis, ~{totalGb} GB, solo la
-          primera vez). Puedes continuar con tu registro mientras se descargan en segundo plano.
+          Al comenzar se descarga{summaryModelRequired ? 'n los modelos locales' : ' el modelo local'}{' '}
+          ({summaryModelRequired ? 'voz + análisis' : 'voz'}, ~{totalGb} GB, solo la primera vez).
+          Puedes continuar con tu registro mientras se descarga{summaryModelRequired ? 'n' : ''} en
+          segundo plano.
         </p>
 
         {/* CTA */}

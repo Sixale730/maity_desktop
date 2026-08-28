@@ -1125,6 +1125,17 @@ pub fn run() {
                 // GGUF en VRAM/RAM). Con preload, el modelo ya está caliente.
                 let app_for_sidecar = app_handle_for_config.clone();
                 tauri::async_runtime::spawn(async move {
+                    // Tier Low: el coach no usará el LLM al grabar, así que
+                    // calentarlo dejaría ~1 GB residente sin consumidor. Mismo
+                    // punto de decisión que `live_feedback::start` a propósito.
+                    if !crate::coach::should_use_llm_tips() {
+                        log::info!(
+                            "🦙 Sidecar warmup omitido — tier Low: los tips usan heurísticos y \
+                             el modelo no se carga (ver coach::should_use_llm_tips)"
+                        );
+                        return;
+                    }
+
                     let app_data_dir = match app_for_sidecar.path().app_data_dir() {
                         Ok(p) => p,
                         Err(e) => {
@@ -1165,10 +1176,6 @@ pub fn run() {
                                 "Sidecar warmup skipped — modelo '{}' no descargado todavía",
                                 preferred
                             );
-                            // En tier Low baja el 1B en background para que la próxima
-                            // grabación tenga tips (no-op fuera de tier Low).
-                            crate::coach::setup::ensure_low_tier_tips_model(&app_for_sidecar)
-                                .await;
                             return;
                         }
                     };

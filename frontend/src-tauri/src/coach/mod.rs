@@ -22,3 +22,30 @@ pub use commands::{
 };
 pub use nudge_engine::coach_evaluate_nudge;
 pub use trigger::coach_analyze_trigger;
+
+/// ¿Este equipo debe usar el LLM local para los tips del coach?
+///
+/// `false` en tier Low. Punto de decisión ÚNICO: lo consultan el warmup de
+/// arranque (`lib.rs`) y `live_feedback::start`, que si divergieran dejarían el
+/// modelo cargado en RAM sin nadie que lo use — el peor de los dos mundos.
+///
+/// **Por qué apagarlo y no sólo aplazarlo** (piloto Dingler, ago-2026): en dos
+/// semanas y 7 equipos de gama baja, el LLM produjo **1 tip** contra 19
+/// heurísticos, a cambio de 75 reinicios de sidecar, 28 timeouts, 26 aperturas
+/// de circuit breaker y un p95 de 94 s. El helper pica en 1.2 GB justo cuando
+/// Parakeet y FFmpeg más memoria necesitan: 215 avisos de presión de memoria,
+/// con mínimos de 74 MB libres. No es una función degradada, es una que no
+/// llega a ejecutarse y estorba.
+///
+/// Los tips heurísticos (`evaluate_health_tips`, tick de 3 s) y el gauge de
+/// participación siguen intactos: el coach no se apaga, sólo su mitad cara.
+///
+/// **No se re-enciende al terminar la grabación.** El sidecar local no tiene
+/// ningún otro consumidor vivo: Maity Chat corre en la nube, la minuta y el
+/// análisis V4 también, y `coach_chat` / `coach_evaluate_meeting` / el resumen
+/// local de `/meeting-details` no tienen call sites en el frontend. Ver
+/// CLAUDE.md § "Resumen built-in (Gemma)".
+pub fn should_use_llm_tips() -> bool {
+    use crate::audio::hardware_detector::{HardwareProfile, PerformanceTier};
+    HardwareProfile::detect().performance_tier != PerformanceTier::Low
+}

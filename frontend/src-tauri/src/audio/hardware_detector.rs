@@ -136,18 +136,22 @@ impl HardwareProfile {
     /// Calculate performance tier based on hardware
     fn calculate_performance_tier(cpu_cores: u8, gpu_type: &GpuType, memory_gb: u8) -> PerformanceTier {
         match gpu_type {
-            GpuType::Metal => {
+            // Metal y CUDA comparten piso de RAM: tener GPU no crea memoria de
+            // sistema. Hasta ago-2026 estas dos ramas NO tenían piso alguno, así
+            // que una laptop de 6 GB con driver NVIDIA salía `High` y recibía el
+            // modelo grande — justo el perfil que el piloto Dingler mostró
+            // ahogándose (215 avisos de presión de memoria, mínimos de 74 MB
+            // libres). La rama Vulkan ya tenía su piso desde jul-2026; esto cierra
+            // el mismo agujero para las otras dos.
+            GpuType::Metal | GpuType::Cuda => {
                 if memory_gb >= 16 && cpu_cores >= 8 {
                     PerformanceTier::Ultra
-                } else {
+                } else if memory_gb >= 12 {
                     PerformanceTier::High
-                }
-            }
-            GpuType::Cuda => {
-                if memory_gb >= 16 && cpu_cores >= 8 {
-                    PerformanceTier::Ultra
+                } else if memory_gb >= 8 {
+                    PerformanceTier::Medium
                 } else {
-                    PerformanceTier::High
+                    PerformanceTier::Low
                 }
             }
             GpuType::Vulkan | GpuType::OpenCL => {
@@ -339,5 +343,51 @@ mod tests {
         assert_eq!(high, PerformanceTier::High);
         let medium = HardwareProfile::calculate_performance_tier(4, &GpuType::Vulkan, 16);
         assert_eq!(medium, PerformanceTier::Medium);
+    }
+
+    #[test]
+    fn gpu_dedicada_con_poca_ram_tambien_baja_de_tier() {
+        // El agujero que cerró el piloto Dingler: hasta ago-2026 las ramas Cuda y
+        // Metal no tenían piso de RAM, así que estas dos máquinas salían `High` y
+        // recibían el modelo grande del coach.
+        assert_eq!(
+            HardwareProfile::calculate_performance_tier(8, &GpuType::Cuda, 6),
+            PerformanceTier::Low,
+            "6 GB con NVIDIA sigue siendo una máquina de 6 GB"
+        );
+        assert_eq!(
+            HardwareProfile::calculate_performance_tier(8, &GpuType::Metal, 8),
+            PerformanceTier::Medium
+        );
+        assert_eq!(
+            HardwareProfile::calculate_performance_tier(4, &GpuType::Cuda, 12),
+            PerformanceTier::High
+        );
+        // Sin regresión en el tope: la GPU dedicada con RAM de sobra sigue Ultra.
+        assert_eq!(
+            HardwareProfile::calculate_performance_tier(8, &GpuType::Cuda, 32),
+            PerformanceTier::Ultra
+        );
+    }
+
+    #[test]
+    fn tier_low_no_usa_llm_para_los_tips() {
+        // Contrato entre el tier y el coach: el punto de decisión es único
+        // (`coach::should_use_llm_tips`) para que el warmup del arranque y
+        // `live_feedback::start` no puedan divergir — divergir dejaría el modelo
+        // residente en RAM sin nadie que lo consuma, el peor de los dos mundos.
+        for (cores, gpu, ram) in [
+            (8u8, GpuType::Cuda, 6u8),
+            (8, GpuType::Vulkan, 8),
+            (2, GpuType::None, 4),
+        ] {
+            assert_eq!(
+                HardwareProfile::calculate_performance_tier(cores, &gpu, ram),
+                PerformanceTier::Low,
+                "{:?} con {} GB debe ser Low",
+                gpu,
+                ram
+            );
+        }
     }
 }
