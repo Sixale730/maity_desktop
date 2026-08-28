@@ -450,6 +450,15 @@ pub async fn stop_recording_reporting<R: Runtime>(
                     .or_else(|| m.get_recording_duration())
             })
         });
+
+    // Hora de arranque SELLADA, capturada en la misma ventana que la duración (antes del
+    // teardown del manager). El frontend la usa como `started_at` en vez de restar la duración
+    // al cierre — ver el doc de `RecordingState::recording_start_wall` (#5 del piloto Dingler).
+    let captured_started_at: Option<String> = RECORDING_MANAGER
+        .lock()
+        .ok()
+        .and_then(|guard| guard.as_ref().and_then(|m| m.get_recording_started_at()))
+        .map(|dt| dt.to_rfc3339());
     info!(
         "🕒 Captured wall-clock recording duration: {:?}s (before manager teardown)",
         captured_duration_seconds
@@ -705,7 +714,8 @@ pub async fn stop_recording_reporting<R: Runtime>(
             "message": "Recording stopped - frontend will save after all transcripts received",
             "folder_path": folder_path_str,
             "meeting_name": meeting_name_str,
-            "duration_seconds": captured_duration_seconds
+            "duration_seconds": captured_duration_seconds,
+            "started_at": captured_started_at
         }),
     )
     .map_err(|e| e.to_string())?;

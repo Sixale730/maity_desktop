@@ -397,6 +397,12 @@ impl RecordingManager {
         self.state.get_active_recording_duration()
     }
 
+    /// Hora de pared del arranque, sellada. Fuente de `started_at` — ver el doc del campo en
+    /// `RecordingState`: no reconstruirla restando la duración al cierre.
+    pub fn get_recording_started_at(&self) -> Option<chrono::DateTime<chrono::Utc>> {
+        self.state.get_recording_started_at()
+    }
+
     /// Get total pause duration
     pub fn get_total_pause_duration(&self) -> f64 {
         self.state.get_total_pause_duration()

@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tokio::sync::mpsc;
 use anyhow::Result;
+use chrono::{DateTime, Utc};
 
 use super::devices::AudioDevice;
 use super::buffer_pool::AudioBufferPool;
@@ -130,6 +131,15 @@ pub struct RecordingState {
 
     // Recording start time for accurate timestamps
     recording_start: Mutex<Option<Instant>>,
+    /// Hora de pared del arranque, SELLADA. Convive con `recording_start` a propósito: son
+    /// relojes distintos para preguntas distintas y no son intercambiables.
+    ///
+    /// `Instant` es monotónico y sirve para medir cuánto lleva grabando (inmune a que el usuario
+    /// mueva el reloj del sistema), pero **no sabe en qué momento del día empezó** y en Windows
+    /// sigue corriendo con la máquina dormida. Derivar la fecha de inicio restando su `elapsed()`
+    /// al cierre fue el bug #5 del piloto Dingler: una grabación cerró con 6 h 45 de "duración"
+    /// para 67 min de audio, y su `started_at` acabó a las 02:19 de la madrugada siguiente.
+    recording_start_wall: Mutex<Option<DateTime<Utc>>>,
     // Pause time tracking
     pause_start: Mutex<Option<Instant>>,
     total_pause_duration: Mutex<std::time::Duration>,
@@ -158,6 +168,7 @@ impl RecordingState {
             error_callback: Mutex::new(None),
             stats: Mutex::new(RecordingStats::default()),
             recording_start: Mutex::new(None),
+            recording_start_wall: Mutex::new(None),
             pause_start: Mutex::new(None),
             total_pause_duration: Mutex::new(std::time::Duration::ZERO),
             mic_rms_level: AtomicU32::new(0),
@@ -173,6 +184,8 @@ impl RecordingState {
         self.is_recording.store(true, Ordering::SeqCst);
         *self.recording_start.lock()
             .map_err(|e| anyhow::anyhow!("recording_start lock poisoned: {e}"))? = Some(Instant::now());
+        *self.recording_start_wall.lock()
+            .map_err(|e| anyhow::anyhow!("recording_start_wall lock poisoned: {e}"))? = Some(Utc::now());
         self.error_count.store(0, Ordering::SeqCst);
         self.recoverable_error_count.store(0, Ordering::SeqCst);
         *self.last_error.lock()
@@ -442,6 +455,13 @@ impl RecordingState {
             .unwrap_or_default()
     }
 
+    /// Hora de pared del arranque de la grabación en curso, sellada por `start_recording`.
+    /// `None` si no se ha arrancado. Es la fuente de `started_at`: NUNCA reconstruirlo restando
+    /// una duración al cierre (ver el doc del campo).
+    pub fn get_recording_started_at(&self) -> Option<DateTime<Utc>> {
+        self.recording_start_wall.lock().ok().and_then(|g| *g)
+    }
+
     pub fn get_recording_duration(&self) -> Option<f64> {
         self.recording_start.lock().ok()
             .and_then(|guard| guard.map(|start| start.elapsed().as_secs_f64()))
@@ -527,6 +547,7 @@ impl Default for RecordingState {
             error_callback: Mutex::new(None),
             stats: Mutex::new(RecordingStats::default()),
             recording_start: Mutex::new(None),
+            recording_start_wall: Mutex::new(None),
             pause_start: Mutex::new(None),
             total_pause_duration: Mutex::new(std::time::Duration::ZERO),
             mic_rms_level: AtomicU32::new(0),

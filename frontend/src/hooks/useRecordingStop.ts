@@ -137,10 +137,11 @@ export function useRecordingStop(
           folder_path?: string;
           meeting_name?: string;
           duration_seconds?: number | null;
+          started_at?: string | null;
         }>(TauriEvent.RECORDING_STOPPED, async (event) => {
           // Create promise that resolves when sessionStorage is set (prevents race condition)
           recordingStoppedDataRef.current = (async () => {
-            const { folder_path, meeting_name, duration_seconds } = event.payload;
+            const { folder_path, meeting_name, duration_seconds, started_at } = event.payload;
 
             // Store folder_path and meeting_name for later use in handleRecordingStop
             if (folder_path) {
@@ -153,6 +154,12 @@ export function useRecordingStop(
             // Inmune al bug 2x de timestamps VAD/Deepgram cuando hay sample rate mismatch.
             if (typeof duration_seconds === 'number' && duration_seconds > 0) {
               sessionStorage.setItem('last_recording_duration_seconds', String(duration_seconds));
+            }
+            // Hora de arranque SELLADA por Rust al empezar a grabar. Sustituye a derivarla
+            // restando la duración al cierre, que mentía en cuanto la máquina se suspendía
+            // (#5 del piloto Dingler: 6h45 de "duración" para 67 min de audio).
+            if (started_at) {
+              sessionStorage.setItem('last_recording_started_at', started_at);
             }
           })();
 
@@ -302,6 +309,9 @@ export function useRecordingStop(
           sessionStorage.removeItem('last_recording_folder_path');
           sessionStorage.removeItem('last_recording_meeting_name');
           sessionStorage.removeItem('last_recording_duration_seconds');
+          // Obligatorio: si el sello sobrevive, la SIGUIENTE grabación cuyo stop no lo emita
+          // heredaría la hora de arranque de ésta — peor que el fallback derivado.
+          sessionStorage.removeItem('last_recording_started_at');
           sessionStorage.removeItem('early_meeting_id');
           sessionStorage.removeItem('active_recording_mode');
           sessionStorage.removeItem('indexeddb_current_meeting_id');
@@ -569,9 +579,17 @@ export function useRecordingStop(
         .reduce((a, b) => a + b, 0);
 
       const now = new Date().toISOString();
-      const startedAt = sortedTranscripts[0]?.audio_start_time !== undefined
-        ? new Date(Date.now() - (durationSec * 1000)).toISOString()
-        : now;
+      // `started_at` SELLADO por Rust al arrancar (`RecordingState::recording_start_wall`).
+      // Antes se derivaba como `ahora - duración`, y como la duración viene de un reloj que en
+      // Windows sigue corriendo con la máquina dormida, una grabación suspendida acababa con una
+      // fecha de inicio de madrugada (#5 del piloto Dingler). El fallback derivado se conserva
+      // sólo para el caso en que el evento no traiga el sello (versión vieja de Rust, o stop por
+      // un camino que no lo emite).
+      const sealedStartedAt = sessionStorage.getItem('last_recording_started_at');
+      const startedAt = sealedStartedAt
+        ?? (sortedTranscripts[0]?.audio_start_time !== undefined
+          ? new Date(Date.now() - (durationSec * 1000)).toISOString()
+          : now);
 
       const segments = sortedTranscripts.map((t, i) => ({
         segment_index: t.sequence_id ?? i,

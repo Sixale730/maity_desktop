@@ -83,20 +83,40 @@ pub fn next_hour_boundary(now: NaiveDateTime) -> NaiveDateTime {
     truncated + Duration::hours(1)
 }
 
+/// Tope duro de duración de un segmento, en minutos. Sólo entra en juego FUERA de la ventana
+/// horaria: dentro de ella manda la frontera de hora en punto, que ya trocea cada ≤60 min.
+///
+/// Piloto Dingler (ago-2026): un segmento corrió 16:01 → 18:30 (150 min) sin rotar. No fue un
+/// fallo del reloj — fue la regla de abajo funcionando como estaba escrita: en overtime la
+/// rotación se apagaba y el cierre quedaba en manos de `auto_close`, que esa usuaria tenía
+/// desactivado. Sin nadie que cerrara, el segmento crecía sin límite.
+pub const MAX_SEGMENT_MINUTES: i64 = 90;
+
 /// ¿Debe rotarse el segmento actual? (Incremento 4, troceo por hora alineado al reloj.)
 ///
-/// `true` cuando la rotación está activa, seguimos DENTRO de la ventana, y `now` ya cruzó la
-/// próxima hora en punto posterior al arranque del segmento (`owned_since`). Fuera de ventana
-/// devuelve `false`: en overtime NO se rota — el cierre lo maneja `auto_close`. Como
-/// `owned_since` se actualiza en cada rotación, la siguiente frontera se recalcula sola y el
-/// chequeo es robusto a sleep/suspend (un salto de varias horas dispara una sola rotación).
+/// `true` cuando la rotación está activa y `now` ya cruzó la próxima hora en punto posterior al
+/// arranque del segmento (`owned_since`), siempre que se cumpla UNA de dos: seguimos dentro de la
+/// ventana, o el segmento ya excedió `MAX_SEGMENT_MINUTES`.
+///
+/// **En overtime se ROTA, no se cierra.** El usuario sigue en una junta pasadas las 18:00 y
+/// cortarle la grabación sería peor que el bloque gigante; lo que se evita es el bloque, no la
+/// grabación. El cierre sigue siendo cosa de `auto_close` y del paro manual.
+///
+/// Como `owned_since` se actualiza en cada rotación, la siguiente frontera se recalcula sola y el
+/// chequeo es robusto a sleep/suspend (un salto de varias horas dispara una sola rotación). Esta
+/// función usa wall-clock A PROPÓSITO: un reloj monotónico sería peor aquí, porque en Windows
+/// sigue corriendo con la máquina dormida (ver el `started_at` sellado en `service.rs`).
 pub fn should_rotate(
     owned_since: NaiveDateTime,
     now: NaiveDateTime,
     in_window: bool,
     enabled: bool,
 ) -> bool {
-    enabled && in_window && now >= next_hour_boundary(owned_since)
+    if !enabled {
+        return false;
+    }
+    let excedio_tope = now - owned_since >= Duration::minutes(MAX_SEGMENT_MINUTES);
+    (in_window || excedio_tope) && now >= next_hour_boundary(owned_since)
 }
 
 /// Primera ocurrencia de la hora-del-día `auto_close_time` ("HH:MM") ESTRICTAMENTE después de
@@ -283,8 +303,33 @@ mod tests {
 
     #[test]
     fn should_rotate_fuera_de_ventana_no_rota() {
-        // Cruzó la frontera pero ya está fuera de la ventana (overtime) => no rota (lo cierra auto_close).
+        // Cruzó la frontera pero ya está fuera de la ventana (overtime) y lleva sólo 35 min
+        // => no rota; lo normal en overtime es que cierre `auto_close`.
         assert!(!should_rotate(dt(2026, 6, 29, 17, 30), dt(2026, 6, 29, 18, 5), false, true));
+    }
+
+    /// El caso exacto del piloto Dingler: segmento 16:01 → 18:30 en overtime con `auto_close`
+    /// desactivado. Antes crecía sin límite (150 min en producción); ahora el tope lo trocea.
+    #[test]
+    fn should_rotate_overtime_rota_al_exceder_el_tope() {
+        assert!(should_rotate(dt(2026, 8, 20, 16, 1), dt(2026, 8, 20, 18, 30), false, true));
+    }
+
+    /// En overtime, cruzar la hora en punto NO basta: hace falta además exceder el tope. Fija el
+    /// flanco (89 min) para que el tope no se convierta por accidente en "rotar siempre",
+    /// que reintroduciría el troceo horario después de hora y llenaría la lista de segmentos.
+    ///
+    /// (Al revés no hay caso que probar: si el segmento excede 90 min, la frontera de hora —a lo
+    /// sumo 60 min después del arranque— ya quedó cruzada por construcción.)
+    #[test]
+    fn should_rotate_overtime_cruzar_la_hora_no_basta_sin_el_tope() {
+        assert!(!should_rotate(dt(2026, 8, 20, 16, 1), dt(2026, 8, 20, 17, 30), false, true));
+    }
+
+    /// Con la rotación apagada el tope NO aplica: es una preferencia explícita del usuario.
+    #[test]
+    fn should_rotate_tope_no_ignora_la_preferencia_del_usuario() {
+        assert!(!should_rotate(dt(2026, 8, 20, 16, 1), dt(2026, 8, 20, 18, 30), false, false));
     }
 
     #[test]
