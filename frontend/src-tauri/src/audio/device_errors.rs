@@ -241,6 +241,26 @@ pub fn open_microphone_privacy_settings() -> Result<(), String> {
     Err("unsupported".into())
 }
 
+/// Preflight de micrófono para onboarding, ajustes y diagnóstico.
+///
+/// `Ok(None)` = micrófono listo. `Ok(Some(payload))` = falla clasificada, con el
+/// mismo shape que el evento `audio-device-error`, así que el frontend reusa
+/// `AudioDeviceErrorPayload` y su remediación sin tipos nuevos.
+///
+/// Corre en `spawn_blocking` porque la probe abre un stream y duerme 500 ms: en
+/// el hilo async bloquearía el runtime.
+///
+/// **No llamar desde el camino de grabación** — ver `probe_microphone_access`.
+#[tauri::command]
+pub async fn check_microphone_ready() -> Result<Option<AudioDeviceErrorPayload>, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        crate::audio::devices::discovery::probe_microphone_access()
+            .map(|err| err.to_payload(String::new()))
+    })
+    .await
+    .map_err(|e| format!("no se pudo ejecutar la comprobación de micrófono: {e}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

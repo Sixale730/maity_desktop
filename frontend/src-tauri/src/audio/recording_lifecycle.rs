@@ -57,17 +57,121 @@ pub async fn start_recording<R: Runtime>(app: AppHandle<R>) -> Result<(), String
     start_recording_with_meeting_name(app, None, None).await
 }
 
+/// Limitador de `recording_start_failed`, calcado de `BridgeLimiter`
+/// (`logging/rust_error_bridge.rs`).
+///
+/// Defensa en profundidad frente a la tormenta del piloto Dingler: el back-off del
+/// scheduler corta los reintentos en origen, pero `emit_event` escribía al outbox
+/// SIN ningún límite, así que cualquier otro camino ruidoso podría repetir las 965
+/// filas de una sola usuaria (el 27 % de `platform_logs` del piloto).
+///
+/// La clave es `código clasificado + trigger`, NO el mensaje crudo: éste trae
+/// nombres de dispositivo, así que dedupear por él daría cardinalidad infinita y
+/// no agruparía nada.
+mod start_failed_limiter {
+    use std::collections::{BTreeMap, BTreeSet};
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+    use std::sync::Mutex;
+    use std::sync::OnceLock;
+
+    /// Cupo por proceso. Generoso frente a los ~6 códigos distintos que existen:
+    /// lo que se corta es la repetición, no la variedad.
+    const MAX_PER_PROCESS: usize = 20;
+    const MIN_GAP_MS: u64 = 2_000;
+
+    #[derive(Default)]
+    pub struct Limiter {
+        sent: AtomicUsize,
+        last_sent_ms: AtomicU64,
+        /// Ocurrencias por clave (rollup de suprimidos), para poder reportar
+        /// `suppressed` y no perder la señal de volumen.
+        seen: Mutex<BTreeMap<String, u64>>,
+        /// Claves ya ENVIADAS. Separado de `seen` a propósito: un descarte por
+        /// cap/gap no debe envenenar el dedup — si se dedupea por lo visto, el
+        /// PRIMER error de cada ráfaga se pierde para siempre. Misma invariante
+        /// que `BridgeLimiter`, fijada por test en ambos lados.
+        sent_keys: Mutex<BTreeSet<String>>,
+    }
+
+    static LIMITER: OnceLock<Limiter> = OnceLock::new();
+
+    pub fn global() -> &'static Limiter {
+        LIMITER.get_or_init(Limiter::default)
+    }
+
+    impl Limiter {
+        /// `Some(suprimidos_hasta_ahora)` si hay que emitir; `None` si se descarta.
+        pub fn allows(&self, key: &str, now_ms: u64) -> Option<u64> {
+            {
+                let Ok(mut seen) = self.seen.lock() else {
+                    return None;
+                };
+                *seen.entry(key.to_string()).or_insert(0) += 1;
+            }
+            {
+                let Ok(sent_keys) = self.sent_keys.lock() else {
+                    return None;
+                };
+                if sent_keys.contains(key) {
+                    return None;
+                }
+            }
+            if self.sent.load(Ordering::Relaxed) >= MAX_PER_PROCESS {
+                return None;
+            }
+            let last = self.last_sent_ms.load(Ordering::Relaxed);
+            if last != 0 && now_ms.saturating_sub(last) < MIN_GAP_MS {
+                return None;
+            }
+            self.sent.fetch_add(1, Ordering::Relaxed);
+            self.last_sent_ms.store(now_ms, Ordering::Relaxed);
+            if let Ok(mut sent_keys) = self.sent_keys.lock() {
+                sent_keys.insert(key.to_string());
+            }
+            Some(self.suppressed_total())
+        }
+
+        fn suppressed_total(&self) -> u64 {
+            let sent = self.sent.load(Ordering::Relaxed) as u64;
+            match self.seen.lock() {
+                Ok(seen) => seen.values().sum::<u64>().saturating_sub(sent),
+                Err(_) => 0,
+            }
+        }
+
+        #[cfg(test)]
+        pub fn fresh() -> Self {
+            Self::default()
+        }
+    }
+}
+
 /// Telemetría (G1): un arranque fallido SIEMPRE deja rastro en el outbox —
 /// incluye el `Err` del StartGate (el doble-clic que dejaba la UI muerta en 5
 /// usuarias del piloto) y cualquier fallo de resolución de dispositivos o del
 /// embudo. El id de sesión es efímero: un start rechazado no debe pisar el
 /// slot de la grabación VIVA.
+///
+/// Rate-limitado desde ago-2026 (ver `start_failed_limiter`). El payload lleva
+/// `suppressed` para que el descarte sea visible en la nube en vez de silencioso.
 async fn emit_start_failed<R: Runtime>(app: &AppHandle<R>, trigger: Option<&str>, error: &str) {
+    let trigger = trigger.unwrap_or("command");
+    let code = super::device_errors::classify_device_error(error).code();
+    let key = format!("{}:{}", code, trigger);
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+
+    let Some(suppressed) = start_failed_limiter::global().allows(&key, now_ms) else {
+        return;
+    };
+
     crate::logging::telemetry::emit::emit_event(
         app,
         &crate::logging::telemetry::recording_session::new_id(),
         crate::logging::telemetry::catalog::RECORDING_START_FAILED,
-        serde_json::json!({ "trigger": trigger.unwrap_or("command") }),
+        serde_json::json!({ "trigger": trigger, "code": code, "suppressed": suppressed }),
         Some("error"),
         Some(error),
         None,
@@ -757,4 +861,70 @@ fn spawn_pause_reminder<R: Runtime>(app: AppHandle<R>) {
 
         PAUSE_REMINDER_RUNNING.store(false, Ordering::SeqCst);
     });
+}
+
+#[cfg(test)]
+mod start_failed_limiter_tests {
+    //! Invariante compartida con `BridgeLimiter`: el dedup mira lo ENVIADO, no lo
+    //! VISTO. Si mirara lo visto, un descarte por gap marcaría la clave y el
+    //! PRIMER error de cada ráfaga posterior se perdería para siempre.
+    use super::start_failed_limiter::Limiter;
+
+    /// Epoch ms realista. `last_sent_ms == 0` es el centinela de "nada enviado
+    /// aún", así que un test que arranque en t=0 desactiva el gap sin querer.
+    const T0: u64 = 1_756_000_000_000;
+
+    #[test]
+    fn dedupea_por_clave_ya_enviada() {
+        let lim = Limiter::fresh();
+        assert!(lim.allows("mic_not_found:scheduler", T0).is_some());
+        // El caso xochitl: la misma clave 964 veces más, un tick de 30 s aparte.
+        for i in 1..965u64 {
+            assert!(
+                lim.allows("mic_not_found:scheduler", T0 + i * 30_000).is_none(),
+                "la repetición {} debió suprimirse",
+                i
+            );
+        }
+    }
+
+    #[test]
+    fn una_causa_distinta_si_pasa() {
+        let lim = Limiter::fresh();
+        assert!(lim.allows("mic_not_found:scheduler", T0).is_some());
+        // Códigos distintos son problemas distintos: el dedup no debe taparlos.
+        assert!(lim
+            .allows("mic_permission_denied:scheduler", T0 + 10_000)
+            .is_some());
+        // Y el mismo código desde otro trigger también es señal propia.
+        assert!(lim.allows("mic_not_found:tray", T0 + 20_000).is_some());
+    }
+
+    #[test]
+    fn un_drop_por_gap_no_envenena_el_dedup() {
+        let lim = Limiter::fresh();
+        assert!(lim.allows("a:ui", T0).is_some());
+        // Dentro del gap de 2 s: se descarta, pero la clave NO queda marcada...
+        assert!(lim.allows("b:ui", T0 + 500).is_none());
+        // ...así que su siguiente ocurrencia, ya fuera del gap, sí se envía.
+        assert!(
+            lim.allows("b:ui", T0 + 5_000).is_some(),
+            "el primer error de una ráfaga no puede perderse por un drop de gap"
+        );
+    }
+
+    #[test]
+    fn reporta_los_suprimidos() {
+        let lim = Limiter::fresh();
+        assert_eq!(lim.allows("a:ui", T0), Some(0));
+        for i in 1..50u64 {
+            lim.allows("a:ui", T0 + i * 3_000);
+        }
+        // 49 repeticiones suprimidas de "a:ui" + esta primera de "b:ui".
+        assert_eq!(
+            lim.allows("b:ui", T0 + 500_000),
+            Some(49),
+            "el volumen descartado debe viajar en el payload, no desaparecer"
+        );
+    }
 }
