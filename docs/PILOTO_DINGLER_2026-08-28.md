@@ -6,6 +6,12 @@ managers; Rita no está en la plataforma) vive como artifact "Radiografía del p
 tipos de junta, cobertura de jornada, acciones) — y **no** incluye nada de este documento. Se regenera con
 `/piloto-analisis` (`.claude/skills/piloto-analisis/`; datos en `docs/piloto/dingler-2026-08-28.data.json`).
 
+Dos artifacts, decisión del 2026-08-28:
+- **Cliente**: "Radiografía del piloto Dingler" (v4 conductas) — https://claude.ai/code/artifact/f0d68a85-8ed3-4532-91ee-1074bfa10824
+- **Interno Maity**: "Piloto Dingler · lectura interna" (la v3 de uso/ritmo/quién graba/qué salió, que el
+  equipo consideró útil para nosotros) — https://claude.ai/code/artifact/2301fce9-ff9f-403a-a6db-61f75fd13d12.
+  Sus cifras son las de la v3 (148 conversaciones incl. 4 `discarded`); lo técnico sigue solo en este md.
+
 Todo lo de aquí sale de Supabase (`maity.omi_conversations`, `omi_transcript_segments`,
 `platform_logs`, `subscriptions`, `usage_counters`, `billing_plans`) con corte el
 **2026-08-28 09:30 CDMX**. Horas en America/Mexico_City.

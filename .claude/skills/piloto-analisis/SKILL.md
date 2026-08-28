@@ -10,10 +10,14 @@ Un piloto genera dos preguntas distintas y **no se contestan con el mismo docume
 
 | | Reporte A — interno Maity | Reporte B — manager del cliente |
 |---|---|---|
-| Pregunta | ¿Qué le pasó a la app y al modelo con este equipo? | ¿Cómo se comunica mi equipo, qué le pasa a cada quien y qué hago el lunes? |
-| Forma | `docs/PILOTO_<EMPRESA>_<fecha>.md` (plantilla `report-a-template.md`) | Artifact HTML (`report-b-skeleton.html` + `build-report-b.mjs` + JSON de datos) |
-| Contiene | RAM, scheduler, atribución, cuota, versiones, calidad de datos, backlog | Conductas, competencias, citas → alternativa, tipos de junta, cobertura, acciones |
-| Nunca contiene | — | Volumen como mérito ("148 conversaciones"), jerga, problemas técnicos, managers |
+| Pregunta | ¿Cuánto y cómo se usó, quién, qué salió, y qué le pasó a la app y al modelo con este equipo? | ¿Cómo se comunica mi equipo, qué le pasa a cada quien y qué hago el lunes? |
+| Forma | **Dos piezas**: (1) `docs/PILOTO_<EMPRESA>_<fecha>.md` (plantilla `report-a-template.md`) con lo técnico; (2) **artifact interno de uso** (KPIs de volumen, horas por día, heatmap día×hora, quién graba con RAM/versión, destino de cada conversación, hablantes por canal, "lo que le diríamos al manager") — ejemplo real en `report-interno-ejemplo-dingler.html` | Artifact HTML (`report-b-skeleton.html` + `build-report-b.mjs` + JSON de datos) |
+| Contiene | RAM, scheduler, atribución, cuota, versiones, calidad de datos, backlog; volumen y ritmo de uso | Conductas, competencias, citas → alternativa, tipos de junta, cobertura, acciones |
+| Nunca contiene | Datos que identifiquen clientes del cliente | Volumen como mérito ("148 conversaciones"), jerga, problemas técnicos, managers |
+
+Decisión del usuario (2026-08-28): **al final son dos artifacts, uno interno y uno del cliente.** El de uso
+(v2/v3 de Dingler: "estaba bien para nosotros") no se tira, se publica como interno con título distinto
+("<Empresa> · lectura interna"); el de conductas es el único que ve el cliente.
 
 Principio del reporte B (feedback del cofundador, 2026-08-28): **dato → pregunta del manager → frase sobre una conducta → acción**. Un número que no sobrevive esa conversión no va en el cuerpo ("¿para qué le sirve a Rita que se guardaron 148 conversaciones?"). Un pico de horas no dice nada hasta que se lee con la minuta del día: qué juntas fueron, con quién, de qué.
 
@@ -24,8 +28,9 @@ Archivos de esta skill:
 ├── SKILL.md               ← este archivo
 ├── queries.sql            ← encabezado CTE + Q0…Q9 (pegar en mcp__supabase__execute_sql)
 ├── report-a-template.md   ← esqueleto del md interno
-├── report-b-skeleton.html ← tokens, CSS, tooltip y gráficas SVG; recibe {{DATA}} y {{SECTIONS}}
-└── build-report-b.mjs     ← node build-report-b.mjs <datos.json> <salida.html>
+├── report-b-skeleton.html ← tokens, CSS, tooltip; recibe {{MASTHEAD}} {{TOC}} {{SECTIONS}} {{FOOTER}}
+├── build-report-b.mjs     ← node build-report-b.mjs <datos.json> <salida.html>
+└── report-interno-ejemplo-dingler.html ← artifact interno de uso (v3 de Dingler) para partir de ahí
 ```
 
 Datos por piloto: `docs/piloto/<empresa>-<fecha>.data.json` (estructura documentada al final; Dingler = `docs/piloto/dingler-2026-08-28.data.json`).
@@ -109,9 +114,18 @@ Flujo: (a) llenar `docs/piloto/<empresa>-<fecha>.data.json` con las cifras de Q1
 - [ ] Claro/oscuro OK (tokens en `:root`, `@media (prefers-color-scheme: dark) :root:not([data-theme="light"])`, `:root[data-theme="dark"]`).
 - [ ] "Cómo leer esto" trae fecha/hora de corte y el supuesto de jornada.
 
-## Paso 6 — Reporte A (interno)
+## Paso 6 — Reporte A (interno): md + artifact de uso
 
-`docs/PILOTO_<EMPRESA>_<fecha>.md` con `report-a-template.md`. Secciones obligatorias además de los hallazgos: **Lo que NO va al manager y por qué** (tabla con "cómo se dice en B"), **Señales de producto desde la vista del manager**, **Caveats de calidad de datos**, **Backfill**, **Changelog del reporte del manager**. Cada cifra con su Q.
+**Artifact interno de uso** (audiencia: equipo Maity): partir de `report-interno-ejemplo-dingler.html`
+(mismos tokens/CSS/tooltip que el esqueleto B; datos inline en los arrays `daily`, `heat`, `hourly`,
+`users`, `spk` del `<script>` final, generados con Q7 + el perfil por hora + Q0/Q5 + `omi_transcript_segments.is_user`).
+Secciones: Resumen (tiles de volumen), Ritmo de uso (horas/día, heatmap día×hora, perfil por hora), Quién
+graba (tabla con análisis, "sin tema", vistas, RAM, tier, estado), Qué salió (destino por día, niveles,
+hablantes por canal, lo que dicen las minutas), Lectura para el manager (borrador interno), Método.
+Título "<Empresa> · lectura interna", favicon 🛠️, publicar como artifact **separado** del B. Puede
+llevar jerga y nombres de managers si hace falta; no lleva datos de clientes del cliente.
+
+**md técnico**: `docs/PILOTO_<EMPRESA>_<fecha>.md` con `report-a-template.md`. Secciones obligatorias además de los hallazgos: **Lo que NO va al manager y por qué** (tabla con "cómo se dice en B"), **Señales de producto desde la vista del manager**, **Caveats de calidad de datos**, **Backfill**, **Changelog del reporte del manager**. Cada cifra con su Q.
 
 ## Paso 7 — Memoria y cierre
 

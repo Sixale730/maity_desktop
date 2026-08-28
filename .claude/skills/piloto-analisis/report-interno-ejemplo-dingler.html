@@ -1,0 +1,543 @@
+<title>Piloto Dingler · lectura interna</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,600;12..96,700&family=Instrument+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+  :root {
+    color-scheme: light;
+    --bg: #F4F5FA; --surface: #FFFFFF; --surface-2: #EEF0F7; --ink: #171A2B; --ink-2: #5F6580; --muted: #8A90A8; --line: #E2E5F0;
+    --accent: #485DF4; --accent-ink: #3446C9; --accent-soft: #E8EBFE;
+    --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a;
+    --seq0: #EEF0F7; --seq1: #cde2fb; --seq2: #9ec5f4; --seq3: #6da7ec; --seq4: #3987e5; --seq5: #256abf; --seq6: #184f95; --seq7: #0d366b;
+    --ord1: #86b6ef; --ord2: #2a78d6; --ord3: #104281;
+    --good: #0ca30c; --warn: #fab219; --serious: #ec835a; --critical: #d03b3b; --good-text: #006300;
+    --shadow: 0 1px 2px rgba(23,26,43,.05), 0 8px 24px -12px rgba(23,26,43,.12);
+    --font-display: "Bricolage Grotesque", "Instrument Sans", system-ui, sans-serif;
+    --font-body: "Instrument Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --font-mono: "IBM Plex Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --bg: #111321; --surface: #1B1E2B; --surface-2: #232739; --ink: #EEF0F8; --ink-2: #A3A9C2; --muted: #7C8299; --line: #2A2E40;
+      --accent: #8A98FF; --accent-ink: #AAB4FF; --accent-soft: #252B4D;
+      --s1: #3987e5; --s2: #d95926; --s3: #199e70;
+      --seq0: #232739; --seq1: #163f75; --seq2: #1c5cab; --seq3: #256abf; --seq4: #3987e5; --seq5: #5598e7; --seq6: #86b6ef; --seq7: #b7d3f6;
+      --ord1: #184f95; --ord2: #3987e5; --ord3: #9ec5f4;
+      --good-text: #0ca30c;
+      --shadow: 0 1px 2px rgba(0,0,0,.3), 0 8px 24px -12px rgba(0,0,0,.5);
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --bg: #111321; --surface: #1B1E2B; --surface-2: #232739; --ink: #EEF0F8; --ink-2: #A3A9C2; --muted: #7C8299; --line: #2A2E40;
+    --accent: #8A98FF; --accent-ink: #AAB4FF; --accent-soft: #252B4D;
+    --s1: #3987e5; --s2: #d95926; --s3: #199e70;
+    --seq0: #232739; --seq1: #163f75; --seq2: #1c5cab; --seq3: #256abf; --seq4: #3987e5; --seq5: #5598e7; --seq6: #86b6ef; --seq7: #b7d3f6;
+    --ord1: #184f95; --ord2: #3987e5; --ord3: #9ec5f4;
+    --good-text: #0ca30c;
+    --shadow: 0 1px 2px rgba(0,0,0,.3), 0 8px 24px -12px rgba(0,0,0,.5);
+  }
+
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font-family: var(--font-body); font-size: 16px; line-height: 1.55; -webkit-font-smoothing: antialiased; }
+  a { color: var(--accent-ink); }
+  a:focus-visible, button:focus-visible, [tabindex]:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 0 24px 96px; }
+  .masthead { padding: 56px 0 28px; border-bottom: 1px solid var(--line); display: grid; grid-template-columns: 1fr auto; gap: 24px; align-items: end; }
+  .eyebrow { font-family: var(--font-mono); font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-2); }
+  .eyebrow .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); margin-right: 8px; vertical-align: 1px; }
+  h1 { font-family: var(--font-display); font-weight: 700; font-size: clamp(34px, 5vw, 52px); line-height: 1.02; letter-spacing: -.02em; margin: 12px 0 14px; text-wrap: balance; }
+  .lede { max-width: 62ch; color: var(--ink-2); font-size: 18px; margin: 0; }
+  .meta { font-family: var(--font-mono); font-size: 12px; color: var(--muted); line-height: 1.7; text-align: right; }
+  .meta b { color: var(--ink-2); font-weight: 500; }
+
+  nav.toc { position: sticky; top: 0; z-index: 5; background: color-mix(in srgb, var(--bg) 88%, transparent); backdrop-filter: blur(8px); border-bottom: 1px solid var(--line); margin: 0 -24px; padding: 0 24px; }
+  nav.toc ul { list-style: none; margin: 0; padding: 0; display: flex; gap: 4px; overflow-x: auto; }
+  nav.toc a { display: block; padding: 12px 10px; font-family: var(--font-mono); font-size: 12px; letter-spacing: .04em; text-transform: uppercase; color: var(--ink-2); text-decoration: none; white-space: nowrap; border-bottom: 2px solid transparent; }
+  nav.toc a:hover { color: var(--ink); border-bottom-color: var(--line); }
+
+  section { padding-top: 56px; }
+  h2 { font-family: var(--font-display); font-weight: 600; font-size: 30px; letter-spacing: -.015em; line-height: 1.1; margin: 8px 0 8px; text-wrap: balance; }
+  h3 { font-family: var(--font-display); font-weight: 600; font-size: 19px; margin: 0 0 6px; letter-spacing: -.01em; }
+  p { max-width: 68ch; }
+  .sub { color: var(--ink-2); margin-top: 0; }
+
+  .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin: 28px 0 8px; }
+  .kpi { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 16px 16px 14px; box-shadow: var(--shadow); }
+  .kpi .v { font-size: 34px; font-weight: 600; letter-spacing: -.02em; line-height: 1; color: var(--ink); }
+  .kpi .v small { font-size: 16px; font-weight: 500; color: var(--ink-2); margin-left: 2px; }
+  .kpi .l { font-size: 13px; color: var(--ink-2); margin-top: 8px; }
+  .kpi .d { font-family: var(--font-mono); font-size: 11px; color: var(--muted); margin-top: 4px; }
+  .kpi.alert .v { color: var(--critical); }
+
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 800px) { .grid2 { grid-template-columns: 1fr; } .masthead { grid-template-columns: 1fr; } .meta { text-align: left; } }
+
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 20px 22px 18px; box-shadow: var(--shadow); margin: 18px 0; }
+  .card .cap { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin-bottom: 10px; flex-wrap: wrap; }
+  .card .cap h3 { margin: 0; }
+  .card .cap .u { font-family: var(--font-mono); font-size: 11px; color: var(--muted); letter-spacing: .04em; }
+  .chart { width: 100%; overflow-x: auto; }
+  svg.viz { display: block; width: 100%; height: auto; font-family: var(--font-mono); font-size: 11px; }
+  svg.viz text { fill: var(--ink-2); }
+  svg.viz .grid { stroke: var(--line); stroke-width: 1; }
+  svg.viz .axis { stroke: var(--line); stroke-width: 1; }
+  svg.viz .lbl-strong { fill: var(--ink); font-weight: 500; }
+  svg.viz .lbl-muted { fill: var(--muted); }
+  svg.viz .bar { fill: var(--s1); }
+  svg.viz .bar.dim { fill: var(--s1); opacity: .42; }
+  svg.viz .s1 { fill: var(--s1); } svg.viz .s2 { fill: var(--s2); } svg.viz .s3 { fill: var(--s3); }
+  svg.viz .hit { fill: transparent; cursor: default; }
+  .legend { display: flex; gap: 16px; flex-wrap: wrap; font-family: var(--font-mono); font-size: 11px; color: var(--ink-2); margin: 10px 0 0; }
+  .legend span::before { content: ""; display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; background: var(--sw); }
+  .note { font-size: 13px; color: var(--ink-2); margin: 10px 0 0; max-width: 80ch; }
+
+  details.tbl { margin-top: 10px; }
+  details.tbl summary { font-family: var(--font-mono); font-size: 11px; letter-spacing: .04em; text-transform: uppercase; color: var(--accent-ink); cursor: pointer; }
+  table { border-collapse: collapse; width: 100%; font-size: 13.5px; margin-top: 8px; }
+  th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-family: var(--font-mono); font-size: 11px; letter-spacing: .05em; text-transform: uppercase; color: var(--ink-2); font-weight: 500; }
+  td.n, th.n { text-align: right; font-variant-numeric: tabular-nums; }
+  .tblwrap { overflow-x: auto; }
+  .bar-cell { position: relative; min-width: 120px; }
+  .bar-cell i { display: block; height: 8px; border-radius: 0 4px 4px 0; background: var(--s1); }
+  .bar-cell b { font-weight: 500; font-variant-numeric: tabular-nums; }
+  .pill { display: inline-block; font-family: var(--font-mono); font-size: 11px; padding: 2px 8px; border-radius: 999px; background: var(--surface-2); color: var(--ink-2); white-space: nowrap; }
+  .pill.off { background: color-mix(in srgb, var(--critical) 14%, var(--surface)); color: var(--critical); }
+  .pill.low { background: color-mix(in srgb, var(--warn) 22%, var(--surface)); color: var(--ink); }
+  .pill.ok { background: color-mix(in srgb, var(--good) 14%, var(--surface)); color: var(--good-text); }
+
+  .heat { display: grid; grid-template-columns: 44px repeat(11, 1fr); gap: 3px; font-family: var(--font-mono); font-size: 11px; }
+  .heat .h { color: var(--muted); text-align: center; padding-bottom: 4px; }
+  .heat .r { color: var(--ink-2); display: flex; align-items: center; }
+  .heat .c { aspect-ratio: 1.6 / 1; border-radius: 3px; background: var(--seq0); position: relative; }
+  .heat .c[data-v]:hover, .heat .c[data-v]:focus { outline: 2px solid var(--ink); outline-offset: -2px; }
+  .ramp { display: flex; align-items: center; gap: 6px; font-family: var(--font-mono); font-size: 11px; color: var(--muted); margin-top: 10px; }
+  .ramp i { width: 22px; height: 10px; border-radius: 2px; display: inline-block; }
+
+  .stack { display: flex; height: 26px; border-radius: 6px; overflow: hidden; gap: 2px; background: transparent; }
+  .stack div { display: flex; align-items: center; padding: 0 8px; font-family: var(--font-mono); font-size: 11px; color: #fff; white-space: nowrap; }
+  .stack .o1 { background: var(--ord1); color: var(--ink); } .stack .o2 { background: var(--ord2); } .stack .o3 { background: var(--ord3); min-width: 6px; }
+
+  .aud { border-radius: 14px; padding: 26px 26px 8px; margin-top: 24px; border: 1px solid var(--line); background: var(--surface); box-shadow: var(--shadow); }
+  .aud .who { display: inline-block; font-family: var(--font-mono); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; padding: 4px 10px; border-radius: 999px; background: var(--accent-soft); color: var(--accent-ink); }
+  .aud h2 { margin-top: 12px; }
+  .tldr { background: var(--surface-2); border-radius: 10px; padding: 14px 16px; margin: 14px 0 22px; }
+  .tldr p { margin: 0; max-width: 78ch; }
+  .tldr p + p { margin-top: 8px; }
+
+  .finding { display: grid; grid-template-columns: 112px 1fr; gap: 16px; padding: 16px 0; border-top: 1px solid var(--line); }
+  .finding:last-of-type { border-bottom: 1px solid var(--line); }
+  .finding .sev { font-family: var(--font-mono); font-size: 11px; letter-spacing: .05em; text-transform: uppercase; display: flex; align-items: flex-start; gap: 6px; line-height: 1.5; }
+  .finding .sev::before { content: ""; width: 10px; height: 10px; border-radius: 50%; margin-top: 4px; flex: none; background: var(--sc); }
+  .finding h3 { font-size: 17px; }
+  .finding p { margin: 4px 0 0; max-width: 76ch; color: var(--ink-2); }
+  .finding p b { color: var(--ink); font-weight: 600; }
+  .finding .fix { margin-top: 8px; padding-left: 12px; border-left: 2px solid var(--accent); color: var(--ink); }
+  .finding .fix::before { content: "Qué hacer · "; font-family: var(--font-mono); font-size: 11px; letter-spacing: .05em; text-transform: uppercase; color: var(--accent-ink); }
+  @media (max-width: 640px) { .finding { grid-template-columns: 1fr; gap: 6px; } }
+
+  ul.plain { padding-left: 18px; margin: 6px 0; }
+  ul.plain li { margin: 4px 0; max-width: 76ch; }
+  ul.plain li b { font-weight: 600; }
+  .mono { font-family: var(--font-mono); font-size: 12.5px; }
+  .fixed-ok { color: var(--good-text); font-weight: 600; }
+
+  #tip { position: fixed; pointer-events: none; z-index: 20; background: var(--ink); color: var(--bg); font-family: var(--font-mono); font-size: 12px; line-height: 1.4; padding: 7px 10px; border-radius: 6px; max-width: 280px; opacity: 0; transform: translateY(4px); transition: opacity .12s, transform .12s; white-space: pre-line; }
+  #tip.on { opacity: 1; transform: none; }
+  @media (prefers-reduced-motion: reduce) { #tip { transition: none; } }
+
+  footer { margin-top: 56px; padding-top: 18px; border-top: 1px solid var(--line); font-size: 13px; color: var(--ink-2); }
+  footer p { max-width: 80ch; }
+</style>
+
+<div class="wrap">
+  <header class="masthead">
+    <div>
+      <div class="eyebrow"><span class="dot"></span>Maity · piloto empresarial · versión interna</div>
+      <h1>Piloto Dingler: uso, ritmo y qué salió</h1>
+      <p class="lede">Lectura interna de Maity sobre las dos primeras semanas: cuánto se usó, cuándo, quién, qué salió y qué le diríamos al manager. El reporte que recibe Dingler es «Radiografía del piloto Dingler» (conductas por competencia y por persona); los hallazgos técnicos viven en <code>docs/PILOTO_DINGLER_2026-08-28.md</code>.</p>
+    </div>
+    <div class="meta">
+      <b>14 → 28 de agosto 2026</b><br>
+      hora de Ciudad de México<br>
+      datos al 28-ago 09:30<br>
+      fuente: datos de la plataforma Maity
+    </div>
+  </header>
+
+  <nav class="toc" aria-label="Secciones">
+    <ul>
+      <li><a href="#resumen">Resumen</a></li>
+      <li><a href="#ritmo">Ritmo de uso</a></li>
+      <li><a href="#quien">Quién graba</a></li>
+      <li><a href="#resultados">Qué salió</a></li>
+      <li><a href="#manager">Para el manager</a></li>
+      <li><a href="#metodo">Método</a></li>
+    </ul>
+  </nav>
+
+  <section id="resumen">
+    <div class="eyebrow">Resumen</div>
+    <h2>Se grabó mucho, se analizó poco y casi nadie leyó los resultados</h2>
+    <p class="sub">10 personas dadas de alta el viernes 14 (sin contar a la manager). Ocho grabaron; dos nunca pudieron. La app corrió la jornada completa en bloques de una hora, así que el volumen es alto pero un tercio de los segmentos no contiene conversación.</p>
+
+    <div class="kpis">
+      <div class="kpi"><div class="v">148</div><div class="l">conversaciones guardadas</div><div class="d">99.4 h · 128.5 k palabras</div></div>
+      <div class="kpi"><div class="v">8<small>/ 10</small></div><div class="l">personas que grabaron</div><div class="d">4 siguieron en la 2ª semana</div></div>
+      <div class="kpi"><div class="v">64<small>43 %</small></div><div class="l">con análisis de comunicación</div><div class="d">84 sin conversación suficiente · 16 recuperadas el 28-ago</div></div>
+      <div class="kpi"><div class="v">129</div><div class="l">minutas generadas</div><div class="d">101 acciones · 35 decisiones detectadas</div></div>
+      <div class="kpi"><div class="v">37<small>/ 100</small></div><div class="l">puntaje medio de comunicación</div><div class="d">77 % evaluado como monólogo (1 hablante)</div></div>
+      <div class="kpi alert"><div class="v">2</div><div class="l">personas sin poder grabar</div><div class="d">xochitl (sin micrófono) · melissa (permiso de micrófono)</div></div>
+    </div>
+  </section>
+
+  <section id="ritmo">
+    <div class="eyebrow">Ritmo de uso</div>
+    <h2>Picos los lunes, miércoles y jueves; valles los martes y viernes; nada en fin de semana</h2>
+    <p class="sub">El pico absoluto fue el lunes 17 (20.8 h, 5 personas). La segunda semana arrancó con la mitad del equipo y aun así el jueves 27 volvió a 15.7 h. Las franjas de más grabación son 11–13 h y sobre todo 15–17 h; a las 14 h se ve la comida.</p>
+
+    <div class="card">
+      <div class="cap"><h3>Horas grabadas por día</h3><span class="u">barras: horas · debajo: personas activas · atenuado = una sola persona</span></div>
+      <div class="chart" id="daily"></div>
+      <details class="tbl"><summary>Ver tabla</summary>
+        <div class="tblwrap"><table id="daily-table"></table></div>
+      </details>
+    </div>
+
+    <div class="grid2">
+      <div class="card">
+        <div class="cap"><h3>Cuándo se graba</h3><span class="u">minutos acumulados en las 2 semanas · día × hora</span></div>
+        <div class="heat" id="heat"></div>
+        <div class="ramp" id="ramp"></div>
+        <p class="note">Lunes 11–13 h y miércoles 9–13 h son los bloques más densos. Los viernes solo hay actividad de 15 a 17 h. Tres segmentos de margarita quedaron con hora 02:00–03:00 por un equipo en suspensión (ver sección técnica); no se dibujan aquí.</p>
+      </div>
+      <div class="card">
+        <div class="cap"><h3>Perfil por hora</h3><span class="u">minutos grabados · 8–18 h</span></div>
+        <div class="chart" id="hourly"></div>
+        <p class="note">15–17 h concentra el 30 % de todo lo grabado. Antes de las 8 h y después de las 18 h no hay grabación.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="quien">
+    <div class="eyebrow">Quién graba</div>
+    <h2>Tres personas ponen el 74 % de las horas; cuatro dejaron de grabar tras la primera semana</h2>
+    <p class="sub">mary, erika y margarita corren la jornada completa casi a diario. michael, marcela, janeth y jessica grabaron solo la primera semana. Las dos personas que más graban no han abierto ni una conversación ni un análisis.</p>
+
+    <div class="card">
+      <div class="cap"><h3>Actividad por persona</h3><span class="u">ordenado por horas grabadas</span></div>
+      <div class="tblwrap">
+        <table>
+          <thead><tr>
+            <th>Persona</th><th>Horas</th><th class="n">Conv.</th><th class="n">Días</th><th class="n">Análisis</th><th class="n">Sin tema</th><th class="n">Vistas</th><th>Equipo</th><th>Estado</th>
+          </tr></thead>
+          <tbody id="users"></tbody>
+        </table>
+      </div>
+      <p class="note"><b>Sin tema</b> = segmentos cuyo título el sistema dejó como "fragmentada / sin tema claro / vacía": grabación sin conversación real. <b>Vistas</b> = detalle de conversación + análisis abiertos en la app. <b>Equipo</b> = RAM reportada por la app (tier Low = 6–8 GB).</p>
+    </div>
+  </section>
+
+  <section id="resultados">
+    <div class="eyebrow">Qué salió de las grabaciones</div>
+    <h2>Menos de la mitad llegó a análisis de comunicación, y ese análisis califica al equipo como si hablara solo</h2>
+    <p class="sub">Más de la mitad de lo grabado no tiene 100 palabras de conversación real (la jornada corre en silencio). La primera semana 29 conversaciones se quedaron sin análisis por la cuota del plan Free — la empresa pasó a Pro el 19 de agosto y el 28 se relanzaron: 16 recibieron su análisis y 13 no tenían conversación suficiente. Las minutas se generaron desde el principio.</p>
+
+    <div class="card">
+      <div class="cap"><h3>Destino de cada conversación por día</h3><span class="u">conversaciones</span></div>
+      <div class="chart" id="outcome"></div>
+      <div class="legend"><span style="--sw: var(--s1)">Análisis completo (48)</span><span style="--sw: var(--s2)">Recuperado del plan Free el 28-ago (16)</span><span style="--sw: var(--s3)">Sin conversación suficiente (84)</span></div>
+      <p class="note">Desde el 19-ago (plan Pro) todo lo que tiene conversación real recibe análisis el mismo día. Las 29 que la cuota Free dejó fuera se relanzaron el 28-ago: 16 sí tenían conversación evaluable; las otras 13 eran fragmentos o jornada en silencio.</p>
+    </div>
+
+    <div class="grid2">
+      <div class="card">
+        <div class="cap"><h3>Nivel de comunicación (64 análisis)</h3><span class="u">calidad global V4</span></div>
+        <div class="stack" aria-label="41 crítico, 21 en desarrollo, 2 competente"><div class="o1" style="flex: 41">crítico 41</div><div class="o2" style="flex: 21">en desarrollo 21</div><div class="o3" style="flex: 2" title="competente 2"></div></div>
+        <p class="note">Puntaje medio 37/100. Fortaleza más citada: <b>claridad</b> (33 de 64). A mejorar: <b>estructura</b> (39) y <b>persuasión</b> (19). Patrón dominante: "monólogo fragmentado". Muletillas típicas: <i>este, o sea, eh, pues</i> — 1 cada 25–60 palabras.</p>
+        <div class="tblwrap"><table>
+          <thead><tr><th>Persona</th><th class="n">Análisis</th><th class="n">Puntaje medio</th><th class="n">Mejor</th></tr></thead>
+          <tbody>
+            <tr><td>erika</td><td class="n">23</td><td class="n">35</td><td class="n">71 <span class="pill ok">competente</span></td></tr>
+            <tr><td>margarita</td><td class="n">15</td><td class="n">42</td><td class="n">65 <span class="pill ok">competente</span></td></tr>
+            <tr><td>mary</td><td class="n">13</td><td class="n">31</td><td class="n">50</td></tr>
+            <tr><td>alejandra</td><td class="n">7</td><td class="n">39</td><td class="n">54</td></tr>
+            <tr><td>janeth</td><td class="n">3</td><td class="n">49</td><td class="n">55</td></tr>
+            <tr><td>marcela · michael</td><td class="n">2 · 1</td><td class="n">26 · 38</td><td class="n">—</td></tr>
+          </tbody></table></div>
+      </div>
+      <div class="card">
+        <div class="cap"><h3>A quién se le atribuye la voz</h3><span class="u">palabras transcritas por canal</span></div>
+        <div class="chart" id="speakers"></div>
+        <div class="legend"><span style="--sw: var(--s1)">Micrófono → "usuario"</span><span style="--sw: var(--s2)">Audio del sistema → "interlocutor"</span></div>
+        <p class="note">El 89 % de las palabras entran por el micrófono y se atribuyen a la persona. En una oficina, quien está enfrente también entra por el micrófono: el análisis "ve" un solo hablante, anula empatía y adaptación, y castiga como monólogo. Solo margarita tiene volumen real de audio del sistema (llamadas).</p>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="cap"><h3>Lo que dicen las minutas</h3><span class="u">129 minutas · esquema v2</span></div>
+      <div class="grid2">
+        <ul class="plain">
+          <li><b>De qué se habla:</b> pólizas, cotizaciones, gastos médicos mayores, cancelaciones y endosos, portales de aseguradoras (Afirme, HDI), conciliación de pagos y siniestros. Categoría "trabajo" en 45, "finanzas/negocios" en 16, "personal/social" en 22.</li>
+          <li><b>Tipo de reunión:</b> 123 operativas, 6 de ventas. Interlocutor: equipo interno 60, uno a uno 47, cliente externo 20.</li>
+          <li><b>Efectividad media 49/100</b> — 111 de 129 etiquetadas "con brechas significativas". Es el reflejo de grabar jornadas, no reuniones con agenda.</li>
+        </ul>
+        <ul class="plain">
+          <li><b>101 acciones y 35 decisiones detectadas.</b> erika concentra 51 acciones y 18 decisiones; margarita 17/5; alejandra 14/6; mary 8/1.</li>
+          <li><b>Quién las ve:</b> 42 aperturas de detalle en dos semanas (7 personas) y 8 del análisis (4 personas). michael abrió 11, jessica 9, marcela 8. mary: 0.</li>
+          <li><b>Web:</b> todas jugaron "El tiempo que nos queda" el 14-ago a las 14:15 (sesión grupal). Después, solo melissa siguió en la web (5 juegos, 914 XP) — y es justo quien no pudo grabar.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section id="manager">
+    <div class="aud">
+      <span class="who">Lectura interna · lo que le diríamos al manager</span>
+      <h2>Qué le sirve al manager</h2>
+      <div class="tldr">
+        <p><b>Adopción:</b> 8 de 10 grabaron; 2 no pudieron por micrófono; 4 más se cayeron después de la primera semana. Hoy el uso real lo sostienen mary, erika y margarita (74 % de las horas), y alejandra en menor medida.</p>
+        <p><b>Valor entregado:</b> 129 minutas con 101 acciones y 35 decisiones, pero casi nadie las abre. Los puntajes de comunicación (media 37/100) todavía no sirven para evaluar al equipo: 3 de cada 4 análisis solo "escuchan" a una persona.</p>
+      </div>
+
+      <div class="finding" style="--sc: var(--critical)"><div class="sev">Bloqueo</div><div>
+        <h3>Dos personas llevan dos semanas sin poder grabar</h3>
+        <p><b>xochitl</b>: su equipo no tiene micrófono, así que la app no tiene de dónde grabar (el 25-ago intentó arrancar la jornada todo el día sin éxito). <b>melissa</b>: Windows le niega el acceso al micrófono desde el día 1; es la más activa en los ejercicios de la web (5 completados) pero tiene cero grabaciones.</p>
+        <p class="fix">xochitl: conseguirle un micrófono (una diadema USB basta) y elegirlo en Ajustes de Maity. melissa: Configuración de Windows → Privacidad → Micrófono → permitir que las apps de escritorio lo usen. En ambos casos, comprobar con una grabación de un minuto.</p>
+      </div></div>
+
+      <div class="finding" style="--sc: var(--serious)"><div class="sev">Retención</div><div>
+        <h3>Cuatro personas dejaron de grabar tras la primera semana</h3>
+        <p><b>michael</b> y <b>marcela</b> (últimas grabaciones 19-ago), <b>janeth</b> (17-ago), <b>jessica</b> (abre la app casi a diario — 10 de 12 días — pero solo tiene 4 grabaciones cortas). Las cuatro siguen en la versión vieja porque no han vuelto a abrir la app, salvo jessica.</p>
+        <p class="fix">Preguntarles qué pasó: en el caso de jessica parece falta de claridad de cómo arrancar la jornada, no rechazo. Un recordatorio corto con los 2 pasos (abrir Maity → "Iniciar grabación") suele bastar.</p>
+      </div></div>
+
+      <div class="finding" style="--sc: var(--serious)"><div class="sev">Valor</div><div>
+        <h3>Se graba pero no se lee: mary lleva 45 conversaciones y ninguna abierta</h3>
+        <p>En dos semanas hubo 42 aperturas de conversación y 8 del análisis en todo el equipo. Sin ese paso, Maity solo consume horas de disco. Las minutas ya traen acciones concretas de trámites (cancelaciones, endosos, cotizaciones pendientes).</p>
+        <p class="fix">Un ritual de 15 minutos por semana: cada persona abre una minuta propia y revisa sus acciones detectadas. El manager puede empezar por las de erika (51 acciones) y margarita (17), que son las más ricas.</p>
+      </div></div>
+
+      <div class="finding" style="--sc: var(--warn)"><div class="sev">Calidad</div><div>
+        <h3>Un tercio de lo grabado es jornada en silencio</h3>
+        <p>58 de 148 segmentos (39 %, 30 h) quedaron titulados "fragmentada / sin tema claro". En mary son 27 de 45; en michael 7 de 11. La jornada graba desde las 9 hasta las 17 aunque no haya conversación, y eso ensucia la lista y el ranking.</p>
+        <p class="fix">Pausar la grabación cuando no hay interacción (el widget tiene pausa) o pasar a grabar solo llamadas y reuniones. Mientras, ignorar en las revisiones los segmentos "sin tema".</p>
+      </div></div>
+
+      <div class="finding" style="--sc: var(--warn)"><div class="sev">Lectura</div><div>
+        <h3>No usar todavía los puntajes para comparar personas</h3>
+        <p>49 de 64 análisis detectan un solo hablante, así que evalúan "monólogo fragmentado" y ponen empatía y adaptación en cero. Cuando sí hay dos hablantes (llamadas de margarita, un 1:1 de erika) los puntajes suben a 48–71. La diferencia es del método, no de la persona.</p>
+        <p class="fix">Leer los análisis por su contenido (muletillas, estructura, ejemplos citados), y comparar solo cuando "hablantes detectados = 2". Maity está corrigiendo la atribución para conversaciones presenciales.</p>
+      </div></div>
+
+      <div class="finding" style="--sc: var(--good)"><div class="sev">Funciona</div><div>
+        <h3>Lo que ya está dando resultado</h3>
+        <p>La jornada corre sola en bloques de una hora y se sube a la nube sin intervención: mary, erika y margarita acumulan 30, 24 y 20 horas. Desde el 19-ago (plan Pro) todas las conversaciones con contenido reciben análisis y minuta el mismo día, y las 29 de la primera semana que se quedaron fuera por la cuota ya se relanzaron el 28-ago (16 con análisis, 13 sin conversación suficiente).</p>
+      </div></div>
+    </div>
+  </section>
+
+  <section id="metodo">
+    <div class="eyebrow">Método</div>
+    <h2>Cómo se leen los números</h2>
+    <ul class="plain">
+      <li><b>Periodo:</b> del 14 al 28 de agosto de 2026, con corte el 28 a las 09:30 (hora de Ciudad de México). No se cuenta a la manager.</li>
+      <li><b>Horas por día y mapa día × hora:</b> la duración de cada grabación se reparte entre las horas que cubre, no solo la hora en que empezó.</li>
+      <li><b>"Sin tema":</b> grabaciones cuyo título automático dice fragmentada / sin tema claro / sin contexto / vacía / incompleta / confusa.</li>
+      <li><b>"Usuario" e "interlocutor":</b> lo que entra por el micrófono se atribuye a la persona; lo que entra por el audio de la computadora (llamadas, videollamadas) al interlocutor.</li>
+      <li><b>Análisis y minutas:</b> los genera Maity en la nube al terminar cada grabación. Antes del 19 de agosto el plan Free limitaba a un análisis por persona por día; las 29 conversaciones que quedaron fuera se relanzaron el 28 de agosto.</li>
+    </ul>
+    <footer><p>Preparado el 28 de agosto de 2026. Los nombres son los prefijos de correo del equipo; no se incluyen transcripciones.</p></footer>
+  </section>
+</div>
+<div id="tip" role="status" aria-live="polite"></div>
+
+<script>
+(function () {
+  const $ = (s) => document.querySelector(s);
+  const tip = $('#tip');
+  function showTip(e, text) { tip.textContent = text; tip.classList.add('on'); moveTip(e); }
+  function moveTip(e) { const x = e.clientX + 14, y = e.clientY + 14; tip.style.left = Math.min(x, window.innerWidth - 300) + 'px'; tip.style.top = (y + 60 > window.innerHeight ? e.clientY - 60 : y) + 'px'; }
+  function hideTip() { tip.classList.remove('on'); }
+  function bindTips(root) {
+    root.querySelectorAll('[data-tip]').forEach(el => {
+      el.addEventListener('mouseenter', e => showTip(e, el.dataset.tip));
+      el.addEventListener('mousemove', moveTip);
+      el.addEventListener('mouseleave', hideTip);
+      el.addEventListener('focus', e => { const r = el.getBoundingClientRect(); showTip({ clientX: r.left + r.width / 2, clientY: r.top }, el.dataset.tip); });
+      el.addEventListener('blur', hideTip);
+      if (!el.hasAttribute('tabindex')) el.setAttribute('tabindex', '0');
+    });
+  }
+  const svgNS = 'http://www.w3.org/2000/svg';
+  function el(tag, attrs, text) { const n = document.createElementNS(svgNS, tag); for (const k in attrs) n.setAttribute(k, attrs[k]); if (text != null) n.textContent = text; return n; }
+
+  // ---------- Daily hours ----------
+  const daily = [
+    { d: '14', dow: 'vie', min: 480, users: 7, convs: 22, c: 1, r: 2, s: 19 },
+    { d: '15', dow: 'sáb', min: 0, users: 0, convs: 0, c: 0, r: 0, s: 0 },
+    { d: '16', dow: 'dom', min: 22, users: 1, convs: 1, c: 1, r: 0, s: 0 },
+    { d: '17', dow: 'lun', min: 1249, users: 5, convs: 21, c: 2, r: 11, s: 8 },
+    { d: '18', dow: 'mar', min: 243, users: 3, convs: 7, c: 2, r: 3, s: 2 },
+    { d: '19', dow: 'mié', min: 798, users: 4, convs: 23, c: 5, r: 0, s: 18 },
+    { d: '20', dow: 'jue', min: 460, users: 1, convs: 7, c: 6, r: 0, s: 1 },
+    { d: '21', dow: 'vie', min: 72, users: 1, convs: 5, c: 1, r: 0, s: 4 },
+    { d: '22', dow: 'sáb', min: 0, users: 0, convs: 0, c: 0, r: 0, s: 0 },
+    { d: '23', dow: 'dom', min: 0, users: 0, convs: 0, c: 0, r: 0, s: 0 },
+    { d: '24', dow: 'lun', min: 410, users: 3, convs: 11, c: 3, r: 0, s: 8 },
+    { d: '25', dow: 'mar', min: 358, users: 3, convs: 8, c: 5, r: 0, s: 3 },
+    { d: '26', dow: 'mié', min: 848, users: 2, convs: 18, c: 10, r: 0, s: 8 },
+    { d: '27', dow: 'jue', min: 939, users: 4, convs: 23, c: 10, r: 0, s: 13 },
+    { d: '28', dow: 'vie*', min: 87, users: 2, convs: 2, c: 2, r: 0, s: 0 },
+  ];
+  (function drawDaily() {
+    const W = 1000, H = 300, L = 44, R = 12, T = 18, B = 54;
+    const pw = W - L - R, ph = H - T - B, n = daily.length, step = pw / n, bw = Math.min(46, step - 8);
+    const maxH = 22, yS = (h) => T + ph - (h / maxH) * ph;
+    const svg = el('svg', { class: 'viz', viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': 'Horas grabadas por día' });
+    [0, 5, 10, 15, 20].forEach(h => { svg.appendChild(el('line', { class: 'grid', x1: L, x2: W - R, y1: yS(h), y2: yS(h) })); svg.appendChild(el('text', { x: L - 8, y: yS(h) + 4, 'text-anchor': 'end', class: 'lbl-muted' }, h + ' h')); });
+    const top3 = daily.map(d => d.min).sort((a, b) => b - a).slice(0, 3);
+    daily.forEach((d, i) => {
+      const x = L + i * step + (step - bw) / 2, h = d.min / 60, y = yS(h);
+      const g = el('g', {});
+      if (d.min > 0) {
+        const hgt = Math.max(2, T + ph - y);
+        const cls = 'bar mark' + (d.users <= 1 ? ' dim' : '');
+        g.appendChild(el('rect', { class: cls, x, y: T + ph - hgt, width: bw, height: hgt, rx: 4 }));
+        // square off the baseline end: rounded corners only at the data end
+        g.appendChild(el('rect', { class: cls, x, y: T + ph - Math.min(4, hgt), width: bw, height: Math.min(4, hgt) }));
+        if (top3.includes(d.min)) g.appendChild(el('text', { x: x + bw / 2, y: y - 6, 'text-anchor': 'middle', class: 'lbl-strong' }, h.toFixed(1) + ' h'));
+      }
+      svg.appendChild(g);
+      svg.appendChild(el('text', { x: x + bw / 2, y: T + ph + 16, 'text-anchor': 'middle', class: 'lbl-strong' }, d.d));
+      svg.appendChild(el('text', { x: x + bw / 2, y: T + ph + 29, 'text-anchor': 'middle', class: 'lbl-muted' }, d.dow));
+      svg.appendChild(el('text', { x: x + bw / 2, y: T + ph + 45, 'text-anchor': 'middle', class: 'lbl-muted' }, d.users ? d.users + ' p' : '·'));
+      const hit = el('rect', { class: 'hit', x: L + i * step, y: T, width: step, height: ph + B });
+      hit.dataset.tip = `${d.dow} ${d.d}-ago\n${(d.min / 60).toFixed(1)} h · ${d.convs} conversaciones · ${d.users} personas`;
+      svg.appendChild(hit);
+    });
+    svg.appendChild(el('line', { class: 'axis', x1: L, x2: W - R, y1: T + ph, y2: T + ph }));
+    $('#daily').appendChild(svg); bindTips(svg);
+    const t = $('#daily-table');
+    t.innerHTML = '<thead><tr><th>Día</th><th class="n">Horas</th><th class="n">Conv.</th><th class="n">Personas</th><th class="n">Análisis</th><th class="n">Recuperados</th><th class="n">Sin conversación</th></tr></thead><tbody>' +
+      daily.filter(d => d.convs).map(d => `<tr><td>${d.dow} ${d.d}</td><td class="n">${(d.min / 60).toFixed(1)}</td><td class="n">${d.convs}</td><td class="n">${d.users}</td><td class="n">${d.c}</td><td class="n">${d.r}</td><td class="n">${d.s}</td></tr>`).join('') + '</tbody>';
+  })();
+
+  // ---------- Heatmap ----------
+  const heat = {
+    'Lun': { 8: 52, 9: 171, 10: 195, 11: 240, 12: 209, 13: 227, 14: 120, 15: 176, 16: 181, 17: 57, 18: 28 },
+    'Mar': { 8: 1, 9: 52, 10: 14, 11: 59, 12: 48, 13: 59, 14: 115, 15: 131, 16: 119, 17: 3 },
+    'Mié': { 8: 18, 9: 244, 10: 192, 11: 276, 12: 201, 13: 247, 14: 52, 15: 200, 16: 186, 17: 29 },
+    'Jue': { 8: 4, 9: 29, 10: 163, 11: 164, 12: 239, 13: 186, 14: 128, 15: 210, 16: 177, 17: 68, 18: 31 },
+    'Vie': { 8: 20, 9: 3, 10: 0, 11: 11, 12: 27, 13: 0, 14: 55, 15: 232, 16: 183, 17: 39, 18: 2 },
+  };
+  (function drawHeat() {
+    const hours = []; for (let h = 8; h <= 18; h++) hours.push(h);
+    const steps = ['--seq1', '--seq2', '--seq3', '--seq4', '--seq5', '--seq6', '--seq7'];
+    const bins = [1, 40, 80, 120, 160, 200, 240];
+    const root = $('#heat');
+    root.appendChild(Object.assign(document.createElement('div'), { className: 'h' }));
+    hours.forEach(h => { const d = document.createElement('div'); d.className = 'h'; d.textContent = h; root.appendChild(d); });
+    for (const day in heat) {
+      const r = document.createElement('div'); r.className = 'r'; r.textContent = day; root.appendChild(r);
+      hours.forEach(h => {
+        const v = heat[day][h] || 0, c = document.createElement('div'); c.className = 'c';
+        if (v > 0) { let k = 0; bins.forEach((b, i) => { if (v >= b) k = i; }); c.style.background = `var(${steps[k]})`; c.dataset.v = v; c.dataset.tip = `${day} ${h}:00–${h + 1}:00\n${v} min en 2 semanas`; }
+        else { c.dataset.tip = `${day} ${h}:00–${h + 1}:00\nsin grabación`; }
+        root.appendChild(c);
+      });
+    }
+    bindTips(root);
+    const ramp = $('#ramp'); ramp.appendChild(document.createTextNode('0'));
+    steps.forEach((s, i) => { const b = document.createElement('i'); b.style.background = `var(${s})`; b.title = bins[i] + '+ min'; ramp.appendChild(b); });
+    ramp.appendChild(document.createTextNode('240+ min'));
+  })();
+
+  // ---------- Hourly profile ----------
+  const hourly = { 8: 95, 9: 500, 10: 565, 11: 750, 12: 725, 13: 719, 14: 470, 15: 971, 16: 847, 17: 197, 18: 61 };
+  (function drawHourly() {
+    const W = 480, H = 220, L = 40, R = 8, T = 14, B = 30, keys = Object.keys(hourly).map(Number);
+    const pw = W - L - R, ph = H - T - B, step = pw / keys.length, bw = step - 6, max = 1000;
+    const yS = v => T + ph - (v / max) * ph;
+    const svg = el('svg', { class: 'viz', viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': 'Minutos grabados por hora del día' });
+    [0, 250, 500, 750, 1000].forEach(v => { svg.appendChild(el('line', { class: 'grid', x1: L, x2: W - R, y1: yS(v), y2: yS(v) })); svg.appendChild(el('text', { x: L - 6, y: yS(v) + 4, 'text-anchor': 'end', class: 'lbl-muted' }, v)); });
+    keys.forEach((h, i) => {
+      const v = hourly[h], x = L + i * step + 3, y = yS(v), peak = v === 971;
+      svg.appendChild(el('rect', { class: 'bar mark' + (peak ? '' : ' dim'), x, y, width: bw, height: T + ph - y, rx: 3 }));
+      if (peak) svg.appendChild(el('text', { x: x + bw / 2, y: y - 5, 'text-anchor': 'middle', class: 'lbl-strong' }, '971'));
+      svg.appendChild(el('text', { x: x + bw / 2, y: T + ph + 16, 'text-anchor': 'middle', class: 'lbl-muted' }, h + 'h'));
+      const hit = el('rect', { class: 'hit', x: L + i * step, y: T, width: step, height: ph + B }); hit.dataset.tip = `${h}:00–${h + 1}:00\n${v} min (${(v / 5965 * 100).toFixed(0)} % del total)`; svg.appendChild(hit);
+    });
+    svg.appendChild(el('line', { class: 'axis', x1: L, x2: W - R, y1: T + ph, y2: T + ph }));
+    $('#hourly').appendChild(svg); bindTips(svg);
+  })();
+
+  // ---------- Users table ----------
+  const users = [
+    { who: 'mary', h: 30.1, convs: 45, days: 8, an: 13, bad: 27, views: '0 · 0', ram: '7 GB', tier: 'low', st: 'ok', stt: '0.2.57 · activa' },
+    { who: 'erika', h: 23.7, convs: 38, days: 7, an: 23, bad: 9, views: '4 · 0', ram: '6 GB', tier: 'low', st: 'ok', stt: '0.2.57 · activa' },
+    { who: 'margarita', h: 19.5, convs: 25, days: 6, an: 15, bad: 5, views: '4 · 1', ram: '7 GB', tier: 'low', st: 'ok', stt: '0.2.57 · activa' },
+    { who: 'marcela', h: 12.5, convs: 10, days: 4, an: 2, bad: 6, views: '8 · 3', ram: '16 GB', tier: 'high', st: 'low', stt: '0.2.56 · última 19-ago' },
+    { who: 'alejandra', h: 5.5, convs: 9, days: 3, an: 7, bad: 0, views: '4 · 1', ram: '6 GB', tier: 'low', st: 'ok', stt: '0.2.57 · activa' },
+    { who: 'michael', h: 3.8, convs: 11, days: 2, an: 1, bad: 7, views: '11 · 0', ram: '16 GB', tier: 'high', st: 'low', stt: '0.2.56 · última 19-ago' },
+    { who: 'janeth', h: 3.1, convs: 6, days: 3, an: 3, bad: 3, views: '2 · 0', ram: '6 GB', tier: 'low', st: 'low', stt: '0.2.56 · última 17-ago' },
+    { who: 'jessica', h: 1.2, convs: 4, days: 3, an: 0, bad: 1, views: '9 · 3', ram: '7 GB', tier: 'low', st: 'low', stt: '0.2.57 · abre la app, no graba' },
+    { who: 'xochitl', h: 0, convs: 0, days: 0, an: 0, bad: 0, views: '0 · 0', ram: '14 GB', tier: 'high', st: 'off', stt: 'sin micrófono en el equipo' },
+    { who: 'melissa', h: 0, convs: 0, days: 0, an: 0, bad: 0, views: '0 · 0', ram: '7 GB', tier: 'low', st: 'off', stt: 'micrófono: acceso denegado' },
+  ];
+  $('#users').innerHTML = users.map(u => `<tr>
+    <td><b>${u.who}</b></td>
+    <td class="bar-cell"><b>${u.h ? u.h.toFixed(1) + ' h' : '—'}</b>${u.h ? `<i style="width:${(u.h / 30.1 * 100).toFixed(0)}%"></i>` : ''}</td>
+    <td class="n">${u.convs || '—'}</td><td class="n">${u.days || '—'}</td><td class="n">${u.convs ? u.an : '—'}</td>
+    <td class="n">${u.convs ? `${u.bad} <span style="color:var(--muted)">(${Math.round(u.bad / u.convs * 100)} %)</span>` : '—'}</td>
+    <td class="n">${u.views}</td>
+    <td>${u.ram}${u.tier ? ` <span class="pill ${u.tier === 'low' ? 'low' : ''}">${u.tier}</span>` : ''}</td>
+    <td><span class="pill ${u.st}">${u.stt}</span></td>
+  </tr>`).join('');
+
+  // ---------- Outcome stacked ----------
+  (function drawOutcome() {
+    const W = 1000, H = 250, L = 44, R = 12, T = 14, B = 40, rows = daily.filter(d => d.convs);
+    const pw = W - L - R, ph = H - T - B, step = pw / rows.length, bw = Math.min(56, step - 10), max = 24;
+    const yS = v => T + ph - (v / max) * ph;
+    const svg = el('svg', { class: 'viz', viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': 'Destino de las conversaciones por día' });
+    [0, 6, 12, 18, 24].forEach(v => { svg.appendChild(el('line', { class: 'grid', x1: L, x2: W - R, y1: yS(v), y2: yS(v) })); svg.appendChild(el('text', { x: L - 8, y: yS(v) + 4, 'text-anchor': 'end', class: 'lbl-muted' }, v)); });
+    rows.forEach((d, i) => {
+      const x = L + i * step + (step - bw) / 2; let acc = 0;
+      [['c', 's1'], ['r', 's2'], ['s', 's3']].forEach(([k, cls]) => {
+        const v = d[k]; if (!v) return;
+        const y0 = yS(acc), y1 = yS(acc + v), gap = acc ? 2 : 0;
+        svg.appendChild(el('rect', { class: cls + ' mark', x, y: y1, width: bw, height: Math.max(1, y0 - y1 - gap), rx: acc + v === d.convs ? 3 : 0 }));
+        acc += v;
+      });
+      svg.appendChild(el('text', { x: x + bw / 2, y: T + ph + 16, 'text-anchor': 'middle', class: 'lbl-strong' }, d.d));
+      svg.appendChild(el('text', { x: x + bw / 2, y: T + ph + 29, 'text-anchor': 'middle', class: 'lbl-muted' }, d.dow));
+      const hit = el('rect', { class: 'hit', x: L + i * step, y: T, width: step, height: ph + B });
+      hit.dataset.tip = `${d.dow} ${d.d}-ago · ${d.convs} conv.\ncompletas ${d.c} · recuperadas ${d.r} · sin conversación ${d.s}`; svg.appendChild(hit);
+    });
+    svg.appendChild(el('line', { class: 'axis', x1: L, x2: W - R, y1: T + ph, y2: T + ph }));
+    $('#outcome').appendChild(svg); bindTips(svg);
+  })();
+
+  // ---------- Speakers ----------
+  const spk = [
+    { who: 'erika', u: 32487, o: 1424 }, { who: 'margarita', u: 20307, o: 9212 }, { who: 'mary', u: 14400, o: 2 }, { who: 'alejandra', u: 12647, o: 508 },
+    { who: 'janeth', u: 10670, o: 127 }, { who: 'marcela', u: 4428, o: 722 }, { who: 'michael', u: 1091, o: 0 }, { who: 'jessica', u: 288, o: 14 },
+  ];
+  (function drawSpk() {
+    const W = 480, H = 236, L = 78, R = 56, T = 6, rh = 26, max = 34000, pw = W - L - R;
+    const svg = el('svg', { class: 'viz', viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': 'Palabras por canal y persona' });
+    spk.forEach((s, i) => {
+      const y = T + i * rh + 6, wu = s.u / max * pw, wo = s.o / max * pw;
+      svg.appendChild(el('text', { x: L - 8, y: y + 11, 'text-anchor': 'end', class: 'lbl-strong' }, s.who));
+      svg.appendChild(el('rect', { class: 's1 mark', x: L, y, width: Math.max(1, wu), height: 14, rx: 0 }));
+      if (s.o) svg.appendChild(el('rect', { class: 's2 mark', x: L + wu + 2, y, width: Math.max(2, wo), height: 14, rx: 3 }));
+      const pct = Math.round(s.o / (s.u + s.o) * 100);
+      svg.appendChild(el('text', { x: L + wu + (s.o ? wo + 2 : 0) + 6, y: y + 11, class: 'lbl-muted' }, pct + ' %'));
+      const hit = el('rect', { class: 'hit', x: 0, y: y - 6, width: W, height: rh }); hit.dataset.tip = `${s.who}\nusuario ${s.u.toLocaleString('es-MX')} · interlocutor ${s.o.toLocaleString('es-MX')} (${pct} %)`; svg.appendChild(hit);
+    });
+    $('#speakers').appendChild(svg); bindTips(svg);
+  })();
+})();
+</script>
