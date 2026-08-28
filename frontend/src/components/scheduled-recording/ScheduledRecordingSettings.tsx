@@ -1,13 +1,15 @@
 'use client'
 
-import React, { useEffect, useMemo, useState } from 'react'
-import { CalendarClock, Loader2, RefreshCw } from 'lucide-react'
+import React, { useCallback, useEffect, useMemo, useState } from 'react'
+import { CalendarClock, Loader2, MicOff, RefreshCw } from 'lucide-react'
 import { toast } from 'sonner'
 import { Switch } from '@/components/ui/switch'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { useScheduledRecording } from '@/hooks/useScheduledRecording'
+import { checkMicrophoneReady, openMicrophonePrivacySettings } from '@/lib/microphonePreflight'
+import type { AudioDeviceErrorPayload } from '@/lib/tauri-events'
 import {
   scheduledRecordingService,
   defaultWindow,
@@ -61,6 +63,31 @@ export function ScheduledRecordingSettings() {
   const [autoCloseEnabled, setAutoCloseEnabled] = useState(false)
   const [autoCloseTime, setAutoCloseTime] = useState('18:00')
   const [hourlyRotation, setHourlyRotation] = useState(true)
+
+  // Preflight de micrófono. La jornada arranca headless: sin esto el usuario no
+  // se entera de que no puede grabar hasta que revisa (o no revisa) sus
+  // conversaciones vacías al final del día. Piloto Dingler ago-2026.
+  const [micIssue, setMicIssue] = useState<AudioDeviceErrorPayload | null>(null)
+  const [isCheckingMic, setIsCheckingMic] = useState(false)
+
+  const runMicPreflight = useCallback(async () => {
+    setIsCheckingMic(true)
+    try {
+      setMicIssue(await checkMicrophoneReady())
+    } finally {
+      setIsCheckingMic(false)
+    }
+  }, [])
+
+  // Sólo con la jornada activa: la probe abre un stream de captura real, así que
+  // no se corre "por si acaso" ni en un intervalo (ver `microphonePreflight`).
+  useEffect(() => {
+    if (!settings?.enabled) {
+      setMicIssue(null)
+      return
+    }
+    void runMicPreflight()
+  }, [settings?.enabled, runMicPreflight])
 
   useEffect(() => {
     if (!settings) return
@@ -183,6 +210,41 @@ export function ScheduledRecordingSettings() {
         </div>
         <Switch checked={settings.enabled} onCheckedChange={handleToggleEnabled} disabled={isSaving} />
       </div>
+
+      {settings.enabled && micIssue && (
+        <div className="flex items-start gap-3 p-4 rounded-lg border border-amber-500/40 bg-amber-500/10">
+          <MicOff className="h-5 w-5 mt-0.5 shrink-0 text-amber-500" />
+          <div className="flex-1 space-y-2">
+            <p className="text-sm font-medium text-foreground">{micIssue.userMessage}</p>
+            <p className="text-sm text-muted-foreground">
+              La jornada no podrá grabar hasta que se resuelva.
+            </p>
+            <div className="flex gap-2">
+              {micIssue.remediation === 'open_microphone_privacy_settings' && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    void openMicrophonePrivacySettings().catch(() =>
+                      toast.error('No se pudo abrir la configuración de privacidad'),
+                    )
+                  }}
+                >
+                  Abrir configuración
+                </Button>
+              )}
+              <Button variant="ghost" size="sm" onClick={runMicPreflight} disabled={isCheckingMic}>
+                {isCheckingMic ? (
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                ) : (
+                  <RefreshCw className="h-4 w-4 mr-2" />
+                )}
+                Volver a comprobar
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {settings.enabled && (
         <>
