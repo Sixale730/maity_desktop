@@ -731,17 +731,96 @@ pub fn report_device_error<R: Runtime>(app: &AppHandle<R>, raw: impl Into<String
     raw
 }
 
+/// Por qué no se puede grabar, en palabras del usuario. Devuelve `(userMessage, actionable)`.
+///
+/// El mensaje anterior era uno solo, en inglés, y afirmaba SIEMPRE "the model is still
+/// downloading. Please wait" — aunque el modelo faltara del disco, estuviera corrupto o hubiera
+/// fallado al cargar. Es la misma patología que costó el hallazgo #1 del piloto Dingler: una
+/// razón inventada que además se auto-justifica, porque le dice al usuario que espere a algo que
+/// no está pasando. "Esperar" no arregla un modelo corrupto ni uno que nunca se descargó.
+///
+/// Se consulta el estado real del modelo. Si no se puede consultar, el mensaje lo dice en vez de
+/// suponer.
+async fn classify_model_failure() -> (String, bool) {
+    use crate::parakeet_engine::ModelStatus;
+
+    let models = match crate::parakeet_engine::commands::parakeet_get_available_models().await {
+        Ok(m) => m,
+        Err(e) => {
+            warn!("[preflight] no se pudo consultar el estado de los modelos: {}", e);
+            return (
+                "No se pudo verificar el modelo de transcripción. Reinicia Maity e inténtalo de nuevo."
+                    .to_string(),
+                false,
+            );
+        }
+    };
+
+    // Se toma el estado MÁS favorable de todos los modelos: si alguno se está descargando, el
+    // mensaje correcto es "espera", aunque otro esté corrupto.
+    if let Some(progress) = models.iter().find_map(|m| match m.status {
+        ModelStatus::Downloading { progress } => Some(progress),
+        _ => None,
+    }) {
+        return (
+            format!(
+                "El modelo de transcripción se está descargando ({} %). Podrás grabar en cuanto termine.",
+                progress
+            ),
+            false,
+        );
+    }
+
+    if models
+        .iter()
+        .any(|m| matches!(m.status, ModelStatus::Corrupted { .. }))
+    {
+        return (
+            "El modelo de transcripción quedó incompleto y no se puede usar. Vuelve a descargarlo \
+             desde Ajustes → Transcripción."
+                .to_string(),
+            true,
+        );
+    }
+
+    if let Some(detail) = models.iter().find_map(|m| match &m.status {
+        ModelStatus::Error(e) => Some(e.clone()),
+        _ => None,
+    }) {
+        warn!("[preflight] modelo en estado Error: {}", detail);
+        return (
+            "El modelo de transcripción no se pudo cargar. Vuelve a descargarlo desde \
+             Ajustes → Transcripción."
+                .to_string(),
+            true,
+        );
+    }
+
+    // Missing, o ni siquiera hay modelos registrados.
+    (
+        "Falta el modelo de transcripción: Maity no puede grabar sin él. Descárgalo desde \
+         Ajustes → Transcripción."
+            .to_string(),
+        true,
+    )
+}
+
 /// Validate that transcription models are ready before starting recording.
 /// Emits an error event to the frontend if validation fails.
+///
+/// Vive en `initialize_recording`, el embudo común de los dos start paths, para que el tray, la
+/// jornada y el botón de la UI pasen todos por aquí — delegarlo al frontend fue lo que dejó
+/// grabar sin motor en el piloto (ver el bloque de mediación en `initialize_recording`).
 pub async fn validate_transcription_ready<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
     info!("🔍 Validating transcription model availability before starting recording...");
     if let Err(validation_error) = transcription::validate_transcription_model_ready(app).await {
         error!("Model validation failed: {}", validation_error);
 
+        let (user_message, actionable) = classify_model_failure().await;
         let _ = app.emit(events::TRANSCRIPTION_ERROR, serde_json::json!({
             "error": validation_error,
-            "userMessage": "Recording cannot start: Transcription model is still downloading. Please wait for the download to complete.",
-            "actionable": false
+            "userMessage": user_message,
+            "actionable": actionable
         }));
 
         return Err(validation_error);
