@@ -130,7 +130,38 @@ Qué hacer:
   necesitan. (Relacionado con la decisión "1B en tier Low" de jul-2026: el 1B tampoco cabe.)
 - Reevaluar el umbral de Low ahora que `device.profile` trae `memory_gb` real.
 
-### 4. Serio — la jornada guarda una hora de silencio como conversación
+### 4. Serio — la jornada guarda una hora de silencio como conversación — **ATENDIDO (28-ago)**
+
+> **Resuelto en `main`** (sin push): umbral de **250 palabras totales** en
+> `finalize_segment_native` (`MIN_SEGMENT_WORDS`). Por debajo no se crea reunión local ni se
+> encola outbox — ni cuota, ni ruido en la lista. El audio en disco no se toca.
+>
+> **Corrección al diagnóstico de abajo: son DOS poblaciones y este titular describe una.** Los
+> datos reales (post-backfill, 144 conversaciones):
+>
+> | grupo | n | palabras de usuario | duración media | ¿lo agarra un umbral? |
+> |---|---|---|---|---|
+> | `completed` | 64 | ≥100 (todas) | 56 min | no, y no debe |
+> | `insufficient_user_words` | 36 | 0–89 (media 32) | 12 min | **sí** |
+> | `no_evaluable_speech` | 44 | 101–513 (media 253) | 44 min | parcialmente |
+>
+> Las 44 `no_evaluable_speech` son la "hora de ruido ambiente": palabras de sobra, ningún tramo
+> de 5 min de conversación continua. **La regla de densidad que proponía el punto de abajo se
+> descartó con datos**: los `completed` bajan hasta 3.6 palabras/min y los inservibles llegan a
+> 18.3 — los rangos se solapan y cualquier corte por densidad pierde conversaciones buenas.
+>
+> Se cuentan las palabras de **ambos canales** para no castigar a quien estuvo escuchando.
+> Riesgo aceptado: hasta 5 de las 64 analizadas (las de 100–299 palabras de usuario) podrían
+> caer si el interlocutor habló poco — ≤8 % a cambio de quitar el 30–40 % de basura.
+>
+> **La trampa que costó el diseño:** devolver `None` no bastaba. `None` significa "falló,
+> sálvalo por otro lado", así que el segmento revivía por DOS caminos — `close_scheduled` emite
+> `RECORDING_STOP_COMPLETE` y el webview lo guarda por el camino legacy, y el frontend deja el
+> registro sin marcar para que `autoRecoverAll` lo recupere al siguiente arranque. Hizo falta un
+> tercer estado (`SegmentOutcome::{Saved,Discarded,Failed}`) y que el frontend marque el
+> registro cuando `discarded`. Evento nuevo `recording.segment_discarded` (el primero que emite
+> `scheduled_recording`, que no emitía telemetría ninguna).
+
 
 71/148 conversaciones no llegan a 100 palabras de usuario, 58 quedan tituladas
 "fragmentada / sin tema", 4 son placeholders "Jornada 2026-08-xx HH:00" con 2 palabras. Todas
@@ -144,7 +175,30 @@ Qué hacer:
 - Considerar rotación por contenido (cerrar segmento tras N min de silencio) además de la
   rotación horaria.
 
-### 5. Serio — la rotación no sobrevive a la suspensión ni a la presión de memoria
+### 5. Serio — la rotación no sobrevive a la suspensión ni a la presión de memoria — **ATENDIDO (28-ago)**
+
+> **Resuelto en `main`** (sin push), y **con el diagnóstico corregido: el título de este
+> hallazgo y su primer "qué hacer" estaban al revés.** Pedían "reloj monotónico para la
+> rotación", pero la rotación **ya** usa wall-clock y **ya** es robusta a suspensión:
+> `should_rotate` deriva la frontera de `owned_since`, que se actualiza en cada rotación, así
+> que un salto de 3 h dispara **una sola** rotación — hay un test que lo fija desde antes
+> (`should_rotate_salto_por_suspend_dispara_una_vez`). Lo que sí estaba roto es la **duración**,
+> que sale de `Instant::elapsed()`: un reloj monotónico que en Windows **sigue corriendo con la
+> máquina dormida**. Meter más monotonicidad habría empeorado el bug.
+>
+> - **`started_at` sellado**: `RecordingState` gana `recording_start_wall` (`DateTime<Utc>`
+>   estampado al arrancar) y la jornada usa `owned_since`. Se acabó el `ahora − duración`, que
+>   era lo que mandaba el inicio de margarita a las 02:19. `duration_seconds` se queda como la
+>   duración de **audio** y ya no gobierna ninguna fecha: `finished_at − started_at` puede ser
+>   mayor, y esa diferencia es justo el tiempo dormido o en silencio.
+> - **Tope de segmento en overtime** (90 min): `should_rotate` exigía `in_window`, así que fuera
+>   de la ventana el cierre quedaba en manos de `auto_close`; quien lo tiene desactivado no
+>   tenía a nadie que cerrara — el segmento de 150 min del 20-ago. Ahora rota igual. **Rota, no
+>   cierra**: el usuario sigue en una junta pasadas las 18:00.
+>
+> **Fuera de alcance por decisión explícita:** rotar las grabaciones manuales largas (los 393
+> min de marcela el 17-ago). Las manuales siguen sin rotar.
+
 
 - margarita 27-ago: `recording_stopped` con `duration_seconds` **24,316** (6 h 45) a las 22:45
   CDMX; la conversación resultante dura 67 min con `started_at` "02:19 del 28-ago" y
@@ -184,7 +238,26 @@ Qué hacer:
 - Para futuros backfills el camino es el mismo worker con el secreto; probar primero con
   una (`--one <uuid>`) y confirmar en DB.
 
-### 7. Modelo — "grabar al vacío" antes de tener Parakeet
+### 7. Modelo — "grabar al vacío" antes de tener Parakeet — **ATENDIDO (28-ago)**
+
+> **Ya estaba resuelto en lo esencial y este hallazgo no lo sabía.** El gate contra grabar sin
+> motor vive desde 0.2.57 en `initialize_recording` — el embudo común de los dos start paths — y
+> su comentario cita este mismo piloto. Encaja con el dato: *"desde que alejandra actualizó a
+> 0.2.57 graba bien"*. El tray además desactiva su ítem y el frontend valida antes de invocar;
+> en la jornada el `Err` cae en el back-off del #1 por la rama `Other` (escalada corta, sin alto
+> del día), que es lo correcto porque el modelo puede terminar de bajarse en cualquier momento.
+>
+> Lo que quedaba era el **mensaje**, y repetía la patología del #1: en inglés, sin acción, y
+> afirmando siempre *"the model is still downloading, please wait"* **sin comprobarlo**. Esperar
+> no arregla un modelo corrupto ni uno que nunca se descargó — que es justo el caso de este
+> hallazgo, porque la validación **solo comprueba el tamaño** y un archivo truncado por el
+> `reqwest Decode/Body` del 14-ago la pasa. Ahora se consulta el estado real y se responde:
+> descargando (con %), corrupto, error de carga o ausente, los tres últimos con acción.
+>
+> **El doble stop del 24-ago no se persiguió:** `StopGate` ya hace el stop idempotente y rechaza
+> el segundo. Los dos `recording_stopped` del mismo segundo son dos **emisores** de telemetría
+> (Rust y frontend), no dos paradas.
+
 
 8 `save_skipped_no_transcripts`: alejandra 7 (17-ago ×4, 18-ago ×2, 24-ago ×1), jessica 1
 (17-ago). El 14-ago tres personas tuvieron `reqwest Decode/Body` bajando Parakeet. Desde que
@@ -371,17 +444,37 @@ de cuota. Detalle en el hallazgo 6. Q9 de `queries.sql` devuelve 0 filas desde e
 3. ~~Relanzar los 29 `quota_skipped` (#6)~~ — **hecho 28-ago** (29/29, ver arriba).
 4. ~~Gemma off durante grabación en tier Low (#3)~~ — **hecho 28-ago**, y quedó en "ni
    cargar ni descargar" al confirmar que no hay otro consumidor del sidecar.
-5. Umbral de contenido en la rotación (#4) y rotación con reloj monotónico (#5).
+5. ~~Umbral de contenido en la rotación (#4) y rotación con reloj monotónico (#5)~~ —
+   **hecho 28-ago**. El "reloj monotónico" resultó ser el diagnóstico invertido: la rotación ya
+   era robusta a suspensión y el reloj monotónico era la *causa* del problema, no la cura.
+6. ~~Mensaje al grabar sin modelo (#7)~~ — **hecho 28-ago**; el gate ya existía desde 0.2.57.
+
+**Queda abierto:** #2 (lado web) y la rotación de grabaciones manuales largas, descartada a
+propósito en este ciclo.
 
 ## Estado del código (28-ago, `main` sin push)
 
-4 commits: `2844baf` back-off de jornada · `18681a2` rate-limit + probe de micrófono ·
-`162bac4` tier Low sin Gemma · `3adb40c` preflight en ajustes. Build
-`tauri:build:debug` en verde (exit 0) con los 7 checks pre-build, 527 tests de Rust,
-317 de vitest y el smoke con handshake del helper.
+**Ciclo 1 — #1 y #3.** 4 commits: `2844baf` back-off de jornada · `18681a2` rate-limit +
+probe de micrófono · `162bac4` tier Low sin Gemma · `3adb40c` preflight en ajustes.
 
-**Pendiente: el E2E manual de #1 y #3** — ningún test automático lo cubre. Ver la
-sección de verificación del plan: micrófono deshabilitado ⇒ 2 intentos y un toast;
-permiso revocado ⇒ toast con "Abrir configuración" + escalada 1/2/5/15;
-`MEMORY_GB=6` ⇒ cero procesos `llama-helper.exe` durante la grabación con tips
-heurísticos vivos; `GPU_TYPE=cuda MEMORY_GB=6` ⇒ tier `low`.
+**Ciclo 2 — #4, #5 y #7.** 3 commits: `059660f` umbral de contenido de la jornada (+ el
+`started_at` sellado de la jornada, que vive en la misma función) · `c18446e` sello de la hora
+de arranque en el camino manual + tope de segmento en overtime · `ec77164` mensaje honesto
+cuando falta el modelo.
+
+Build `tauri:build:debug` en verde (exit 0) con los checks pre-build, **533 tests de Rust**
+(6 nuevos), 317 de vitest y el smoke con handshake del helper.
+
+**Pendiente: el E2E manual de los dos ciclos** — ningún test automático lo cubre.
+
+- **#1/#3:** micrófono deshabilitado ⇒ 2 intentos y un toast; permiso revocado ⇒ toast con
+  "Abrir configuración" + escalada 1/2/5/15; `MEMORY_GB=6` ⇒ cero procesos `llama-helper.exe`
+  durante la grabación con tips heurísticos vivos; `GPU_TYPE=cuda MEMORY_GB=6` ⇒ tier `low`.
+- **#4:** jornada con un segmento casi mudo ⇒ no aparece conversación, no hay job en
+  `sync_queue`, y **al reiniciar la app NO sale el diálogo de recuperación** (es la trampa del
+  diseño); segmento con contenido real ⇒ se guarda igual que hoy.
+- **#5:** suspender la laptop con la jornada abierta ⇒ al despertar una sola rotación y
+  `started_at` = hora real de arranque; jornada fuera de ventana con `auto_close_enabled=false`
+  ⇒ rota a los 90 min en vez de crecer sin límite.
+- **#7:** renombrar el `.onnx` de Parakeet y pulsar Grabar ⇒ mensaje en español que dice que
+  **falta** el modelo, no que se está descargando.

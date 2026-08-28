@@ -677,6 +677,24 @@ Cada grabación crea al **arrancar** un registro en IndexedDB (`TranscriptContex
 
 Tests: `hooks/useTranscriptRecovery.test.ts`, `hooks/useRecordingStop.feedback.test.tsx` (bloque "0 transcripts con audio en disco").
 
+### Umbral de contenido de la jornada: `SegmentOutcome`, no `Option` (ago-2026, #4 del piloto)
+
+La jornada headless guardaba una hora de silencio como conversación: de 144 conversaciones del piloto Dingler, **80 no eran analizables** y todas viajaban a la nube gastando cuota. Hoy `finalize_segment_native` descarta el segmento por debajo de **`MIN_SEGMENT_WORDS` = 250 palabras, contando AMBOS canales**.
+
+- **Ambos canales, no solo el usuario**: si se contaran solo las del usuario, una junta donde la persona escuchó y el interlocutor habló mucho se tiraría entera.
+- **Nada de densidad (palabras/minuto)**, aunque parezca más fina: se descartó **con datos**. Las conversaciones que sí se analizaron bajan hasta **3.6 palabras/min** y las inservibles llegan a **18.3** — los rangos se solapan, así que cualquier corte por densidad pierde conversaciones buenas. El conteo bruto sí separa las poblaciones.
+- **`finalize_segment_native` devuelve `SegmentOutcome::{Saved,Discarded,Failed}`, NO `Option<String>`. No "simplificarlo" de vuelta.** `None` significa *"falló, sálvalo por otro lado"*, así que un descarte deliberado señalizado como `None` revivía por partida **doble**: (1) `close_scheduled` emite `RECORDING_STOP_COMPLETE` y el webview lo guarda por el camino legacy; (2) el frontend deja el registro de IndexedDB **sin marcar a propósito** para que el diálogo de recuperación sea red de seguridad, y `autoRecoverAll` lo guarda solo en el siguiente arranque — el filtro de fantasmas solo borra los de `transcriptCount === 0`, y un segmento descartado tiene transcripts, solo que pocos. Por eso los eventos llevan `discarded: true` y `RecordingPostProcessingProvider` marca cuando `meetingId || discarded`.
+- **0 transcripts sigue siendo `Failed`, no `Discarded`**, a propósito: el archivo puede estar vacío porque falló la escritura a disco mientras el buffer de React sí tiene contenido, y el fallback legacy es la red de seguridad de ese caso.
+- Telemetría: evento propio **`recording.segment_discarded`** — **no** reusar `save_skipped_no_transcripts`, cuyo nombre afirma "no transcripts" cuando aquí sí los hay (misma razón falsa que costó el hallazgo #1). Es el primer evento que emite `scheduled_recording`, que no emitía telemetría ninguna.
+
+### Timestamps de grabación: `started_at` se SELLA, nunca se deriva (ago-2026, #5 del piloto)
+
+`RecordingState` tiene **dos relojes y no son intercambiables**: `recording_start` (`Instant`, monotónico) mide *cuánto lleva grabando*; `recording_start_wall` (`DateTime<Utc>`, sellado en `start_recording`) dice *en qué momento del día empezó*. La jornada usa `owned_since` para lo mismo.
+
+**Nunca reconstruir `started_at` como `ahora − duración`.** Era lo que hacían los dos caminos (`enqueue_cloud_sync_jobs` y `useRecordingStop`), y miente en cuanto la máquina se suspende: en Windows `Instant::elapsed()` **sigue corriendo con la máquina dormida**, así que una jornada cerró con `duration_seconds` de 24,316 (6 h 45) para 67 min de audio real y su `started_at` acabó a las **02:19 de la madrugada siguiente**. `duration_seconds` se queda como la duración de **audio** y ya no gobierna ninguna fecha; que `finished_at − started_at` sea mayor es correcto y esperado — esa diferencia es el tiempo dormido o en silencio. La clave `last_recording_started_at` de `sessionStorage` **debe limpiarse** con la de duración: si sobrevive, la siguiente grabación cuyo stop no emita sello hereda la hora de arranque de la anterior.
+
+> **La rotación NO tiene un problema de reloj — lo contrario.** El análisis del piloto pedía "reloj monotónico para la rotación"; es el diagnóstico invertido. `should_rotate` usa wall-clock y **ya** es robusta a sleep/suspend porque deriva la frontera de `owned_since`, que se actualiza en cada rotación (test `should_rotate_salto_por_suspend_dispara_una_vez`). El reloj monotónico era la *causa* del bug de fechas, no la cura. Lo que sí se añadió es **`MAX_SEGMENT_MINUTES` = 90**: `should_rotate` exigía `in_window`, así que en overtime el cierre quedaba en manos de `auto_close` y quien lo tenga desactivado no tenía a nadie que cerrara (segmento de 150 min en producción). En overtime se **rota, no se cierra** — el usuario sigue en una junta pasadas las 18:00. Las grabaciones **manuales** siguen sin rotar (decisión explícita).
+
 ### Patron Visual: Dashboard de Gamificacion (DPI Scaling Windows)
 
 El componente `GamifiedDashboardV2.tsx` y el Card de "Mision Actual" tienen reglas estrictas — violarlas ha causado 4 regresiones documentadas (commits `5400b67`, `2b90533`, `7ed9829` + iter 2 mayo 2026).
