@@ -815,21 +815,21 @@ async fn close_scheduled<R: Runtime>(
     }
 
     // 3. Guardado LOCAL headless + outbox cloud (mismo camino que la rotación).
-    let meeting_id = match folder.as_deref() {
-        Some(f) => finalize_segment_native(app, f, &closing_name).await,
+    let outcome = match folder.as_deref() {
+        Some(f) => finalize_segment_native(app, f, &closing_name, owned_since, "close").await,
         None => {
             warn!("[scheduled] cierre: sin folder del segmento; no se guarda a DB");
-            None
+            SegmentOutcome::Failed
         }
     };
 
-    // 4. Emisión EXCLUYENTE (ver doc-comment). Con `Some`, el frontend solo limpia su
+    // 4. Emisión EXCLUYENTE (ver doc-comment). Con `Saved`, el frontend solo limpia su
     //    buffer (nunca emitir ADEMÁS el fallback: `clearTranscripts` vaciaría el buffer
     //    antes del flush de `handleRecordingStop` y mataría el guardado legacy). Con
-    //    `None` (nada persistido), fallback al flujo legacy completo del webview — que
+    //    `Failed` (nada persistido), fallback al flujo legacy completo del webview — que
     //    además notifica por su cuenta, por eso aquí no se duplica el aviso.
-    match &meeting_id {
-        Some(mid) => {
+    match &outcome {
+        SegmentOutcome::Saved(mid) => {
             if let Err(e) = app.emit(
                 events::SCHEDULED_JORNADA_CLOSED,
                 serde_json::json!({ "meetingId": mid, "meetingName": closing_name }),
@@ -838,7 +838,23 @@ async fn close_scheduled<R: Runtime>(
             }
             notify_jornada_saved(app, &closing_name).await;
         }
-        None => {
+        // Descarte deliberado: NO va el fallback legacy (el webview volvería a guardar justo
+        // lo que acabamos de decidir tirar) y NO se notifica (no hay minuta que ofrecer). Sí se
+        // emite el evento con `discarded: true` para que el frontend limpie su buffer Y marque
+        // el registro como guardado — sin esa marca, `autoRecoverAll` lo resucita al arrancar.
+        SegmentOutcome::Discarded => {
+            if let Err(e) = app.emit(
+                events::SCHEDULED_JORNADA_CLOSED,
+                serde_json::json!({
+                    "meetingId": serde_json::Value::Null,
+                    "meetingName": closing_name,
+                    "discarded": true,
+                }),
+            ) {
+                warn!("[scheduled] no se pudo emitir scheduled-jornada-closed: {}", e);
+            }
+        }
+        SegmentOutcome::Failed => {
             error!(
                 "[scheduled] cierre sin persistencia headless; fallback a webview (si está vivo)"
             );
@@ -899,11 +915,11 @@ async fn rotate_scheduled<R: Runtime>(
     }
 
     // 3. Guardado LOCAL headless del segmento cerrado (no depende del buffer del frontend).
-    let meeting_id = match folder.as_deref() {
-        Some(f) => finalize_segment_native(app, f, &closing_name).await,
+    let outcome = match folder.as_deref() {
+        Some(f) => finalize_segment_native(app, f, &closing_name, owned_since, "rotation").await,
         None => {
             warn!("[scheduled] rotación: sin folder del segmento; no se guarda a DB");
-            None
+            SegmentOutcome::Failed
         }
     };
 
@@ -911,9 +927,22 @@ async fn rotate_scheduled<R: Runtime>(
     //    cloud ya la encoló `finalize_segment_native` (headless): este evento SOLO limpia el
     //    buffer de React para que el nuevo segmento arranque limpio y el stop manual final NO
     //    reguarde los segmentos ya rotados como una reunión duplicada.
+    //
+    //    `discarded` distingue el descarte deliberado del fallo: con `meetingId: null` a secas el
+    //    frontend deja el registro sin marcar (red de seguridad para el fallo) y `autoRecoverAll`
+    //    lo guardaría solo al siguiente arranque — resucitando justo lo que tiramos.
+    let (meeting_id, discarded) = match &outcome {
+        SegmentOutcome::Saved(mid) => (Some(mid.clone()), false),
+        SegmentOutcome::Discarded => (None, true),
+        SegmentOutcome::Failed => (None, false),
+    };
     if let Err(e) = app.emit(
         events::SCHEDULED_SEGMENT_ROTATED,
-        serde_json::json!({ "meetingId": meeting_id, "meetingName": closing_name }),
+        serde_json::json!({
+            "meetingId": meeting_id,
+            "meetingName": closing_name,
+            "discarded": discarded,
+        }),
     ) {
         warn!("[scheduled] no se pudo emitir scheduled-segment-rotated: {}", e);
     }
@@ -948,13 +977,62 @@ async fn rotate_scheduled<R: Runtime>(
     }
 }
 
+/// Mínimo de palabras (AMBOS canales) para que un segmento de jornada se convierta en
+/// conversación. Por debajo se descarta: ni SQLite, ni outbox cloud, ni cuota, ni ruido en la
+/// lista del usuario.
+///
+/// **Por qué existe:** en el piloto Dingler (ago-2026) la jornada headless produjo 144
+/// conversaciones de las que 80 no eran analizables — 36 con menos de 100 palabras del usuario
+/// (media 32, 12 min) y 44 con palabras de sobra pero sin un solo tramo de 5 min de conversación
+/// continua, o sea una hora de ruido ambiente. Todas viajaban a la nube y gastaban cuota.
+///
+/// **Por qué palabras TOTALES y no del usuario:** para no castigar a quien estuvo escuchando. Una
+/// junta donde el interlocutor habló mucho sobrevive aunque el usuario casi no hable. Contar solo
+/// las del usuario tiraría esa reunión entera.
+///
+/// **Por qué no una regla de densidad** (palabras/minuto), que parecería más precisa: se descartó
+/// con los datos del piloto. Las conversaciones que SÍ se analizaron bajan hasta 3.6 palabras/min
+/// y las inservibles llegan a 18.3 — los rangos se solapan, así que cualquier corte por densidad
+/// pierde conversaciones buenas. El conteo bruto sí separa las poblaciones.
+const MIN_SEGMENT_WORDS: usize = 250;
+
+/// Palabras totales del segmento, ambos canales. `split_whitespace` ignora tokens vacíos y
+/// espacios repetidos — mismo criterio que el `words_count` de `enqueue_cloud_sync_jobs`.
+fn count_segment_words(raws: &[RawTranscriptSegment]) -> usize {
+    raws.iter().map(|r| r.text.split_whitespace().count()).sum()
+}
+
+/// Desenlace de `finalize_segment_native`. Los tres casos NO son intercambiables:
+///
+/// - `Saved(meeting_id)`: se creó la reunión local y se encoló la sync cloud.
+/// - `Discarded`: decisión DELIBERADA (por debajo de `MIN_SEGMENT_WORDS`). El segmento no debe
+///   revivir por ningún camino.
+/// - `Failed`: fallo real (I/O, parseo, sin usuario, error de DB). Conserva el fallback al
+///   guardado legacy del webview, que es la red de seguridad histórica.
+///
+/// **Por qué no basta `Option<String>`** (que es lo que devolvía antes, con `None` = "falló"):
+/// un descarte deliberado señalizado como `None` revivía por partida DOBLE. (1) `close_scheduled`
+/// interpreta `None` como "no se persistió nada" y emite `RECORDING_STOP_COMPLETE`, con lo que el
+/// webview guarda el segmento por el camino legacy. (2) El frontend deja el registro de IndexedDB
+/// sin marcar a propósito para que el diálogo de recuperación sea red de seguridad, y desde
+/// ago-2026 `autoRecoverAll` lo guarda solo en el siguiente arranque. El filtro de fantasmas solo
+/// borra los de `transcriptCount === 0`, así que un segmento de 40 palabras volvía como reunión.
+enum SegmentOutcome {
+    Saved(String),
+    Discarded,
+    Failed,
+}
+
 /// Guarda a SQLite el segmento recién cerrado leyendo su `transcripts.json` Y encola los 3 jobs
 /// de sync cloud (`save_conversation` → `save_transcript_segments` → `finalize_conversation`)
 /// contra el mismo `meeting_id`. Todo headless: sin depender del buffer de React ni de la ventana
-/// viva. Devuelve el `meeting_id` creado, o `None` si no hay transcripts, no hay usuario logueado,
-/// o falla la lectura/parseo. La brecha original —"el frontend hace la sync via
-/// `scheduled-segment-rotated`"— nunca se implementó y era la causa de que los segmentos
-/// intermedios rotados quedaran local-only.
+/// viva. Devuelve `Saved(meeting_id)`, `Discarded` si el segmento no llega a
+/// `MIN_SEGMENT_WORDS`, o `Failed` si no hay usuario logueado o falla la lectura/parseo/DB.
+/// La brecha original —"el frontend hace la sync via `scheduled-segment-rotated`"— nunca se
+/// implementó y era la causa de que los segmentos intermedios rotados quedaran local-only.
+///
+/// `segment_started_at` es la hora REAL de arranque del segmento (`owned_since`), sellada por el
+/// scheduler al abrirlo. No se deriva del cierre — ver `enqueue_cloud_sync_jobs`.
 ///
 /// Patrón: Transactional Outbox (Chris Richardson). Fuente de verdad = `transcripts.json` en disco;
 /// tanto el guardado local como el encolado a la cola de sync se derivan de la misma lectura, así
@@ -963,13 +1041,15 @@ async fn finalize_segment_native<R: Runtime>(
     app: &AppHandle<R>,
     folder_path: &str,
     meeting_name: &str,
-) -> Option<String> {
+    segment_started_at: NaiveDateTime,
+    trigger: &'static str,
+) -> SegmentOutcome {
     let json_path = std::path::Path::new(folder_path).join("transcripts.json");
     let content = match tokio::fs::read_to_string(&json_path).await {
         Ok(c) => c,
         Err(e) => {
             warn!("[scheduled] no se pudo leer {}: {}", json_path.display(), e);
-            return None;
+            return SegmentOutcome::Failed;
         }
     };
 
@@ -977,16 +1057,20 @@ async fn finalize_segment_native<R: Runtime>(
         Ok(v) => v,
         Err(e) => {
             warn!("[scheduled] transcripts.json inválido; segmento queda local-only: {}", e);
-            return None;
+            return SegmentOutcome::Failed;
         }
     };
     let Some(raw_segments) = parsed.get("segments").and_then(|v| v.as_array()) else {
         warn!("[scheduled] transcripts.json sin clave 'segments'; segmento queda local-only");
-        return None;
+        return SegmentOutcome::Failed;
     };
+    // 0 transcripts sigue siendo `Failed` A PROPÓSITO, no `Discarded`: el archivo puede estar
+    // vacío porque falló la escritura a disco mientras el buffer de React sí tiene contenido, y
+    // el fallback legacy del webview es justo la red de seguridad para ese caso. El descarte
+    // deliberado es SOLO el del umbral de palabras, más abajo.
     if raw_segments.is_empty() {
         info!("[scheduled] segmento sin transcripts; no se guarda a DB");
-        return None;
+        return SegmentOutcome::Failed;
     }
 
     // Deserializar UNA vez al shape completo del saver. Los dos consumidores downstream
@@ -1013,7 +1097,20 @@ async fn finalize_segment_native<R: Runtime>(
 
     if raws.is_empty() {
         warn!("[scheduled] segmento con transcripts inválidos; no se guarda a DB");
-        return None;
+        return SegmentOutcome::Failed;
+    }
+
+    // Umbral de contenido: el ÚNICO camino que produce `Discarded`. Va aquí, antes de tocar
+    // SQLite y antes de encolar nada, para que un segmento pobre no cueste ni fila local, ni
+    // job de outbox, ni unidad de cuota en la nube.
+    let words_total = count_segment_words(&raws);
+    if words_total < MIN_SEGMENT_WORDS {
+        info!(
+            "[scheduled] segmento descartado por contenido insuficiente: {} palabras (< {})",
+            words_total, MIN_SEGMENT_WORDS
+        );
+        emit_segment_discarded(app, words_total, trigger).await;
+        return SegmentOutcome::Discarded;
     }
 
     // Vista compatible con el repositorio (api::models::TranscriptSegment usa `timestamp`
@@ -1038,14 +1135,14 @@ async fn finalize_segment_native<R: Runtime>(
             Some(s) => s,
             None => {
                 warn!("[scheduled] AppState no inicializado; no se guarda el segmento");
-                return None;
+                return SegmentOutcome::Failed;
             }
         };
         let Some(user_id) = state.current_user_id().await else {
             // Sin usuario => no se guarda (privacidad). Antes era un `?` silencioso: la
             // auditoria jul-2026 encontro 2 de 5 rotaciones sin rastro de por que no guardaron.
             warn!("[scheduled] sin usuario logueado; segmento queda local-only (audio en disco, sin SQLite)");
-            return None;
+            return SegmentOutcome::Failed;
         };
         (user_id, state.db_manager.pool().clone()) // SqlitePool es Arc: clonar es barato
     };
@@ -1081,22 +1178,59 @@ async fn finalize_segment_native<R: Runtime>(
             // Outbox: encolar los 3 jobs de sync cloud contra el mismo meeting_id, ANTES de
             // reportar éxito. Un fallo aquí NO invalida el guardado local (ya committed), pero sí
             // se loggea al nivel error para diagnosticar rotaciones que no lleguen a la nube.
-            if let Err(e) =
-                enqueue_cloud_sync_jobs(&pool, &mid, meeting_name, &raws, &user_id, recording_mode)
-                    .await
+            if let Err(e) = enqueue_cloud_sync_jobs(
+                &pool,
+                &mid,
+                meeting_name,
+                &raws,
+                &user_id,
+                recording_mode,
+                segment_started_at,
+            )
+            .await
             {
                 error!(
                     "[scheduled] fallo al encolar sync cloud para {} (local OK, nube pendiente): {}",
                     mid, e
                 );
             }
-            Some(mid)
+            SegmentOutcome::Saved(mid)
         }
         Err(e) => {
             error!("[scheduled] fallo al guardar segmento a DB: {}", e);
-            None
+            SegmentOutcome::Failed
         }
     }
+}
+
+/// Telemetría del descarte deliberado (#4 del piloto Dingler).
+///
+/// Evento PROPIO y no `save_skipped_no_transcripts`: ese nombre afirma "no transcripts" y aquí sí
+/// los hay, solo que pocos. Reusarlo repetiría la patología que costó el hallazgo #1 — una razón
+/// falsa que además se auto-justifica al leer la telemetría. Además `scheduled_recording` no
+/// emitía telemetría ninguna, así que sin este evento el descarte sería invisible en
+/// `platform_logs` y no habría forma de calibrar el umbral con datos reales.
+async fn emit_segment_discarded<R: Runtime>(
+    app: &AppHandle<R>,
+    words_total: usize,
+    trigger: &'static str,
+) {
+    crate::logging::telemetry::emit::emit_event(
+        app,
+        // El `session-…` de la grabación ya no está en scope: `finalize` corre DESPUÉS del stop,
+        // con el manager dropeado. Se usa la identidad de proceso, igual que los eventos de app.
+        crate::logging::telemetry::context::process_session_id(),
+        crate::logging::telemetry::catalog::RECORDING_SEGMENT_DISCARDED,
+        serde_json::json!({
+            "words_total": words_total,
+            "threshold": MIN_SEGMENT_WORDS,
+            "trigger": trigger,
+        }),
+        Some("skipped"),
+        None,
+        None,
+    )
+    .await;
 }
 
 /// Encola los 3 jobs de sync cloud (save_conversation → save_transcript_segments →
@@ -1111,6 +1245,7 @@ async fn enqueue_cloud_sync_jobs(
     raws: &[RawTranscriptSegment],
     user_id: &str,
     recording_mode: &str,
+    segment_started_at: NaiveDateTime,
 ) -> Result<(), sqlx::Error> {
     // Orden cronológico: los chunks dual-channel llegan al buffer fuera de orden (mic + system),
     // así que ordenar por `audio_start_time` garantiza que transcript_text lea natural y que
@@ -1172,11 +1307,29 @@ async fn enqueue_cloud_sync_jobs(
         .fold(0.0_f64, f64::max);
     let duration_seconds = max_end.round() as i64;
 
-    // Timestamps: mismo enfoque que el frontend — `finished_at = now`, `started_at = now - dur`.
-    // El backend cloud los usa solo como metadata display; el orden real lo dan los segmentos.
-    let now = chrono::Utc::now();
-    let finished_at = now.to_rfc3339();
-    let started_at = (now - chrono::Duration::seconds(duration_seconds)).to_rfc3339();
+    // Timestamps: `started_at` SELLADO al abrir el segmento (`owned_since`), nunca derivado.
+    //
+    // Antes era `now - duration_seconds`, copiando al frontend. Eso miente en cuanto la máquina
+    // se suspende: en el piloto Dingler (ago-2026) una jornada cerró con `duration_seconds` de
+    // 24,316 (6 h 45) para 67 min de audio real, y el `started_at` resultante cayó a las 02:19 de
+    // la madrugada siguiente. Dos errores se sumaban — la duración venía de un reloj que sigue
+    // contando dormido, y la hora de arranque se reconstruía a partir de ella.
+    //
+    // `owned_since` es wall-clock local del momento en que el scheduler abrió ESTE segmento, así
+    // que sobrevive a la suspensión sin depender de ninguna duración. `duration_seconds` se queda
+    // como la duración de AUDIO (contenido real) y ya no gobierna ninguna fecha: por eso
+    // `finished_at - started_at` puede ser mayor que `duration_seconds`, y está bien — esa
+    // diferencia es exactamente el tiempo que la máquina estuvo dormida o en silencio.
+    let finished_at = chrono::Utc::now().to_rfc3339();
+    let started_at = segment_started_at
+        .and_local_timezone(chrono::Local)
+        .earliest()
+        .map(|dt| dt.with_timezone(&chrono::Utc).to_rfc3339())
+        // DST: en el salto de primavera hay horas locales que no existen. Es preferible una
+        // marca aproximada a perder el job entero, así que se cae al comportamiento anterior.
+        .unwrap_or_else(|| {
+            (chrono::Utc::now() - chrono::Duration::seconds(duration_seconds)).to_rfc3339()
+        });
 
     let segments_payload: Vec<serde_json::Value> = sorted
         .iter()
@@ -1636,6 +1789,16 @@ mod tests {
             .expect("insert meeting");
     }
 
+    /// Hora de arranque del segmento (`owned_since`) para los tests del outbox. Deliberadamente
+    /// MUY lejos de "ahora": si alguien reintrodujera el `started_at = now - duración`, el valor
+    /// caería en la fecha de hoy y `started_at_se_sella_no_se_deriva` fallaría.
+    fn fixture_started_at() -> NaiveDateTime {
+        chrono::NaiveDate::from_ymd_opt(2026, 8, 20)
+            .unwrap()
+            .and_hms_opt(16, 1, 0)
+            .unwrap()
+    }
+
     /// Fixture DESORDENADO por `audio_start_time` a propósito: así el test verifica el sort
     /// cronológico (user@1.0 debe quedar antes que interlocutor@5.0) además del mapeo de speaker.
     fn fixture_segments() -> Vec<RawTranscriptSegment> {
@@ -1689,6 +1852,7 @@ mod tests {
             &raws,
             "user-test",
             "conversation",
+            fixture_started_at(),
         )
         .await
         .expect("encolar outbox");
@@ -1816,9 +1980,17 @@ mod tests {
         insert_meeting(&pool, meeting_id).await;
 
         let raws = fixture_segments();
-        enqueue_cloud_sync_jobs(&pool, meeting_id, "Ponencia", &raws, "user-test", "presentation")
-            .await
-            .expect("encolar outbox");
+        enqueue_cloud_sync_jobs(
+            &pool,
+            meeting_id,
+            "Ponencia",
+            &raws,
+            "user-test",
+            "presentation",
+            fixture_started_at(),
+        )
+        .await
+        .expect("encolar outbox");
 
         let finalize: (String,) = sqlx::query_as(
             "SELECT payload FROM sync_queue WHERE meeting_id = ? AND job_type = 'finalize_conversation'",
@@ -1832,5 +2004,102 @@ mod tests {
             payload["recording_mode"], "presentation",
             "recording_mode debe viajar tal cual al finalize cloud (no penalizar al ponente)"
         );
+    }
+
+    /// Hallazgo #5 del piloto Dingler: `started_at` se SELLA al abrir el segmento; no se
+    /// reconstruye restando la duración al cierre. Con la fórmula vieja una jornada cerró con
+    /// `duration_seconds` de 6 h 45 (reloj que sigue contando dormido) y el `started_at` cayó a
+    /// las 02:19 de la madrugada siguiente.
+    ///
+    /// La comparación es en hora LOCAL a propósito: `owned_since` es wall-clock local y el payload
+    /// viaja en UTC, así que comparar contra un literal UTC ataría el test a la zona horaria de la
+    /// máquina que lo corre (verde en CDMX, rojo en CI).
+    #[tokio::test]
+    async fn started_at_se_sella_no_se_deriva() {
+        let pool = setup_pool().await;
+        let meeting_id = "mid-sellado";
+        insert_meeting(&pool, meeting_id).await;
+
+        enqueue_cloud_sync_jobs(
+            &pool,
+            meeting_id,
+            "Segmento",
+            &fixture_segments(),
+            "user-test",
+            "conversation",
+            fixture_started_at(),
+        )
+        .await
+        .expect("encolar outbox");
+
+        let row: (String,) = sqlx::query_as(
+            "SELECT payload FROM sync_queue WHERE meeting_id = ? AND job_type = 'save_conversation'",
+        )
+        .bind(meeting_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let payload: serde_json::Value = serde_json::from_str(&row.0).unwrap();
+
+        let started = chrono::DateTime::parse_from_rfc3339(payload["started_at"].as_str().unwrap())
+            .expect("started_at debe ser RFC3339")
+            .with_timezone(&chrono::Local)
+            .naive_local();
+
+        assert_eq!(
+            started,
+            fixture_started_at(),
+            "started_at debe ser el owned_since sellado, no una resta contra el cierre"
+        );
+
+        // La duración de audio del fixture son ~8 s. Si alguien reintrodujera la derivación,
+        // `started_at` quedaría a segundos de ahora en vez de en agosto de 2026.
+        let finished = chrono::DateTime::parse_from_rfc3339(
+            payload["finished_at"].as_str().unwrap(),
+        )
+        .expect("finished_at debe ser RFC3339");
+        assert!(
+            finished.signed_duration_since(started.and_local_timezone(chrono::Local).unwrap())
+                > chrono::Duration::days(1),
+            "el fixture arranca en el pasado: finished_at - started_at debe ser enorme, \
+             y esa diferencia (máquina dormida o en silencio) es legítima"
+        );
+    }
+
+    /// Hallazgo #4: el umbral cuenta palabras de AMBOS canales.
+    #[test]
+    fn umbral_cuenta_los_dos_canales_para_no_castigar_a_quien_escucha() {
+        let mut raws = fixture_segments();
+        // "que tal" (interlocutor) + "hola mundo" (user) = 4 palabras.
+        assert_eq!(count_segment_words(&raws), 4);
+        assert!(
+            count_segment_words(&raws) < MIN_SEGMENT_WORDS,
+            "un segmento de 4 palabras debe caer bajo el umbral"
+        );
+
+        // Una junta donde el usuario casi no habla pero el interlocutor sí: DEBE sobrevivir.
+        // Contar solo las palabras del usuario la habría tirado entera.
+        raws[0].text = (0..MIN_SEGMENT_WORDS).map(|_| "palabra ").collect::<String>();
+        assert!(
+            count_segment_words(&raws) >= MIN_SEGMENT_WORDS,
+            "el interlocutor solo también debe bastar para conservar el segmento"
+        );
+    }
+
+    /// `split_whitespace` ignora espacios repetidos y tokens vacíos — mismo criterio que el
+    /// `words_count` que viaja a la nube, para que umbral y payload no discrepen.
+    #[test]
+    fn umbral_no_cuenta_espacios_repetidos_como_palabras() {
+        let raws = vec![RawTranscriptSegment {
+            id: "s".to_string(),
+            text: "  hola    mundo  ".to_string(),
+            audio_start_time: 0.0,
+            audio_end_time: 1.0,
+            duration: 1.0,
+            display_time: "[00:00]".to_string(),
+            sequence_id: 1,
+            source_type: Some("user".to_string()),
+        }];
+        assert_eq!(count_segment_words(&raws), 2);
     }
 }

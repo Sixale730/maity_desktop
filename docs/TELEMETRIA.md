@@ -105,6 +105,16 @@ drena `drain.rs`; en el payload: `trigger` (`ui|tray|scheduler|scheduler_rotatio
 | `recording_started` (legacy) | POST-commit del `StartGate` en `initialize_recording` | trigger, dispositivos reales, `recording_session_id` |
 | `recording_start_failed` (legacy) | `Err` de cualquiera de los dos start paths (incluido el `StartGate` ocupado) | trigger, `error`, `code`, `suppressed` |
 | `recording_stopped` (legacy) | `stop_recording_reporting()` | duración, trigger, `recording_session_id` |
+| `recording.segment_discarded` | `finalize_segment_native` descarta un segmento de jornada por contenido insuficiente | `words_total`, `threshold`, `trigger` (`rotation`/`close`) |
+
+> **`recording.segment_discarded` (ago-2026, #4 del piloto Dingler).** La jornada headless
+> guardaba una hora de silencio como conversación: 80 de 144 conversaciones del piloto no eran
+> analizables y todas viajaban a la nube gastando cuota. Ahora un segmento por debajo de
+> `MIN_SEGMENT_WORDS` (250 palabras, **ambos canales**) no crea reunión local ni encola outbox.
+> **No se reusó `save_skipped_no_transcripts`**: ese nombre afirma "no transcripts" y aquí sí los
+> hay, sólo que pocos — sería la misma razón falsa que costó el hallazgo #1. Es además el primer
+> evento que emite `scheduled_recording/service.rs`, que hasta ahora no emitía telemetría ninguna:
+> sin él el descarte sería invisible y no habría con qué calibrar el umbral.
 
 > **`recording_start_failed` está rate-limitado (ago-2026).** En el piloto Dingler
 > una usuaria sin micrófono produjo **965 filas en 8 h** — el 27 % de

@@ -91,23 +91,28 @@ export function RecordingPostProcessingProvider({ children }: { children: React.
 
     const setupRotateListener = async () => {
       try {
-        subs.on<{ meetingId: string | null; meetingName: string }>(
+        subs.on<{ meetingId: string | null; meetingName: string; discarded?: boolean }>(
           TauriEvent.SCHEDULED_SEGMENT_ROTATED,
           async (event) => {
             logger.debug('[RecordingPostProcessing] Segmento rotado, reseteando buffer:', event.payload);
             // meetingId null = finalize falló en Rust → NO marcar: el diálogo de
             // recovery queda como red de seguridad para ese segmento.
-            if (event.payload.meetingId) {
+            //
+            // `discarded` es lo contrario: Rust decidió tirar el segmento por no llegar al
+            // umbral de contenido (#4 del piloto Dingler). Ahí SÍ hay que marcarlo, o
+            // `autoRecoverAll` lo guardaría solo en el próximo arranque — el filtro de fantasmas
+            // sólo borra los de `transcriptCount === 0`, y este tiene transcripts, sólo que pocos.
+            if (event.payload.meetingId || event.payload.discarded) {
               await markMeetingAsSavedRef.current();
             }
             clearTranscriptsRef.current();
           }
         );
-        subs.on<{ meetingId: string | null; meetingName: string }>(
+        subs.on<{ meetingId: string | null; meetingName: string; discarded?: boolean }>(
           TauriEvent.SCHEDULED_JORNADA_CLOSED,
           async (event) => {
             logger.debug('[RecordingPostProcessing] Jornada cerrada headless, reseteando buffer:', event.payload);
-            if (event.payload.meetingId) {
+            if (event.payload.meetingId || event.payload.discarded) {
               await markMeetingAsSavedRef.current();
             }
             clearTranscriptsRef.current();
@@ -117,6 +122,7 @@ export function RecordingPostProcessingProvider({ children }: { children: React.
             sessionStorage.removeItem('last_recording_folder_path');
             sessionStorage.removeItem('last_recording_meeting_name');
             sessionStorage.removeItem('last_recording_duration_seconds');
+            sessionStorage.removeItem('last_recording_started_at');
           }
         );
       } catch (error) {

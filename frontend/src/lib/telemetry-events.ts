@@ -21,6 +21,10 @@ export const TELEMETRY_EVENTS = {
   RECORDING_START_FAILED: 'recording_start_failed', // legacy
   RECORDING_STOPPED: 'recording_stopped', // legacy
 
+  // ── Jornada: segmento descartado por contenido insuficiente (emisor: Rust,
+  //    scheduled_recording/service.rs::finalize_segment_native) ──
+  RECORDING_SEGMENT_DISCARDED: 'recording.segment_discarded',
+
   // ── App / salud (emisor: platformLogger; app.error también Rust vía panics.rs) ──
   APP_OPEN: 'app.open',
   APP_CLOSE: 'app.close',

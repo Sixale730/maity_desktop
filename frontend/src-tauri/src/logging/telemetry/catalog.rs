@@ -22,6 +22,10 @@ pub const RECORDING_STARTED: &str = "recording_started"; // legacy
 pub const RECORDING_START_FAILED: &str = "recording_start_failed"; // legacy
 pub const RECORDING_STOPPED: &str = "recording_stopped"; // legacy
 
+// ── Jornada: segmento descartado por contenido insuficiente (emisor: Rust,
+//    `scheduled_recording/service.rs::finalize_segment_native`) ──
+pub const RECORDING_SEGMENT_DISCARDED: &str = "recording.segment_discarded";
+
 // ── App / salud (emisor: platformLogger; `app.error` también Rust vía panics.rs) ──
 pub const APP_OPEN: &str = "app.open";
 pub const APP_CLOSE: &str = "app.close";
