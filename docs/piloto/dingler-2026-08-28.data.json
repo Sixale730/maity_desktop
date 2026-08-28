@@ -1,0 +1,279 @@
+{
+  "empresa": "Dingler",
+  "titulo": "Radiografía del piloto Dingler",
+  "subtitulo": "Cómo se comunica el equipo, qué le pasa a cada persona y qué hacer en las próximas dos semanas",
+  "periodo": "14 al 28 de agosto de 2026",
+  "corte": "28 de agosto de 2026, 09:30 (hora de Ciudad de México)",
+  "jornada": "09:00–18:00, lunes a viernes",
+  "dias_habiles": 10,
+  "equipo_n": 10,
+
+  "resumen": [
+    "El equipo <b>explica con claridad pero no ordena ni cierra</b>: en 64 conversaciones analizadas la claridad es la competencia más alta (41 de 100) y la estructura y la persuasión las más bajas (33 y 31). Seis de las siete personas con análisis tienen \"estructura\" como su área principal; Margarita tiene \"persuasión\".",
+    "Casi todo lo que Maity escuchó fueron <b>juntas operativas internas y conversaciones uno a uno</b> (105 de 129). Las llamadas con clientes fueron pocas (20) pero son las que mejor salen: más efectivas y sin \"reuniones informales\". De 101 acciones detectadas en las juntas, <b>solo 10 quedaron con dueño y fecha</b>.",
+    "Cuando Maity pudo escuchar a las dos partes (13 conversaciones), <b>empatía y adaptación salieron competentes</b> (55 y 59). En presencial solo escucha a la persona del equipo, así que esas dos competencias no se midieron en la mayoría.",
+    "Maity estuvo encendida en promedio <b>un 11 % de la jornada</b> (de 32 % en María a 0 % en Melissa y Xochitl). Tres personas no aparecen en las mediciones por razones distintas: Xochitl no tiene micrófono, a Melissa el equipo le bloquea el micrófono y Jessica abre Maity casi todos los días, lee, pero graba poco."
+  ],
+
+  "nota_evaluable": "Empatía y adaptación solo se miden cuando Maity escucha a las dos partes (llamadas o videollamadas desde la computadora). En una reunión presencial Maity solo escucha a la persona del equipo, así que estas dos competencias se midieron en 13 de 64 conversaciones; el resto no cuenta ni a favor ni en contra.",
+
+  "competencias": [
+    {
+      "key": "claridad", "label": "Claridad", "n_eval": 64, "n_total": 64, "media": 41,
+      "critico": 31, "desarrollo": 23, "competente": 10, "personas": 7,
+      "que_pasa": "Es la fortaleza más frecuente (en 33 de 64 conversaciones fue lo mejor evaluado), pero rara vez llega a competente: las frases salen directas y a medias, con muletillas (\"este\", \"o sea\", \"pues\") y sin terminar la idea.",
+      "quien": "Margarita", "cita": "Es que te digo, lamentablemente pues las aseguradoras se manejan por las experiencias que tienen", "alternativa": "Las aseguradoras se basan en experiencias previas.",
+      "mejorar": "Terminar la frase antes de empezar la siguiente y sustituir la muletilla por una pausa. Es la recomendación que Maity repitió más veces al equipo (unas 35)."
+    },
+    {
+      "key": "proposito", "label": "Propósito", "n_eval": 64, "n_total": 64, "media": 37,
+      "critico": 33, "desarrollo": 26, "competente": 5, "personas": 7,
+      "que_pasa": "Se explica el caso pero no se cierra: no queda dicho qué sigue, quién lo hace ni para cuándo. En 33 de 64 conversaciones el propósito quedó en nivel crítico.",
+      "quien": "Erika", "cita": "Hay que ver cómo estás haciendo", "alternativa": "Voy a revisar el portal y te confirmo por mensaje cómo descargar la póliza.",
+      "mejorar": "Abrir diciendo para qué es la conversación y cerrar con un siguiente paso, un responsable y una fecha. Unas 30 recomendaciones de Maity fueron exactamente esa."
+    },
+    {
+      "key": "estructura", "label": "Estructura", "n_eval": 64, "n_total": 64, "media": 33,
+      "critico": 39, "desarrollo": 24, "competente": 1, "personas": 7,
+      "que_pasa": "Es el área principal del equipo (en 39 de 64 conversaciones fue lo más bajo). El discurso salta de un tema a otro sin conexión y deja ideas a medias; solo una conversación llegó a competente.",
+      "quien": "Erika", "cita": "Tendría que agregar la cobertura de años por la. O en qué momento le agregas tú o consideras.", "alternativa": "Para agregar la cobertura necesito saber en qué momento se incorpora y qué debe incluir.",
+      "mejorar": "Inicio, desarrollo y cierre; un tema a la vez y cerrarlo antes de cambiar. Es la recomendación más frecuente de todo el piloto (unas 50 veces)."
+    },
+    {
+      "key": "persuasion", "label": "Persuasión", "n_eval": 64, "n_total": 64, "media": 31,
+      "critico": 44, "desarrollo": 19, "competente": 1, "personas": 7,
+      "que_pasa": "La competencia más baja: en 44 de 64 conversaciones quedó en crítico. Se afirma sin dar razones ni beneficio (\"sí procede y esto no procede\", \"va a salir más cara\") y el cliente se queda sin el porqué.",
+      "quien": "Erika", "cita": "Y además es propio de la misma empresa, pues.", "alternativa": "Como el equipo es de la empresa, conviene asegurarlo para evitar pérdidas económicas.",
+      "mejorar": "Cada recomendación con una razón y un beneficio concreto para el cliente. Cuando el equipo sí usó datos (\"de cada 10 cotizaciones, 8 se demoran\") la persuasión subió a 72."
+    },
+    {
+      "key": "empatia", "label": "Empatía", "n_eval": 13, "n_total": 64, "media": 55,
+      "critico": 1, "desarrollo": 5, "competente": 7, "personas": 4,
+      "que_pasa": "Solo se pudo medir en 13 conversaciones (4 personas). Cuando se midió salió competente en 7 de 13: el equipo reconoce al otro (\"todas las compañías tienen sus días\"), pero no siempre responde a la preocupación que el cliente acaba de expresar.",
+      "quien": "Margarita", "cita": "El cliente expresó preocupación por posibles problemas y la respuesta pasó directo al trámite.", "alternativa": "Entiendo tu preocupación; voy a verificar que no haya problemas y te confirmo.",
+      "mejorar": "Nombrar la preocupación del otro antes de resolver, y cerrar con una pregunta de confirmación (\"¿te queda más tranquilo así?\")."
+    },
+    {
+      "key": "adaptacion", "label": "Adaptación", "n_eval": 13, "n_total": 64, "media": 59,
+      "critico": 1, "desarrollo": 3, "competente": 9, "personas": 4,
+      "que_pasa": "Medida en 13 conversaciones (4 personas): competente en 9 de 13. Lo que la baja es el término técnico sin traducir (\"inicio de vigencia\", \"refactura\", \"endoso\") y el tono informal con clientes.",
+      "quien": "Janeth", "cita": "el inicio de vigencia de la póliza ya de plan seguro", "alternativa": "La póliza empieza el 17, y eso afecta la refactura.",
+      "mejorar": "Traducir el término técnico en la misma frase en que se dice, y cuidar el registro con clientes externos."
+    }
+  ],
+
+  "personas": [
+    {
+      "nombre": "Erika", "puesto": "Coordinadora de Autos", "n": 23, "lectura": "consistente", "dos_partes": 9,
+      "fortaleza": "claridad", "area": "estructura",
+      "cita": "Porque te digo ahora sí me pasó como la ley de Murphy. Se portó muy bien.",
+      "alternativa": "Hoy el sistema funcionó bien, pero en otras ocasiones ha fallado; por eso propongo hacer pruebas en vivo.",
+      "patron": "Monólogo fragmentado", "que_cambiaria": "Organizar las ideas antes de hablar",
+      "reto": "Nervios o ansiedad al hablar",
+      "reto_vs_medido": "Ella dice que su reto son los nervios. Maity no mide nervios; lo que ve es que el mensaje salta de tema (estructura 32) y que afirma sin dar razones (persuasión 30). Ella se puso 80 en persuasión: es la brecha más grande de su tarjeta. En cambio se subestima en adaptación (se puso 40, Maity midió 54).",
+      "dims": { "claridad": {"medido": 38, "n": 23, "auto": 50}, "proposito": {"medido": 36, "n": 23, "auto": 70}, "estructura": {"medido": 32, "n": 23, "auto": 70}, "persuasion": {"medido": 30, "n": 23, "auto": 80}, "empatia": {"medido": 54, "n": 6, "auto": 80}, "adaptacion": {"medido": 54, "n": 6, "auto": 40} },
+      "cobertura": 26, "cobertura_analizada": 20, "dias_con_maity": 6,
+      "extra": "Es quien más juntas de equipo lleva: en sus conversaciones Maity detectó 51 acciones y 48 no tenían fecha.",
+      "accion": "Cerrar cada junta de equipo con las acciones escritas: quién y para cuándo. Y usar Maity en sus llamadas con cliente, donde sí se puede medir empatía."
+    },
+    {
+      "nombre": "Margarita", "puesto": "Coordinadora de GMM y Siniestros", "n": 15, "lectura": "consistente", "dos_partes": 9,
+      "fortaleza": "claridad", "area": "persuasión",
+      "cita": "Déjame abro el... Dice aquí, mira.",
+      "alternativa": "Voy a leerte la carta para que tengas la información exacta, y luego seguimos con los puntos clave.",
+      "patron": "Monólogo fragmentado", "que_cambiaria": "Estructurar las ideas antes de hablar",
+      "reto": "Falta de confianza en mi mensaje",
+      "reto_vs_medido": "Ella dice que le falta confianza en su mensaje. Maity coincide en el fondo: su área es persuasión (33), o sea que el mensaje va sin razones ni beneficio, aunque lo diga con claridad (48, la más alta del equipo). Se puso 100 en estructura y 90 en persuasión; Maity midió 37 y 33.",
+      "dims": { "claridad": {"medido": 48, "n": 15, "auto": 80}, "proposito": {"medido": 42, "n": 15, "auto": 90}, "estructura": {"medido": 37, "n": 15, "auto": 100}, "persuasion": {"medido": 33, "n": 15, "auto": 90}, "empatia": {"medido": 59, "n": 5, "auto": 80}, "adaptacion": {"medido": 62, "n": 5, "auto": 80} },
+      "cobertura": 20, "cobertura_analizada": 15, "dias_con_maity": 5,
+      "extra": "Es quien más habla con clientes externos (la mayoría de las 20 llamadas con cliente son suyas) y ahí sale mejor: adaptación 62 y empatía 59.",
+      "accion": "En cada recomendación a un cliente, decir el porqué y el beneficio en la misma frase. Es la candidata natural para grabar más llamadas con cliente."
+    },
+    {
+      "nombre": "María", "puesto": "Auxiliar de Autos", "n": 13, "lectura": "consistente", "dos_partes": 0,
+      "fortaleza": "claridad", "area": "estructura",
+      "cita": "Te lo voy a volver. Y guárdalo así. Tal cual. No le mandamos eso y fue su caso.",
+      "alternativa": "Primero, te lo voy a volver a enviar; guárdalo tal cual. Luego, recuerda que no le mandamos eso y por eso fue su caso.",
+      "patron": "Fragmentado y confuso", "que_cambiaria": "Organizar las ideas antes de hablar",
+      "reto": "Falta de confianza en mi mensaje",
+      "reto_vs_medido": "Ella dice que le falta confianza. Maity ve un mensaje fragmentado (estructura 30, propósito 30): frases sueltas sin cierre. Se puso 100 en propósito y Maity midió 30; es la brecha más grande de todo el equipo. Ninguna de sus 13 conversaciones tuvo dos partes audibles, así que empatía y adaptación no se midieron.",
+      "dims": { "claridad": {"medido": 36, "n": 13, "auto": 50}, "proposito": {"medido": 30, "n": 13, "auto": 100}, "estructura": {"medido": 30, "n": 13, "auto": 70}, "persuasion": {"medido": 26, "n": 13, "auto": 70}, "empatia": {"medido": null, "n": 0, "auto": 100}, "adaptacion": {"medido": null, "n": 0, "auto": 100} },
+      "cobertura": 32, "cobertura_analizada": 11, "dias_con_maity": 7,
+      "extra": "Es quien más tiempo tiene Maity encendida (32 % de la jornada), pero dos tercios de ese tiempo no tienen conversación: de sus 41 minutas, 27 son \"reunión informal\" o \"sin contenido\". No ha abierto ninguna de sus conversaciones.",
+      "accion": "Encender Maity cuando empiece una conversación, no toda la jornada. Y revisar con ella una de sus minutas: aún no ha visto lo que Maity le dice."
+    },
+    {
+      "nombre": "Alejandra", "puesto": "Colectivos", "n": 7, "lectura": "consistente", "dos_partes": 1,
+      "fortaleza": "claridad", "area": "estructura",
+      "cita": "Me voy a ir ahorita a lo que yo les estoy platicando.",
+      "alternativa": "Vamos a empezar con los tabuladores, luego veremos la red hospitalaria y al final las coberturas.",
+      "patron": "Monólogo fragmentado", "que_cambiaria": "Definir objetivo y audiencia",
+      "reto": "Dificultad para organizar mis ideas",
+      "reto_vs_medido": "Ella dice que le cuesta organizar sus ideas y Maity coincide: estructura es su dimensión más baja (33). Se puso 80 en las seis competencias; Maity midió entre 33 y 43 en las cuatro que sí pudo medir. Es la persona con más muletillas por conversación del equipo.",
+      "dims": { "claridad": {"medido": 43, "n": 7, "auto": 80}, "proposito": {"medido": 41, "n": 7, "auto": 80}, "estructura": {"medido": 33, "n": 7, "auto": 80}, "persuasion": {"medido": 36, "n": 7, "auto": 80}, "empatia": {"medido": 60, "n": 1, "auto": 90}, "adaptacion": {"medido": 65, "n": 1, "auto": 80} },
+      "cobertura": 6, "cobertura_analizada": 6, "dias_con_maity": 3,
+      "extra": "Grabó poco (3 días) pero casi todo lo que grabó tenía conversación real: presentaciones de gastos médicos y cotizaciones.",
+      "accion": "Preparar la presentación con tres bloques y anunciarlos al inicio (\"vamos a ver tabuladores, red y coberturas\"). Grabar sus presentaciones a grupos: ahí se ve su estructura."
+    },
+    {
+      "nombre": "Janeth", "puesto": "Ejecutiva de Operación", "n": 3, "lectura": "preliminar", "dos_partes": 1,
+      "fortaleza": "claridad", "area": "estructura",
+      "cita": "Estoy viendo tu correo.",
+      "alternativa": "Vamos a resolver la refactura de tu póliza; primero necesito verificar el RFC.",
+      "patron": "Monólogo desordenado", "que_cambiaria": "Estructurar con apertura, desarrollo y cierre",
+      "reto": "Dificultad para organizar mis ideas",
+      "reto_vs_medido": "Ella dice que le cuesta organizar sus ideas y Maity coincide (estructura 42). Con solo 3 conversaciones la lectura es preliminar, pero es la media más alta del equipo (49) y se subestima en claridad: se puso 40 y Maity midió 53.",
+      "dims": { "claridad": {"medido": 53, "n": 3, "auto": 40}, "proposito": {"medido": 55, "n": 3, "auto": 100}, "estructura": {"medido": 42, "n": 3, "auto": 100}, "persuasion": {"medido": 50, "n": 3, "auto": 80}, "empatia": {"medido": 40, "n": 1, "auto": 90}, "adaptacion": {"medido": 60, "n": 1, "auto": 50} },
+      "cobertura": 3, "cobertura_analizada": 2, "dias_con_maity": 2,
+      "extra": "Dejó de grabar el 17 de agosto. Es quien más muletillas usa por conversación después de Alejandra.",
+      "accion": "Volver a grabar: con 3 conversaciones no se puede decir mucho, y lo poco que hay es bueno. Empezar cada llamada diciendo qué se va a resolver."
+    },
+    {
+      "nombre": "Marcela", "puesto": "Asistente de Dirección", "n": 2, "lectura": "preliminar", "dos_partes": 1,
+      "fortaleza": "claridad", "area": "estructura",
+      "cita": "Me preocupa.",
+      "alternativa": "Me preocupa el tema del conteo combinado porque afecta la claridad de los datos; propongo revisarlo en detalle.",
+      "patron": "Monólogo desordenado", "que_cambiaria": "Aumentar participación y claridad",
+      "reto": "Nervios o ansiedad al hablar",
+      "reto_vs_medido": "Ella dice que su reto son los nervios. En las 2 conversaciones que Maity pudo analizar habla poco y en frases cortas (\"Me preocupa\", \"Let's see\") y el mensaje se queda sin desarrollar (estructura 28, persuasión 20). Es una lectura preliminar.",
+      "dims": { "claridad": {"medido": 33, "n": 2, "auto": 60}, "proposito": {"medido": 23, "n": 2, "auto": 70}, "estructura": {"medido": 28, "n": 2, "auto": 70}, "persuasion": {"medido": 20, "n": 2, "auto": 80}, "empatia": {"medido": null, "n": 0, "auto": 80}, "adaptacion": {"medido": null, "n": 0, "auto": 90} },
+      "cobertura": 14, "cobertura_analizada": 8, "dias_con_maity": 3,
+      "extra": "Grabó 10 conversaciones en 3 días (incluida una sesión de práctica de pitch y capacitación de 6.6 horas el lunes 17) y dejó de grabar el 19 de agosto. 8 de las 10 no tenían conversación suficiente para analizar.",
+      "accion": "Retomar Maity en las juntas donde ella participa activamente, no en las que solo escucha. Practicar completar la idea: \"me preocupa X porque Y; propongo Z\"."
+    },
+    {
+      "nombre": "Michael", "puesto": "Coordinador de Daños", "n": 1, "lectura": "una sola", "dos_partes": 0,
+      "fortaleza": "claridad", "area": "estructura",
+      "cita": "Echando este vi que mandaste un correo sobre [un cliente].",
+      "alternativa": "Quiero retomar el correo sobre ese cliente para definir los siguientes pasos.",
+      "patron": "Monólogo fragmentado", "que_cambiaria": "Definir propósito y preguntar",
+      "reto": "Falta de confianza en mi mensaje",
+      "reto_vs_medido": "Una sola conversación analizada: no hay promedios que valgan. Lo que se ve en ella es lo mismo que en el equipo: arranca sin decir para qué (propósito 40) y sin orden (estructura 30).",
+      "dims": { "claridad": {"medido": 45, "n": 1, "auto": 60}, "proposito": {"medido": 40, "n": 1, "auto": 60}, "estructura": {"medido": 30, "n": 1, "auto": 60}, "persuasion": {"medido": 35, "n": 1, "auto": 70}, "empatia": {"medido": null, "n": 0, "auto": 60}, "adaptacion": {"medido": null, "n": 0, "auto": 60} },
+      "cobertura": 4, "cobertura_analizada": 1, "dias_con_maity": 2,
+      "extra": "Grabó 9 conversaciones en 2 días, pero 8 eran demasiado cortas o sin conversación. Dejó de grabar el 19 de agosto. Es quien más ha abierto conversaciones de su equipo para leerlas (11 veces).",
+      "accion": "Grabar llamadas completas de siniestros (son las que más tienen que persuadir). Ya lee lo que Maity produce: falta que grabe."
+    },
+    {
+      "nombre": "Jessica", "puesto": "Coordinadora del Programa Vida", "n": 0, "lectura": "sin análisis", "sin_analisis": true,
+      "reto": "Dificultad para organizar mis ideas",
+      "dims": { "claridad": {"medido": null, "n": 0, "auto": 90}, "proposito": {"medido": null, "n": 0, "auto": 80}, "estructura": {"medido": null, "n": 0, "auto": 90}, "persuasion": {"medido": null, "n": 0, "auto": 100}, "empatia": {"medido": null, "n": 0, "auto": 100}, "adaptacion": {"medido": null, "n": 0, "auto": 80} },
+      "cobertura": 1, "cobertura_analizada": 0, "dias_con_maity": 2,
+      "extra": "Abre Maity 10 de los 12 días hábiles y ha revisado 9 conversaciones y 3 análisis de su equipo, pero solo grabó 3 fragmentos cortos (1.2 horas) los primeros días. Se puso entre 80 y 100 en todas las competencias; su reto declarado es organizar sus ideas.",
+      "accion": "Ya la usa para leer; falta que grabe. Proponerle una llamada del Programa Vida por semana."
+    },
+    {
+      "nombre": "Melissa", "puesto": "Asistente de Dirección", "n": 0, "lectura": "sin análisis", "sin_analisis": true, "bloqueo": "El micrófono está bloqueado para Maity en su equipo",
+      "reto": "Dificultad para organizar mis ideas",
+      "dims": { "claridad": {"medido": null, "n": 0, "auto": 100}, "proposito": {"medido": null, "n": 0, "auto": 100}, "estructura": {"medido": null, "n": 0, "auto": 80}, "persuasion": {"medido": null, "n": 0, "auto": 90}, "empatia": {"medido": null, "n": 0, "auto": 100}, "adaptacion": {"medido": null, "n": 0, "auto": 90} },
+      "cobertura": 0, "cobertura_analizada": 0, "dias_con_maity": 0,
+      "extra": "No ha podido grabar, pero es la persona más activa del equipo en la parte de práctica: completó 9 ejercicios de habilidades en la web (5 tipos distintos) y visitó la sección de ejercicios 53 veces.",
+      "accion": "Permitir el micrófono a las aplicaciones de escritorio en la configuración de Windows de su equipo (5 minutos). Mientras tanto, sus ejercicios ya cuentan."
+    },
+    {
+      "nombre": "Xochitl", "puesto": "Gerente de Operaciones", "n": 0, "lectura": "sin análisis", "sin_analisis": true, "bloqueo": "Su computadora no tiene micrófono",
+      "reto": "Nervios o ansiedad al hablar",
+      "dims": { "claridad": {"medido": null, "n": 0, "auto": 60}, "proposito": {"medido": null, "n": 0, "auto": 80}, "estructura": {"medido": null, "n": 0, "auto": 80}, "persuasion": {"medido": null, "n": 0, "auto": 80}, "empatia": {"medido": null, "n": 0, "auto": 80}, "adaptacion": {"medido": null, "n": 0, "auto": 80} },
+      "cobertura": 0, "cobertura_analizada": 0, "dias_con_maity": 0,
+      "extra": "Abre Maity 6 de los 12 días, pero sin micrófono no hay nada que escuchar. Como gerente de operaciones, sus juntas son las que más acciones y decisiones generarían.",
+      "accion": "Una diadema USB con micrófono. Es el bloqueo más barato de resolver del piloto."
+    }
+  ],
+
+  "conversaciones": {
+    "matriz": [
+      { "tipo": "Operativa", "interlocutor": "Junta de equipo interno", "n": 58, "horas": 43.7, "min": 45, "efectividad": 49, "informales": 26 },
+      { "tipo": "Operativa", "interlocutor": "Uno a uno", "n": 47, "horas": 29.2, "min": 37, "efectividad": 46, "informales": 41 },
+      { "tipo": "Operativa", "interlocutor": "Cliente externo", "n": 16, "horas": 13.0, "min": 49, "efectividad": 54, "informales": 0 },
+      { "tipo": "Ventas", "interlocutor": "Cliente externo", "n": 4, "horas": 2.8, "min": 42, "efectividad": 60, "informales": 0 },
+      { "tipo": "Ventas", "interlocutor": "Práctica / capacitación interna", "n": 2, "horas": 7.6, "min": 228, "efectividad": 50, "informales": 0 },
+      { "tipo": "Operativa", "interlocutor": "Otra área / proveedor", "n": 2, "horas": 0.9, "min": 25, "efectividad": 50, "informales": 0 }
+    ],
+    "acciones": { "total": 101, "completas": 10, "sin_fecha": 92, "sin_dueno": 20 },
+    "decisiones": { "total": 35, "confirmadas": 29, "tentativas": 6 },
+    "informales": { "n": 67, "total": 129 },
+    "temas": ["pólizas (38)", "cotizaciones (35)", "portal de la aseguradora (14)", "trámites (8)", "facturación (7)", "cancelaciones (7)", "pagos (7)", "renovaciones (6)", "estados de cuenta (6)", "siniestros (5)", "coberturas (5)", "constancias y RFC (10)"],
+    "lectura": [
+      "Las juntas de equipo y los uno a uno se llevan 105 de las 129 conversaciones, y la mitad de ellas Maity las tituló \"informal\", \"sin agenda\" o \"sin contenido\" (67 de 129). No es que el equipo pierda el tiempo: es que Maity queda encendida entre conversaciones y en pláticas de pasillo.",
+      "Las llamadas con clientes son pocas (20 de 129) y son las mejores: efectividad 54–60 contra 46–49 de las internas, ninguna \"informal\", y es donde se pudo medir empatía y adaptación.",
+      "De 101 acciones que Maity detectó en las juntas, 92 no tienen fecha y 20 no tienen dueño; solo 10 salieron completas. De 35 decisiones, 29 quedaron confirmadas. La junta de equipo es donde se decide, pero no donde se asigna.",
+      "Los temas son los del negocio: pólizas, cotizaciones, el portal de la aseguradora, trámites, facturación y cancelaciones. No aparecen temas de servicio al cliente como tal (quejas, seguimiento post-venta), porque casi no se grabaron llamadas con clientes."
+    ]
+  },
+
+  "dias": [
+    { "d": "2026-08-14", "dow": "vie", "h": 7.9, "h_an": 2.5, "conv": 20, "an": 3, "personas": 7, "equipo": 8, "uno": 6, "cli": 0, "quienes": "Erika 2.5, María 1.4, Jessica 1.2, Margarita 1.1, Michael 1.0, Janeth 0.7" },
+    { "d": "2026-08-15", "dow": "sáb", "h": 0, "h_an": 0, "conv": 0, "an": 0, "personas": 0, "equipo": 0, "uno": 0, "cli": 0, "quienes": "" },
+    { "d": "2026-08-16", "dow": "dom", "h": 0.4, "h_an": 0.4, "conv": 1, "an": 1, "personas": 1, "equipo": 0, "uno": 0, "cli": 1, "quienes": "Janeth 0.4" },
+    { "d": "2026-08-17", "dow": "lun", "h": 20.8, "h_an": 16.9, "conv": 20, "an": 13, "personas": 4, "equipo": 13, "uno": 7, "cli": 0, "quienes": "María 7.0, Marcela 6.6, Erika 5.1, Janeth 2.1" },
+    { "d": "2026-08-18", "dow": "mar", "h": 4.1, "h_an": 4.0, "conv": 7, "an": 5, "personas": 3, "equipo": 3, "uno": 1, "cli": 3, "quienes": "Alejandra 4.0" },
+    { "d": "2026-08-19", "dow": "mié", "h": 13.3, "h_an": 3.8, "conv": 23, "an": 5, "personas": 4, "equipo": 8, "uno": 8, "cli": 2, "quienes": "Marcela 5.9, Erika 3.6, Michael 2.7, María 1.2" },
+    { "d": "2026-08-20", "dow": "jue", "h": 7.7, "h_an": 6.7, "conv": 7, "an": 6, "personas": 1, "equipo": 1, "uno": 2, "cli": 4, "quienes": "Margarita 7.7" },
+    { "d": "2026-08-21", "dow": "vie", "h": 1.2, "h_an": 0.4, "conv": 5, "an": 1, "personas": 1, "equipo": 1, "uno": 2, "cli": 0, "quienes": "Margarita 1.2" },
+    { "d": "2026-08-22", "dow": "sáb", "h": 0, "h_an": 0, "conv": 0, "an": 0, "personas": 0, "equipo": 0, "uno": 0, "cli": 0, "quienes": "" },
+    { "d": "2026-08-23", "dow": "dom", "h": 0, "h_an": 0, "conv": 0, "an": 0, "personas": 0, "equipo": 0, "uno": 0, "cli": 0, "quienes": "" },
+    { "d": "2026-08-24", "dow": "lun", "h": 6.8, "h_an": 2.4, "conv": 10, "an": 3, "personas": 2, "equipo": 3, "uno": 4, "cli": 1, "quienes": "María 5.3, Alejandra 1.4" },
+    { "d": "2026-08-25", "dow": "mar", "h": 6.0, "h_an": 4.0, "conv": 8, "an": 5, "personas": 3, "equipo": 4, "uno": 2, "cli": 2, "quienes": "Margarita 2.9, María 2.0, Erika 1.1" },
+    { "d": "2026-08-26", "dow": "mié", "h": 14.1, "h_an": 8.2, "conv": 18, "an": 10, "personas": 2, "equipo": 10, "uno": 6, "cli": 2, "quienes": "María 7.6, Erika 6.5" },
+    { "d": "2026-08-27", "dow": "jue", "h": 15.7, "h_an": 8.7, "conv": 23, "an": 10, "personas": 4, "equipo": 9, "uno": 8, "cli": 4, "quienes": "Margarita 5.6, María 5.2, Erika 4.8" },
+    { "d": "2026-08-28", "dow": "vie", "h": 1.5, "h_an": 1.5, "conv": 2, "an": 2, "personas": 2, "equipo": 0, "uno": 1, "cli": 1, "quienes": "Margarita 1.1, María 0.3 (hasta las 09:30)" }
+  ],
+  "picos": [
+    { "d": "2026-08-17", "titulo": "Lunes 17 · 20.8 h", "texto": "No fue \"cierre de mes\": fueron 13 juntas de equipo interno (reestructuración del equipo y flujo de trámites, revisión de coberturas y deducibles, cobranza) más 7 uno a uno, entre María, Erika y Janeth, y una sesión de práctica de pitch y capacitación de 6.6 horas de Marcela. Casi todo tuvo conversación real (16.9 de 20.8 h)." },
+    { "d": "2026-08-27", "titulo": "Jueves 27 · 15.7 h", "texto": "Margarita, María y Erika: 9 juntas de equipo, 8 uno a uno y 4 llamadas con clientes (todas de Margarita) sobre pólizas, cotizaciones, siniestros y cancelaciones. Poco más de la mitad tuvo conversación analizable (8.7 h)." },
+    { "d": "2026-08-26", "titulo": "Miércoles 26 · 14.1 h", "texto": "Solo María y Erika, con Maity encendida buena parte del día: 10 juntas internas, 6 uno a uno y 2 llamadas con cliente (reclamo de seguro, cotización de moto, constancias de pólizas). 8.2 de 14.1 h con conversación real." },
+    { "d": "2026-08-19", "titulo": "Miércoles 19 · 13.3 h", "texto": "El pico con menos sustancia: Marcela, Erika, Michael y María grabaron 23 conversaciones pero solo 5 tenían conversación suficiente (3.8 de 13.3 h). Maity estuvo encendida en juntas donde la persona del equipo casi no habló." }
+  ],
+  "jornada_lectura": [
+    "Con una jornada de 9 a 6, Maity estuvo encendida el 32 % del tiempo en María, 26 % en Erika y 20 % en Margarita; en el resto, 14 % o menos. Y de ese tiempo, solo una parte tuvo conversación analizable: María 11 %, Erika 20 %, Margarita 15 %.",
+    "Una cobertura baja no es un problema en sí: el resto de la jornada puede ser trabajo en el portal, correo o trámites. Lo que sí importa es que lo grabado sea conversación real. Por eso la lectura útil no es \"quién graba más\" sino \"quién graba sus conversaciones\": Alejandra grabó poco (6 %) pero todo con contenido; María grabó mucho y dos tercios en silencio.",
+    "No hubo nada en fines de semana ni después de las 6. Los martes y viernes son los días bajos del equipo; los lunes, miércoles y jueves concentran las juntas."
+  ],
+
+  "no_graban": [
+    { "nombre": "Melissa", "texto": "No ha podido grabar porque su equipo bloquea el micrófono para Maity. Pero es la más activa en la práctica: 9 ejercicios de habilidades completados en la web (5 tipos) y 53 visitas a la sección de ejercicios. Cuando se libere el micrófono, ya conoce la herramienta." },
+    { "nombre": "Jessica", "texto": "Abre Maity 10 de 12 días, revisó 9 conversaciones y 3 análisis, y grabó solo 3 fragmentos cortos los primeros días. Usa Maity para leer, no para grabar. Es la única a la que le falta el paso de \"grabar\", no el de \"entrar\"." },
+    { "nombre": "Xochitl", "texto": "Su computadora no tiene micrófono. Abre Maity 6 de 12 días, así que la intención está; falta el equipo. Como gerente de operaciones, sus juntas serían las de más decisiones y acciones." }
+  ],
+
+  "acciones": {
+    "personas": [
+      { "nombre": "Erika", "accion": "Cerrar cada junta con las acciones escritas (quién, para cuándo). Grabar sus llamadas con cliente." },
+      { "nombre": "Margarita", "accion": "En cada recomendación al cliente, decir el porqué y el beneficio en la misma frase. Grabar más llamadas con cliente." },
+      { "nombre": "María", "accion": "Encender Maity al empezar una conversación, no toda la jornada. Revisar juntas una minuta suya: aún no ha visto ninguna." },
+      { "nombre": "Alejandra", "accion": "Anunciar los tres bloques al inicio de cada presentación. Grabar sus presentaciones a grupos." },
+      { "nombre": "Janeth", "accion": "Volver a grabar (dejó de hacerlo el 17). Abrir cada llamada diciendo qué se va a resolver." },
+      { "nombre": "Marcela", "accion": "Grabar solo las juntas donde ella participa. Completar la idea: \"me preocupa X porque Y; propongo Z\"." },
+      { "nombre": "Michael", "accion": "Grabar llamadas completas de siniestros. Ya lee lo que Maity produce." },
+      { "nombre": "Jessica", "accion": "Una llamada del Programa Vida grabada por semana." },
+      { "nombre": "Melissa", "accion": "Permitir el micrófono a las aplicaciones de escritorio en la configuración de Windows (5 minutos)." },
+      { "nombre": "Xochitl", "accion": "Conseguirle una diadema USB con micrófono." }
+    ],
+    "equipo": [
+      "Agenda de tres puntos y cierre con acciones (quién y cuándo) en las juntas operativas internas: es donde se decide (29 decisiones) pero no se asigna (10 de 101 acciones completas).",
+      "Grabar las llamadas con clientes, no la jornada entera: es donde Maity escucha a las dos partes, donde el equipo sale mejor y donde se puede trabajar empatía y persuasión.",
+      "Quince minutos a la semana en que cada persona abre una minuta suya y elige una recomendación: hoy 4 de 10 personas han abierto un análisis."
+    ],
+    "maity": [
+      "Diadema USB para Xochitl y permiso de micrófono para Melissa.",
+      "El horario real de cada persona, para medir la cobertura contra su jornada y no contra un 9 a 6 supuesto.",
+      "Quince minutos con María y Erika para enseñarles a pausar Maity entre conversaciones."
+    ]
+  },
+
+  "como_leer": [
+    "Periodo: 14 al 28 de agosto de 2026, con datos hasta el 28 a las 09:30 (hora de Ciudad de México). La manager de Dingler no está incluida en las métricas del equipo.",
+    "Una \"conversación analizada\" es una grabación en la que la persona del equipo habló lo suficiente (al menos 100 palabras seguidas de conversación) para evaluar su comunicación. Las grabaciones en silencio o con fragmentos sueltos no cuentan ni a favor ni en contra.",
+    "Los puntajes van de 0 a 100 y se agrupan en cuatro niveles: crítico (menos de 40), en desarrollo (40 a 59), competente (60 a 74) y sólido (75 o más).",
+    "Empatía y adaptación solo se miden cuando Maity escucha a las dos partes (llamadas o videollamadas). En presencial solo escucha a la persona del equipo, por eso tienen menos mediciones.",
+    "Cada persona lleva el número de conversaciones que respaldan su lectura: 5 o más es una lectura consistente; de 2 a 4, preliminar; con una sola solo se muestran ejemplos.",
+    "Las citas son fragmentos de lo que dijo la persona; la versión \"mejor\" es una sugerencia de Maity, no una corrección. Se quitaron nombres de clientes y datos de pólizas.",
+    "\"Cómo se ve\" viene del cuestionario que cada persona respondió al registrarse (del 1 al 5, convertido a 100); \"cómo la ve Maity\" viene de sus conversaciones. Son escalas distintas: lo que importa es la dirección y el tamaño de la brecha, no la diferencia exacta.",
+    "La cobertura de jornada supone un horario de 9:00 a 18:00 de lunes a viernes para todos (10 días hábiles del 14 al 27 de agosto). Si el horario real es otro, el porcentaje cambia pero el orden entre personas no."
+  ],
+
+  "datos_uso": {
+    "conv": 144, "horas": 99.3, "personas": "8 de 10", "analisis": 64, "minutas": 129,
+    "nota": "Estas cifras miden la actividad de Maity, no la del equipo: una hora grabada puede ser una junta o una computadora encendida en silencio. Por eso el reporte no arranca con ellas. 4 grabaciones que el propio usuario descartó no se cuentan."
+  }
+}

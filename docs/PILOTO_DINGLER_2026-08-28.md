@@ -258,6 +258,96 @@ anomalía de margarita).
 | Request timeout after 120s con helper legacy (sin ids) | 3 | erika, margarita | 0.2.56 |
 | Recording is still stopping, try again in a moment | 1 | alejandra | 0.2.56 |
 
+## Lo que NO va al manager y por qué (v4, 2026-08-28)
+
+El feedback del cofundador sobre la v3 fue literal: "estos datos no me dicen nada… ¿para qué le sirve a
+Rita que se guardaron 148 conversaciones?". La regla desde entonces: **dato → pregunta del manager → frase
+sobre una conducta → acción**; lo que no sobrevive la conversión se queda aquí.
+
+| Tema técnico | Por qué no va | Cómo se dice en el reporte B |
+|---|---|---|
+| Atribución por canal (mic = usuario, sistema = interlocutor) → "monólogo" en presencial, 49/64 con 1 hablante | Límite del producto, no conducta del equipo | "Empatía y adaptación solo se miden cuando Maity escucha a las dos partes; en presencial solo escucha a la persona del equipo: se midieron en 13 de 64" |
+| RAM 6–8 GB, 215 `[MEM]`, congelamientos, tier Low, Gemma | Diagnóstico de plataforma | No se menciona |
+| Tormenta de 965 reintentos del scheduler (xochitl) | Bug nuestro | "Su computadora no tiene micrófono" + acción (diadema USB) |
+| `0x80070005` en melissa | Config de Windows | "El micrófono está bloqueado para Maity en su equipo" + acción |
+| Cuota Free → 29 `quota_skipped` y el backfill | Operación de Maity | Desaparece: tras el backfill "todas las conversaciones con contenido reciben análisis" |
+| 39 % de segmentos "sin tema" por la jornada headless | Modelo de grabación continua | "Tiempo con Maity encendida" ≠ "conversación analizada" (cobertura total vs analizada) |
+| Versiones 0.2.56/0.2.57, canal Store vs GitHub | Operación | No se menciona |
+| KPIs de volumen (144 conv, 99 h, 129 minutas) | No accionables para el manager | Apéndice plegado "Datos de uso" con la nota "miden la actividad de Maity, no la del equipo" |
+| `category` OMI (otro 51 / trabajo 46 / personal 15…) | Ruido | El tipo de junta sale de `meta.tipo_reunion × categoria_interlocutor` de la minuta |
+| Heatmap día×hora, perfil por hora, "hablantes por canal" | Describen a Maity, no al equipo | Eliminados de B (la tabla de minutos por hora sigue abajo) |
+
+**Corrección de universo (v4):** las 148 conversaciones de la v3 incluían **4 `discarded`** (descartadas
+por el propio usuario). El universo del reporte v4 es **144** no descartadas antes del corte (Q0 de
+`queries.sql` filtra `deleted` y `discarded`). Nada cambia en las conclusiones.
+
+## Señales de producto desde la vista del manager
+
+Lo que salió al convertir los datos a conductas y que sí es nuestro problema:
+
+- **Cobertura de jornada 0–32 % con trigger dominante `scheduler_rotation`** (Q4: María 32 %, Erika 26 %,
+  Margarita 20 %, Marcela 14 %, el resto ≤6 %; 10 días hábiles 14–27 ago × 9 h). La jornada está encendida
+  pero no acompaña la jornada: suspensión/rotación (hallazgo 5) y gente que la apaga. **Y de lo encendido,
+  solo una fracción es conversación analizable** (María 11 %, Erika 20 %, Margarita 15 %): grabar al vacío
+  es el modo dominante de uso.
+- **Empatía y adaptación no evaluables en 51 de 64** → la diarización en el canal de micrófono es el siguiente
+  salto de valor del V4 para equipos presenciales. Sin eso, 2 de las 6 competencias del pitch no existen
+  para el 80 % de las conversaciones.
+- **8 `analysis_viewed` en dos semanas** (Jessica 3, Marcela 3, Alejandra 1, Margarita 1). María: 45
+  conversaciones, 0 vistas. El valor no llega a quien graba → notificación "tu minuta está lista" con deep
+  link, o resumen semanal por correo.
+- **Autoevaluación vs medido** (Q6): las 10 personas se pusieron 60–100 en el registro y Maity mide 26–55.
+  Brechas de 40–70 puntos en propósito/estructura/persuasión (María propósito 100 vs 30). Dos se subestiman
+  (Erika adaptación 40 vs 54; Janeth claridad 40 vs 53). Argumento de venta ("no se ven como son") y de
+  onboarding (mostrar la brecha en el primer análisis).
+- **Melissa: 9 juegos en la web sin poder grabar; Jessica: abre 10/12 días, lee 9 conversaciones, graba
+  1.2 h** → el valor "sin grabar" existe y hay que medirlo (juegos, roleplay, lectura). Chat y roleplay: 0 en
+  todo Dingler.
+- **101 acciones detectadas, 10 con dueño y fecha** → la minuta ya ve el problema que el manager quiere
+  atacar; falta la UI que lo cierre (asignar desde la minuta, recordatorio).
+- **Las 20 llamadas con cliente son las mejores conversaciones del piloto** (efectividad 54–60, 0
+  informales, únicas con 2 hablantes) y son el 15 % del volumen → el producto debería empujar a grabar
+  llamadas, no jornadas.
+
+## Caveats de calidad de datos (para no sobreleer B)
+
+- `meta.tipo_reunion` y `categoria_interlocutor` son etiquetas del LLM de minuta: "Operativa" 125/129. La
+  explicación de picos se apoya en interlocutor + títulos + `keywords`.
+- Las citas del V4 pueden pertenecer al interlocutor (atribución por canal). En B se prefirieron
+  conversaciones con ≥2 hablantes y se leyó cada cita; se redactó un nombre de cliente (Michael).
+- `acciones[].falta` trae "dueño" o "dueno"; `responsable`/`fecha_limite` vacíos también cuentan como
+  faltantes (Q3b).
+- Autoevaluación (Likert 1–5 ×20) y puntaje V4 (0–100) no son la misma escala: B muestra dirección y brecha
+  mayor, no una resta.
+- `started_at` derivado del cierre en suspensiones (hallazgo 5): los segmentos >61 min inflan la cobertura de
+  Margarita el 20-ago y Marcela el 17/19.
+- `least`/`greatest` de Postgres ignoran NULL: la primera versión de Q4 daba 100 % a quien no grabó. Corregido
+  con `case when c.id is null then 0`.
+- `platform_logs.user_id` puede ser `users.id` o `auth_id`; `platform` ∈ desktop|web|mobile (los juegos de
+  Melissa son web).
+- La efectividad de minuta penaliza por diseño las jornadas sin agenda (`agenda_adherence` asume 70).
+
+## Backfill (hecho)
+
+28-ago 09:58–10:02 CDMX, worker `conversations-async-analysis` + `CRON_SECRET` (`--one` primero, luego
+concurrencia 2): 29/29 procesadas, 16 `completed` + 13 `skipped`, 0 `failed`, minutas intactas, sin cobro
+de cuota. Detalle en el hallazgo 6. Q9 de `queries.sql` devuelve 0 filas desde entonces.
+
+## Changelog del reporte del manager
+
+- **2026-08-28 v4 "conductas"** (label `manager-v4-conductas`, misma URL): reestructura completa por el
+  feedback del cofundador. Fuera: KPIs de volumen (a apéndice), heatmap, perfil por hora, destino por día,
+  hablantes por canal, tabla con RAM/versión, findings técnicos. Dentro: en una página (4 frases), 6
+  competencias con n evaluable/total + niveles + qué pasa + ejemplo→mejor + qué mejorar, 10 tarjetas por
+  persona (puesto, n + tier de lectura, fortaleza/área con cita, patrón, reto declarado vs medido, dumbbell
+  autoeval vs Maity, cobertura, acción), matriz tipo × interlocutor + acciones sin dueño/fecha + temas,
+  cobertura de jornada por persona + horas por día con 4 picos explicados, 3 personas sin análisis y qué sí
+  hacen, acciones por persona/equipo/Maity, cómo leer. Generado con `build-report-b.mjs` desde
+  `docs/piloto/dingler-2026-08-28.data.json`.
+- 2026-08-28 v3 `manager-v3-post-backfill`: cifras post-backfill (64 análisis).
+- 2026-08-28 v2 `manager-v2`: karen fuera, xochitl "sin micrófono", hallazgos técnicos movidos a este md.
+- 2026-08-28 v1 `dos-semanas-v1`: primera versión (uso, valles y picos).
+
 ## Puntos ciegos que siguen
 
 - `daily_evaluations` y `recording_session_telemetry` están vacías para Dingler (la segunda
