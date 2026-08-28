@@ -348,6 +348,17 @@ Sin sesión la app NO graba por ninguna vía y NO muestra el coach-float; la ven
 - **Logout**: `AuthContext.signOut` invoca `logout_cleanup` (reutiliza `graceful_shutdown_before_exit`, timeout 30 s) ANTES de limpiar estado local — detiene y GUARDA la grabación activa (jornada → persistencia nativa; manual → stop estándar) mientras `current_user_id` sigue vivo. Best-effort: nunca bloquea el logout.
 - **Meeting detector**: sin cambios — solo emite eventos a la main; sin sesión no hay listeners montados (AuthGate).
 
+> **Back-off del arranque de jornada (ago-2026, piloto Dingler).** El tick de 30 s reintentaba indefinidamente y etiquetaba **todo** `Err` como `SkipReason::TranscriptionNotReady` ("se reintentará automáticamente") — una razón equivocada que además se auto-justificaba. Una usuaria sin micrófono generó **965 `recording_start_failed` en 8 h**, el 27 % de `platform_logs` de todo el piloto. Hoy `evaluate_tick` clasifica con `audio::device_errors::classify_device_error` (HRESULT primero, **nunca substring**: Windows traduce sus mensajes) y aplica política por causa, con el estado en `SchedulerShared.start_backoff`:
+> - `NoInputDevice` (sin hardware): **alto del día tras 2 fallos**; mientras esté parado, sondeo **barato** (`default_input_device().is_some()`, sólo enumeración, **jamás abre un stream**) cada 5 min que levanta el alto solo al conectar un micrófono.
+> - `MicAccessDenied` (`0x80070005`): escalada **1/2/5/15 min** y alto del día al 5º intento — el permiso SÍ se puede conceder sin tocar hardware, por eso reintenta antes de rendirse.
+> - Resto: escalada corta con tope de 5 min y **nunca** alto (el motor de transcripción puede terminar de descargarse en cualquier momento).
+> - `"already in progress"` es carrera benigna y **no** cuenta como fallo. `CheckNow` ("Evaluar ahora") y guardar ajustes **levantan el alto** — son el escape hatch explícito. `rotate_scheduled` alimenta el mismo back-off: soltar ownership al fallar reinyectaba el tick en el arm de arranque y era la **segunda** vía de la tormenta.
+> - **No reusar `rearm_at`** para esto: produce `SkipReason::RearmingNextHour` y lo limpia el arm de reposo; mezclarlos confunde los mensajes.
+> - Un solo aviso nativo por episodio (latch `notified`), por `show_native_toast` **directo** y no por `NotificationManager` (éste filtra por consentimiento/DND y esto es un fallo, no una cortesía). La jornada arranca headless: el toast in-app no basta.
+> - `next_backoff` es **pura** para poder testear la política con una tabla (`backoff_tests`), sin tokio ni `AppHandle`.
+> - Defensa en profundidad: `emit_start_failed` (`recording_lifecycle.rs`, el **único** emisor del evento) lleva un limiter calcado de `BridgeLimiter` — clave `código:trigger`, dedup sobre lo **ENVIADO**, y campos `code`/`suppressed` en el payload.
+> - **Preflight**: `check_microphone_ready` (comando; `probe_microphone_access` en `devices/discovery.rs`) abre y suelta un stream corto y devuelve el error clasificado. Va en **ajustes/onboarding/diagnóstico y sólo por acción del usuario** — nunca en `initialize_recording` ni en un intervalo. En particular **no** se metió en `usePermissionCheck`, que hace poll cada 5 s: ahí cambiaría una tormenta de telemetría por una de audio. Contar dispositivos NO sirve para el permiso denegado (en Windows la enumeración no está bloqueada por la privacidad: lista el micrófono y falla después en `IAudioClient::Initialize`).
+
 > **Gate de registro (ago-2026, #66) — Rust es la autoridad, fail-closed.** El gate de `registration_form_completed` vivía SOLO en el render de la main (`layout.tsx`, `=== false`) y en producción un usuario con la UI parada en `/registration` grabó **21 jornadas** con 0.2.57: el scheduler, el tray y los floats (`/coach-float`, `/recording-widget` → `WIDGET_REQUEST_START_RECORDING` → `RecordingWidgetListener`, montado FUERA de la cadena de gates) nunca pasaban por ahí. Piezas, diseñadas juntas:
 > - **Verdad en Rust**: `AppState.registration_completed: Option<bool>` (`None` = desconocido). `state::registration_completed(app)` es **fail-closed** (`None` → `false`). Gate en el mismo embudo que la sesión: `recording_helpers::initialize_recording` (cubre ambos start paths), `scheduled_recording` (`SkipReason::RegistrationIncomplete`, el tick siguiente arranca al completar) y `tray.rs`.
 > - **Sincronización**: `useRegistrationGate` llama a `my_status` y espeja el valor con `set_registration_status(userId, completed)` (`registration_status.rs`). Lleva `userId` explícito para no depender del orden respecto a `set_current_user` (salen del mismo commit de React). Es la **única** fuente de `Some(false)`.
@@ -398,6 +409,14 @@ Para cuentas existentes (`get_onboarding_status.completed===true`): saltan el on
   - Setea `isBackgroundDownloading=true` → el widget aparece.
 - **UNA sola UI de progreso de descarga**: `OnboardingDownloadWidget` (`bottom-4 right-4 z-50`), montado en la rama de registro Y en el main app. Por defecto es una **bolita redonda** con anillo de progreso (% combinado); al hacer clic se **expande al modal** completo (filas Parakeet/Gemma) y se minimiza con la X. Solo se muestra cuando hay actividad. **`DownloadProgressToastProvider` fue eliminado** del layout (antes duplicaba: toasts arriba + widget abajo).
 
+> **En tier Low NO se descarga Gemma (ago-2026).** Con el LLM del coach apagado en gama baja (ver § "Qué usa REALMENTE el sidecar local"), ese modelo no tiene consumidor: bajar ~1 GB sería gastar red y disco del equipo que menos lo puede pagar. El total del `WelcomeStep` pasa de ~1.6 GB a **~600 MB** (sólo Parakeet). El tier se resuelve en el frontend con `lib/deviceTier.ts` → comando `get_device_profile` (ya existía, lo usaba sólo `healthHeartbeatService`), cacheado con single-flight.
+>
+> **Regla derivada, y es la que rompe si se ignora: los consumidores miran `summaryModelReady`, NO `summaryModelDownloaded`.** El segundo describe el **disco**, y en tier Low se queda en `false` **para siempre**. Usarlo como condición de "falta algo" hacía que `BackgroundDownloadStarter` llamara a `startBackgroundDownloads` en **cada arranque de la app**; y como esa función pone `isBackgroundDownloading = true` nada más entrar, el widget de descargas aparecía sin nada que descargar. `OnboardingContext` expone ambos: `summaryModelRequired` (¿hace falta?) y `summaryModelReady` (`!required || downloaded`).
+>
+> **Efecto secundario aceptado:** `reconcile_status` (Rust) auto-repara un onboarding atorado sólo si `summary == "downloaded" && parakeet == "downloaded"`. Sin Gemma esa red de seguridad no se arma en equipos Low. No afecta el flujo normal — la completitud la fija `complete_onboarding()`, que no toca `model_status` — y la función sigue siendo **monótona**, así que no puede reproducir el bucle de onboarding de jul-2026.
+>
+> `ensure_low_tier_tips_model` (`coach/setup.rs`) fue **eliminada** en el mismo cambio: bajaba el 1B en background y, con ironía, sólo corría en tier Low. La descarga manual desde Ajustes → Pipeline sigue disponible.
+
 > **El estado del onboarding es MONÓTONO y leerlo NO escribe (arreglado jul-2026 — no revertir).** `onboarding.rs::reconcile_status` solo puede **avanzar** el estado: nunca pone `completed=false` ni baja `current_step`. Retroceder el onboarding es una acción explícita del usuario (`reset_onboarding_status`), jamás un efecto de mirar el disco. Además `load_onboarding_status` es **lectura pura** (CQS) y la reconciliación corre **una sola vez** desde el `setup` de `lib.rs` (`reconcile_onboarding_status_at_startup`).
 >
 > **Por qué**: hasta jul-2026 el reconciliador aplicaba la regla §4.1 de `fb1846b` — "si hay gemma 1b en disco pero no 4b → `completed=false`, volver al paso 3". Pero `builtin_ai_get_recommended_model` es `if is_macos && ram > 16 { 4b } else { 1b }`, o sea **todo Windows baja el 1b por diseño** → la regla declaraba "instalación rota" justo lo que el recomendador produce. Y como `useRecordingStop` hace hard navigate (`window.location.href`), cada fin de reunión remontaba el árbol React y volvía a disparar esa escritura: **el usuario terminaba en "Bienvenido a Maity" después de cada reunión, en bucle** (se rearmaba solo porque `complete_onboarding` reescribía `summary="cloud"` y borraba el centinela). Rompía toda instalación limpia de Windows, incluida la del reviewer de la Store. La salvaguarda original ya era redundante: el coach resuelve su propio modelo con `resolve_effective_tips_model` y degrada a `Unavailable` si falta.
@@ -407,6 +426,48 @@ Para cuentas existentes (`get_onboarding_status.completed===true`): saltan el on
 ### Video de instrucciones (CSP)
 
 - El paso de instrucciones del registro (`features/auth/components/registration/RegistrationInstructions.tsx`) embebe un **iframe de YouTube**. Requiere `frame-src`/`child-src` con `https://www.youtube.com` en la CSP de `frontend/src-tauri/tauri.conf.json`; sin eso WebView2 lo bloquea en el build empaquetado (en `pnpm dev` no se nota).
+
+### Qué usa REALMENTE el sidecar local (Gemma) — ago-2026
+
+> **Verificado contra el código, no contra la intención.** El único consumidor vivo
+> del `llama-helper` en el producto embarcado son los **tips en vivo del coach**
+> durante la grabación (más el warmup de arranque que existe sólo para
+> alimentarlos). Todo lo demás que "parecía" depender de Gemma es nube o código
+> muerto, y confundirlo ya costó una investigación entera:
+>
+> | Camino | Realidad |
+> |---|---|
+> | **Maity Chat** | **Nube.** `https://www.maity.cloud/api/maity-chat` por SSE (`features/maity-chat/services/maityChatService.ts`); **DeepSeek corre del lado servidor**, el desktop nunca nombra el modelo. Cero `invoke(` en toda la feature. |
+> | `coach_chat` (Rust) | **Código muerto**: registrado en `lib.rs`, cero call sites en TS. Su helper `call_coach_builtin` muere con él. |
+> | `coach_evaluate_meeting` | **Código muerto**: cero call sites en TS. |
+> | Minuta / análisis V4 | **Nube**: `api/finalize.rs` → `POST www.maity.cloud/api/conversations`. |
+> | Resumen local (`api_process_transcript` → `LLMProvider::BuiltInAI`) | **Inalcanzable en la práctica**: vive tras `/meeting-details`, ruta **sin un solo enlace entrante**; y el provider por defecto de una instalación limpia es `'ollama'`, no `'builtin-ai'`. |
+>
+> No se borró nada de eso (decisión de ago-2026: documentar, no borrar — el diff
+> no aporta al usuario). Pero **no asumir que algo "usa Gemma" sin buscar su call
+> site en TS**.
+
+> **En tier Low el LLM del coach está APAGADO (ago-2026, piloto Dingler).**
+> `coach::should_use_llm_tips()` (en `coach/mod.rs`) es el punto de decisión
+> **único**: lo consultan el warmup de `lib.rs` y `live_feedback::start`. Si
+> divergieran, el modelo quedaría residente en RAM sin nadie que lo consuma — el
+> peor de los dos mundos. Motivo: en dos semanas y 7 equipos de 5–7 GB el LLM
+> produjo **1 tip** contra 19 heurísticos, a cambio de 75 reinicios de sidecar,
+> 28 timeouts, 26 aperturas de breaker y `p95 = 94 s`; el helper pica en 1.2 GB
+> justo cuando Parakeet y FFmpeg más memoria necesitan (215 avisos de presión de
+> memoria, mínimos de **74 MB** libres).
+>
+> - **No se re-enciende al terminar la grabación**: por la tabla de arriba, no hay
+>   otro consumidor al que servir.
+> - Los tips **heurísticos** (`evaluate_health_tips`, tick de 3 s) y el gauge de
+>   participación siguen intactos. El coach no se apaga, sólo su mitad cara.
+> - `ensure_low_tier_tips_model` fue **eliminada**: bajaba ~1 GB en background y
+>   sólo corría en tier Low, es decir en los equipos que menos podían pagarlo. La
+>   descarga manual desde Ajustes → Pipeline sigue disponible.
+> - El umbral de tier se corrigió a la vez: las ramas **Cuda y Metal no tenían
+>   piso de RAM**, así que una laptop de 6 GB con driver NVIDIA salía `High` y
+>   recibía el modelo grande. Ahora `<8 GB` → Low, `<12` → Medium (la rama Vulkan
+>   ya tenía su piso desde jul-2026).
 
 ### Resumen built-in (Gemma) — requisitos
 

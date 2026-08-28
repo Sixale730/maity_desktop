@@ -1,0 +1,291 @@
+# Piloto Dingler — hallazgos técnicos de las dos primeras semanas (14 → 28 ago 2026)
+
+Notas internas de producto/plataforma. El reporte para la dirección de Dingler (Rita y karen son las
+managers; Rita no está en la plataforma) vive como artifact "Radiografía del piloto Dingler" — desde el
+2026-08-28 en su versión **v4 "conductas"** (6 competencias con por qué y qué mejorar, tarjeta por persona,
+tipos de junta, cobertura de jornada, acciones) — y **no** incluye nada de este documento. Se regenera con
+`/piloto-analisis` (`.claude/skills/piloto-analisis/`; datos en `docs/piloto/dingler-2026-08-28.data.json`).
+
+Todo lo de aquí sale de Supabase (`maity.omi_conversations`, `omi_transcript_segments`,
+`platform_logs`, `subscriptions`, `usage_counters`, `billing_plans`) con corte el
+**2026-08-28 09:30 CDMX**. Horas en America/Mexico_City.
+
+## Contexto que cambia la lectura
+
+- **karen@dinglerpromotores.com es la manager.** Va fuera de toda métrica de uso: el equipo son
+  **10 personas**, no 11. Sus 0 eventos no son un problema.
+- **xochitl no tiene micrófono en su equipo** (hardware, no permiso). Los 672 "No microphone
+  device available" son eso. Los 293 "Acceso denegado (0x80070005)" del mismo día aparecen a
+  ratos (¿dispositivo de captura virtual/BT entrando y saliendo?) — irrelevante mientras no
+  tenga micrófono. **melissa** sí es permiso de privacidad de Windows (0x80070005 en monitor y
+  en captura desde el día 1).
+- Plan **Free** hasta el **19-ago 15:17 UTC** (`omi_conversation daily: 1`); ahí se creó la
+  `subscriptions` Pro de empresa (vigente al 19-nov). Contador `usage_counters` mensual de la
+  empresa en 2026-08: 65.
+- Versiones: **0.2.57 vía Store en 6/10** (erika 19-ago, mary 20, alejandra 24, xochitl 25,
+  margarita 25, jessica 26). janeth, marcela, melissa y michael siguen en 0.2.56 porque no han
+  vuelto a abrir la app. Todo `build_channel = store`, Windows 11 (26200), GPU Vulkan.
+
+## Cifras base
+
+| | |
+|---|---|
+| Conversaciones | 148 (99.4 h, 128.5 k palabras) de 8/10 personas |
+| Semana 1 (14–21) | 86 conv, 55.4 h, 8 personas |
+| Semana 2 (24–28) | 62 conv, 44.0 h, **4 personas** (alejandra, erika, margarita, mary) |
+| Destino | completed 48 · skipped 67 (`insufficient_user_words`) · quota_skipped 29 · null 4 (placeholders "Jornada …" de 2 palabras) |
+| Triggers `recording_started` (0.2.57) | scheduler_rotation 58 · scheduler 24 · sidebar_direct 13 · manual 11 · auto_start 3 · meeting_detector 2 |
+| Segmentos "sin tema" | 58/148 (39 %, 30 h). mary 27/45, michael 7/11, marcela 6/10 |
+| Densidad | 33 de 121 segmentos ≥10 min con ≤ 8 palabras/min |
+| Consumo | `conversation_detail_viewed` 42 (7 p) · `analysis_viewed` 8 (4 p) · mary 0/0 |
+
+## Hallazgos, por severidad
+
+### 1. Crítico — tormenta de reintentos del scheduler sin micrófono — **ATENDIDO (28-ago)**
+
+> **Resuelto en `main`** (sin push): back-off por causa + alto del día en
+> `scheduled_recording/service.rs`, aviso nativo único, rate-limit de
+> `recording_start_failed` en `emit_start_failed`, preflight `check_microphone_ready`
+> en los ajustes de la jornada, y el `0x80070005` enrutado por `report_device_error`
+> (nunca emitía `audio-device-error`, así que **melissa jamás vio el toast con
+> "Abrir configuración"** pese a que la remediación existe desde 0.2.57).
+> Proyección: xochitl 965 → **2** intentos; melissa 293 → **5**. Falta el E2E manual.
+
+
+xochitl, 25-ago 08:40–16:59: **965 `recording_start_failed`** (672 "No microphone device
+available: No default input device found", 293 "Failed to start recording: … Acceso denegado
+(0x80070005)"). Es el tick de 30 s de la jornada (`scheduled_recording/service.rs`) intentando
+arrancar durante 8 horas: 8 h × 120 ticks. Una sola usuaria generó 1,049 eventos en
+`platform_logs` (el 27 % de todo el piloto).
+
+Qué hacer:
+- Back-off exponencial en el tick y alto tras N fallos consecutivos con un `SkipReason`
+  propio (`NoInputDevice`), igual que ya se hace con `NoSession`.
+- Una sola notificación accionable ("Maity no encuentra micrófono") con acción que abra
+  `ms-settings:privacy-microphone` / `ms-settings:sound`.
+- Preflight de micrófono al configurar la jornada y en el onboarding. Distinguir 0x80070005
+  (privacidad de Windows) de "no default input device" (sin hardware) en el mensaje.
+- Rate-limit del lado de telemetría para `recording_start_failed` (dedupe por mensaje en
+  ventana), como ya tiene `app.error`.
+
+### 2. Crítico — la atribución por canal invalida el análisis V4 presencial
+
+`omi_transcript_segments`: **96,318 palabras "user" vs 12,009 "interlocutor"** (89 %). Sin
+margarita (la única que recibe llamadas por el audio del sistema: 20,307 vs 9,212) es
+76,011 vs 2,797 (96 %). mary: 14,400 vs **2**; michael: 1,091 vs 0.
+
+Efecto en V4 (48 completed): `hablantes_detectados = 1` en **37/48**, `ratio_habla = 1`,
+empatía y adaptación en `dimensiones_no_aplica`, patrón "monólogo fragmentado", **32 crítico /
+15 en desarrollo / 1 competente**, media 35.8/100. Las conversaciones con 2 hablantes puntúan
+48–65 (margarita 65 en un 1:1 de 11 min; erika 53 en un 1:1). La diferencia es del método.
+
+Qué hacer:
+- Corto: cuando `hablantes_detectados = 1` y la conversación viene de jornada (título
+  "Jornada …" / trigger scheduler), marcar el análisis como **"no evaluable"** en vez de
+  "crítico" y no afectar XP/ranking. Es un cambio del lado web (`evaluate.ts` /
+  `conversations-async-analysis.ts`) más un estado nuevo en `derivePhase`.
+- Mediano: diarización sobre el canal de micrófono para presencial (o al menos separación
+  por turnos usando el VAD + pausas), y exponer en la UI "hablantes detectados" para que
+  el usuario entienda por qué no hay empatía/adaptación.
+
+### 3. Serio — parque de 6–8 GB al límite; Gemma no paga su renta — **ATENDIDO (28-ago)**
+
+> **Resuelto en `main`** (sin push), y con más alcance del previsto. Se verificó
+> contra el código que el sidecar local tiene **un solo consumidor vivo**: los tips
+> del coach. Maity Chat es nube (DeepSeek del lado servidor), la minuta y el V4
+> también, y `coach_chat` / `coach_evaluate_meeting` / el resumen local de
+> `/meeting-details` **no tienen call sites en el frontend**. Así que "apagar
+> durante la grabación y prender al terminar" no tenía a quién servir: en tier Low
+> el LLM queda apagado y **el modelo ni se carga ni se descarga**
+> (`coach::should_use_llm_tips`, punto de decisión único para el warmup y para
+> `live_feedback::start`). Se eliminó `ensure_low_tier_tips_model` (~1 GB que sólo
+> se bajaba en tier Low) y el onboarding de Windows en gama baja pasa de ~1.6 GB a
+> **~600 MB**. El umbral se corrigió donde estaba el agujero real: **Cuda y Metal
+> no tenían piso de RAM**, así que 6 GB + driver NVIDIA salía `High`.
+
+
+`device.profile` / `coach.session_summary`: **7/10 equipos tier Low** (alejandra 5 GB, erika 5,
+janeth 6, jessica 7, margarita 7, mary 7, melissa 7); marcela y michael 15 GB, xochitl 13 GB.
+
+- **215 `[MEM] system-memory-pressure`** en 7 equipos: jessica 67, erika 40, mary 32,
+  alejandra 31, margarita 26, melissa 10, janeth 9. Mínimo reportado: **74 MB** libres
+  (alejandra), 86 (erika). `health.heartbeat` durante grabación: `sys_avail_min_mb` 62–175.
+- Helper llama pico **1.2 GB** (`llama_rss_peak_mb` 1206–1235); app RSS ~750 MB; webview
+  ~320–480 MB.
+- Rendimiento del coach en 2 semanas: **1 tip LLM** (mary) vs 19 heurísticos; **75 reinicios
+  de sidecar** (margarita 35, erika 15, mary 14), **28 timeouts** (erika 22), **26 aperturas de
+  breaker** (margarita 20, erika 6); `llm_latency_p95_ms` 94,731 (erika) y 31,470 (mary);
+  `llm_parse_failed` 6/8 en mary. erika en 0.2.57 sigue con "3 timeouts consecutivos —
+  reinicio controlado" (25-ago): ya no es el helper legacy, es el hardware.
+
+Qué hacer:
+- En tier Low **no cargar Gemma durante la grabación**: coach heurístico por defecto, LLM
+  solo bajo demanda o post-reunión. Libera ~1.2 GB justo cuando Parakeet + FFmpeg más lo
+  necesitan. (Relacionado con la decisión "1B en tier Low" de jul-2026: el 1B tampoco cabe.)
+- Reevaluar el umbral de Low ahora que `device.profile` trae `memory_gb` real.
+
+### 4. Serio — la jornada guarda una hora de silencio como conversación
+
+71/148 conversaciones no llegan a 100 palabras de usuario, 58 quedan tituladas
+"fragmentada / sin tema", 4 son placeholders "Jornada 2026-08-xx HH:00" con 2 palabras. Todas
+viajan a la nube, gastan cuota (en Free) y ensucian la lista y el ranking.
+
+Qué hacer:
+- Umbral mínimo (palabras, o segundos de voz según VAD) antes de crear la conversación en la
+  rotación; segmento vacío → descartar o fusionar con el siguiente. Ya existe el filtro de
+  fantasmas en recuperación (`useTranscriptRecovery`); falta el equivalente en el camino
+  feliz de `finalize_segment_native`.
+- Considerar rotación por contenido (cerrar segmento tras N min de silencio) además de la
+  rotación horaria.
+
+### 5. Serio — la rotación no sobrevive a la suspensión ni a la presión de memoria
+
+- margarita 27-ago: `recording_stopped` con `duration_seconds` **24,316** (6 h 45) a las 22:45
+  CDMX; la conversación resultante dura 67 min con `started_at` "02:19 del 28-ago" y
+  `created_at` 07:40. Equipo suspendido con la grabación abierta; el inicio se recalculó al
+  revés (cierre − duración de audio).
+- margarita 20-ago: segmento 16:01 → 18:30 (150 min) sin rotar a las 17:00 ni 18:00.
+- margarita 25-ago: 62 min (3,731 s); mary: 3,868 / 3,918 / 4,184 s (64–70 min).
+- marcela 17-ago (0.2.56): una sola grabación **manual** de 393 min (10:27 → 17:00); las
+  manuales no rotan.
+
+Qué hacer:
+- Reloj monotónico para la rotación + detectar suspend/resume (cerrar el segmento al
+  despertar, no estirarlo).
+- Sellar `started_at` al abrir el segmento; nunca derivarlo del cierre.
+- Aplicar rotación también a grabaciones manuales largas (o avisar a los 60 min).
+
+### 6. Cuota — 29 análisis perdidos por arrancar en Free
+
+Del 14 al 18-ago, 29 de 86 conversaciones quedaron `quota_skipped` (Free = 1
+`omi_conversation`/día/persona). Incluye las mejores de la semana: janeth 60 min / 4,782
+palabras, erika 50 min / 3,433, alejandra 48 min / 5,398. Las minutas sí se generaron (la
+cuota solo bloquea el V4). Desde el 19-ago no hay más pérdidas.
+
+**Backfill hecho el 28-ago 09:58–10:02 CDMX.** `retry_analysis` exige el JWT del dueño, así
+que se llamó directo al worker `POST /api/conversations-async-analysis {type:'communication'}`
+con `Bearer CRON_SECRET` (el de `C:\maity\.env` es el de producción). Script:
+`backfill_dingler.mjs` (scratchpad de la sesión; concurrencia 2, 1 reintento en 5xx).
+Resultado verificado en DB: **29/29 procesadas, 0 `failed`, 0 `quota_skipped`** →
+16 `completed` (alejandra 3 · erika 6 · janeth 2 · mary 5; puntajes 16–71, erika sacó el
+primer 71 "competente" del piloto) y 13 `skipped` por el gate de calidad
+(`insufficient_user_words` 7, `no_evaluable_speech` 6). Minutas intactas (el worker con
+`type:'communication'` no las toca). Tiempo: 0–2 s las skipped (sin LLM), 13–18 s las
+evaluables, un outlier de 86 s.
+
+Qué hacer:
+- Próximo piloto: subir el plan **antes** de provisionar.
+- Para futuros backfills el camino es el mismo worker con el secreto; probar primero con
+  una (`--one <uuid>`) y confirmar en DB.
+
+### 7. Modelo — "grabar al vacío" antes de tener Parakeet
+
+8 `save_skipped_no_transcripts`: alejandra 7 (17-ago ×4, 18-ago ×2, 24-ago ×1), jessica 1
+(17-ago). El 14-ago tres personas tuvieron `reqwest Decode/Body` bajando Parakeet. Desde que
+alejandra actualizó a 0.2.57 (24-ago 10:04) graba bien. Ese día aparecen dos
+`recording_stopped` a la misma hora (10:04:47), uno con 0 y otro con 60 transcripts → doble
+stop a revisar.
+
+Qué hacer: el gate de Parakeet post-registro ya cubre cuentas nuevas; falta que el intento de
+grabar sin modelo diga "sin modelo de transcripción" en vez de descartar en silencio.
+
+### 8. Cerrado — confirmado en producción con 0.2.57
+
+- `Command plugin:window|destroy not allowed by ACL`: 9 eventos en 6 personas, **todos
+  0.2.56**; cero en 0.2.57.
+- "Recording start already in progress": 13 eventos en 5 personas, **todos 0.2.56**.
+- "Request timeout after 120s con helper legacy (sin ids)": solo 0.2.56.
+- Telemetría nueva llegando: `device.profile` (os_version, gpu_type, memory_gb, cpu_cores,
+  build_channel, performance_tier) y `recording_started` emitido desde Rust con `trigger`,
+  `mic_device` real, `mic_source`, `auto_save`, `meeting_title`. El embudo de jornada ya es
+  auditable (en 0.2.56 mary tenía 9 conv y 0 eventos).
+- `app.open`/`nav.page_view` siguen sin `app_version`; `coach_float.*` sigue mandando
+  `'unknown'`.
+
+## Tablas de apoyo
+
+### Por persona
+
+| | conv | h | días | V4 | sin tema | vistas det/anál | RAM | tier | versión | notas |
+|---|---|---|---|---|---|---|---|---|---|---|
+| mary | 45 | 30.1 | 8 | 8 | 27 (60 %) | 0 / 0 | 7 GB | low | 0.2.57 | jornada casi diaria; 3 segmentos >60 min |
+| erika | 38 | 23.7 | 7 | 17 | 9 (24 %) | 4 / 0 | 5 GB | low | 0.2.57 | 22 timeouts sidecar, 15 reinicios |
+| margarita | 25 | 19.5 | 6 | 15 | 5 (20 %) | 4 / 1 | 7 GB | low | 0.2.57 | única con audio de sistema real; anomalías de rotación |
+| michael | 11 | 3.8 | 2 | 1 | 7 (64 %) | 11 / 0 | 15 GB | high | 0.2.56 | última actividad 19-ago |
+| marcela | 10 | 12.5 | 4 | 2 | 6 (60 %) | 8 / 3 | 15 GB | high | 0.2.56 | 393 min manual; lag_max 224 s en heartbeat |
+| alejandra | 9 | 5.5 | 3 | 4 | 0 | 4 / 1 | 5 GB | low | 0.2.57 | 7 grabaciones al vacío antes de Parakeet |
+| janeth | 6 | 3.1 | 3 | 1 | 3 (50 %) | 2 / 0 | 6 GB | low | 0.2.56 | última actividad 17-ago |
+| jessica | 4 | 1.2 | 3 | 0 | 1 | 9 / 3 | 7 GB | low | 0.2.57 | abre la app 10 días, 14 eventos coach_float, 67 avisos MEM |
+| xochitl | 0 | — | — | — | — | 0 / 0 | 13 GB | high | 0.2.57 | sin micrófono en el equipo |
+| melissa | 0 | — | — | — | — | 0 / 0 | 7 GB | low | 0.2.56 | 0x80070005; 5 juegos web (914 XP) |
+
+### Por día (CDMX)
+
+| día | conv | personas | h | completed | quota | skipped(+null) |
+|---|---|---|---|---|---|---|
+| vie 14 | 22 | 7 | 8.0 | 1 | 10 | 11 |
+| dom 16 | 1 | 1 | 0.4 | 1 | 0 | 0 |
+| lun 17 | 21 | 5 | 20.8 | 2 | 16 | 3 |
+| mar 18 | 7 | 3 | 4.1 | 2 | 3 | 2 |
+| mié 19 | 23 | 4 | 13.3 | 5 | 0 | 18 |
+| jue 20 | 7 | 1 | 7.7 | 6 | 0 | 1 |
+| vie 21 | 5 | 1 | 1.2 | 1 | 0 | 4 |
+| lun 24 | 11 | 3 | 6.8 | 3 | 0 | 8 |
+| mar 25 | 8 | 3 | 6.0 | 5 | 0 | 3 |
+| mié 26 | 18 | 2 | 14.1 | 10 | 0 | 8 |
+| jue 27 | 23 | 4 | 15.7 | 10 | 0 | 13 |
+| vie 28* | 2 | 2 | 1.5 | 2 | 0 | 0 |
+
+Minutos por hora (duración repartida): 8h 95 · 9h 500 · 10h 565 · 11h 750 · 12h 725 ·
+13h 719 · 14h 470 · 15h 971 · 16h 847 · 17h 197 · 18h 61 (+67 min a las 2–3 am por la
+anomalía de margarita).
+
+### Errores no-MEM (`app.error` + `recording_start_failed`), 14–28 ago
+
+| mensaje | n | personas | versiones |
+|---|---|---|---|
+| No microphone device available: No default input device found | 672 | xochitl | 0.2.56/57 |
+| Failed to start recording: … Acceso denegado (0x80070005) | 293 | xochitl | 0.2.57 |
+| Command plugin:window\|destroy not allowed by ACL | 9 | 6 | 0.2.56 |
+| Recording start already in progress (+ variante "via tauri command") | 13 | 5 | 0.2.56 |
+| No input device available for monitoring | 7 | xochitl | 0.2.56/57 |
+| ❌ No default microphone available | 5 | xochitl | 0.2.56 |
+| ❌ Failed to create microphone stream: Acceso denegado | 4 | melissa, xochitl | 0.2.56 |
+| Failed to build monitor stream: Acceso denegado | 2 | melissa | 0.2.56 |
+| 3 timeouts consecutivos — sidecar presuntamente colgado | 3 | erika | 0.2.56/57 |
+| Coach: 3/5 fallos LLM consecutivos — breaker ABIERTO | 5 | erika, janeth | 0.2.56/57 |
+| Download error for parakeet-tdt-0.6b-v3-int8 (reqwest Decode/Body) | 3 | alejandra, jessica, margarita | 0.2.56 |
+| Request timeout after 120s con helper legacy (sin ids) | 3 | erika, margarita | 0.2.56 |
+| Recording is still stopping, try again in a moment | 1 | alejandra | 0.2.56 |
+
+## Puntos ciegos que siguen
+
+- `daily_evaluations` y `recording_session_telemetry` están vacías para Dingler (la segunda
+  es mobile).
+- `user_feedback`: solo 3 `session_rating` del día 1 (michael useful/not_useful, marcela useful).
+- `app.close` 19 vs `app.open` 110: la mayoría de las sesiones no cierran limpio (tray,
+  suspensión o kill) — sin evento no se distingue.
+- No hay evento para "usuario abrió la minuta" separado de `conversation_detail_viewed`.
+
+## Orden propuesto
+
+1. ~~Back-off del scheduler + notificación accionable de micrófono (#1)~~ — **hecho 28-ago**.
+2. "No evaluable" con 1 hablante en jornada (#2, lado web) — cambia lo que la manager ve
+   hoy mismo. **Siguiente.**
+3. ~~Relanzar los 29 `quota_skipped` (#6)~~ — **hecho 28-ago** (29/29, ver arriba).
+4. ~~Gemma off durante grabación en tier Low (#3)~~ — **hecho 28-ago**, y quedó en "ni
+   cargar ni descargar" al confirmar que no hay otro consumidor del sidecar.
+5. Umbral de contenido en la rotación (#4) y rotación con reloj monotónico (#5).
+
+## Estado del código (28-ago, `main` sin push)
+
+4 commits: `2844baf` back-off de jornada · `18681a2` rate-limit + probe de micrófono ·
+`162bac4` tier Low sin Gemma · `3adb40c` preflight en ajustes. Build
+`tauri:build:debug` en verde (exit 0) con los 7 checks pre-build, 527 tests de Rust,
+317 de vitest y el smoke con handshake del helper.
+
+**Pendiente: el E2E manual de #1 y #3** — ningún test automático lo cubre. Ver la
+sección de verificación del plan: micrófono deshabilitado ⇒ 2 intentos y un toast;
+permiso revocado ⇒ toast con "Abrir configuración" + escalada 1/2/5/15;
+`MEMORY_GB=6` ⇒ cero procesos `llama-helper.exe` durante la grabación con tips
+heurísticos vivos; `GPU_TYPE=cuda MEMORY_GB=6` ⇒ tier `low`.

@@ -103,8 +103,22 @@ drena `drain.rs`; en el payload: `trigger` (`ui|tray|scheduler|scheduler_rotatio
 | event_type | Cuándo | Payload clave |
 |---|---|---|
 | `recording_started` (legacy) | POST-commit del `StartGate` en `initialize_recording` | trigger, dispositivos reales, `recording_session_id` |
-| `recording_start_failed` (legacy) | `Err` de cualquiera de los dos start paths (incluido el `StartGate` ocupado) | trigger, `error` |
+| `recording_start_failed` (legacy) | `Err` de cualquiera de los dos start paths (incluido el `StartGate` ocupado) | trigger, `error`, `code`, `suppressed` |
 | `recording_stopped` (legacy) | `stop_recording_reporting()` | duración, trigger, `recording_session_id` |
+
+> **`recording_start_failed` está rate-limitado (ago-2026).** En el piloto Dingler
+> una usuaria sin micrófono produjo **965 filas en 8 h** — el 27 % de
+> `platform_logs` de todo el piloto — porque `emit_event` escribe al outbox sin
+> ningún límite y el scheduler reintentaba cada 30 s. La causa se atacó en origen
+> (back-off del scheduler, ver CLAUDE.md § Gate de Sesión), y como defensa en
+> profundidad `emit_start_failed` (`recording_lifecycle.rs`, el **único** emisor:
+> envuelve los dos start paths) lleva un limiter calcado de `BridgeLimiter`.
+> Clave = **`código clasificado:trigger`** (p.ej. `mic_not_found:scheduler`), no el
+> mensaje crudo — éste trae nombres de dispositivo y daría cardinalidad infinita
+> sin agrupar nada. Cap 20/proceso + gap de 2 s, y **dedup sobre lo ENVIADO, no
+> sobre lo VISTO** (misma invariante que los otros dos limiters). El payload gana
+> `code` (para agrupar en SQL sin parsear `error`) y `suppressed` (volumen
+> descartado), así que el descarte es visible en vez de silencioso.
 
 **App / salud — emisor `platformLogger` (JS) salvo donde se indica.**
 
@@ -344,13 +358,19 @@ group by 1, 2 order by sesiones desc limit 20;
   `docs/incident-bundles-bucket.sql`, sin red) el usuario ve el error y no se
   reintenta. Tampoco se suben SQLite ni audio, ni hay lectura de bundles desde
   la app.
-- **`probe_microphone_access` (B4 del ciclo v0.2.57, diferido a propósito):**
-  probe honesta que abre y suelta un input stream corto para detectar el
-  micrófono denegado ANTES de grabar. Iría en onboarding/ajustes/`usePermissionCheck`,
-  **nunca** en `initialize_recording` (un `build_input_stream` extra en el
-  arranque toca el pipeline de audio). Hoy el diagnóstico llega al fallar el
-  stream real (`AUDIO_DEVICE_ERROR` tipado por HRESULT + toast con "Abrir
-  configuración").
+- ~~**`probe_microphone_access` (B4 del ciclo v0.2.57)**~~ — **HECHO (ago-2026,
+  ciclo piloto Dingler).** `audio/devices/discovery.rs::probe_microphone_access`
+  abre y suelta un input stream corto y devuelve el `AudioStartError`
+  clasificado; se expone como comando `check_microphone_ready` (en
+  `spawn_blocking`) que responde el mismo `AudioDeviceErrorPayload` del evento
+  `audio-device-error`. `trigger_audio_permission` quedó como wrapper booleano
+  encima — una sola implementación. Consumidor: el preflight de la jornada en
+  `ScheduledRecordingSettings.tsx`.
+  Sigue **prohibido** llamarla desde `initialize_recording` (un
+  `build_input_stream` extra en el arranque toca el pipeline de audio) **y desde
+  cualquier bucle**: en particular NO se metió en `usePermissionCheck`, que hace
+  poll cada 5 s mientras no encuentra micrófono — ahí cambiaría una tormenta de
+  telemetría por una de audio, en la misma máquina que la sufría.
 - **Versión del helper en la nube:** desde 0.2.57 `sidecar.rs` loguea
   `Sidecar helper vX (protocol N)` al spawn (nivel 3, local). Subirla a
   `coach.session_summary` sería una línea más; no se hizo para no ampliar el
