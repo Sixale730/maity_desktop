@@ -107,7 +107,12 @@ def main() -> int:
         if f"__hub__{sch}" in idmap:
             new_edges.append(mkedge(idmap[f"__hub__{sch}"], i, "contains"))
     fk_ok = 0
-    for ttbl, ftbl in fks:
+    # dict.fromkeys dedupea conservando el orden: dos FKs distintas entre el mismo
+    # par de tablas (p.ej. user_id y cancelled_by_user_id) colapsan a la MISMA arista
+    # `references`, y emitirlas dos veces deja duplicados exactos en graph.json
+    # (los detecta `graphify diagnose multigraph`). El grafo es no dirigido y las
+    # colapsa igual en el post-build, asi que no se pierde informacion.
+    for ttbl, ftbl in dict.fromkeys(fks):
         if ttbl in idmap and ftbl in idmap:
             new_edges.append(mkedge(idmap[ttbl], idmap[ftbl], "references"))
             fk_ok += 1
