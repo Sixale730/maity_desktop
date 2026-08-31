@@ -1,0 +1,26 @@
+# Exclusiones del grafo de conocimiento (graphify). Sintaxis de .gitignore.
+#
+# graphify mergea este archivo DESPUES de .gitignore y solo puede excluir MAS,
+# nunca re-incluir. Los directorios generados obvios (node_modules/, target/,
+# dist/, .next/, __pycache__/) ya los salta graphify por su cuenta.
+
+# --- Codigo vendored / minificado -------------------------------------------
+# No lo escribimos nosotros y dominaba el grafo. Medido el 2026-08-31 sobre
+# 11,795 nodos: estos dos archivos eran el 32% de los nodos y el 36% de los
+# edges, y coparon 9 de los 10 "god nodes" del reporte. Ademas producian
+# hallazgos falsos por edges cruzados con codigo real (571 de ellos), tipo
+# `Get --calls--> Progress` (httplib.h -> components/ui/progress.tsx).
+# Comparativa completa en graphify-out/2026-08-31-pre-cleanup/SCORECARD.md.
+#
+# Los archivos SIGUEN en el repo y se siguen usando en runtime/build; lo unico
+# que se excluye es su indexacion en el grafo.
+frontend/public/pdf.worker.min.mjs
+backend/whisper-custom/server/httplib.h
+
+# backend/whisper-custom/server/server.cpp NO se excluye a proposito: es el
+# servidor real de transcripcion del backend, no third-party puro.
+
+# --- Bundles minificados futuros --------------------------------------------
+*.min.js
+*.min.mjs
+*.min.css
