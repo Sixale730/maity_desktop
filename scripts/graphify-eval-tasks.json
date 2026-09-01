@@ -1,0 +1,143 @@
+{
+  "_readme": [
+    "Set de eval para el grafo de conocimiento (graphify). Lo corre scripts/graphify-eval.py.",
+    "Cada tarea es una pregunta REAL sobre este repo cuya respuesta esta documentada en",
+    "CLAUDE.md y vive en archivos concretos. El criterio de acierto es objetivo: los",
+    "archivos de expect_files deben aparecer en el subgrafo que devuelve `graphify query`.",
+    "",
+    "Reglas al agregar tareas:",
+    "  - expect_files son rutas repo-relativas con / y DEBEN existir (salvo en el control).",
+    "  - La pregunta se escribe como la escribiria un dev de este repo, sin nombrar el",
+    "    archivo esperado. Nombrar un simbolo del codigo si es legitimo: asi se pregunta aqui.",
+    "  - hops: 'single' = la respuesta vive en un archivo; 'multi' = hay que cruzar varios.",
+    "  - No ajustar una tarea porque salga MISS. Un MISS es un resultado, no un bug del set.",
+    "    Solo se reescribe una pregunta si esta mal redactada respecto a lo que se queria medir."
+  ],
+  "tasks": [
+    {
+      "id": "started-at-sellado",
+      "question": "donde se sella la hora de arranque started_at de una grabacion",
+      "hops": "single",
+      "expect_files": ["frontend/src-tauri/src/audio/recording_state.rs"],
+      "expect_symbols": ["recording_start_wall"],
+      "why": "CLAUDE.md: started_at se SELLA en start_recording, nunca se deriva de ahora menos duracion (hallazgo #5 del piloto Dingler)"
+    },
+    {
+      "id": "toast-nativo-msix",
+      "question": "como se muestra una notificacion toast nativa bajo identidad de paquete MSIX",
+      "hops": "single",
+      "expect_files": ["frontend/src-tauri/src/notifications/toast.rs"],
+      "expect_symbols": ["show_native_toast", "resolve_target"],
+      "why": "CLAUDE.md: el plugin de Tauri es inutilizable bajo MSIX; hay un transporte propio con AUMID resuelto en runtime"
+    },
+    {
+      "id": "coach-llm-tier-low",
+      "question": "que decide si el coach usa el LLM en equipos de gama baja",
+      "hops": "single",
+      "expect_files": ["frontend/src-tauri/src/coach/mod.rs"],
+      "expect_symbols": ["should_use_llm_tips"],
+      "why": "CLAUDE.md: en tier Low el LLM del coach esta apagado; should_use_llm_tips es el punto de decision unico"
+    },
+    {
+      "id": "bluetooth-perfil-hfp",
+      "question": "como se evita que abrir el microfono bluetooth cambie el perfil a manos libres",
+      "hops": "single",
+      "expect_files": ["frontend/src-tauri/src/audio/bluetooth_guard.rs"],
+      "expect_symbols": ["should_avoid_opening_mic"],
+      "why": "CLAUDE.md: A2DP y HFP no conviven; la deteccion es nativa por PKEY_Device_EnumeratorName, nunca por nombre"
+    },
+    {
+      "id": "clasificar-error-dispositivo",
+      "question": "como se clasifica un error de dispositivo de audio por su HRESULT",
+      "hops": "single",
+      "expect_files": ["frontend/src-tauri/src/audio/device_errors.rs"],
+      "expect_symbols": ["classify_device_error"],
+      "why": "CLAUDE.md: HRESULT primero, nunca substring, porque Windows traduce sus mensajes"
+    },
+    {
+      "id": "supabase-schema-default",
+      "question": "que schema usa por defecto el cliente de supabase",
+      "hops": "single",
+      "expect_files": ["frontend/src/lib/supabase.ts"],
+      "expect_symbols": [],
+      "why": "CLAUDE.md: el default es public, no maity; el default maity puso 5 RPC en 403 silencioso (issue #70)"
+    },
+    {
+      "id": "instalacion-rival-nsis",
+      "question": "como se detecta y desinstala la instalacion NSIS rival cuando corre el MSIX",
+      "hops": "single",
+      "expect_files": ["frontend/src-tauri/src/rival_install.rs"],
+      "expect_symbols": ["get_rival_install", "uninstall_rival"],
+      "why": "CLAUDE.md: doble instalacion rompe la DB compartida; el uninstaller mata el exe por nombre de imagen"
+    },
+    {
+      "id": "ventanas-auxiliares",
+      "question": "cual es la lista canonica de rutas de ventanas auxiliares",
+      "hops": "single",
+      "expect_files": ["frontend/src/lib/auxWindows.ts"],
+      "expect_symbols": ["isAuxWindowPath"],
+      "why": "CLAUDE.md: la lista canonica vive en lib/auxWindows.ts, no duplicarla inline"
+    },
+    {
+      "id": "umbral-segmento-jornada",
+      "question": "cual es el umbral de palabras para descartar un segmento de jornada",
+      "hops": "single",
+      "expect_files": ["frontend/src-tauri/src/scheduled_recording/service.rs"],
+      "expect_symbols": ["MIN_SEGMENT_WORDS", "SegmentOutcome"],
+      "why": "CLAUDE.md: 250 palabras contando AMBOS canales; devuelve SegmentOutcome, no Option (hallazgo #4)"
+    },
+    {
+      "id": "guardar-archivo-generado",
+      "question": "como se guarda en disco un PDF generado sin usar un enlace de descarga",
+      "hops": "multi",
+      "expect_files": [
+        "frontend/src-tauri/src/file_export.rs",
+        "frontend/src/lib/saveArtifact.ts"
+      ],
+      "expect_symbols": ["save_artifact_file"],
+      "why": "CLAUDE.md: nunca <a download> en WebView2; el dialogo lo maneja Rust con DialogExt y el comando DEBE ser async"
+    },
+    {
+      "id": "cola-sync-a-la-nube",
+      "question": "que conecta la cola de sync local con la nube",
+      "hops": "multi",
+      "expect_files": [
+        "frontend/src-tauri/src/cloud_sync/worker.rs",
+        "frontend/src-tauri/src/cloud_sync/executors.rs",
+        "frontend/src-tauri/src/database/repositories/sync_queue.rs"
+      ],
+      "expect_symbols": [],
+      "why": "CLAUDE.md: sync queue offline-first; el worker se porto a Rust headless porque WebView2 suspendia el de JS"
+    },
+    {
+      "id": "gate-de-sesion-grabacion",
+      "question": "donde se decide si la app puede grabar sin sesion iniciada",
+      "hops": "multi",
+      "expect_files": [
+        "frontend/src-tauri/src/state.rs",
+        "frontend/src-tauri/src/scheduled_recording/service.rs"
+      ],
+      "expect_symbols": ["has_session"],
+      "why": "CLAUDE.md: la verdad de la sesion vive en Rust (AppState.current_user_id); el gate va en los entrypoints nativos"
+    },
+    {
+      "id": "reintento-analisis-cuota",
+      "question": "como se reintenta el analisis de una conversacion que quedo en quota_skipped",
+      "hops": "multi",
+      "expect_files": [
+        "frontend/src-tauri/src/api/retry_analysis.rs",
+        "frontend/src-tauri/src/api/finalize.rs"
+      ],
+      "expect_symbols": ["parse_quota_403"],
+      "why": "CLAUDE.md: quota_skipped dejo de ser terminal; el 403 se detecta por el campo error, no code"
+    },
+    {
+      "id": "control-negativo-stripe",
+      "question": "donde esta el modulo de facturacion con stripe del escritorio",
+      "hops": "control",
+      "expect_files": ["frontend/src-tauri/src/stripe_billing.rs"],
+      "expect_symbols": [],
+      "why": "CONTROL: este archivo NO existe. CLAUDE.md dice que el desktop no tiene Stripe (el checkout se hace por handoff al navegador). Si esta tarea sale HIT, el harness esta roto."
+    }
+  ]
+}
