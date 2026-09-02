@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createSubscriptionGroup } from '@/lib/tauriSubscribe';
 import { invoke } from '@tauri-apps/api/core';
 import {
@@ -13,49 +13,23 @@ import { useMeetingMetrics } from '@/hooks/useMeetingMetrics';
 import { HealthGauge } from '@/components/coach/HealthGauge';
 import { TalkSplitBar } from '@/components/coach/TalkSplitBar';
 import { getPriorityColor, getCategoryMeta, PRIORITY_META } from '@/components/coach/tipMeta';
+import { AudioLevelBars } from '@/components/audio/AudioLevelBars';
 import { supabase } from '@/lib/supabase';
 import { Analytics } from '@/lib/analytics';
 import { TauriEvent } from '@/lib/tauri-events';
 
-interface AudioLevels {
-  micRms: number;
-  micPeak: number;
-  sysRms: number;
-  sysPeak: number;
-}
-
 type TipFeedback = 'like' | 'dislike' | null;
 
 // AudioBars (3 barras) + MIC_SCALES/SYS_SCALES eliminados en iter 11. Solo
-// se usaban en el expanded antiguo que reemplazamos por el drawer panel —
-// el drawer usa AudioBars5 (5 barras) de la barra superior. Si en V12
-// reintroducimos el dashboard completo, restaurar desde git history.
-
-// 5-bar visualizer para la barra horizontal (iter 5/9/11).
-// Iter 9: idle heights bajadas a [2,3,2,3,2] (casi planas) y multiplicador
-// subido de 200 → 600 para que la habla normal (rms ~0.02) dé alturas
-// visibles ~12 px. Antes el silencio se veía más alto que la habla — bug
-// "barras al revés" del usuario.
-const BARS5_IDLE_HEIGHTS = [2, 3, 2, 3, 2];
-const BARS5_SCALES = [0.4, 0.8, 0.6, 1.0, 0.5];
-function AudioBars5({ rms, color, active }: { rms: number; color: string; active: boolean }) {
-  return (
-    <div className="h-4 flex items-end gap-[2px]">
-      {BARS5_SCALES.map((scale, i) => {
-        const h = active
-          ? Math.max(2, Math.min(16, rms * 600 * scale))
-          : BARS5_IDLE_HEIGHTS[i];
-        return (
-          <div
-            key={i}
-            className="w-1 rounded-full transition-[height] duration-150"
-            style={{ height: `${h}px`, backgroundColor: color }}
-          />
-        );
-      })}
-    </div>
-  );
-}
+// se usaban en el expanded antiguo que reemplazamos por el drawer panel.
+// AudioBars5 (5 barras, barra superior) se movió a
+// `@/components/audio/AudioLevelBars` en el issue #07 (auditoría de
+// recursos): antes leía `rms` del `useState` de niveles de ESTA página, así
+// que cada tick de audio (10-20 Hz) re-renderizaba el árbol completo debajo
+// del backdrop-filter. Ahora consume el store módulo-level directo y es la
+// ÚNICA parte de la página que re-renderiza en cada tick. Si en V12
+// reintroducimos el dashboard completo, restaurar el AudioBars viejo desde
+// git history.
 
 // Idle empty state del drawer (iter 13): cuando el user abre el drawer sin
 // haber empezado a grabar (y sin tips de sesion previa), mostramos esta
@@ -129,10 +103,15 @@ function formatDuration(secs: number): string {
 // drawer panel ahora usa estilos inline propios. Solo queda GLASS_STYLE_COMPACT
 // para la barra superior. Removemos también el `border` y boxShadow grueso —
 // el boxShadow inset se aplica directamente en el JSX por barra/drawer.
+//
+// Issue #07 (auditoría de recursos, decisión explícita del usuario): SIN
+// backdrop-filter. El blur forzaba recomposición por CPU en equipos sin GPU
+// dedicada cada vez que las barras de nivel cambiaban de altura (11/20
+// usuarios del piloto). Fondo opaco #0F1018 (equivalente sin alpha de
+// rgba(15,16,24,*)) en vez de blur — el `clipPath` sigue dando las esquinas
+// redondeadas sobre la ventana Tauri `transparent: true`.
 const GLASS_STYLE_COMPACT: React.CSSProperties = {
-  background: 'rgba(15, 16, 24, 0.85)',
-  backdropFilter: 'blur(22px) saturate(180%)',
-  WebkitBackdropFilter: 'blur(22px) saturate(180%)',
+  background: '#0F1018',
 };
 
 export default function CoachFloatPage() {
@@ -152,7 +131,11 @@ export default function CoachFloatPage() {
   // Default false: la app suele arrancar idle, drawer cerrado. Al
   // recording-start-complete se auto-abre (Fix F).
   const [drawerOpen, setDrawerOpen] = useState(false);
-  const [levels, setLevels] = useState({ micRms: 0, sysRms: 0 });
+  // `levels` se eliminó de aquí en el issue #07: vivía en un useState de
+  // esta página y cada tick de audio (10-20 Hz) re-renderizaba el árbol
+  // completo. Ahora lo consume directo `AudioLevelBars` desde
+  // `@/lib/audioLevelsStore` — esta página ya no sabe ni le importa el
+  // valor de los niveles.
   // Feedback persistido por tip. Permite votar tips anteriores sin perder los
   // ratings ya dados. El tipKey es estable por (timestamp_secs, tip_type).
   const [feedbackByTip, setFeedbackByTip] = useState<Record<string, Exclude<TipFeedback, null>>>({});
@@ -194,7 +177,10 @@ export default function CoachFloatPage() {
   // por ciclo de grabación (transición idle → rec). Se resetea al stop.
   const userManuallyClosedDrawerRef = useRef(false);
 
-  const reversedTips = [...tips].reverse();
+  // Memoizado (issue #07): sin esto se creaba un array nuevo en CADA render
+  // de la página (tips, timer, niveles de audio antes de este refactor,
+  // etc.), aunque `tips` no hubiera cambiado.
+  const reversedTips = useMemo(() => [...tips].reverse(), [tips]);
   const totalTips = reversedTips.length;
   const tip = reversedTips[tipIndex] ?? null;
   const canPrev = tipIndex < totalTips - 1;
@@ -211,10 +197,11 @@ export default function CoachFloatPage() {
     setTipIndex(0);
   }, [totalTips]);
 
-  // Iter 9: ref para que el listener `recording-audio-levels` pueda leer el
-  // valor actual de recordingActive sin re-suscribirse. El useEffect del
-  // listener corre una sola vez con deps=[] así que sin ref captura el valor
-  // inicial (false).
+  // Iter 9: ref para que listeners con deps=[] (que corren una sola vez)
+  // puedan leer el valor actual de recordingActive sin re-suscribirse — sin
+  // ref, capturarían el valor inicial (false) para siempre. Issue #07: ya
+  // no lo usa el listener de `recording-audio-levels` (se removió de esta
+  // página); hoy lo usa `applyPickedDevice` para decidir el hot-swap.
   const recordingActiveRef = useRef(false);
   useEffect(() => { recordingActiveRef.current = recordingActive; }, [recordingActive]);
 
@@ -226,36 +213,13 @@ export default function CoachFloatPage() {
 
   useEffect(() => {
     const subs = createSubscriptionGroup();
-    // recording-audio-levels: solo aplicar cuando realmente estamos grabando.
-    // Iter 9: en idle la pipeline puede emitir niveles spurious (warm-up)
-    // que movían las barras de sistema sin razón. Gate explícito.
-    subs.on<AudioLevels>(TauriEvent.RECORDING_AUDIO_LEVELS, (e) => {
-      if (!recordingActiveRef.current) return; // ignorar en idle
-      setLevels({ micRms: e.payload.micRms, sysRms: e.payload.sysRms });
-    });
-    // audio-levels (preview del monitor independiente).
-    // Iter 11: el monitor ahora trae ambos canales — input (mic via CPAL) y
-    // output (sistema via WASAPI loopback / CoreAudio). Filtrar por
-    // device_type para popular ambas barras correctamente. En Linux o
-    // macOS sin permiso, outputLvl viene con rms_level=0 (graceful), así
-    // que la barra verde queda plana sin lógica adicional.
-    subs.on<{
-      timestamp: number;
-      levels: Array<{
-        device_name: string;
-        device_type: string; // 'input' | 'output'
-        rms_level: number;
-        peak_level: number;
-        is_active: boolean;
-      }>;
-    }>(TauriEvent.AUDIO_LEVELS, (e) => {
-      const inputLvl = e.payload.levels.find(l => l.device_type === 'input');
-      const outputLvl = e.payload.levels.find(l => l.device_type === 'output');
-      setLevels({
-        micRms: inputLvl?.rms_level ?? 0,
-        sysRms: outputLvl?.rms_level ?? 0,
-      });
-    });
+    // Los listeners de RECORDING_AUDIO_LEVELS y AUDIO_LEVELS vivían aquí
+    // (issue #07): se movieron a `@/lib/audioLevelsStore`, que los adjunta
+    // una sola vez para toda la ventana (no por componente) y throttlea/
+    // epsilon-filtra antes de notificar. El gate "ignorar en idle" que
+    // tenía RECORDING_AUDIO_LEVELS ya no aplica — AudioLevelBars deriva
+    // `hasLiveAudio` internamente y el store no distingue "grabando" de
+    // "preview", igual que ya hacía AUDIO_LEVELS.
     // Iter 9: el device-picker (mini-ventana) emite este evento al click
     // en un device. Aplicamos la selección + hot-swap si grabando.
     subs.on<{ deviceName: string; deviceType: 'Microphone' | 'SystemAudio' }>(
@@ -334,6 +298,9 @@ export default function CoachFloatPage() {
   // consumidor PASIVO — solo escucha el evento `audio-levels` broadcast.
   // Si la home no monta el preview (porque está grabando), el coach-float
   // recibe `recording-audio-levels` directamente desde la pipeline real.
+  // Issue #07: ambos listeners ahora viven en `@/lib/audioLevelsStore`
+  // (adjuntados por `AudioLevelBars`, no por esta página) — el patrón
+  // "pasivo" no cambia, solo quién escucha.
 
   // Polling de defensa: sincroniza recordingActive con el backend cada 2s.
   // Cubre casos donde un evento se pierde (window restored from minimize
@@ -665,8 +632,10 @@ export default function CoachFloatPage() {
   // (timer si graba) | botón Play/Stop icon-only | drawer toggle + close.
   // Dimensiones 352×76 (COACH_COMPACT_W/H en coach/commands.rs). El drawer
   // suma 344 px adicionales cuando se abre.
-  const hasLiveAudio = levels.micRms > 0.005 || levels.sysRms > 0.005;
-  const barsActive = recordingActive || hasLiveAudio;
+  // `hasLiveAudio`/`barsActive` se eliminaron de aquí en el issue #07: ahora
+  // los deriva `AudioLevelBars` internamente (lee el store directo). El
+  // gate `!isPaused` que se aplicaba a `barsActive` se pasa por separado vía
+  // la prop `active` de cada instancia (ver JSX abajo).
   // Iter 11: layout único — barra horizontal SIEMPRE visible (76 px) + drawer
   // panel opcional debajo (260 px). Antes había dos returns separados (compact
   // vs expanded) que producían layouts mutuamente exclusivos. Ahora la barra
@@ -749,9 +718,9 @@ export default function CoachFloatPage() {
               }`}
             />
           </button>
-          <AudioBars5
-            rms={levels.micRms}
-            active={barsActive && !isPaused}
+          <AudioLevelBars
+            channel="mic"
+            active={recordingActive && !isPaused}
             color={recordingActive ? (isPaused ? '#fbbf24' : '#f87171') : 'rgba(72,93,244,0.7)'}
           />
         </div>
@@ -767,9 +736,9 @@ export default function CoachFloatPage() {
           >
             <Volume2 className="w-4 h-4 text-white/70" />
           </button>
-          <AudioBars5
-            rms={levels.sysRms}
-            active={barsActive && !isPaused}
+          <AudioLevelBars
+            channel="sys"
+            active={recordingActive && !isPaused}
             color={
               recordingActive
                 ? (isPaused ? 'rgba(16,185,129,0.35)' : 'rgb(16,185,129)')
@@ -889,9 +858,10 @@ export default function CoachFloatPage() {
         <div
           className="flex-1 w-full overflow-hidden flex flex-col text-white"
           style={{
-            background: 'rgba(15,16,24,0.92)',
-            backdropFilter: 'blur(22px) saturate(180%)',
-            WebkitBackdropFilter: 'blur(22px) saturate(180%)',
+            // Issue #07: mismo tratamiento sin blur que GLASS_STYLE_COMPACT
+            // (fondo opaco #0F1018 en vez de backdrop-filter). clipPath
+            // sigue redondeando solo abajo.
+            background: '#0F1018',
             clipPath: 'inset(0 round 0 0 24px 24px)',
             borderTop: '1px solid rgba(255,255,255,0.06)',
           }}

@@ -64,10 +64,18 @@
       //    createSubscriptionGroup().
       //  - errorTelemetry.ts es fire-and-forget deliberado: init idempotente
       //    sin teardown, documentado en CLAUDE.md.
+      //  - audioLevelsStore.ts (issue #07) es un store singleton fuera de
+      //    React: el ref-count de suscriptores sube y baja entre MUCHOS
+      //    componentes hoja independientes (barras de mic/sistema en dos
+      //    ventanas Tauri distintas), no un ciclo de vida 1:1 con un solo
+      //    useEffect — no encaja en el modelo "monta N listeners, suelta
+      //    todos juntos" de createSubscriptionGroup. Reimplementa la misma
+      //    defensa anti-doble-unlisten localmente.
       //  - los tests importan `listen` para mockearlo/tiparlo.
       "files": [
         "src/lib/tauriSubscribe.ts",
         "src/lib/errorTelemetry.ts",
+        "src/lib/audioLevelsStore.ts",
         "src/services/recordingService.ts",
         "src/services/transcriptService.ts",
         "src/shared/maity-shared/**/*.{ts,tsx}",

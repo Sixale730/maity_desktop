@@ -153,11 +153,17 @@ const SRC_ROOT = path.resolve(__dirname, '..');
  *    del unlisten; el ciclo de vida lo maneja el llamador con el grupo.
  *  - errorTelemetry.ts es fire-and-forget deliberado (init idempotente sin
  *    teardown, documentado en CLAUDE.md).
+ *  - audioLevelsStore.ts (issue #07) es un store singleton fuera de React:
+ *    el ref-count de suscriptores sube y baja entre MUCHOS componentes hoja
+ *    independientes, no un ciclo de vida 1:1 con un solo useEffect — no
+ *    encaja en el modelo de createSubscriptionGroup. Reimplementa
+ *    localmente la misma defensa anti-doble-unlisten de este archivo.
  *  - el arbol copiado zero-drift y los tests.
  */
 const EXEMPT_PATTERNS = [
   'lib/tauriSubscribe.ts',
   'lib/errorTelemetry.ts',
+  'lib/audioLevelsStore.ts',
   'services/recordingService.ts',
   'services/transcriptService.ts',
   'shared/maity-shared/',

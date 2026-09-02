@@ -7,20 +7,16 @@ import {
   ChevronDown, ChevronUp, X, Play, Pause, Square, Mic, Volume2,
 } from 'lucide-react';
 import { TauriEvent } from '@/lib/tauri-events';
+import { AudioLevelBars } from '@/components/audio/AudioLevelBars';
+import { resetAudioLevels } from '@/lib/audioLevelsStore';
 
-interface AudioLevels {
-  micRms: number;
-  micPeak: number;
-  sysRms: number;
-  sysPeak: number;
-}
-
-// Patrón glass copiado de coach-float — el body con bg-transparent del
-// recording-widget layout deja pasar el blur Tauri detrás de esto.
+// Patrón glass copiado de coach-float — issue #07 (auditoría de recursos,
+// decisión explícita del usuario): SIN backdrop-filter. Fondo opaco #0F1018
+// (equivalente sin alpha de rgba(15,16,24,*)) en vez de blur — forzaba
+// recomposición por CPU en equipos sin GPU dedicada cada vez que las barras
+// de nivel cambiaban de altura.
 const GLASS_STYLE: React.CSSProperties = {
-  background: 'rgba(15, 16, 24, 0.92)',
-  backdropFilter: 'blur(22px) saturate(180%)',
-  WebkitBackdropFilter: 'blur(22px) saturate(180%)',
+  background: '#0F1018',
   border: '1px solid rgba(255,255,255,0.14)',
   boxShadow: '0 12px 40px rgba(0,0,0,0.5)',
 };
@@ -32,38 +28,12 @@ const SYS_SCALES_SMALL = [0.6, 0.85, 1.0, 0.7];
 const MIC_SCALES_LARGE = [0.45, 0.7, 0.9, 1.0, 0.95, 0.8, 0.65, 0.5];
 const SYS_SCALES_LARGE = [0.5, 0.65, 0.8, 0.95, 1.0, 0.9, 0.7, 0.45];
 
-function AudioBars({
-  rms,
-  scales,
-  color,
-  maxH = 16,
-  barW = 3,
-}: {
-  rms: number;
-  scales: number[];
-  color: string;
-  maxH?: number;
-  barW?: number;
-}) {
-  return (
-    <div className="flex items-end gap-[2px]" style={{ height: `${maxH}px` }}>
-      {scales.map((scale, i) => {
-        const h = Math.max(2, Math.min(maxH, rms * 200 * scale));
-        return (
-          <div
-            key={i}
-            className="rounded-full transition-all duration-75"
-            style={{
-              width: `${barW}px`,
-              height: `${h}px`,
-              backgroundColor: color,
-            }}
-          />
-        );
-      })}
-    </div>
-  );
-}
+// `AudioBars` local (leía `rms` de un prop, alimentado por el useState de
+// niveles de ESTA página) se eliminó en el issue #07: se reemplazó por el
+// componente compartido `AudioLevelBars` (`@/components/audio/AudioLevelBars`),
+// que consume el store módulo-level directo — ver `coach-float/page.tsx`
+// para el mismo cambio con más detalle. Las constantes de escalas de arriba
+// se siguen pasando por prop porque son específicas de este widget.
 
 function formatDuration(secs: number): string {
   const h = Math.floor(secs / 3600);
@@ -77,7 +47,8 @@ export default function RecordingWidgetPage() {
   const [isExpanded, setIsExpanded] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
-  const [levels, setLevels] = useState({ micRms: 0, sysRms: 0 });
+  // `levels` se eliminó de aquí en el issue #07 — ver la nota junto a
+  // `AudioLevelBars` en coach-float/page.tsx para el detalle del refactor.
   const [displaySecs, setDisplaySecs] = useState(0);
   const [busy, setBusy] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -145,9 +116,9 @@ export default function RecordingWidgetPage() {
   // desalineamientos.
   useEffect(() => {
     const subs = createSubscriptionGroup();
-    subs.on<AudioLevels>(TauriEvent.RECORDING_AUDIO_LEVELS, (e) => {
-      setLevels({ micRms: e.payload.micRms, sysRms: e.payload.sysRms });
-    });
+    // El listener de RECORDING_AUDIO_LEVELS que vivía aquí se movió a
+    // `@/lib/audioLevelsStore` (issue #07) — lo adjunta `AudioLevelBars`
+    // directo, ya no pasa por el `useState` de esta página.
     subs.on(TauriEvent.RECORDING_START_COMPLETE, () => {
       setIsRecording(true);
       setIsPaused(false);
@@ -165,7 +136,10 @@ export default function RecordingWidgetPage() {
       setIsPaused(false);
       recordingStartRef.current = null;
       setDisplaySecs(0);
-      setLevels({ micRms: 0, sysRms: 0 });
+      // Reset explícito e inmediato (issue #07): las barras ya no se
+      // desmontan entre grabaciones (siguen en el widget idle), así que el
+      // reset automático del store al llegar a 0 suscriptores no dispara.
+      resetAudioLevels();
       setBusy(false);
       userManuallyCollapsedRef.current = false;
     });
@@ -174,7 +148,7 @@ export default function RecordingWidgetPage() {
       setIsPaused(false);
       recordingStartRef.current = null;
       setDisplaySecs(0);
-      setLevels({ micRms: 0, sysRms: 0 });
+      resetAudioLevels();
       setBusy(false);
       userManuallyCollapsedRef.current = false;
     });
@@ -479,11 +453,27 @@ export default function RecordingWidgetPage() {
           <div className="flex items-center justify-between gap-3">
             <div className="flex items-center gap-2">
               <Mic className="w-3.5 h-3.5 text-white/55" />
-              <AudioBars rms={levels.micRms} scales={MIC_SCALES_SMALL} color="#485df4" maxH={14} />
+              <AudioLevelBars
+                channel="mic"
+                color="#485df4"
+                scales={MIC_SCALES_SMALL}
+                maxHeightPx={14}
+                barWidthPx={3}
+                multiplier={200}
+                durationMs={75}
+              />
             </div>
             <div className="flex items-center gap-2">
               <Volume2 className="w-3.5 h-3.5 text-white/55" />
-              <AudioBars rms={levels.sysRms} scales={SYS_SCALES_SMALL} color="#10b981" maxH={14} />
+              <AudioLevelBars
+                channel="sys"
+                color="#10b981"
+                scales={SYS_SCALES_SMALL}
+                maxHeightPx={14}
+                barWidthPx={3}
+                multiplier={200}
+                durationMs={75}
+              />
             </div>
           </div>
 
@@ -558,12 +548,14 @@ export default function RecordingWidgetPage() {
             <Mic className="w-3 h-3" />
             Mic
           </div>
-          <AudioBars
-            rms={levels.micRms}
+          <AudioLevelBars
+            channel="mic"
             scales={MIC_SCALES_LARGE}
             color="#485df4"
-            maxH={28}
-            barW={5}
+            maxHeightPx={28}
+            barWidthPx={5}
+            multiplier={200}
+            durationMs={75}
           />
         </div>
         <div className="flex items-center justify-between gap-3">
@@ -571,12 +563,14 @@ export default function RecordingWidgetPage() {
             <Volume2 className="w-3 h-3" />
             Sistema
           </div>
-          <AudioBars
-            rms={levels.sysRms}
+          <AudioLevelBars
+            channel="sys"
             scales={SYS_SCALES_LARGE}
             color="#10b981"
-            maxH={28}
-            barW={5}
+            maxHeightPx={28}
+            barWidthPx={5}
+            multiplier={200}
+            durationMs={75}
           />
         </div>
       </div>
