@@ -3,28 +3,41 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use anyhow::{Result, anyhow};
 use log::{info, warn, error};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use super::encode::encode_single_audio;
 use super::recording_state::AudioChunk;
 use serde::{Serialize, Deserialize};
 
 use super::ffmpeg::find_ffmpeg_path;
 
-/// Audio data without device type (we only store mixed audio)
-#[derive(Clone)]
-struct AudioData {
-    data: Vec<f32>,
-    // sample_rate: u32,
-}
-
 /// Incremental audio saver that writes checkpoints every 30 seconds
 /// to minimize memory usage and enable crash recovery
 pub struct IncrementalAudioSaver {
-    checkpoint_buffer: Vec<AudioData>,
-    buffered_samples: usize,  // running total of interleaved samples in buffer
+    /// Buffer contiguo de muestras interleaved (f32), preasignado con
+    /// `with_capacity`. Antes era un `Vec<AudioData>` de ~300 sub-buffers
+    /// sueltos que había que concatenar en un SEGUNDO Vec de 2.88M elementos
+    /// justo antes de cada encode (pico de ~23MB extra por checkpoint, más
+    /// el buffer viejo re-creciendo de 0 cada 30s tras el `mem::take`). Ahora
+    /// los chunks se escriben aquí directo con `extend_from_slice` y viajan
+    /// a ffmpeg sin una copia intermedia.
+    checkpoint_buffer: Vec<f32>,
     checkpoint_interval_samples: usize,  // 30s at 48kHz = 1,440,000 samples (per channel)
     checkpoint_count: u32,
     pending_encodes: Arc<AtomicU32>,  // background encodes still in flight
     encode_errors: Arc<AtomicU32>,
+    /// Acota a 1 el número de encodes de checkpoint en vuelo a la vez. Sin
+    /// esto, un encode lento (máquina cargada) dejaba que los checkpoints se
+    /// apilaran sin tope en el pool blocking de tokio (512 hilos), cada uno
+    /// con su propio proceso ffmpeg y sus ~23MB de buffer. Es POR SAVER, no
+    /// un `OnceLock` global: solo hay un saver vivo a la vez y así los tests
+    /// no comparten estado entre sí.
+    encode_slots: Arc<Semaphore>,
+    /// Momento en que el flush quedo diferido por falta de permiso, o `None`
+    /// si no lo esta. Es un LATCH para el log, no estado funcional: sin el,
+    /// los ~10 `add_chunk` por segundo convierten un encode lento en una
+    /// tormenta de avisos identicos (el mismo patron que costo 965 eventos
+    /// en 8h en el piloto Dingler).
+    deferred_since: Option<std::time::Instant>,
     checkpoints_dir: PathBuf,
     meeting_folder: PathBuf,
     sample_rate: u32,
@@ -48,15 +61,18 @@ impl IncrementalAudioSaver {
 
         info!("IncrementalAudioSaver: {} channels, {}Hz, 30s checkpoints", channels, sample_rate);
 
+        // 30 seconds worth of samples (accounting for channels)
+        // For stereo: 48000 * 30 * 2 = 2,880,000 interleaved samples
+        let checkpoint_interval_samples = sample_rate as usize * 30 * channels as usize;
+
         Ok(Self {
-            checkpoint_buffer: Vec::new(),
-            buffered_samples: 0,
-            // 30 seconds worth of samples (accounting for channels)
-            // For stereo: 48000 * 30 * 2 = 2,880,000 interleaved samples
-            checkpoint_interval_samples: sample_rate as usize * 30 * channels as usize,
+            checkpoint_buffer: Vec::with_capacity(checkpoint_interval_samples),
+            checkpoint_interval_samples,
             checkpoint_count: 0,
             pending_encodes: Arc::new(AtomicU32::new(0)),
             encode_errors: Arc::new(AtomicU32::new(0)),
+            encode_slots: Arc::new(Semaphore::new(1)),
+            deferred_since: None,
             checkpoints_dir,
             meeting_folder,
             sample_rate,
@@ -67,32 +83,34 @@ impl IncrementalAudioSaver {
     /// Add an audio chunk to the buffer
     /// Automatically saves a checkpoint when buffer reaches 30 seconds
     pub fn add_chunk(&mut self, chunk: AudioChunk) -> Result<()> {
-        self.buffered_samples += chunk.data.len();
-        self.checkpoint_buffer.push(AudioData {
-            data: chunk.data,
-            // sample_rate: chunk.sample_rate,
-        });
+        self.checkpoint_buffer.extend_from_slice(&chunk.data);
 
         // Save checkpoint when buffer reaches threshold (30 seconds)
-        if self.buffered_samples >= self.checkpoint_interval_samples {
+        if self.checkpoint_buffer.len() >= self.checkpoint_interval_samples {
             self.spawn_checkpoint_encode();
         }
 
         Ok(())
     }
 
-    /// Move the buffered audio into a blocking task that encodes the checkpoint.
-    /// The FFmpeg encode takes 1-4s on loaded machines; running it inline
-    /// blocked a tokio worker (and the saver's AsyncMutex) that long every 30s.
-    /// `finalize()` waits for `pending_encodes` before merging.
-    fn spawn_checkpoint_encode(&mut self) {
-        let chunks = std::mem::take(&mut self.checkpoint_buffer);
-        self.buffered_samples = 0;
-        if chunks.is_empty() {
-            warn!("Attempted to save empty checkpoint, skipping");
-            return;
-        }
+    /// Saca el buffer acumulado y lo reemplaza por uno vacío ya preasignado
+    /// (`with_capacity`), para que no tenga que re-crecer de 0 muestras en
+    /// el siguiente ciclo de 30s. Separado del encode en sí para poder
+    /// probar la preasignación sin disparar un encode real (que exige
+    /// ffmpeg instalado).
+    fn take_buffer_for_checkpoint(&mut self) -> Vec<f32> {
+        std::mem::replace(
+            &mut self.checkpoint_buffer,
+            Vec::with_capacity(self.checkpoint_interval_samples),
+        )
+    }
 
+    /// Lanza el encode en el pool blocking de tokio con el buffer ya tomado
+    /// y el permiso del semáforo ya en mano. El FFmpeg encode toma 1-4s en
+    /// máquinas cargadas; correrlo inline bloquearía un worker de tokio (y el
+    /// AsyncMutex del saver) ese tiempo cada 30s. `finalize()` espera
+    /// `pending_encodes` antes de mergear.
+    fn dispatch_checkpoint_encode(&mut self, buf: Vec<f32>, permit: OwnedSemaphorePermit) {
         let checkpoint_path = self.checkpoints_dir
             .join(format!("audio_chunk_{:03}.mp4", self.checkpoint_count));
         self.checkpoint_count += 1;
@@ -105,32 +123,29 @@ impl IncrementalAudioSaver {
         pending.fetch_add(1, Ordering::SeqCst);
 
         tokio::task::spawn_blocking(move || {
-            // Decrement even if the encode panics
-            struct PendingGuard(Arc<AtomicU32>);
+            // Decrementa pending_encodes Y suelta el permiso del semáforo
+            // incluso si el encode entra en pánico (el permit vive dentro
+            // del guard, así que su Drop libera el slot para el siguiente
+            // checkpoint).
+            struct PendingGuard(Arc<AtomicU32>, #[allow(dead_code)] OwnedSemaphorePermit);
             impl Drop for PendingGuard {
                 fn drop(&mut self) {
                     self.0.fetch_sub(1, Ordering::SeqCst);
                 }
             }
-            let _guard = PendingGuard(pending);
-
-            let total: usize = chunks.iter().map(|c| c.data.len()).sum();
-            let mut audio_data: Vec<f32> = Vec::with_capacity(total);
-            for c in &chunks {
-                audio_data.extend_from_slice(&c.data);
-            }
+            let _guard = PendingGuard(pending, permit);
 
             match encode_single_audio(
-                bytemuck::cast_slice(&audio_data),
+                bytemuck::cast_slice(&buf),
                 sample_rate,
                 channels,
                 &checkpoint_path,
             ) {
                 Ok(()) => {
                     let duration_seconds =
-                        audio_data.len() as f32 / (sample_rate as f32 * channels as f32);
+                        buf.len() as f32 / (sample_rate as f32 * channels as f32);
                     info!("Saved checkpoint {}: {:.2}s of audio ({} samples)",
-                          checkpoint_number, duration_seconds, audio_data.len());
+                          checkpoint_number, duration_seconds, buf.len());
                 }
                 Err(e) => {
                     errors.fetch_add(1, Ordering::SeqCst);
@@ -140,16 +155,84 @@ impl IncrementalAudioSaver {
         });
     }
 
+    /// Camino normal, llamado desde `add_chunk` (sync). Intenta tomar el
+    /// permiso SIN esperar: si ya hay un encode en vuelo, NO se lleva el
+    /// buffer — sigue acumulando y se reintenta en el siguiente chunk
+    /// (~100ms después). El checkpoint sale más largo de 30s, pero no se
+    /// pierde audio, y la memoria queda acotada a ~2 buffers (uno
+    /// encodeando + uno llenándose) en vez de crecer sin tope si la máquina
+    /// va lenta y los encodes se acumulan.
+    fn spawn_checkpoint_encode(&mut self) {
+        if self.checkpoint_buffer.is_empty() {
+            warn!("Attempted to save empty checkpoint, skipping");
+            return;
+        }
+
+        let permit = match self.encode_slots.clone().try_acquire_owned() {
+            Ok(permit) => permit,
+            Err(_) => {
+                // Latch: `add_chunk` entra aquí ~10 veces por segundo mientras
+                // el buffer siga por encima del umbral, asi que sin esto un
+                // encode que se pase de los 30s escupiria 10 warns/segundo al
+                // log rotativo. Se avisa UNA vez al entrar en estado diferido.
+                if self.deferred_since.is_none() {
+                    self.deferred_since = Some(std::time::Instant::now());
+                    warn!(
+                        "Encode de checkpoint anterior sigue en vuelo; difiriendo flush ({} samples acumulados)",
+                        self.checkpoint_buffer.len()
+                    );
+                }
+                return;
+            }
+        };
+
+        // Salimos del estado diferido: un solo aviso con cuanto duro, para poder
+        // medir en el log si la maquina se esta quedando corta de CPU.
+        if let Some(since) = self.deferred_since.take() {
+            warn!(
+                "Flush de checkpoint reanudado tras {:.1}s diferido ({} samples acumulados)",
+                since.elapsed().as_secs_f32(),
+                self.checkpoint_buffer.len()
+            );
+        }
+
+        let buf = self.take_buffer_for_checkpoint();
+        self.dispatch_checkpoint_encode(buf, permit);
+    }
+
+    /// Versión forzada para `finalize()`: espera (await) el permiso en vez
+    /// de solo intentarlo. Sin este flush forzado, el último checkpoint de
+    /// la grabación podría quedar diferido para siempre si el encode
+    /// anterior seguía en vuelo justo cuando la grabación terminó.
+    async fn flush_checkpoint(&mut self) {
+        if self.checkpoint_buffer.is_empty() {
+            return;
+        }
+
+        let permit = match self.encode_slots.clone().acquire_owned().await {
+            Ok(permit) => permit,
+            Err(_) => {
+                // Solo ocurre si el semáforo se cerrara explícitamente (nunca lo hacemos).
+                error!("encode_slots semaphore closed unexpectedly during finalize");
+                return;
+            }
+        };
+
+        let buf = self.take_buffer_for_checkpoint();
+        self.dispatch_checkpoint_encode(buf, permit);
+    }
+
     /// Finalize the recording: save final checkpoint, merge all checkpoints, cleanup
     ///
     /// Returns the path to the final merged audio.mp4 file
     pub async fn finalize(&mut self) -> Result<PathBuf> {
         info!("Finalizing incremental recording...");
 
-        // Save final buffer if not empty
+        // Save final buffer if not empty (flush forzado: espera el permiso en vez
+        // de solo intentarlo, para no perder el último tramo de audio).
         if !self.checkpoint_buffer.is_empty() {
-            info!("Saving final checkpoint with remaining {} chunks", self.checkpoint_buffer.len());
-            self.spawn_checkpoint_encode();
+            info!("Saving final checkpoint with remaining {} samples", self.checkpoint_buffer.len());
+            self.flush_checkpoint().await;
         }
 
         // Wait for background encodes: their files must exist before the merge
@@ -472,6 +555,10 @@ mod tests {
     use super::super::recording_state::DeviceType;
 
     #[tokio::test]
+    #[ignore] // Requiere ffmpeg real en el PATH: find_ffmpeg_path() intentaría
+              // DESCARGARLO (287MB) si no lo encuentra, así que no corre por
+              // default. Correr a mano con `cargo test -- --ignored` en una
+              // máquina con ffmpeg instalado.
     async fn test_checkpoint_creation() {
         // Create temp meeting folder
         let temp_dir = tempdir().unwrap();
@@ -485,9 +572,15 @@ mod tests {
             2  // stereo (L=mic, R=system)
         ).unwrap();
 
-        // Add 60 seconds worth of audio (should create 2 checkpoints).
+        // Add 60 seconds worth of audio (debería producir 2 checkpoints en total).
         // Pipeline emits interleaved stereo chunks, so 0.5s @ 48kHz stereo = 48000 samples
         // (not 24000, which would be 0.5s mono).
+        //
+        // Con el semáforo de 1 permiso, el SEGUNDO cruce del umbral de 30s puede
+        // encontrar el primer encode todavía en vuelo y quedar diferido — por
+        // eso ya NO afirmamos el conteo aquí a mitad de grabación (como hacía
+        // esta prueba antes), sino después de finalize(), que fuerza el flush
+        // del remanente y garantiza que ambos checkpoints se hayan lanzado.
         for i in 0..120u64 {  // 120 chunks of 0.5s each
             let chunk = AudioChunk {
                 data: vec![0.5f32; 48000],  // 0.5s stereo interleaved @ 48kHz
@@ -500,15 +593,120 @@ mod tests {
             saver.add_chunk(chunk).unwrap();
         }
 
-        // Verify 2 checkpoints created
-        assert_eq!(saver.checkpoint_count, 2);
-
         // Finalize and verify merge
         let final_path = saver.finalize().await.unwrap();
         assert!(final_path.exists());
 
         // Verify checkpoints directory deleted
         assert!(!meeting_folder.join(".checkpoints").exists());
+
+        // Verify 2 checkpoints were produced across the whole recording (checked
+        // AFTER finalize, not mid-recording — ver comentario arriba).
+        assert_eq!(saver.checkpoint_count, 2);
+    }
+
+    /// Prueba el cambio central del issue sin necesitar ffmpeg instalado: si el
+    /// slot de encode está ocupado, `add_chunk` NO debe tirar audio ni avanzar
+    /// `checkpoint_count` — debe seguir acumulando y reintentar más tarde.
+    ///
+    /// Deliberadamente NO llama a `flush_checkpoint()`/`spawn_checkpoint_encode()`
+    /// con el permiso libre: hacerlo despacharía un `spawn_blocking` real hacia
+    /// `encode_single_audio` → `find_ffmpeg_path()`, que en esta máquina (sin
+    /// ffmpeg instalado ni cacheado) puede intentar una descarga real de ~287MB
+    /// — y como tokio bloquea el Drop del runtime del test hasta que ese
+    /// `spawn_blocking` termine, un test así podría colgarse esperando red. Es
+    /// exactamente el riesgo por el que `test_checkpoint_creation` de arriba
+    /// quedó `#[ignore]`. En vez de eso, esta prueba verifica la contabilidad
+    /// del semáforo directamente (que el permiso se libera correctamente al
+    /// soltar el guard sostenido a mano).
+    #[tokio::test]
+    async fn test_checkpoint_defers_without_dropping_audio_when_encode_busy() {
+        let temp_dir = tempdir().unwrap();
+        let meeting_folder = temp_dir.path().join("Busy_Test");
+        std::fs::create_dir_all(&meeting_folder).unwrap();
+        std::fs::create_dir_all(meeting_folder.join(".checkpoints")).unwrap();
+
+        let mut saver = IncrementalAudioSaver::new(
+            meeting_folder.clone(),
+            48000,
+            2, // stereo (L=mic, R=system)
+        ).unwrap();
+
+        // Simula un encode en vuelo tomando el único permiso a mano.
+        let held_permit = saver.encode_slots.clone().try_acquire_owned()
+            .expect("el semáforo debe nacer con 1 permiso libre");
+
+        // Alimenta 60s de audio (2x el intervalo de checkpoint de 30s), cruzando
+        // el umbral dos veces mientras el permiso sigue ocupado.
+        let mut total_samples_pushed: usize = 0;
+        for i in 0..120u64 {
+            let chunk = AudioChunk {
+                data: vec![0.5f32; 48000], // 0.5s stereo interleaved @ 48kHz
+                sample_rate: 48000,
+                timestamp: i as f64 * 0.5,
+                chunk_id: i,
+                device_type: DeviceType::Mixed,
+                ended_by_silence: true,
+            };
+            total_samples_pushed += chunk.data.len();
+            saver.add_chunk(chunk).unwrap();
+        }
+
+        // (a) Ningún checkpoint pudo despacharse: el slot seguía ocupado.
+        assert_eq!(saver.checkpoint_count, 0);
+
+        // (b) El audio no se perdió: el buffer acumuló TODO lo empujado, más
+        // allá del umbral de un solo checkpoint.
+        assert_eq!(saver.checkpoint_buffer.len(), total_samples_pushed);
+        assert!(saver.checkpoint_buffer.len() > saver.checkpoint_interval_samples);
+
+        // Soltar el permiso sostenido a mano debe devolverlo al semáforo: un
+        // nuevo try_acquire debe volver a tener éxito (no hay fuga de permisos).
+        drop(held_permit);
+        let fresh_permit = saver.encode_slots.clone().try_acquire_owned();
+        assert!(fresh_permit.is_ok(), "el permiso debe quedar disponible de nuevo tras soltar el anterior");
+        drop(fresh_permit);
+    }
+
+    /// El buffer de reemplazo tras un flush debe nacer YA preasignado
+    /// (`with_capacity`), no vacío-y-creciendo-de-0: si no, cada checkpoint de
+    /// 30s re-crece el Vec desde cero en vez de reusar la capacidad reservada.
+    /// Usa `take_buffer_for_checkpoint()` directo (sin pasar por el encode real)
+    /// para no depender de ffmpeg — ver comentario del test anterior.
+    #[tokio::test]
+    async fn test_checkpoint_buffer_replacement_is_preallocated() {
+        let temp_dir = tempdir().unwrap();
+        let meeting_folder = temp_dir.path().join("Prealloc_Test");
+        std::fs::create_dir_all(&meeting_folder).unwrap();
+        std::fs::create_dir_all(meeting_folder.join(".checkpoints")).unwrap();
+
+        let mut saver = IncrementalAudioSaver::new(
+            meeting_folder.clone(),
+            48000,
+            2, // stereo (L=mic, R=system)
+        ).unwrap();
+
+        // El buffer inicial ya nace preasignado.
+        assert!(saver.checkpoint_buffer.capacity() >= saver.checkpoint_interval_samples);
+
+        // Llenarlo con algo de audio para que el "flush" tenga contenido real que mover.
+        let chunk = AudioChunk {
+            data: vec![0.5f32; 48000],
+            sample_rate: 48000,
+            timestamp: 0.0,
+            chunk_id: 0,
+            device_type: DeviceType::Mixed,
+            ended_by_silence: true,
+        };
+        saver.add_chunk(chunk).unwrap();
+        assert!(!saver.checkpoint_buffer.is_empty());
+
+        let taken = saver.take_buffer_for_checkpoint();
+        assert_eq!(taken.len(), 48000);
+
+        // El buffer que queda en el saver (el reemplazo) debe seguir preasignado.
+        assert!(saver.checkpoint_buffer.is_empty());
+        assert!(saver.checkpoint_buffer.capacity() >= saver.checkpoint_interval_samples);
     }
 
     #[tokio::test]
