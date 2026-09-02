@@ -111,6 +111,7 @@ Flujo: (a) llenar `docs/piloto/<empresa>-<fecha>.data.json` con las cifras de Q1
 - [ ] Personas con n<2 sin promedios ni gráfica.
 - [ ] Cada cita leída; sin nombres de clientes, montos ni pólizas identificables.
 - [ ] Cero problemas técnicos.
+- [ ] Ninguna recomendación contradice el producto (2026-09-02): NUNCA sugerir pausar/apagar Maity, "grabar solo las reuniones/llamadas" ni "no grabar toda la jornada" — la jornada continua es el diseño de Maity; el silencio lo filtra el producto (umbral de 250 palabras en `finalize_segment_native`), no el usuario. `grep -iE "no (toda|la) jornada|jornada entera|grabar solo|solo grabar|pausar? maity|apagar maity"` = 0. Sí se vale lo aditivo ("llevar Maity también a las llamadas con clientes").
 - [ ] Claro/oscuro OK (tokens en `:root`, `@media (prefers-color-scheme: dark) :root:not([data-theme="light"])`, `:root[data-theme="dark"]`).
 - [ ] "Cómo leer esto" trae fecha/hora de corte y el supuesto de jornada.
 

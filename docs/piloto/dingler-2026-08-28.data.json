@@ -100,7 +100,7 @@
       "dims": { "claridad": {"medido": 36, "n": 13, "auto": 50}, "proposito": {"medido": 30, "n": 13, "auto": 100}, "estructura": {"medido": 30, "n": 13, "auto": 70}, "persuasion": {"medido": 26, "n": 13, "auto": 70}, "empatia": {"medido": null, "n": 0, "auto": 100}, "adaptacion": {"medido": null, "n": 0, "auto": 100} },
       "cobertura": 32, "cobertura_analizada": 11, "dias_con_maity": 7,
       "extra": "Es quien más tiempo tiene Maity encendida (32 % de la jornada), pero dos tercios de ese tiempo no tienen conversación: de sus 41 minutas, 27 son \"reunión informal\" o \"sin contenido\". No ha abierto ninguna de sus conversaciones.",
-      "accion": "Encender Maity cuando empiece una conversación, no toda la jornada. Y revisar con ella una de sus minutas: aún no ha visto lo que Maity le dice."
+      "accion": "Organizar las ideas antes de hablar: es lo que Maity le señala en sus 13 conversaciones. Y revisar con ella una de sus minutas: aún no ha visto lo que Maity le dice."
     },
     {
       "nombre": "Alejandra", "puesto": "Colectivos", "n": 7, "lectura": "consistente", "dos_partes": 1,
@@ -139,7 +139,7 @@
       "dims": { "claridad": {"medido": 33, "n": 2, "auto": 60}, "proposito": {"medido": 23, "n": 2, "auto": 70}, "estructura": {"medido": 28, "n": 2, "auto": 70}, "persuasion": {"medido": 20, "n": 2, "auto": 80}, "empatia": {"medido": null, "n": 0, "auto": 80}, "adaptacion": {"medido": null, "n": 0, "auto": 90} },
       "cobertura": 14, "cobertura_analizada": 8, "dias_con_maity": 3,
       "extra": "Grabó 10 conversaciones en 3 días (incluida una sesión de práctica de pitch y capacitación de 6.6 horas el lunes 17) y dejó de grabar el 19 de agosto. 8 de las 10 no tenían conversación suficiente para analizar.",
-      "accion": "Retomar Maity en las juntas donde ella participa activamente, no en las que solo escucha. Practicar completar la idea: \"me preocupa X porque Y; propongo Z\"."
+      "accion": "Retomar Maity (dejó de grabar el 19) e intervenir en las juntas: Maity solo puede evaluarla cuando habla. Practicar completar la idea: \"me preocupa X porque Y; propongo Z\"."
     },
     {
       "nombre": "Michael", "puesto": "Coordinador de Daños", "n": 1, "lectura": "una sola", "dos_partes": 0,
@@ -240,10 +240,10 @@
     "personas": [
       { "nombre": "Erika", "accion": "Cerrar cada junta con las acciones escritas (quién, para cuándo). Grabar sus llamadas con cliente." },
       { "nombre": "Margarita", "accion": "En cada recomendación al cliente, decir el porqué y el beneficio en la misma frase. Grabar más llamadas con cliente." },
-      { "nombre": "María", "accion": "Encender Maity al empezar una conversación, no toda la jornada. Revisar juntas una minuta suya: aún no ha visto ninguna." },
+      { "nombre": "María", "accion": "Organizar las ideas antes de hablar (su patrón es el mensaje fragmentado). Revisar juntas una minuta suya: aún no ha visto ninguna." },
       { "nombre": "Alejandra", "accion": "Anunciar los tres bloques al inicio de cada presentación. Grabar sus presentaciones a grupos." },
       { "nombre": "Janeth", "accion": "Volver a grabar (dejó de hacerlo el 17). Abrir cada llamada diciendo qué se va a resolver." },
-      { "nombre": "Marcela", "accion": "Grabar solo las juntas donde ella participa. Completar la idea: \"me preocupa X porque Y; propongo Z\"." },
+      { "nombre": "Marcela", "accion": "Intervenir en las juntas que graba: Maity solo puede evaluarla cuando habla. Completar la idea: \"me preocupa X porque Y; propongo Z\"." },
       { "nombre": "Michael", "accion": "Grabar llamadas completas de siniestros. Ya lee lo que Maity produce." },
       { "nombre": "Jessica", "accion": "Una llamada del Programa Vida grabada por semana." },
       { "nombre": "Melissa", "accion": "Permitir el micrófono a las aplicaciones de escritorio en la configuración de Windows (5 minutos)." },
@@ -251,13 +251,12 @@
     ],
     "equipo": [
       "Agenda de tres puntos y cierre con acciones (quién y cuándo) en las juntas operativas internas: es donde se decide (29 decisiones) pero no se asigna (10 de 101 acciones completas).",
-      "Grabar las llamadas con clientes, no la jornada entera: es donde Maity escucha a las dos partes, donde el equipo sale mejor y donde se puede trabajar empatía y persuasión.",
+      "Llevar Maity también a las llamadas y videollamadas con clientes: es donde escucha a las dos partes, donde el equipo sale mejor y donde se puede trabajar empatía y persuasión.",
       "Quince minutos a la semana en que cada persona abre una minuta suya y elige una recomendación: hoy 4 de 10 personas han abierto un análisis."
     ],
     "maity": [
       "Diadema USB para Xochitl y permiso de micrófono para Melissa.",
-      "El horario real de cada persona, para medir la cobertura contra su jornada y no contra un 9 a 6 supuesto.",
-      "Quince minutos con María y Erika para enseñarles a pausar Maity entre conversaciones."
+      "El horario real de cada persona, para medir la cobertura contra su jornada y no contra un 9 a 6 supuesto."
     ]
   },
 
