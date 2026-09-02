@@ -12,6 +12,7 @@ export {
   mergeConversations,
   isAnalysisSkipped,
   isFullAnalysis,
+  LIST_DEFAULT_LIMIT,
 } from './services/conversations.service';
 export type {
   OmiConversation,

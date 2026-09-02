@@ -15,11 +15,6 @@ import { invoke } from '@tauri-apps/api/core';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { toast } from 'sonner';
 import { useRecordingState, RecordingStatus } from '@/contexts/RecordingStateContext';
-import { useAuth } from '@/contexts/AuthContext';
-import { useQuery } from '@tanstack/react-query';
-import { getOmiConversations } from '@/features/conversations';
-
-
 
 import { CloudSyncBadge } from '@/components/shared/CloudSyncBadge';
 import { useCloudSyncStatuses } from '@/hooks/useCloudSyncStatuses';
@@ -59,17 +54,16 @@ const Sidebar: React.FC = () => {
   // el doble arranque es isStartingRef en useRecordingStart (síncrono); esto es
   // la mitad visible, para que el botón no invite al segundo clic.
   const isStartingRecording = status === RecordingStatus.STARTING;
-  const { maityUser } = useAuth();
   const syncStatuses = useCloudSyncStatuses();
 
-  // Fetch Supabase conversations for search
-  const { data: omiConversations } = useQuery({
-    queryKey: ['omi-conversations', maityUser?.id],
-    queryFn: () => getOmiConversations(maityUser?.id),
-    enabled: !!maityUser?.id,
-  });
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set(['meetings']));
-  const [searchQuery, setSearchQuery] = useState<string>('');
+  // El input de búsqueda del Sidebar se eliminó hace meses (ver CLAUDE.md,
+  // "Header del Sidebar"): searchQuery queda inerte (siempre '') para que
+  // filteredSidebarItems/searchResults sigan compilando sin volver a montar
+  // la query de conversaciones que amplificaba cada invalidación en un fetch
+  // real (issue #05 fase 1, C1). NO reintroducir el setter sin recablear un
+  // input real a setSearchQuery.
+  const [searchQuery] = useState<string>('');
   const [, setShowModelSettings] = useState(false);
   const [, setModelConfig] = useState<ModelConfig>({
     provider: 'ollama',
@@ -236,7 +230,14 @@ const Sidebar: React.FC = () => {
     }
   };
 
-  // Combine search results with sidebar items
+  // Combine search results with sidebar items.
+  // Quedó sin consumidor al borrar el bloque "No results message" (issue #05
+  // fase 1, C1): la tarea pidió explícitamente NO tocar este cálculo (no
+  // cuesta red, solo filtra en memoria), así que se conserva intacto con la
+  // misma supresión que ya lleva `renderItem` más abajo por el mismo motivo
+  // — código huérfano de una iteración anterior del árbol de reuniones del
+  // Sidebar, fuera de alcance de este issue.
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const filteredSidebarItems = useMemo(() => {
     if (!searchQuery.trim()) return sidebarItems;
 
@@ -297,17 +298,6 @@ const Sidebar: React.FC = () => {
         .filter((item): item is SidebarItem => item !== undefined); // Type-safe filter
     }
   }, [sidebarItems, searchQuery, searchResults, expandedFolders]);
-
-  // Filter Supabase conversations by search query
-  const filteredConversations = useMemo(() => {
-    if (!searchQuery.trim() || !omiConversations) return [];
-    const q = searchQuery.toLowerCase();
-    return omiConversations.filter(
-      (c) =>
-        c.title?.toLowerCase().includes(q) ||
-        c.overview?.toLowerCase().includes(q)
-    );
-  }, [searchQuery, omiConversations]);
 
   const handleDelete = async (itemId: string) => {
     logger.debug('Deleting item:', itemId);
@@ -773,35 +763,6 @@ const Sidebar: React.FC = () => {
           {/* Content area */}
           <div className="flex-1 flex flex-col min-h-0 overflow-y-auto">
             {renderCollapsedIcons()}
-
-            {/* Supabase conversation search results */}
-            {!isCollapsed && searchQuery.trim() && filteredConversations.length > 0 && (
-              <div className="px-3 py-2">
-                <p className="text-xs font-medium text-muted-foreground mb-2 uppercase tracking-wider">En conversaciones</p>
-                <div className="space-y-1">
-                  {filteredConversations.slice(0, 8).map((conv) => (
-                    <div
-                      key={conv.id}
-                      onClick={() => {
-                        setSearchQuery('');
-                        router.push(`/conversations?id=${conv.id}`);
-                      }}
-                      className="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-secondary cursor-pointer transition-colors"
-                    >
-                      {conv.emoji && <span className="text-sm flex-shrink-0">{conv.emoji}</span>}
-                      <span className="text-sm text-foreground truncate">{conv.title}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* No results message */}
-            {!isCollapsed && searchQuery.trim() && filteredConversations.length === 0 && filteredSidebarItems.every(f => f.type === 'folder' && (!f.children || f.children.length === 0)) && (
-              <div className="px-3 py-8 text-center">
-                <p className="text-sm text-muted-foreground">Sin resultados para &quot;{searchQuery}&quot;</p>
-              </div>
-            )}
           </div>
         </div>
 

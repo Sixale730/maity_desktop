@@ -39,6 +39,18 @@ export interface SchemaCall {
   schema: string;
 }
 
+/** Registro de cada `.select(columns)` invocado sobre una tabla (issue #05 fase 2). */
+export interface SelectCall {
+  table: string;
+  columns: unknown;
+}
+
+/** Registro de cada `.limit(n)` invocado sobre una tabla (issue #05 fase 2). */
+export interface LimitCall {
+  table: string;
+  limit: unknown;
+}
+
 /**
  * @param defaultSchema El `db.schema` del cliente real. Debe reflejar
  *   lib/supabase.ts — es 'public' desde el issue #70. Los tests que verifican
@@ -49,11 +61,22 @@ export function createMockSupabaseClient(defaultSchema = 'public') {
   const tableResults = new Map<string, QueryResult>();
   const channels = new Map<string, MockChannel>();
   const schemaCalls: SchemaCall[] = [];
+  // Issue #05 fase 2: antes `.select`/`.limit` eran `vi.fn(chainable)` puros —
+  // vitest SÍ registra sus `.mock.calls`, pero esa instancia de `chain` nace
+  // fresca en CADA `.from()` (ver abajo) y no queda expuesta fuera de
+  // `makeTable`, así que ningún test podía inspeccionarla. Estos arrays viven
+  // en el closure de `createMockSupabaseClient` y sobreviven a los múltiples
+  // `.from()` de una misma prueba — mismo patrón que `schemaCalls`.
+  const selectCalls: SelectCall[] = [];
+  const limitCalls: LimitCall[] = [];
 
   const makeTable = (name: string): TableMock => {
     const chain: Partial<TableMock> = {};
     const chainable = () => chain as TableMock;
-    chain.select = vi.fn(chainable);
+    chain.select = vi.fn((columns?: unknown) => {
+      selectCalls.push({ table: name, columns });
+      return chainable();
+    });
     chain.insert = vi.fn(chainable);
     chain.update = vi.fn(chainable);
     chain.delete = vi.fn(chainable);
@@ -61,7 +84,10 @@ export function createMockSupabaseClient(defaultSchema = 'public') {
     chain.eq = vi.fn(chainable);
     chain.in = vi.fn(chainable);
     chain.order = vi.fn(chainable);
-    chain.limit = vi.fn(chainable);
+    chain.limit = vi.fn((limit?: unknown) => {
+      limitCalls.push({ table: name, limit });
+      return chainable();
+    });
     chain.single = vi.fn(() => Promise.resolve(tableResults.get(name) ?? { data: null, error: null }));
     chain.maybeSingle = vi.fn(() => Promise.resolve(tableResults.get(name) ?? { data: null, error: null }));
     chain.then = (resolve) => {
@@ -163,11 +189,27 @@ export function createMockSupabaseClient(defaultSchema = 'public') {
       }
       return undefined;
     },
+    /** Columnas del ÚLTIMO `.select(...)` sobre esa tabla, o undefined. */
+    selectOf(table: string): unknown {
+      for (let i = selectCalls.length - 1; i >= 0; i -= 1) {
+        if (selectCalls[i].table === table) return selectCalls[i].columns;
+      }
+      return undefined;
+    },
+    /** Argumento del ÚLTIMO `.limit(...)` sobre esa tabla, o undefined. */
+    limitOf(table: string): unknown {
+      for (let i = limitCalls.length - 1; i >= 0; i -= 1) {
+        if (limitCalls[i].table === table) return limitCalls[i].limit;
+      }
+      return undefined;
+    },
     reset() {
       rpcHandlers.clear();
       tableResults.clear();
       channels.clear();
       schemaCalls.length = 0;
+      selectCalls.length = 0;
+      limitCalls.length = 0;
     },
   };
 }

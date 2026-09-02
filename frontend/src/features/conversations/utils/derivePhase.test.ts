@@ -124,6 +124,59 @@ describe('derivePhase', () => {
   });
 });
 
+describe('derivePhase — proyección ligera (issue #05 fase 2, _projection==="list")', () => {
+  it('fila ligera "full" + minuta → "completed" sin tocar los JSONB (que están en null)', () => {
+    const conv = base({
+      _projection: 'list',
+      _listAnalysis: 'full',
+      _listHasMinuta: true,
+      // JSONB reales ausentes a propósito — si el branch de proyección no
+      // cortara antes, isFullAnalysis(null) sería falso y esto NO daría 'completed'.
+      communication_feedback_v4: null,
+      meeting_minutes_data: null,
+      analysis_status: 'completed',
+    });
+    expect(derivePhase(conv, NOW)).toBe('completed');
+  });
+
+  it('fila ligera "none" con analysis_status null de hace 30 min → "stalled" (apaga el poll)', () => {
+    const thirtyMinAgo = new Date(NOW - 30 * 60 * 1000).toISOString();
+    const conv = base({
+      _projection: 'list',
+      _listAnalysis: 'none',
+      _listHasMinuta: false,
+      analysis_status: null,
+      finished_at: thirtyMinAgo,
+      started_at: thirtyMinAgo,
+    });
+    expect(derivePhase(conv, NOW)).toBe('stalled');
+  });
+
+  it('la misma fila ligera "none" pero de hace 1 min → "polling" (no rompe la conversación recién creada)', () => {
+    const oneMinAgo = new Date(NOW - 60 * 1000).toISOString();
+    const conv = base({
+      _projection: 'list',
+      _listAnalysis: 'none',
+      _listHasMinuta: false,
+      analysis_status: null,
+      finished_at: oneMinAgo,
+      started_at: oneMinAgo,
+    });
+    expect(derivePhase(conv, NOW)).toBe('polling');
+  });
+
+  it('fila ligera con _listAnalysis="skipped" → "skipped" sin mirar communication_feedback_v4', () => {
+    const conv = base({
+      _projection: 'list',
+      _listAnalysis: 'skipped',
+      _listHasMinuta: false,
+      communication_feedback_v4: null,
+      analysis_status: 'skipped',
+    });
+    expect(derivePhase(conv, NOW)).toBe('skipped');
+  });
+});
+
 describe('isTerminalPhase', () => {
   it.each(['completed', 'failed', 'skipped', 'quota_skipped'] as const)('returns true for %s', (phase) => {
     expect(isTerminalPhase(phase)).toBe(true);

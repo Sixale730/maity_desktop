@@ -36,16 +36,34 @@ export const STALL_TIMEOUT_MS = STALL_TIMEOUT_LEGACY_MS;
  *   idle (no anchor timestamp, no status)
  */
 export function derivePhase(conv: OmiConversation, nowMs: number = Date.now()): AnalysisPhase {
-  const v4 = conv.communication_feedback_v4;
-  const minuta = conv.meeting_minutes_data;
   const status = conv.analysis_status ?? null;
+
+  // Issue #05 fase 2: la proyección ligera de la lista (`_projection==='list'`)
+  // trae `communication_feedback_v4`/`meeting_minutes_data` en `null` a
+  // propósito (son 2 de los 5 campos pesados que el query ya no baja) — sobre
+  // ellos `isFullAnalysis`/`isAnalysisSkipped` SIEMPRE darían falso. Sin este
+  // branch, TODA fila proyectada caería al fallback por edad de abajo →
+  // 'stalled' → dispara `reanalyzeConversation` automáticamente y le quema
+  // cuota de análisis al usuario (y reenciende el poll de 15s que la fase 1
+  // apagó, porque ConversationsList ata su `refetchInterval` a esta función).
+  // Los `_list*` ya traen la señal resuelta EN el query — nada de JSONB aquí.
+  const isProjected = conv._projection === 'list';
+  const isFull = isProjected
+    ? conv._listAnalysis === 'full'
+    : isFullAnalysis(conv.communication_feedback_v4);
+  const isSkipped = isProjected
+    ? conv._listAnalysis === 'skipped'
+    : isAnalysisSkipped(conv.communication_feedback_v4);
+  const hasMinuta = isProjected
+    ? !!conv._listHasMinuta
+    : conv.meeting_minutes_data != null;
 
   // Strongest signal: data is fully present. Trust the data over a stale status flag
   // (covers the 'failed-but-data-present' inconsistency observed in production).
-  if (isFullAnalysis(v4) && minuta != null) return 'completed';
+  if (isFull && hasMinuta) return 'completed';
 
   // Skipped marker is also data, treat as terminal.
-  if (isAnalysisSkipped(v4)) return 'skipped';
+  if (isSkipped) return 'skipped';
 
   // Backend-assigned terminal states (only after data check).
   if (status === 'completed') return 'completed';

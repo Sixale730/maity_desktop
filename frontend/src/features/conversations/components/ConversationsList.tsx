@@ -20,11 +20,11 @@ import {
   getOmiConversations,
   getLocalConversations,
   mergeConversations,
-  isAnalysisSkipped,
-  isFullAnalysis,
+  LIST_DEFAULT_LIMIT,
   OmiConversation,
 } from '../services/conversations.service';
 import { useConversationsListAutoRefresh } from '../hooks/useConversationsListAutoRefresh';
+import { derivePhase } from '../utils/derivePhase';
 
 interface ConversationsListProps {
   onSelect: (conversation: OmiConversation) => void;
@@ -43,6 +43,11 @@ export function ConversationsList({ onSelect, selectedId }: ConversationsListPro
   const { maityUser } = useAuth();
   const queryClient = useQueryClient();
   const [retryingIds, setRetryingIds] = useState<Set<string>>(new Set());
+  // Tope de la lista (issue #05 fase 2, D1): sube en pasos de LIST_DEFAULT_LIMIT
+  // vía "Cargar más" y ENTRA en la queryKey a propósito — así cada tope tiene
+  // su propia entrada de caché en vez de pisar la de 200 con una más grande
+  // (que rompería el gcTime/staleTime pensado para la vista inicial).
+  const [limit, setLimit] = useState(LIST_DEFAULT_LIMIT);
 
   // Caché compartida con PlanIndicator (misma queryKey, staleTime 60s): NO
   // agrega polling. Solo se usa para AVISAR de forma anticipada que el análisis
@@ -60,7 +65,7 @@ export function ConversationsList({ onSelect, selectedId }: ConversationsListPro
   // becomes visible again or the network reconnects. The Realtime push lives
   // globally in GlobalConversationNotifier (root layout) and invalidates the
   // same query on UPDATE events.
-  useConversationsListAutoRefresh(maityUser?.id ?? null);
+  useConversationsListAutoRefresh(maityUser?.id ?? null, limit);
 
   // Local data loads instantly from SQLite.
   // Privacy: queryKey includes maityUser?.id so the list refetches when the user changes
@@ -84,22 +89,28 @@ export function ConversationsList({ onSelect, selectedId }: ConversationsListPro
     },
   });
 
-  // Cloud data loads in background. Polling floor: while at least one row is
-  // non-terminal (processing/pending/null), refetch every 15s as a fallback for
-  // the cases where Realtime is silently degraded (RLS/JWT desync, Tauri WebView
-  // suspending the WS, etc.). Stops automatically when all rows are terminal.
+  // Cloud data loads in background. Polling floor: while al menos una fila
+  // está en fase 'polling' (derivePhase — no el `analysis_status` crudo),
+  // refetch cada 15s como fallback para cuando Realtime está degradado
+  // (RLS/JWT desync, Tauri WebView suspendiendo el WS, etc). Se apaga solo
+  // cuando ninguna fila sigue en 'polling'.
+  //
+  // Antes esto contaba `analysis_status === null` como "en vuelo": medido en
+  // producción, 813 de 1,893 filas (43%) tienen `analysis_status = NULL`
+  // (filas legacy sin el campo, no filas realmente procesando), así que el
+  // poll de 15s quedaba prendido SIEMPRE en cualquier cuenta real, no "a
+  // veces". `derivePhase` ya distingue una fila recién creada (→ 'polling')
+  // de una legacy vieja sin señal (→ 'stalled', que NO reactiva el poll).
   const { data: cloudConversations, isLoading: isCloudLoading, error, refetch, isFetching } = useQuery({
-    queryKey: ['omi-conversations', maityUser?.id],
-    queryFn: () => getOmiConversations(maityUser?.id),
+    queryKey: ['omi-conversations', maityUser?.id, { limit }],
+    queryFn: () => getOmiConversations(maityUser?.id, { limit }),
     enabled: !!maityUser?.id,
+    staleTime: 30_000,
+    gcTime: 5 * 60_000,
     refetchInterval: (q) => {
       const data = q.state.data as OmiConversation[] | undefined;
       if (!data || data.length === 0) return false;
-      const hasInFlight = data.some((c) =>
-        c.analysis_status === 'processing' ||
-        c.analysis_status === 'pending' ||
-        c.analysis_status === null,
-      );
+      const hasInFlight = data.some((c) => derivePhase(c) === 'polling');
       return hasInFlight ? 15_000 : false;
     },
     refetchOnWindowFocus: true,
@@ -370,7 +381,7 @@ export function ConversationsList({ onSelect, selectedId }: ConversationsListPro
                         {conversation.category}
                       </Badge>
                     )}
-                    {conversation.meeting_minutes_data && (
+                    {conversation._listHasMinuta && (
                       <Badge variant="outline" className="text-xs gap-1">
                         <FileText className="h-3 w-3" />
                         Minuta
@@ -382,14 +393,16 @@ export function ConversationsList({ onSelect, selectedId }: ConversationsListPro
                         Tareas ({conversation.action_items.length})
                       </Badge>
                     )}
-                    {/* Type guard, NO truthiness: el marcador skipped es un objeto (#72). */}
-                    {isFullAnalysis(conversation.communication_feedback_v4) && (
+                    {/* Issue #05 fase 2: `_listAnalysis` viene resuelto del query
+                        (proyección ligera) — reemplaza a isFullAnalysis/isAnalysisSkipped,
+                        que operarían sobre communication_feedback_v4=null y siempre darían falso. */}
+                    {conversation._listAnalysis === 'full' && (
                       <Badge variant="outline" className="text-xs gap-1">
                         <Sparkles className="h-3 w-3" />
                         Análisis
                       </Badge>
                     )}
-                    {isAnalysisSkipped(conversation.communication_feedback_v4) && (
+                    {conversation._listAnalysis === 'skipped' && (
                       <Badge variant="outline" className="text-xs gap-1 text-muted-foreground">
                         Sin análisis
                       </Badge>
@@ -400,6 +413,23 @@ export function ConversationsList({ onSelect, selectedId }: ConversationsListPro
               </CardContent>
             </Card>
           ))}
+          {/* "Cargar más" (issue #05 fase 2, D1): solo cuando la nube devolvió
+              exactamente `limit` filas — señal de que puede haber más detrás.
+              Sin cursor a propósito: created_at no es estable para paginar con
+              updated_at, y refetchear 200 filas ligeras en una acción explícita
+              del usuario es más barato que useInfiniteQuery. */}
+          {cloudConversations && cloudConversations.length === limit && (
+            <div className="flex justify-center pt-2">
+              <button
+                type="button"
+                onClick={() => setLimit((l) => l + LIST_DEFAULT_LIMIT)}
+                disabled={isFetching}
+                className="text-sm px-4 py-2 rounded-lg border border-border hover:bg-muted transition-colors disabled:opacity-50"
+              >
+                {isFetching ? 'Cargando...' : 'Cargar más'}
+              </button>
+            </div>
+          )}
         </div>
       )}
     </div>

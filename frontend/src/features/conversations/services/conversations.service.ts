@@ -608,6 +608,28 @@ export interface OmiConversation {
   /** `last_error` del job fallido más reciente, con su prefijo (`quota:`,
    *  `auth:`, `network:`, `dependency_failed:`…). Solo con `_syncState='failed'`. */
   _syncError?: string | null;
+  /** Issue #05 fase 2: marca las filas que vinieron de la proyección ligera
+   *  de `getOmiConversations` (`LIST_COLUMNS`) — ahí los 5 campos pesados
+   *  (`communication_feedback`, `communication_feedback_v4`,
+   *  `meeting_minutes_data`, `transcript_text`, `events`) llegan en `null` a
+   *  propósito y las señales derivadas viven en los `_list*` de abajo.
+   *  `undefined` en toda fila COMPLETA (`getOmiConversation`, local,
+   *  `getOmiConversationsForAnalysis`) — ahí sí manda el JSONB real. */
+  _projection?: 'list';
+  /** Estado de análisis resuelto EN EL QUERY para la proyección ligera —
+   *  espejo de `isFullAnalysis`/`isAnalysisSkipped`, pero sin necesitar el
+   *  JSONB completo. Solo válido cuando `_projection === 'list'`. */
+  _listAnalysis?: 'full' | 'skipped' | 'none';
+  /** ¿Tiene minuta? derivado de `meeting_minutes_data->meta->>titulo`, no de
+   *  `!!meeting_minutes_data` — ese truthiness pinta el badge "Minuta" a 3
+   *  filas que solo traen `{"error": "..."}` sin minuta real (medido contra
+   *  producción, ver CLAUDE.md issue #05). Solo válido con `_projection==='list'`. */
+  _listHasMinuta?: boolean;
+  /** `getCommScore` ya resuelto en el query (mismas reglas: `null` si
+   *  skipped o `calidad_insumo.nivel==='baja'`). Solo válido con
+   *  `_projection==='list'`; en fila completa `getCommScore` recalcula del
+   *  JSONB real. */
+  _listCommScore?: number | null;
 }
 
 /** Estado agregado de la cola de sync de una reunión local. */
@@ -704,24 +726,178 @@ export interface OmiTranscriptSegment {
   end_time: number;
 }
 
-export async function getOmiConversations(userId?: string): Promise<OmiConversation[]> {
+/** Tope por defecto de `getOmiConversations` (issue #05 fase 2, D1). Antes la
+ *  lista traía TODAS las filas del usuario sin límite (hasta 578 en producción,
+ *  cada una con 3 JSONB pesados) — 200 filas ligeras cubre la lectura normal
+ *  y el resto queda detrás de "Cargar más" en `ConversationsList`. */
+export const LIST_DEFAULT_LIMIT = 200;
+
+/**
+ * Columnas de la proyección ligera de la lista (issue #05 fase 2, D1).
+ * Sintaxis PostgREST `alias:columna->>clave` / `alias:columna->clave` — los
+ * `->>` bajan texto, los `->` conservan el tipo JSONB original (para
+ * `v4_calidad_global`, que puede ser objeto `{puntaje}` o número suelto).
+ *
+ * A propósito NO incluye `transcript_text`, `communication_feedback`,
+ * `communication_feedback_v4`, `meeting_minutes_data` ni `events` — son los 5
+ * campos pesados (fila promedio 8.5 KB, máx 99 KB en producción) que la lista
+ * nunca renderiza completos. `action_items` SÍ se queda: pesa 141 B de media
+ * (máx 2.8 KB), TasksList lo necesita íntegro y separarlo no compensa.
+ */
+const LIST_COLUMNS = [
+  'id',
+  'user_id',
+  'firebase_uid',
+  'created_at',
+  'started_at',
+  'finished_at',
+  'updated_at',
+  'title',
+  'overview',
+  'emoji',
+  'category',
+  'source',
+  'language',
+  'status',
+  'words_count',
+  'duration_seconds',
+  'analysis_status',
+  'analysis_error_message',
+  'idempotency_key',
+  'action_items',
+  'v4_status:communication_feedback_v4->>status',
+  'v4_reason:communication_feedback_v4->>reason',
+  'v4_insumo_nivel:communication_feedback_v4->calidad_insumo->>nivel',
+  'v4_calidad_global:communication_feedback_v4->calidad_global',
+  'v4_resumen_puntuacion:communication_feedback_v4->resumen->puntuacion_global',
+  'v1_overall_score:communication_feedback->overall_score',
+  'minuta_titulo:meeting_minutes_data->meta->>titulo',
+].join(',');
+
+/** Fila cruda que devuelve Supabase para `LIST_COLUMNS` — los alias JSONB
+ *  llegan sueltos (nombre de columna = alias), listos para `toListRow`. */
+interface ListRowRaw {
+  id: string;
+  user_id: string | null;
+  firebase_uid: string | null;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  updated_at: string | null;
+  title: string | null;
+  overview: string | null;
+  emoji: string | null;
+  category: string | null;
+  source: string | null;
+  language: string | null;
+  status: string | null;
+  words_count: number | null;
+  duration_seconds: number | null;
+  analysis_status: string | null;
+  analysis_error_message: string | null;
+  idempotency_key: string | null;
+  action_items: ActionItem[] | null;
+  v4_status: string | null;
+  v4_reason: string | null;
+  v4_insumo_nivel: string | null;
+  /** `->` (no `->>`): puede llegar como objeto `{puntaje: number, ...}` O
+   *  como número suelto — ambos shapes conviven en producción. */
+  v4_calidad_global: unknown;
+  v4_resumen_puntuacion: number | null;
+  v1_overall_score: number | null;
+  minuta_titulo: string | null;
+}
+
+/**
+ * Mapea una fila de `LIST_COLUMNS` al mismo shape ligero que ya produce
+ * `getLocalConversations` (pesados en `null`), con las 4 señales derivadas
+ * (`_list*`) que reemplazan a `isFullAnalysis`/`isAnalysisSkipped`/
+ * `!!meeting_minutes_data`/`getCommScore` cuando la fila viene de aquí.
+ *
+ * `_listHasMinuta` usa `minuta_titulo != null` en vez de la vieja
+ * `!!meeting_minutes_data`: medido contra producción, detecta 709/712 minutas
+ * reales — las 3 que no detecta tienen `meeting_minutes_data =
+ * {"error": "..."}` (sin minuta real), así que es una MEJORA, no una
+ * regresión (ver CLAUDE.md issue #05).
+ */
+function toListRow(raw: ListRowRaw): OmiConversation {
+  const skipped = raw.v4_status === 'skipped';
+  const hasScoreSignal = raw.v4_calidad_global != null || raw.v4_resumen_puntuacion != null;
+  const full = !skipped && (hasScoreSignal || raw.analysis_status === 'completed');
+
+  // `v4_calidad_global` puede venir como objeto `{puntaje}` (shape nuevo) o
+  // como número suelto (shape viejo) — mismo defensive-parsing que
+  // `utils/scoring.ts::getCommScore` para el JSONB completo.
+  let calidadGlobalPuntaje: number | null = null;
+  const cg = raw.v4_calidad_global;
+  if (typeof cg === 'number') {
+    calidadGlobalPuntaje = cg;
+  } else if (cg && typeof cg === 'object' && typeof (cg as Record<string, unknown>).puntaje === 'number') {
+    calidadGlobalPuntaje = (cg as Record<string, unknown>).puntaje as number;
+  }
+
+  const isLowConfidence = raw.v4_insumo_nivel === 'baja';
+  const listCommScore =
+    skipped || isLowConfidence
+      ? null
+      : calidadGlobalPuntaje ?? raw.v4_resumen_puntuacion ?? (raw.v1_overall_score != null ? raw.v1_overall_score * 10 : null);
+
+  return {
+    id: raw.id,
+    user_id: raw.user_id,
+    firebase_uid: raw.firebase_uid,
+    created_at: raw.created_at,
+    started_at: raw.started_at,
+    finished_at: raw.finished_at,
+    title: raw.title ?? '',
+    overview: raw.overview ?? '',
+    emoji: raw.emoji,
+    category: raw.category,
+    action_items: raw.action_items,
+    events: null,
+    transcript_text: null,
+    source: raw.source,
+    language: raw.language,
+    status: raw.status,
+    words_count: raw.words_count,
+    duration_seconds: raw.duration_seconds,
+    communication_feedback: null,
+    communication_feedback_v4: null,
+    meeting_minutes_data: null,
+    analysis_status: normalizeAnalysisStatus(raw.analysis_status),
+    updated_at: raw.updated_at,
+    analysis_error_message: raw.analysis_error_message,
+    idempotency_key: raw.idempotency_key,
+    _projection: 'list',
+    _listAnalysis: skipped ? 'skipped' : full ? 'full' : 'none',
+    _listHasMinuta: raw.minuta_titulo != null,
+    _listCommScore: listCommScore,
+  };
+}
+
+export async function getOmiConversations(
+  userId?: string,
+  opts: { limit?: number } = {}
+): Promise<OmiConversation[]> {
   if (!userId) return [];
 
+  const limit = opts.limit ?? LIST_DEFAULT_LIMIT;
   const t0 = Date.now();
   const userIdSuffix = userId.slice(-8);
-  void fileLogger.info('conversations_service', 'getOmiConversations start', { userIdSuffix });
+  void fileLogger.info('conversations_service', 'getOmiConversations start', { userIdSuffix, limit });
   // Dual-emit a [POLL] para correlacionar en DevTools con el resto del flow
   // del polling. Critico para diagnosticar el bug "lista se cuelga post-stop":
   // si vemos start sin ok ni error, el cliente Supabase quedo envenenado.
-  logPoll('getOmiConversations_start', { userIdSuffix });
+  logPoll('getOmiConversations_start', { userIdSuffix, limit });
 
   const { data, error } = await supabase
     .schema('maity')
     .from('omi_conversations')
-    .select('*')
+    .select(LIST_COLUMNS)
     .eq('user_id', userId)
     .eq('deleted', false)
-    .order('created_at', { ascending: false });
+    .order('created_at', { ascending: false })
+    .limit(limit);
 
   const elapsedMs = Date.now() - t0;
 
@@ -730,6 +906,7 @@ export async function getOmiConversations(userId?: string): Promise<OmiConversat
     console.error('Error fetching omi conversations:', error);
     logPoll('getOmiConversations_error', {
       elapsedMs,
+      limit,
       code: errShape.code ?? null,
       message: errShape.message ?? null,
       details: errShape.details ?? null,
@@ -739,13 +916,80 @@ export async function getOmiConversations(userId?: string): Promise<OmiConversat
       code: error.code,
       message: error.message,
       durationMs: elapsedMs,
+      limit,
     });
     throw error;
   }
 
-  const rows = data || [];
-  logPoll('getOmiConversations_ok', { rows: rows.length, elapsedMs });
+  const rawRows = (data || []) as unknown as ListRowRaw[];
+  const rows = rawRows.map(toListRow);
+  // Bytes de la respuesta CRUDA (antes de proyectar) — es la métrica que
+  // importa para comparar antes/después del recorte de columnas de D1.
+  let bytes = 0;
+  try {
+    bytes = new Blob([JSON.stringify(data ?? [])]).size;
+  } catch {
+    // Blob no disponible (no debería pasar en el webview) — no bloquea el log.
+  }
+  logPoll('getOmiConversations_ok', { rows: rows.length, elapsedMs, limit, bytes });
   void fileLogger.info('conversations_service', 'getOmiConversations ok', {
+    rows: rows.length,
+    durationMs: elapsedMs,
+    limit,
+    bytes,
+  });
+  return rows;
+}
+
+/**
+ * Proyección ligera para gamificación (issue #05 fase 1, C5).
+ *
+ * Gamificación es el único consumidor de la lista de conversaciones que NO
+ * puede vivir con un `limit` (necesita filas legacy viejas para el radar y
+ * las gráficas de progreso — `useProgressChartsData` promedia sobre
+ * `communication_feedback` de cualquier antigüedad), así que no puede
+ * compartir la queryKey `['omi-conversations', userId]` que la fase 2 va a
+ * acotar. Comparte los MISMOS filtros/orden que `getOmiConversations`, pero
+ * con un `select` explícito que excluye los tres campos pesados que
+ * gamificación nunca mira: `transcript_text`, `meeting_minutes_data` y
+ * `events` (juntos, ~7 de los 15 MB de la tabla).
+ *
+ * A propósito SIN `limit`: el fix real de fondo sería un RPC agregado en
+ * Postgres (`get_user_progress_charts`) que calcule el radar/tendencia en el
+ * servidor en vez de traer todas las filas al cliente — queda fuera de
+ * alcance de este issue.
+ */
+export async function getOmiConversationsForAnalysis(userId?: string): Promise<OmiConversation[]> {
+  if (!userId) return [];
+
+  const t0 = Date.now();
+  const userIdSuffix = userId.slice(-8);
+  void fileLogger.info('conversations_service', 'getOmiConversationsForAnalysis start', { userIdSuffix });
+
+  const { data, error } = await supabase
+    .schema('maity')
+    .from('omi_conversations')
+    .select(
+      'id,title,overview,emoji,category,created_at,duration_seconds,words_count,analysis_status,communication_feedback,communication_feedback_v4'
+    )
+    .eq('user_id', userId)
+    .eq('deleted', false)
+    .order('created_at', { ascending: false });
+
+  const elapsedMs = Date.now() - t0;
+
+  if (error) {
+    console.error('Error fetching omi conversations (analysis projection):', error);
+    void fileLogger.error('conversations_service', 'getOmiConversationsForAnalysis fail', {
+      code: error.code,
+      message: error.message,
+      durationMs: elapsedMs,
+    });
+    throw error;
+  }
+
+  const rows = (data || []) as OmiConversation[];
+  void fileLogger.info('conversations_service', 'getOmiConversationsForAnalysis ok', {
     rows: rows.length,
     durationMs: elapsedMs,
   });

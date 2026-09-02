@@ -68,4 +68,17 @@ describe('getCommScore', () => {
     expect(getCommScore(conv({ communication_feedback: { overall_score: 6.5 } as never }))).toBe(65);
     expect(getCommScore(conv())).toBeNull();
   });
+
+  it('issue #05 fase 2: con _projection==="list" usa _listCommScore aunque los JSONB estén en null', () => {
+    const c = conv({ _projection: 'list', _listCommScore: 80 });
+    expect(c.communication_feedback_v4).toBeNull();
+    expect(getCommScore(c)).toBe(80);
+  });
+
+  it('issue #05 fase 2: _projection==="list" con _listCommScore null (skipped/baja confianza) devuelve null, no recalcula del JSONB', () => {
+    // El v4 completo de abajo daría 72 si se leyera — confirma que el atajo
+    // de proyección corta ANTES de llegar a esa rama.
+    const c = conv({ _projection: 'list', _listCommScore: null, communication_feedback_v4: v4() });
+    expect(getCommScore(c)).toBeNull();
+  });
 });

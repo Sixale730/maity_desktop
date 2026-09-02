@@ -226,10 +226,27 @@ function ConversationsContent() {
     // from the live Postgres data via useConversationLive.
     // Skipped es terminal (igual que en derivePhase): un marcador skipped nunca
     // va a convertirse en análisis, así que no hay nada que esperar.
+    //
+    // Issue #05 fase 2: `selectedConversation` puede llegar de DOS formas —
+    // seleccionada en `ConversationsList` (proyección ligera, `_projection
+    // === 'list'`, v4/minuta en null) o cargada completa vía `getOmiConversation`/
+    // `getLocalMeetingDetail` (idParam/localIdParam/swapToCloud). Mismo guard
+    // que `derivePhase`/`getCommScore`: sobre una fila proyectada los type
+    // guards de JSONB siempre darían falso.
+    const isProjected = selectedConversation._projection === 'list';
+    const isSkipped = isProjected
+      ? selectedConversation._listAnalysis === 'skipped'
+      : isAnalysisSkipped(selectedConversation.communication_feedback_v4);
+    const isFull = isProjected
+      ? selectedConversation._listAnalysis === 'full'
+      : isFullAnalysis(selectedConversation.communication_feedback_v4);
+    const hasMinuta = isProjected
+      ? !!selectedConversation._listHasMinuta
+      : selectedConversation.meeting_minutes_data != null;
     const isAnalyzing =
       source === 'recording' &&
-      !isAnalysisSkipped(selectedConversation.communication_feedback_v4) &&
-      (!isFullAnalysis(selectedConversation.communication_feedback_v4) || !selectedConversation.meeting_minutes_data);
+      !isSkipped &&
+      (!isFull || !hasMinuta);
     return (
       <div className="h-full flex flex-col bg-background">
         <ConversationDetail

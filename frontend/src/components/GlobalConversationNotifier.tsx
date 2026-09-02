@@ -13,6 +13,64 @@ import type { OmiConversation } from '@/features/conversations/services/conversa
 
 const REALTIME_CONNECT_TIMEOUT_MS = 5_000;
 const TERMINAL_STATUSES = new Set(['completed', 'failed', 'skipped']);
+/** Throttle del invalidate de la LISTA cuando la fila actualizada no está en
+ *  ninguna caché (creada en otro dispositivo): es el único caso que todavía
+ *  justifica pagar un fetch completo, pero sin tope se vuelve a convertir en
+ *  el mismo amplificador que este cambio existe para cortar. */
+const MISSING_ROW_INVALIDATE_THROTTLE_MS = 30_000;
+
+/**
+ * Campos superficiales que sí vale la pena parchear en caliente desde
+ * Realtime. Deliberadamente NO incluye los JSONB pesados
+ * (`communication_feedback_v4`, `meeting_minutes_data`, `transcript_text`,
+ * `events`): tocarlos aquí empezaría a decidir el shape del dato, que es
+ * responsabilidad de la fase 2 de este issue. Si a una fila le falta alguno,
+ * el próximo refetch real (staleTime, foco de ventana, reconexión, o el poll
+ * mientras algo siga 'polling' — ver ConversationsList) los trae.
+ */
+const PATCHABLE_FIELDS = [
+  'title',
+  'overview',
+  'emoji',
+  'category',
+  'analysis_status',
+  'analysis_error_message',
+  'words_count',
+  'duration_seconds',
+  'started_at',
+  'finished_at',
+  'source',
+  'action_items',
+] as const satisfies ReadonlyArray<keyof OmiConversation>;
+
+/**
+ * ¿Cambió algo que a la LISTA le importa mostrar? Compara solo
+ * `PATCHABLE_FIELDS` — el backend escribe un heartbeat en `updated_at` cada
+ * 30s mientras `analysis_status='processing'` y ese campo NUNCA debe, por sí
+ * solo, disparar un parche (mucho menos un invalidate).
+ */
+function hasPatchableChange(prev: OmiConversation, next: Partial<OmiConversation>): boolean {
+  return PATCHABLE_FIELDS.some((field) => {
+    const nextVal = next[field];
+    if (nextVal === undefined) return false; // Realtime no mandó esta columna
+    const prevVal = prev[field];
+    if (Array.isArray(prevVal) || Array.isArray(nextVal)) {
+      return JSON.stringify(prevVal ?? null) !== JSON.stringify(nextVal ?? null);
+    }
+    return prevVal !== nextVal;
+  });
+}
+
+/** Extrae solo los campos parcheables presentes en el payload de Realtime. */
+function pickPatchable(row: Partial<OmiConversation>): Partial<OmiConversation> {
+  const patch: Partial<OmiConversation> = {};
+  for (const field of PATCHABLE_FIELDS) {
+    if (row[field] !== undefined) {
+      (patch as Record<string, unknown>)[field] = row[field];
+    }
+  }
+  return patch;
+}
 
 /** Fire system notification + in-app toast when a conversation transitions to 'completed'. */
 function notifyAnalysisComplete(
@@ -82,12 +140,17 @@ export function GlobalConversationNotifier() {
   // (the backend writes updated_at every 30s during processing — without this
   // we'd spam a notification on every heartbeat).
   const prevStatusRef = useRef<Map<string, string | null>>(new Map());
+  // Timestamp del último invalidate de lista disparado por una fila ausente
+  // de la caché (ver `patchOrInvalidateList`). Vive fuera del efecto para
+  // sobrevivir reconexiones del canal dentro de la misma sesión.
+  const lastMissingInvalidateRef = useRef<number>(0);
 
   useEffect(() => {
     if (isAux) return;
     const userId = maityUser?.id;
     if (!userId) {
       prevStatusRef.current.clear();
+      lastMissingInvalidateRef.current = 0;
       return;
     }
 
@@ -153,12 +216,80 @@ export function GlobalConversationNotifier() {
       // button in the detail view if they navigate there.
     };
 
+    /**
+     * Parchea la(s) caché(s) de LISTA en vez de invalidarlas a ciegas.
+     *
+     * `getQueriesData` con un `queryKey` parcial (sin `exact: true`) matchea
+     * por PREFIJO — así que si la fase 2 agrega un tercer elemento a la key
+     * (el `limit`) esto sigue encontrando la caché sin cambios aquí.
+     *
+     * Tres casos:
+     *   1. La fila está en caché y solo cambió algo que a la lista no le
+     *      importa (p.ej. el heartbeat de `updated_at`) → no-op total: ni
+     *      parche ni invalidate, la referencia del array se conserva.
+     *   2. La fila está en caché y cambió algo de `PATCHABLE_FIELDS` → parche
+     *      quirúrgico con `setQueriesData` (misma fila, resto del array intacto).
+     *   3. La fila NO está en ninguna caché (creada en otro dispositivo, o la
+     *      lista nunca se fetcheó) → único caso que sigue valiendo un
+     *      `invalidateQueries`, throttleado a 1 cada 30s.
+     *
+     * La comparación va ANTES de tocar la caché a propósito: devolver `prev`
+     * desde DENTRO del updater de `setQueriesData` igual dispara el evento
+     * 'updated' del QueryCache, y el observer de abajo (defensa en profundidad
+     * de notificaciones) volvería a iterar las N filas por nada.
+     */
+    const patchOrInvalidateList = (newRow: Partial<OmiConversation>) => {
+      const id = newRow.id;
+      if (!id) return;
+
+      const matches = queryClient.getQueriesData<OmiConversation[]>({
+        queryKey: ['omi-conversations', userId],
+      });
+
+      let found = false;
+      let changed = false;
+      for (const [, data] of matches) {
+        if (!Array.isArray(data)) continue;
+        const existing = data.find((c) => c.id === id);
+        if (existing) {
+          found = true;
+          changed = hasPatchableChange(existing, newRow);
+          break;
+        }
+      }
+
+      if (found && !changed) return;
+
+      if (found && changed) {
+        const patch = pickPatchable(newRow);
+        queryClient.setQueriesData<OmiConversation[]>(
+          { queryKey: ['omi-conversations', userId] },
+          (old) => {
+            if (!Array.isArray(old)) return old;
+            return old.map((c) => (c.id === id ? { ...c, ...patch } : c));
+          },
+        );
+        return;
+      }
+
+      // No está en ninguna lista cacheada — throttleado, si no esto vuelve a
+      // ser el mismo amplificador (una fila nueva en otro dispositivo puede
+      // llegar seguida de varios heartbeats de UPDATE antes de asentarse).
+      const now = Date.now();
+      if (now - lastMissingInvalidateRef.current < MISSING_ROW_INVALIDATE_THROTTLE_MS) return;
+      lastMissingInvalidateRef.current = now;
+      queryClient.invalidateQueries({ queryKey: ['omi-conversations', userId] });
+    };
+
     const handleRealtimeUpdate = (newRow: Partial<OmiConversation>) => {
       if (!newRow.id) return;
 
-      // Invalidate so any active hook (list or detail) refetches.
-      queryClient.invalidateQueries({ queryKey: ['omi-conversations', userId] });
+      // El detalle SIEMPRE se invalida: useConversationLive poll-ea a 3s
+      // cuando el usuario está en esa vista y su watchdog necesita ver
+      // avanzar `updated_at` para no disparar un reload.
       queryClient.invalidateQueries({ queryKey: ['omi-conversation', newRow.id] });
+
+      patchOrInvalidateList(newRow);
 
       handleStatusUpdate({
         id: newRow.id,
@@ -250,6 +381,10 @@ export function GlobalConversationNotifier() {
     // notification still fires the moment the cache reflects 'completed'.
     const cacheUnsubscribe = queryClient.getQueryCache().subscribe((event) => {
       if (cleanedUp) return;
+      // Guard barato: una query en error/pending no tiene data útil que
+      // iterar, y así nos ahorramos entrar al branch de abajo en cada
+      // transición de fetchStatus (loading→success dispara 'updated' igual).
+      if (event.query.state.status !== 'success') return;
       if (event.type !== 'updated') return;
       const key = event.query.queryKey;
       if (!Array.isArray(key) || key.length < 2) return;

@@ -3,14 +3,21 @@
 import { useQuery } from '@tanstack/react-query';
 import { ListChecks } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
-import { getOmiConversations } from '@/features/conversations';
+import { getOmiConversations, LIST_DEFAULT_LIMIT } from '@/features/conversations';
 import { TasksList } from '@/features/tasks';
 
 export default function TasksPage() {
   const { maityUser } = useAuth();
 
   const { data: conversations, isLoading } = useQuery({
-    queryKey: ['omi-conversations', maityUser?.id],
+    // La key lleva el `limit` explicito para que sea IDENTICA a la del estado
+    // inicial de ConversationsList (y a la de /notes): asi las tres vistas
+    // comparten una sola entrada de cache en vez de fetchear 200 filas cada
+    // una por su cuenta. TanStack hashea la key completa, asi que omitir el
+    // tercer elemento crearia una cache paralela con el mismo contenido.
+    // El render de Tasks NO cambia: `action_items` sigue completo en la
+    // proyeccion ligera (141 B de media, no compensa separarlo).
+    queryKey: ['omi-conversations', maityUser?.id, { limit: LIST_DEFAULT_LIMIT }],
     queryFn: () => getOmiConversations(maityUser?.id),
     enabled: !!maityUser?.id,
   });

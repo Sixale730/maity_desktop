@@ -2,22 +2,34 @@
 
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { FileText, Clock, MessageSquare, ChevronRight, ListChecks } from 'lucide-react';
+import { FileText, Clock, MessageSquare, ChevronRight, ListChecks, Loader2 } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useAuth } from '@/contexts/AuthContext';
-import { getOmiConversations, OmiConversation } from '@/features/conversations';
+import { getOmiConversations, getOmiConversation, LIST_DEFAULT_LIMIT } from '@/features/conversations';
 import { NoteDetail } from '@/features/notes';
 
 export default function NotesPage() {
   const { maityUser } = useAuth();
-  const [selectedConversation, setSelectedConversation] = useState<OmiConversation | null>(null);
+  // Issue #05 fase 2 (D2): la lista ahora solo guarda el `id` seleccionado, no
+  // la fila completa — la fila que viene de `getOmiConversations` es la
+  // proyección ligera (JSONB pesados en null) y NoteDetail necesita la minuta
+  // y el feedback v1 REALES. `useQuery(['omi-conversation', id], ...)` reusa
+  // la misma key/fetcher que el detalle de ConversationDetail, así que si el
+  // usuario ya abrió esa conversación desde /conversations sale del caché.
+  const [selectedId, setSelectedId] = useState<string | null>(null);
 
   const { data: conversations, isLoading, error } = useQuery({
-    queryKey: ['omi-conversations', maityUser?.id],
+    queryKey: ['omi-conversations', maityUser?.id, { limit: LIST_DEFAULT_LIMIT }],
     queryFn: () => getOmiConversations(maityUser?.id),
     enabled: !!maityUser?.id,
+  });
+
+  const { data: selectedConversation, error: detailError } = useQuery({
+    queryKey: ['omi-conversation', selectedId],
+    queryFn: () => getOmiConversation(selectedId as string),
+    enabled: !!selectedId,
   });
 
   const formatDuration = (seconds: number | null) => {
@@ -36,12 +48,40 @@ export default function NotesPage() {
     });
   };
 
-  if (selectedConversation) {
+  if (selectedId) {
+    if (detailError) {
+      return (
+        <div className="h-full flex items-center justify-center bg-background">
+          <div className="text-center">
+            <p className="text-sm text-destructive mb-3">No se pudo cargar la nota</p>
+            <button
+              type="button"
+              onClick={() => setSelectedId(null)}
+              className="text-sm px-4 py-2 rounded-lg border border-border hover:bg-muted transition-colors"
+            >
+              Volver
+            </button>
+          </div>
+        </div>
+      );
+    }
+    if (!selectedConversation) {
+      // isLoadingDetail: todavía no hay fila completa (JSONB reales) que
+      // pasarle a NoteDetail — la de la lista es la proyección ligera.
+      return (
+        <div className="h-full flex items-center justify-center bg-background">
+          <div className="text-center">
+            <Loader2 className="h-8 w-8 mx-auto text-primary animate-spin mb-3" />
+            <p className="text-sm text-muted-foreground">Cargando nota...</p>
+          </div>
+        </div>
+      );
+    }
     return (
       <div className="h-full flex flex-col bg-background">
         <NoteDetail
           conversation={selectedConversation}
-          onClose={() => setSelectedConversation(null)}
+          onClose={() => setSelectedId(null)}
         />
       </div>
     );
@@ -100,7 +140,10 @@ export default function NotesPage() {
         {!isLoading && conversations && conversations.length > 0 && (
           <div className="space-y-3">
             {conversations.map((conversation) => {
-              const hasMinuta = !!conversation.meeting_minutes_data || !!conversation.communication_feedback?.meeting_minutes;
+              // Issue #05 fase 2: la fila viene de la proyección ligera —
+              // `_listHasMinuta` reemplaza al truthiness sobre los JSONB
+              // pesados (que aquí siempre son null).
+              const hasMinuta = !!conversation._listHasMinuta;
               const actionItems = conversation.action_items;
               const hasActionItems = actionItems && actionItems.length > 0;
 
@@ -108,7 +151,7 @@ export default function NotesPage() {
                 <Card
                   key={conversation.id}
                   className="cursor-pointer hover:shadow-md transition-all hover:border-primary/30"
-                  onClick={() => setSelectedConversation(conversation)}
+                  onClick={() => setSelectedId(conversation.id)}
                 >
                   <CardContent className="p-4">
                     <div className="flex items-start justify-between gap-4">

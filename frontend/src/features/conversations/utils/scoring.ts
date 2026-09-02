@@ -30,6 +30,13 @@ export function isLowConfidenceV4(v4: unknown): boolean {
  * consumidor.
  */
 export function getCommScore(conv: OmiConversation): number | null {
+  // Issue #05 fase 2: la proyección ligera (`_projection==='list'`) ya trae el
+  // puntaje resuelto EN el query (`_listCommScore`, misma regla que el resto
+  // de esta función) porque `communication_feedback_v4` viene en `null` a
+  // propósito. Sin este atajo, cualquier fila proyectada devolvería `null`
+  // siempre (v4 nulo no tiene `calidad_global` ni `resumen` que leer).
+  if (conv._projection === 'list') return conv._listCommScore ?? null;
+
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const v4 = conv.communication_feedback_v4 as any;
 

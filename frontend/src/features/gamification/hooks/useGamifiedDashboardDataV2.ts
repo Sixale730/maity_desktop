@@ -4,7 +4,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { supabase } from '@/lib/supabase';
 import { fileLogger } from '@/lib/fileLogger';
 import {
-  getOmiConversations,
+  getOmiConversationsForAnalysis,
   getFormResponses,
   OmiConversation,
   CommunicationFeedback,
@@ -239,23 +239,28 @@ export function useGamifiedDashboardDataV2(): GamifiedDashboardDataV2 {
   const { maityUser } = useAuth();
   const userId = maityUser?.id;
 
-  // Conversations: shared queryKey with the rest of the app. GlobalConversationNotifier
-  // (root layout) invalidates this on Supabase Realtime UPDATE, so the dashboard refetches
-  // automatically when an analysis lands without the user having to navigate away.
+  // Conversations: queryKey PROPIA ('omi-conversations-analysis'), NO compartida
+  // con la lista de conversaciones (issue #05 fase 1, C5). Gamificación es el
+  // único consumidor que necesita filas legacy sin límite (el radar y las
+  // gráficas de progreso — useProgressChartsData — promedian
+  // communication_feedback de cualquier antigüedad), así que no puede vivir
+  // con la proyección/limit que la fase 2 le va a aplicar a la lista. Al no
+  // compartir key, GlobalConversationNotifier ya no la invalida/parchea — el
+  // staleTime largo de abajo es la única razón por la que sigue fresca.
   const conversationsQuery = useQuery({
-    queryKey: ['omi-conversations', userId],
+    queryKey: ['omi-conversations-analysis', userId],
     queryFn: async () => {
       const t0 = Date.now();
-      void fileLogger.info('dashboard_query', 'omi-conversations start', { userIdSuffix: userId?.slice(-8) });
+      void fileLogger.info('dashboard_query', 'omi-conversations-analysis start', { userIdSuffix: userId?.slice(-8) });
       try {
-        const result = await getOmiConversations(userId);
-        void fileLogger.info('dashboard_query', 'omi-conversations ok', {
+        const result = await getOmiConversationsForAnalysis(userId);
+        void fileLogger.info('dashboard_query', 'omi-conversations-analysis ok', {
           rows: result.length,
           durationMs: Date.now() - t0,
         });
         return result;
       } catch (err) {
-        void fileLogger.error('dashboard_query', 'omi-conversations fail', {
+        void fileLogger.error('dashboard_query', 'omi-conversations-analysis fail', {
           message: err instanceof Error ? err.message : String(err),
           durationMs: Date.now() - t0,
         });
@@ -263,7 +268,9 @@ export function useGamifiedDashboardDataV2(): GamifiedDashboardDataV2 {
       }
     },
     enabled: !!userId,
-    staleTime: 5 * 60 * 1000,
+    staleTime: 10 * 60_000,
+    gcTime: 10 * 60_000,
+    refetchOnWindowFocus: false,
   });
   const conversations = useMemo(() => conversationsQuery.data ?? [], [conversationsQuery.data]);
 
