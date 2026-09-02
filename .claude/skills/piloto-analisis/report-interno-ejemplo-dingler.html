@@ -230,12 +230,12 @@
       <div class="tblwrap">
         <table>
           <thead><tr>
-            <th>Persona</th><th>Horas</th><th class="n">Conv.</th><th class="n">Días</th><th class="n">Análisis</th><th class="n">Sin tema</th><th class="n">Vistas</th><th>Equipo</th><th>Estado</th>
+            <th>Persona</th><th>Puesto</th><th>Horas</th><th class="n">Conv.</th><th class="n">Días</th><th class="n">Análisis</th><th class="n">Sin tema</th><th class="n">Vistas</th><th>Equipo</th><th>Estado</th>
           </tr></thead>
           <tbody id="users"></tbody>
         </table>
       </div>
-      <p class="note"><b>Sin tema</b> = segmentos cuyo título el sistema dejó como "fragmentada / sin tema claro / vacía": grabación sin conversación real. <b>Vistas</b> = detalle de conversación + análisis abiertos en la app. <b>Equipo</b> = RAM reportada por la app (tier Low = 6–8 GB).</p>
+      <p class="note"><b>Puesto</b> = el que cada quien declaró en el cuestionario de registro de la plataforma (form_responses q4). <b>Sin tema</b> = segmentos cuyo título el sistema dejó como "fragmentada / sin tema claro / vacía": grabación sin conversación real. <b>Vistas</b> = detalle de conversación + análisis abiertos en la app. <b>Equipo</b> = RAM reportada por la app (tier Low = 6–8 GB).</p>
     </div>
   </section>
 
@@ -475,19 +475,20 @@
 
   // ---------- Users table ----------
   const users = [
-    { who: 'mary', h: 30.1, convs: 45, days: 8, an: 13, bad: 27, views: '0 · 0', ram: '7 GB', tier: 'low', st: 'ok', stt: '0.2.57 · activa' },
-    { who: 'erika', h: 23.7, convs: 38, days: 7, an: 23, bad: 9, views: '4 · 0', ram: '6 GB', tier: 'low', st: 'ok', stt: '0.2.57 · activa' },
-    { who: 'margarita', h: 19.5, convs: 25, days: 6, an: 15, bad: 5, views: '4 · 1', ram: '7 GB', tier: 'low', st: 'ok', stt: '0.2.57 · activa' },
-    { who: 'marcela', h: 12.5, convs: 10, days: 4, an: 2, bad: 6, views: '8 · 3', ram: '16 GB', tier: 'high', st: 'low', stt: '0.2.56 · última 19-ago' },
-    { who: 'alejandra', h: 5.5, convs: 9, days: 3, an: 7, bad: 0, views: '4 · 1', ram: '6 GB', tier: 'low', st: 'ok', stt: '0.2.57 · activa' },
-    { who: 'michael', h: 3.8, convs: 11, days: 2, an: 1, bad: 7, views: '11 · 0', ram: '16 GB', tier: 'high', st: 'low', stt: '0.2.56 · última 19-ago' },
-    { who: 'janeth', h: 3.1, convs: 6, days: 3, an: 3, bad: 3, views: '2 · 0', ram: '6 GB', tier: 'low', st: 'low', stt: '0.2.56 · última 17-ago' },
-    { who: 'jessica', h: 1.2, convs: 4, days: 3, an: 0, bad: 1, views: '9 · 3', ram: '7 GB', tier: 'low', st: 'low', stt: '0.2.57 · abre la app, no graba' },
-    { who: 'xochitl', h: 0, convs: 0, days: 0, an: 0, bad: 0, views: '0 · 0', ram: '14 GB', tier: 'high', st: 'off', stt: 'sin micrófono en el equipo' },
-    { who: 'melissa', h: 0, convs: 0, days: 0, an: 0, bad: 0, views: '0 · 0', ram: '7 GB', tier: 'low', st: 'off', stt: 'micrófono: acceso denegado' },
+    { who: 'mary', puesto: 'Auxiliar de Autos', h: 30.1, convs: 45, days: 8, an: 13, bad: 27, views: '0 · 0', ram: '7 GB', tier: 'low', st: 'ok', stt: '0.2.57 · activa' },
+    { who: 'erika', puesto: 'Coordinadora de Autos', h: 23.7, convs: 38, days: 7, an: 23, bad: 9, views: '4 · 0', ram: '6 GB', tier: 'low', st: 'ok', stt: '0.2.57 · activa' },
+    { who: 'margarita', puesto: 'Coordinadora de GMM y Siniestros', h: 19.5, convs: 25, days: 6, an: 15, bad: 5, views: '4 · 1', ram: '7 GB', tier: 'low', st: 'ok', stt: '0.2.57 · activa' },
+    { who: 'marcela', puesto: 'Asistente de Dirección', h: 12.5, convs: 10, days: 4, an: 2, bad: 6, views: '8 · 3', ram: '16 GB', tier: 'high', st: 'low', stt: '0.2.56 · última 19-ago' },
+    { who: 'alejandra', puesto: 'Colectivos', h: 5.5, convs: 9, days: 3, an: 7, bad: 0, views: '4 · 1', ram: '6 GB', tier: 'low', st: 'ok', stt: '0.2.57 · activa' },
+    { who: 'michael', puesto: 'Coordinador de Daños', h: 3.8, convs: 11, days: 2, an: 1, bad: 7, views: '11 · 0', ram: '16 GB', tier: 'high', st: 'low', stt: '0.2.56 · última 19-ago' },
+    { who: 'janeth', puesto: 'Ejecutiva de Operación', h: 3.1, convs: 6, days: 3, an: 3, bad: 3, views: '2 · 0', ram: '6 GB', tier: 'low', st: 'low', stt: '0.2.56 · última 17-ago' },
+    { who: 'jessica', puesto: 'Coordinadora del Programa Vida', h: 1.2, convs: 4, days: 3, an: 0, bad: 1, views: '9 · 3', ram: '7 GB', tier: 'low', st: 'low', stt: '0.2.57 · abre la app, no graba' },
+    { who: 'xochitl', puesto: 'Gerente de Operaciones', h: 0, convs: 0, days: 0, an: 0, bad: 0, views: '0 · 0', ram: '14 GB', tier: 'high', st: 'off', stt: 'sin micrófono en el equipo' },
+    { who: 'melissa', puesto: 'Asistente de Dirección', h: 0, convs: 0, days: 0, an: 0, bad: 0, views: '0 · 0', ram: '7 GB', tier: 'low', st: 'off', stt: 'micrófono: acceso denegado' },
   ];
   $('#users').innerHTML = users.map(u => `<tr>
     <td><b>${u.who}</b></td>
+    <td>${u.puesto}</td>
     <td class="bar-cell"><b>${u.h ? u.h.toFixed(1) + ' h' : '—'}</b>${u.h ? `<i style="width:${(u.h / 30.1 * 100).toFixed(0)}%"></i>` : ''}</td>
     <td class="n">${u.convs || '—'}</td><td class="n">${u.days || '—'}</td><td class="n">${u.convs ? u.an : '—'}</td>
     <td class="n">${u.convs ? `${u.bad} <span style="color:var(--muted)">(${Math.round(u.bad / u.convs * 100)} %)</span>` : '—'}</td>
