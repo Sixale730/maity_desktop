@@ -1,0 +1,802 @@
+# Auditoría de recursos — Maity Desktop (2026-09-02)
+
+Dónde se va la RAM, la CPU, el disco y la red en las cuatro situaciones que importan: la jornada
+grabando en segundo plano, la app en reposo en la bandeja, el cierre de cada segmento y el arranque.
+
+- **Telemetría**: 1,380 latidos con memoria, 30 días, 23 usuarios (`maity.platform_logs`).
+- **Hardware**: 20 perfiles, **11 en tier Low** (5–7 GB, iGPU).
+- **Código**: 5 auditorías por área sobre `main@6fe10eb`; los hallazgos marcados *verificado* llevan la
+  línea citada revisada a mano, no solo el reporte del auditor.
+- **Versión en campo**: 0.2.57 (Store).
+
+**Checklist vivo**: artifact [Huella de recursos de Maity](https://claude.ai/code/artifact/3f618734-11a8-4d9d-998c-22db7e994bd2).
+El estado de cada hallazgo **no vive en este archivo**, vive en la base de datos del artifact. Este
+documento es el contenido (inmutable, es una foto del 2026-09-02); el estado es lo único que cambia.
+
+Leer el estado desde Claude Code:
+
+```
+Artifact action:read_db url:<la de arriba> db_op:list collection:hallazgos
+```
+
+Marcar un hallazgo como cerrado al landear su fix:
+
+```
+Artifact action:write_db url:<la de arriba> db_op:set collection:hallazgos doc_id:"13"
+        data:{"done":true,"at":"2026-09-XX","commit":"<sha>","note":"<qué se hizo>"}
+```
+
+**Ausencia de documento = pendiente.** Por eso la colección no se siembra con los 35: contiene
+exactamente lo cerrado. La tabla de abajo es una foto del estado; la verdad es la colección.
+
+> Regla al portar esto: **no se reescriben los números ni las conclusiones.** Es un registro fechado. Si
+> algo se descubre falso después, se anota como corrección con su fecha (igual que se hizo con el
+> MSIX/AppData en `CLAUDE.md`).
+
+---
+
+## Estado (foto del 2026-09-02)
+
+`L` = efecto si la jornada dejara de transcribir en tiempo real y pasara a lote
+(ver [Alternativa: transcribir por lote](#alternativa-transcribir-la-jornada-por-lote)):
+**✗** desaparece · **↓** se encoge · **=** no cambia.
+
+| # | Hallazgo | Sev | Recursos | Etapa | Esf | L | Estado |
+|---|---|---|---|---|---|---|---|
+| 01 | VAD de Silero guarda cada muestra de silencio | Crítico | RAM | Jornada | S | ✗ | abierto |
+| 02 | Parakeet se carga al arrancar y nunca se descarga | Crítico | RAM | Idle/Arranque/Jornada | M | ↓ | abierto |
+| 03 | Idle-kill del sidecar coincide con el cooldown del breaker | Alto | RAM/CPU/Disco | Jornada | S | ✗ | abierto |
+| 04 | Warmup del sidecar carga Gemma antes del login | Medio | RAM/CPU/Disco | Arranque/Idle | S | ✗ | abierto |
+| 05 | Lista de conversaciones con `select(*)` sin límite | Alto | RAM/Red/CPU | Post/Idle/Jornada | M | = | **cerrado** `1571eda` |
+| 06 | Ocultar a la bandeja no pausa nada de la main | Alto | RAM/CPU | Jornada/Idle | M | ↓ | abierto |
+| 07 | Coach-float re-renderiza a 10 Hz tras un blur de 22 px | Alto | CPU/RAM | Jornada/Idle | S | = | **cerrado** `477bfa0` |
+| 08 | El encoder de checkpoints copia 11.5 MB dos veces | Medio | RAM/CPU | Jornada/Post | S | = | **cerrado** `5584e3e` |
+| 09 | Tres canales sin límite en la ruta de grabación | Medio | RAM | Jornada | S | ↓ | abierto |
+| 10 | `AudioMetricsBatcher` acumula resúmenes que nadie lee | Bajo | RAM/CPU | Jornada | S | = | abierto |
+| 11 | El normalizador EBU R128 guarda historial ilimitado | Bajo | RAM | Jornada | S | = | abierto |
+| 12 | El VAD usa 4 hilos intra-op por sesión, dos sesiones | Alto | CPU | Jornada | M | ↓ | abierto |
+| 13 | Tormenta de `snapshot_now` con backlog múltiplo de 30 | Alto | CPU | Jornada | S | ✗ | abierto |
+| 14 | El muestreador de memoria refresca más de lo que lee | Medio | CPU | Jornada/Idle/Arranque | S | = | abierto |
+| 15 | Sondeos del frontend por IPC que no hacen falta | Medio | CPU | Jornada/Idle | S | ↓ | abierto |
+| 16 | La inferencia de Parakeet corre en un hilo de tokio | Medio | CPU | Jornada | M | ↓ | abierto |
+| 17 | El monitor re-enumera endpoints WASAPI cada 5 s | Bajo | CPU | Jornada | S | = | abierto |
+| 18 | El concat final de ffmpeg corre síncrono en una `async fn` | Bajo | CPU | Post | S | = | abierto |
+| 19 | ONNX Runtime escribe a INFO: 35-64 % del log | Medio | Disco/CPU | Jornada/Arranque | S | ↓ | abierto |
+| 20 | `reqwest::Client` se construye por request en ~20 sitios | Bajo | CPU/Red | Post/Jornada | S | = | abierto |
+| 21 | `System::new_all()` para un procesador que nadie invoca | Bajo | RAM/CPU | Arranque | S | = | abierto |
+| 22 | La presión de memoria se observa pero no se actúa | Alto | RAM | Jornada/Post | M | = | abierto |
+| 23 | Las ventanas auxiliares cargan el grafo del layout raíz | Bajo | RAM/CPU | Arranque/Jornada | M | = | abierto |
+| 24 | Bundle de arranque de 2.1 MB con librerías pesadas | Bajo | RAM/CPU/Disco | Arranque | M | = | abierto |
+| 25 | El logging diagnóstico escribe por IPC en cada poll | Bajo | Disco/CPU | Post | S | = | abierto |
+| 26 | `sync_queue` nunca se poda | Bajo | Disco | Post | S | = | abierto |
+| 27 | Audio AAC 192 kbps y ningún borrado: 0.7 GB/día | Medio | Disco | Jornada/Post | S | = | abierto |
+| 28 | Pool de SQLite sin ajustar | Bajo | RAM/Disco | Post | S | = | abierto |
+| 29 | Gemma 1B se descarga sin consumidor | Bajo | Disco/Red | Arranque | S | ✗ | abierto |
+| 30 | El helper crea un `LlamaContext` por request | Bajo | CPU/RAM | Jornada | M | ✗ | abierto |
+| 31 | El workspace ignora el `[profile.release]` y el `[patch]` de cpal | Medio | CPU/Disco | Arranque | S | = | abierto |
+| 32 | En Windows ffmpeg se descarga en runtime | Alto | Disco/Red/RAM | Jornada/Post | M | = | abierto |
+| 33 | DirectML y D3D12 son imports de carga del exe | Bajo | RAM/CPU | Arranque | S | = | abierto |
+| 34 | Los segmentos descartados dejan su carpeta huérfana | Medio | Disco | Post | S | = | abierto |
+| 35 | Dos pilas HTTP/TLS, crates duplicados y deps muertas | Bajo | Disco/CPU | Arranque | S | = | abierto |
+
+**32 abiertos de 35**, incluidos los 2 críticos.
+
+---
+
+## Lo que dicen los datos
+
+La mitad del parque real vive con 5 a 7 GB y una GPU integrada. En esas máquinas Maity ocupa alrededor
+de 1 GB en cuanto graba por primera vez, **y ya no lo suelta**. El sistema pasa la jornada por debajo de
+1 GB libre.
+
+| Métrica (tier Low) | Valor | Nota |
+|---|---|---|
+| Proceso Rust al grabar (p50) | **652 MB** | Arranca en 46 MB. En reposo **después** de grabar sigue en 650 MB. |
+| WebView2 al grabar (p50, 8 procesos) | **483 MB** | ~90 MB por ventana: 6 procs 301 MB · 7 procs 392 MB · 9 procs 585 MB. |
+| Latidos con <1 GB libre (grabando) | **89 %** | 173 de 195. Mediana de memoria disponible 653 MB; p10 315 MB. |
+| Sidecar LLM en 0.2.57 | **1,018 MB** | Pico p50 en 40 de 62 sesiones, para **2 tips generados**. El apagado en tier Low ya está en main. |
+
+### Composición de la RSS en tier Low, por estado (medianas, MB)
+
+| Estado | Rust | WebView2 | Sidecar | Total |
+|---|---:|---:|---:|---:|
+| Arranque / login (antes de grabar) | 46 | 298 | 0 | 344 |
+| Idle **después** de grabar | 650 | 347 | 0 | 997 |
+| Grabando, main sin publicar | 652 | 347 | 0 | 999 |
+| Grabando, 0.2.57 en campo | 652 | 347 | 1,018 | 2,017 |
+
+### Disco y red por jornada de 8 horas
+
+| Concepto | Por jornada | Nota |
+|---|---:|---|
+| `audio.mp4` (AAC 192 kbps estéreo) | 691 MB | 86 MB/h; **nunca se borra**: ~14 GB al mes. |
+| Checkpoints `.checkpoints/` | +130 MB | Transitorio por segmento de 90 min; se borra tras el merge. |
+| SQLite (transcripts + `sync_queue` ×2) | ~3 MB | Los payloads de jobs completados no se podan. |
+| Logs rotativos | 0.25–0.85 MB | Hasta 1.4 MB/h grabando; 7 archivos diarios. |
+| Red total | 3.5–4 MB | Solo texto e ids; **el audio nunca sale**. +3.6 MB por conversación mientras se analiza. |
+| Primera vez: modelos | 0.67–1.7 GB | Parakeet 670 MB; Gemma 1B 1,019 MB fuera de tier Low. |
+| Primera vez: ffmpeg (canal NSIS) | 287 MB | Descarga de ~100 MB en runtime; tres binarios, uno en uso. |
+| Primera vez: perfil WebView2 | 82 MB | `EBWebView` en LocalAppData. |
+
+---
+
+## Puntos ciegos de la medición
+
+Antes de optimizar conviene saber qué **no** estamos viendo. Tres huecos distorsionan cualquier
+conclusión sobre la jornada; por eso van antes de los hallazgos.
+
+1. **El latido muere con la ventana oculta.** Cero sesiones con más de 3 h de latidos en 30 días,
+   mientras que las grabaciones de 0.2.57 duran 57 min de mediana en segmentos de jornada. El heartbeat
+   es JavaScript y WebView2 lo suspende en la bandeja: **el estado más largo del día no aparece en la
+   nube**. El muestreador Rust de 30 s ya tiene el dato; falta que lo emita por el outbox.
+2. **`cpu_pct` es la CPU del sistema, no la de Maity.** Viene de `global_cpu_usage()`
+   (`logging/mem_sampler.rs:232`). Un idle al 85 % en tier High describe la máquina, no la app. No hay
+   CPU por proceso en la telemetría, así que **todo lo de CPU en este documento es estimación de
+   código**.
+3. **WebView2 se mide como bloque.** La suma de los 6 a 9 procesos no dice cuánto pesa la ventana
+   principal oculta frente al coach-float. Decidir si el coach se cierra en la jornada exige ese reparto
+   por ventana.
+
+---
+
+## Los 35 hallazgos
+
+Ordenados por impacto estimado en RAM, luego CPU, luego disco y red.
+
+### #01 · El VAD de Silero guarda cada muestra de silencio hasta el próximo fin de voz
+`Crítico` · RAM · Jornada · esfuerzo S · verificado · **desaparece por lote** · abierto
+
+- **Impacto**: de 0 a ~700 MB por segmento de 90 min: 230 MB/h por canal, dos canales, en sierra que
+  solo se vacía al rotar.
+- **Dónde**: `silero-rs lib.rs:213` (extend_from_slice en cada process) · `silero-rs lib.rs:357` (único
+  drain, en SpeechEnd) · `audio/vad.rs:256-258` (nunca llama `trim_start_silence`) ·
+  `audio/pipeline.rs:919` y `:1011` (ambos canales, sin compuerta).
+- **Qué pasa**: `session_audio` es un `Vec<f32>` a 16 kHz que solo se poda cuando termina un tramo de
+  voz. En silencio no se suelta nada. El tope de `vad.rs:13` acota el buffer propio, no el del crate. El
+  canal del sistema sin llamadas en todo el día crece el segmento entero.
+- **Cambio**: tras `session.process(chunk)`, si no hay voz, llamar `session.trim_start_silence()`;
+  conserva los 200 ms de pre-speech y mantiene los timestamps. Para voz continua, `take_until` tras cada
+  force-cut de 2 s, con test.
+- **Riesgo**: validar con los tests snapshot y consistency del crate; `trim_start_silence` es API
+  pública pensada para esto.
+
+### #02 · Parakeet se carga al arrancar, antes del login, y nunca se descarga
+`Crítico` · RAM · Idle/Arranque/Jornada · esfuerzo M · verificado · **se encoge por lote** · abierto
+
+- **Impacto**: ~600 MB residentes desde el arranque para siempre; pico de ~1.3 GB al cargar y de
+  +700 MB durante el reciclado, que carga el modelo nuevo antes de soltar el viejo.
+- **Dónde**: `lib.rs:1119` → `audio/transcription/engine.rs:165-220` ·
+  `audio/recording_lifecycle.rs:624-627` ("~600MB is acceptable") ·
+  `parakeet_engine/parakeet_engine.rs:625` y `:644-646` · telemetría: idle tras grabar 650 MB p50 (Low).
+- **Qué pasa**: la precarga no consulta sesión ni registro; en la pantalla de login y en la bandeja el
+  motor está residente sin consumidor posible. El encoder int8 pesa 652 MB en disco y son tres sesiones
+  ORT. La telemetría lo confirma: 46 MB antes de grabar, 650 MB después, aunque la app quede en reposo.
+- **Cambio**: disparar la precarga en la transición None→Some de `set_current_user` y exigir registro.
+  En tier Low, descargar tras N minutos fuera de la ventana de jornada y recargar desde el tick del
+  scheduler (30 s; carga fría 3-6 s). Reciclado drop-then-load bajo el write lock.
+- **Riesgo**: la primera grabación manual tras el login paga 3-10 s de carga; el autostart al boot no
+  carga hasta que alguien inicia sesión, que es lo deseado.
+
+### #03 · Idle-kill del sidecar (300 s) coincide con el cooldown del breaker (300 s)
+`Alto` · RAM/CPU/Disco · Jornada · esfuerzo S · **desaparece por lote** · abierto
+
+- **Impacto**: por ciclo, relectura de 1.0 GB (1B) o 2.4 GB (4B) del GGUF y 50-90 s de 2-4 núcleos. Es
+  el mecanismo detrás de los 55 reinicios en 62 sesiones Low de 0.2.57.
+- **Dónde**: `summary/summary_engine/models.rs:258` · `coach/live_feedback.rs:47-48` y `:1232-1247` ·
+  `summary/summary_engine/sidecar.rs:1080-1127` y `:639-643`.
+- **Qué pasa**: tres tips fallidos abren el breaker 300 s; sin Generates el idle loop mata el helper a
+  los 300-360 s; el probe half-open cae en un spawn frío con timeout efectivo de 120 s;
+  `COACH_LLM_CONSEC_FAILS` no se reinicia al abrir, así que reabre al primer fallo. El mismo idle-kill
+  dispara en cualquier tramo callado de 5 min de un segmento.
+- **Cambio**: no matar por idle mientras hay grabación con `LLM_TIPS_ENABLED` (o `update_activity` al
+  abrir el breaker e idle ≥ 2× cooldown); reiniciar el contador de fallos al abrir para que half-open
+  exija 3 fallos nuevos.
+- **Riesgo**: mantiene 1.2-3 GB residentes durante todo el segmento: solo en Medium+ (ya es así).
+
+### #04 · El warmup del sidecar al arranque carga Gemma antes del login y lo tira a los 5 minutos
+`Medio` · RAM/CPU/Disco · Arranque/Idle · esfuerzo S · **desaparece por lote** · abierto
+
+- **Impacto**: 0.8-2.4 GB durante ~5 min y ~1 núcleo por ~1 min en cada arranque, sin beneficio salvo
+  que se grabe en esos 5 min. Hoy solo dispara en macOS >16 GB por el desajuste de modelos (#29).
+- **Dónde**: `lib.rs:1122-1213` (sin check de sesión) · `sidecar.rs:821-848` (el ping no cuenta como
+  actividad).
+- **Qué pasa**: carga el GGUF completo, corre dos Generates de un token, y el idle loop lo cierra 300 s
+  después. Para una máquina de jornada (app al boot, scheduler a las 9:00) es I/O y CPU a cambio de
+  nada, repetido en cada relanzamiento.
+- **Cambio**: eliminarlo, o moverlo a `live_feedback::start` / al tick del scheduler ≤2 min antes de un
+  arranque programado.
+- **Riesgo**: latencia del primer tip en la primera grabación del día, que ya es el caso común.
+
+### #05 · La lista de conversaciones es un `select(*)` sin límite
+`Alto` · RAM/Red/CPU · Post/Idle/Jornada · esfuerzo M · verificado · no cambia por lote · **CERRADO** `1571eda`
+
+- **Impacto**: usuario p95: 3 MB por fetch (6-9 MB de heap JS retenidos toda la sesión), 2-4 fetches por
+  minuto mientras se analiza un segmento, ~180 MB/día de red en una jornada de 6 segmentos.
+- **Dónde**: `features/conversations/services/conversations.service.ts:718-724` ·
+  `components/Sidebar/index.tsx:66-70` (segundo observer, nunca se recolecta) ·
+  `components/GlobalConversationNotifier.tsx:160` (invalida en cada UPDATE de Realtime).
+- **Qué pasa**: trae `transcript_text`, `communication_feedback_v4` y minuta completos de todas las
+  conversaciones. Se invalida en cada UPDATE de Realtime (cada 30 s durante el procesado), en cada
+  `sync-status-changed`, cada 15 s con filas no terminales y en cada foco de ventana.
+- **Cambio aplicado**: proyección de lista con escalares del JSONB, tope de 200 + "Cargar más", parche
+  de fila con `setQueriesData`, borrado de la query del Sidebar, `refetchInterval` colgado de
+  `derivePhase` y gamificación en key propia. Detalle en `CLAUDE.md` § *Features*.
+- **Nota de la medición**: al implementarlo se comprobó contra producción que **813 de 1,893 filas
+  (43 %) tienen `analysis_status = NULL`**, así que el poll de 15 s no se quedaba encendido "a veces"
+  sino **siempre**; y que **0 filas** pierden el badge con la proyección.
+
+### #06 · Ocultar a la bandeja no pausa nada de la ventana principal
+`Alto` · RAM/CPU · Jornada/Idle · esfuerzo M · **se encoge por lote** · abierto
+
+- **Impacto**: renderer completo residente (150-300 MB estimados, por medir): árbol React, caché de
+  React Query (#5), 2.1 MB de JS parseado; los polls IPC siguen a ritmo throttled y cada chunk hace tres
+  operaciones de IndexedDB y un re-render.
+- **Dónde**: `lib.rs:894-906` (solo hide, cierra coach, para preview) ·
+  `contexts/TranscriptContext.tsx:269-311` · `services/indexedDBService.ts:233-277`.
+- **Qué pasa**: WebView2 throttlea los timers pero no los evals de eventos Tauri: la ventana oculta en
+  `/` sigue recibiendo niveles a 10 Hz y cada chunk de transcripción. Solo cuatro sitios del código
+  miran `visibilityState` y ninguno es un poll IPC.
+- **Cambio**: en `AppContent`, desmontar `MainContent` y `Sidebar` mientras `document.hidden`,
+  manteniendo `TranscriptProvider` (es el WAL de recuperación), `RecordingStateProvider`,
+  `RecordingWidgetListener` y `CloudSyncInitializer`; guard de `document.hidden` en
+  `useRecordingLevels`, `usePermissionCheck` y `HeadphonesRecommendationWarning`;
+  `RecordingStateContext` por evento con refetch en `visibilitychange`.
+- **Riesgo**: `useRecordingStop` navega con `window.location.href`; `TranscriptContext` debe seguir
+  montado.
+
+### #07 · Coach-float re-renderiza la página entera a 10 Hz detrás de un blur de 22 px
+`Alto` · CPU/RAM · Jornada/Idle · esfuerzo S · verificado · no cambia por lote · **CERRADO** `477bfa0`
+
+- **Impacto**: 36,000 renders/h con recomposición del `backdrop-filter` en cada uno (compositing por CPU
+  sin dGPU), más un proceso renderer de ~90 MB, más 2 IPC cada 2 s y un ticker de 1 s.
+- **Dónde**: `app/coach-float/page.tsx:134` y `:893` (blur 22px saturate 180%) ·
+  `app/coach-float/page.tsx:155` y `:234` (setLevels a nivel de página) · `coach/commands.rs:292-303`.
+- **Cambio aplicado**: `lib/audioLevelsStore.ts` (store fuera de React con epsilon y coalescing a 4 Hz)
+  + `components/audio/AudioLevelBars.tsx` (hoja memoizada, `transform: scaleY()`), fondo opaco `#0F1018`
+  sin `backdrop-filter`. Aplicado también a `recording-widget`, que tenía el patrón idéntico. Detalle en
+  `CLAUDE.md` § *Ventanas auxiliares*.
+- **Pendiente anotado**: el `setInterval` de 2 s con doble `invoke` y el ticker de 1 s siguen en ambas
+  páginas.
+
+### #08 · El encoder de checkpoints copia 11.5 MB dos veces y no acota la concurrencia
+`Medio` · RAM/CPU · Jornada/Post · esfuerzo S · verificado · no cambia por lote · **CERRADO** `5584e3e`
+
+- **Impacto**: normal: 11.5 MB fijos + 23 MB transitorios + un ffmpeg (~30 MB) cada 30 s. Con CPU
+  saturada, encodes que tardan más de 30 s se solapan y cada uno retiene su buffer: N × (23 MB + ffmpeg)
+  sin tope.
+- **Dónde**: `audio/incremental_saver.rs:56` (2,880,000 f32) · `:117-121` (concat a segundo Vec) ·
+  `:107` (spawn_blocking sin semáforo) · `audio/encode.rs:36-83` (sin `-threads`, sin `-loglevel`).
+- **Cambio aplicado**: `Vec<f32>` contiguo preasignado, `Semaphore(1)` por saver con `try_acquire_owned`
+  en el camino sync (difiere sin perder audio) y `acquire().await` en `finalize()`, latch en el aviso de
+  flush diferido, flags `-hide_banner -loglevel error -nostats -threads 1` y drenado de stderr en
+  paralelo con el `write_all` (cerraba un deadlock real). Detalle en `CLAUDE.md` § *Rendimiento de
+  Audio*.
+
+### #09 · Tres canales sin límite en la ruta de grabación
+`Medio` · RAM · Jornada · esfuerzo S · verificado · **se encoge por lote** · abierto
+
+- **Impacto**: si el pipeline se atasca (Parakeet en el runtime, #16), el canal de captura crece 384 KB
+  por segundo de retraso sin señal alguna.
+- **Dónde**: `audio/pipeline.rs:1264` (captura → pipeline, ~200 msg/s) · `audio/recording_manager.rs:75`
+  (pipeline → dispatcher) · `audio/recording_saver.rs:214` (pipeline → saver, 10/s).
+- **Qué pasa**: los callbacks de WASAPI de 10 ms envían a un `unbounded_channel`; el único con
+  backpressure real es el del worker (256 × ≤384 KB = 96 MB con drop-oldest).
+- **Cambio**: acotar el canal de captura a ~200 mensajes (1 s de audio) con `try_send` y contador de
+  descartes; el del saver a ~300 (30 s) con drop-newest.
+- **Riesgo**: el audio descartado bajo inanición pasa a ser explícito y contable; hoy se retrasa en
+  silencio.
+
+### #10 · `AudioMetricsBatcher` acumula resúmenes que nadie lee
+`Bajo` · RAM/CPU · Jornada · esfuerzo S · no cambia por lote · abierto
+
+- **Impacto**: 1-2 MB por segmento de 90 min más una tarea, un canal y un `Instant::now()` por callback
+  de 10 ms.
+- **Dónde**: `audio/pipeline.rs:817` y `:882-893` · `audio/batch_processor.rs:56-78` y `:185-192`
+  (`get_summaries` sin llamadores).
+- **Qué pasa**: 4 resúmenes por segundo se empujan a un `Arc<RwLock<Vec>>` que solo se libera al soltar
+  el pipeline.
+- **Cambio**: borrar el batcher y la macro `batch_audio_metric!`. **Riesgo**: ninguno.
+
+### #11 · El normalizador EBU R128 guarda un historial de sonoridad ilimitado
+`Bajo` · RAM · Jornada · esfuerzo S · no cambia por lote · abierto
+
+- **Impacto**: 0.4 MB por segmento; además `normalize_loudness` asigna un Vec de salida por callback.
+- **Dónde**: `audio/audio_processing.rs:165` y `:186-224` · crate `ebur128`: `history = usize::MAX`.
+- **Qué pasa**: `set_max_history` nunca se llama, así que el estado integrado crece 80 B/s.
+- **Cambio**: `set_max_history(600_000)` tras construir; escribir en sitio en `normalize_loudness`.
+- **Riesgo**: la sonoridad integrada pasa a ventana de 10 min; para 90 min es más apropiado.
+
+### #12 · El VAD usa 4 hilos intra-op por sesión, dos sesiones, para un modelo de 1.7 MB
+`Alto` · CPU · Jornada · esfuerzo M · verificado · **se encoge por lote** · abierto
+
+- **Impacto**: en una laptop de 4 núcleos: 8 hilos del VAD + 6 de Parakeet + workers de tokio +
+  WebView2. Los hilos de ORT hacen spin-wait tras cada run; con una inferencia cada 30 ms por canal, las
+  ventanas de spin se solapan casi siempre. Estimación 0.5-1.5 núcleos en tier Low.
+- **Dónde**: `silero-rs lib.rs:142-145` (`with_intra_threads(4)`) ·
+  `audio/transcription/onnx_providers.rs:130` y `:213-226`.
+- **Qué pasa**: un hilo es más rápido que cuatro para un frame de 480 muestras; el spin por defecto de
+  ORT (`allow_spinning=1`) suma CPU sin trabajo útil.
+- **Cambio**: parchear el fork a `with_intra_threads(1)` e inter 1; en `build_session` añadir
+  `session.intra_op.allow_spinning=0` para Parakeet; valorar un pool global de ORT para las cinco
+  sesiones.
+- **Riesgo**: el RTF de Parakeet puede subir algo sin spin: re-medir contra el 0.39 del A/B de julio.
+
+### #13 · Tormenta de `snapshot_now` en el dispatcher cuando el backlog cae en un múltiplo de 30
+`Alto` · CPU · Jornada · esfuerzo S · verificado · **desaparece por lote** · abierto
+
+- **Impacto**: mientras el worker pasa 2-30 s en un chunk con `pending = 60, 90, 120…`, la condición es
+  cierta en cada iteración del bucle (cada segmento o 200 ms): cinco o más recorridos completos de la
+  tabla de procesos por segundo, justo cuando la máquina ya va atrasada.
+- **Dónde**: `audio/transcription/worker.rs:836-843` · `:849-859` (mismo patrón para el lag warning) ·
+  `logging/mem_sampler.rs:169-192` (System fresco + `refresh_processes` All).
+- **Qué pasa**: `pending` solo cambia al encolar o completar; la comprobación por módulo se repite en
+  cada vuelta del loop.
+- **Cambio**: latch por bucket: `let bucket = pending / 30; if bucket != last_bucket { … }`. Igual para
+  el emit de lag. **Riesgo**: ninguno.
+
+### #14 · El muestreador de memoria refresca más de lo que lee, cada 30 s, incluso en el login
+`Medio` · CPU · Jornada/Idle/Arranque · esfuerzo S · verificado · no cambia por lote · abierto
+
+- **Impacto**: `refresh_processes(All, true)` abre un handle por proceso para IoCounters y exe en
+  250-400 procesos: 10-40 ms por tick, 1,080 ticks por jornada, desde el arranque.
+- **Dónde**: `logging/mem_sampler.rs:188` · `:232` (cpu global).
+- **Qué pasa**: el sampler consume solo `memory()`, `name()` y `parent()`; el kind por defecto de
+  sysinfo 0.32 añade cpu, `disk_usage` y exe.
+- **Cambio**: `refresh_processes_specifics(All, true, ProcessRefreshKind::nothing().with_memory())`;
+  60 s cuando la fase es Idle. Y ya que se toca: **emitir un latido de salud desde aquí por el outbox**
+  (punto ciego nº 1) y medir cpu del proceso propio.
+- **Riesgo**: `cpu_pct` sigue saliendo de `refresh_cpu_usage`.
+
+### #15 · Sondeos del frontend por IPC que no hacen falta o no se apagan
+`Medio` · CPU · Jornada/Idle · esfuerzo S · verificado · **se encoge por lote** · abierto
+
+- **Impacto**: `get_recording_state` cada 500 ms toda la grabación (64,800 IPC por jornada) más un
+  duplicado muerto a 1 s; sync statuses cada 10 s en toda ruta y en reposo (8,640/día); enumeración
+  WASAPI completa cada 5 s en una laptop sin micrófono (6,480 por jornada); salida de audio cada 5 s en
+  el home; 2 IPC cada 2 s en coach-float y recording-widget.
+- **Dónde**: `contexts/RecordingStateContext.tsx:101` · `hooks/useRecordingStateSync.ts:57` (sin
+  consumidores) · `hooks/useCloudSyncStatuses.ts:38` · `hooks/usePermissionCheck.ts:96` ·
+  `components/recording/HeadphonesRecommendationWarning.tsx:42` · `app/coach-float/page.tsx:359`.
+- **Qué pasa**: los cuatro listeners de transición ya actualizan el estado de grabación; el puente
+  `sync-status-changed` ya refresca al instante; `usePermissionCheck` ya escucha `devicechange`.
+- **Cambio**: estado de grabación por evento con refetch en `visibilitychange` (o 5 s); borrar
+  `useRecordingStateSync`; sync statuses solo mientras haya pending/in_progress, si no 60 s; permisos
+  con tope de 60 s; audífonos desde el device monitor de Rust. **Riesgo**: ninguno funcional.
+
+### #16 · La inferencia de Parakeet corre en un hilo del runtime de tokio
+`Medio` · CPU · Jornada · esfuerzo M · **se encoge por lote** · abierto
+
+- **Impacto**: uno de los N workers queda pinneado 1-3 s por chunk; el pipeline (que también corre
+  Silero en síncrono), el saver, el tick de niveles y el scheduler comparten ese runtime. En 2-4 núcleos
+  produce picos de latencia y deja crecer el canal sin límite (#9).
+- **Dónde**: `audio/transcription/worker.rs:1121` → `parakeet_engine/parakeet_engine.rs:537-558` ·
+  `parakeet_engine/model.rs:462-487`.
+- **Qué pasa**: `transcribe_samples` es síncrono y se llama bajo `current_model.write().await` sin
+  `spawn_blocking`.
+- **Cambio**: ejecutarlo en `tokio::task::spawn_blocking` (`blocking_write` dentro del closure o
+  `Option<ParakeetModel>` tras un `std::sync::Mutex`). Igual para Moonshine y Canary.
+- **Riesgo**: el swap del reciclado debe seguir usando el mismo lock.
+
+### #17 · El monitor de dispositivos re-enumera todos los endpoints WASAPI cada 5 s mientras graba
+`Bajo` · CPU · Jornada · esfuerzo S · no cambia por lote · abierto
+
+- **Impacto**: 20-100 ms por sondeo (0.4-2 % de un núcleo) más asignaciones; el stop ya tuvo que
+  tratarlo aparte porque la enumeración "corre 90+ s" en el teardown.
+- **Dónde**: `audio/device_monitor.rs:171`, `:186`, `:255-258` · `audio/recording_manager.rs:259-264`.
+- **Cambio**: intervalo de 30 s, o callbacks `IMMNotificationClient` de cambio de dispositivo.
+- **Riesgo**: con callbacks, la reconexión deja de depender del polling.
+
+### #18 · El concat final de ffmpeg corre síncrono dentro de una función async
+`Bajo` · CPU · Post · esfuerzo S · no cambia por lote · abierto
+
+- **Impacto**: bloquea un worker de tokio durante todo el concat en cada rotación; con 8 hilos se
+  disimula, con 2-4 se nota en el resto de tareas.
+- **Dónde**: `audio/incremental_saver.rs:233-240` (`Command::output()` en `async fn`) · `:157-165`
+  (spin-wait de 50 ms hasta `pending = 0`).
+- **Cambio**: `tokio::process::Command` o `spawn_blocking`; sustituir el spin-wait por un `Notify`.
+- **Riesgo**: ninguno. *(Anotado también en `CLAUDE.md` al cerrar #08.)*
+
+### #19 · ONNX Runtime escribe a nivel INFO y es del 35 al 64 % del log
+`Medio` · Disco/CPU · Jornada/Arranque · esfuerzo S · verificado · **se encoge por lote** · abierto
+
+- **Impacto**: 1.2-1.4 MB/h grabando (88-109 líneas/min), 11-13 MB por jornada, 80-90 MB con la
+  retención de 7 días; cada línea se formatea también para un stdout que no existe bajo
+  `windows_subsystem`.
+- **Dónde**: `logging/file_logger.rs:65-66` (EnvFilter "info" para todo) · `:59-62` (capa de consola
+  siempre) · `audio/transcription/worker.rs` (`info!` por chunk, 55 % de las líneas propias).
+- **Cambio**: `EnvFilter::new("info,ort=warn")`; consola solo con `cfg(debug_assertions)`; demote del
+  `info!` por chunk del worker a `debug!`.
+- **Riesgo**: ninguno; la diagnosticabilidad mejora porque las líneas propias dejan de ahogarse.
+
+### #20 · `reqwest::Client` se construye por request en unos 20 sitios
+`Bajo` · CPU/Red · Post/Jornada · esfuerzo S · verificado · no cambia por lote · abierto
+
+- **Impacto**: cada construcción enumera y parsea el root store de Windows (100-300 certificados) y tira
+  el pool: 5-30 ms de CPU, ~1 MB transitorio y un handshake TLS completo por request. Un cierre de
+  segmento construye al menos cuatro.
+- **Dónde**: `logging/telemetry/drain.rs:93` · `cloud_sync/executors.rs:276` y `:340` ·
+  `cloud_sync/session.rs:210` · `api/finalize.rs:145` · `api/retry_analysis.rs:77` ·
+  `logging/incident.rs:416`.
+- **Qué pasa**: el patrón correcto **ya existe** en `coach/commands.rs:50`
+  (`static HTTP_CLIENT: Lazy<Client>`).
+- **Cambio**: un `pub static HTTP: Lazy<reqwest::Client>` con timeout de 30 s en `api/mod.rs`,
+  compartido por drain, executors, session, finalize, retry e incident.
+- **Riesgo**: ninguno; reqwest cierra las conexiones ociosas a los 90 s.
+
+### #21 · `System::new_all()` completo al construir la app para un procesador que nadie invoca
+`Bajo` · RAM/CPU · Arranque · esfuerzo S · verificado · no cambia por lote · abierto
+
+- **Impacto**: 1-5 MB retenidos toda la vida del proceso (entornos y cmdlines de 250-400 procesos) y
+  50-200 ms de arranque; el mismo patrón en `builtin_ai_get_recommended_model` solo para leer la RAM
+  total.
+- **Dónde**: `lib.rs:669` → `whisper_engine/system_monitor.rs:46-47` ·
+  `summary/summary_engine/commands.rs:387` · frontend: cero call sites de
+  `initialize_parallel_processor` / `get_system_resources`.
+- **Cambio**: quitar el estado del `manage()` o hacer el monitor perezoso; `System::new()` +
+  `refresh_memory()` para la RAM total, como ya hace `hardware_detector.rs:130`.
+- **Riesgo**: ninguno: inalcanzable o one-shot.
+
+### #22 · La presión de memoria se observa pero nunca se actúa sobre ella
+`Alto` · RAM · Jornada/Post · esfuerzo M · verificado · no cambia por lote · abierto
+
+- **Impacto**: los 215 avisos del piloto equivalen a ~36 h de presión sostenida en 7 máquinas; la app
+  tiene la señal y no descarga nada. Además el mensaje lleva cifras cambiantes, así que cada aviso se
+  come una de las 20 plazas de `app.error` por proceso.
+- **Dónde**: `logging/mem_sampler.rs:336-367` (`ConditionWarns::check`) ·
+  `logging/rust_error_bridge.rs:132-165` (dedup por mensaje).
+- **Cambio**: exponer `mem_sampler::pressure_level()`; consumidores: saltar o abortar el warmup del
+  sidecar, `SidecarManager::shutdown()` con presión sostenida y sin requests activos, pausar los tips
+  LLM del segmento, descargar Parakeet en reposo. Loguear con clave sin números.
+- **Riesgo**: definir la histéresis para no oscilar.
+- **Nota**: si se adopta la transcripción por lote, esta política **deja de ser opcional** (el pico de
+  carga de Parakeet cada hora la necesita).
+
+### #23 · Las ventanas auxiliares cargan el grafo completo del layout raíz
+`Bajo` · RAM/CPU · Arranque/Jornada · esfuerzo M · no cambia por lote · abierto
+
+- **Impacto**: `coach-float.html` carga 1,457 KB de JS de los que la página son 34 KB (supabase-js,
+  sonner, Radix, polyfills); +10-20 MB de heap y peor primer pintado por ventana; es también la razón
+  del sleep de 180 ms antes del `show()`.
+- **Dónde**: `app/layout.tsx:785` (early-return en runtime, no en bundling) · `coach/commands.rs:320`.
+- **Cambio**: route groups `app/(main)/layout.tsx` y `app/(aux)/layout.tsx` con un layout auxiliar
+  mínimo; mantener `isAuxWindowPath` como gate defensivo.
+- **Riesgo**: invariantes de `layout.test.ts`; las aux siguen necesitando `globals.css`.
+
+### #24 · Bundle de arranque de 2.1 MB de JS con tres familias tipográficas y librerías pesadas
+`Bajo` · RAM/CPU/Disco · Arranque · esfuerzo M · no cambia por lote · abierto
+
+- **Impacto**: `index.html` carga 40 scripts sin gzip (protocolo custom); recharts 346 KB y
+  framer-motion 111 KB en el home (framer para un solo fade-in); BlockNote, tiptap y prosemirror suman
+  2 MB solo alcanzables desde `/meeting-details`, **ruta sin enlace entrante**.
+- **Dónde**: `out/index.html` (build 2026-08-28) · `app/page.tsx:256` (framer) · `next.config.js` (sin
+  `optimizePackageImports`).
+- **Cambio**: quitar framer del home y de settings; `dynamic()` para la sección de recharts; borrar
+  `/meeting-details` con su árbol; una sola familia tipográfica. **Riesgo**: bajo.
+
+### #25 · El logging diagnóstico escribe al log de Rust por IPC en cada tick de poll
+`Bajo` · Disco/CPU · Post · esfuerzo S · no cambia por lote · abierto
+
+- **Impacto**: ~60 IPC y 60 líneas por minuto con un detalle en procesado abierto; también en cada
+  UPDATE de Realtime.
+- **Dónde**: `lib/diagnostics.ts:28-33` (`logPoll` = console.log + `fileLogger.info` → invoke) ·
+  `features/conversations/hooks/useConversationLive.ts:60`, `:63`, `:97`.
+- **Cambio**: muestrear `logPoll` o dejarlo tras una preferencia de debug. **Riesgo**: ninguno.
+
+### #26 · `sync_queue` nunca se poda: cada job completado conserva su payload completo
+`Bajo` · Disco · Post · esfuerzo S · verificado · no cambia por lote · abierto
+
+- **Impacto**: en la DB de desarrollo 37 jobs retienen 606 KB de 1.67 MB (36 %); un usuario de jornada
+  crea ~24 jobs/día: 50-100 MB al año, más los backups con `VACUUM INTO`.
+- **Dónde**: `database/repositories/sync_queue.rs:447` (`cleanup_old_completed`, cero llamadores) ·
+  `lib.rs:961` (`reset_stale_jobs`, sitio natural).
+- **Cambio**: llamar `cleanup_old_completed(pool, 7)` tras `reset_stale_jobs` o una vez al día desde el
+  sweep del worker.
+- **Riesgo**: mantener 7 días: `sync_queue_get_finalize_result` lee `result_data` de jobs recientes.
+
+### #27 · Audio AAC estéreo a 192 kbps para voz, y ningún borrado: 0.7 GB por día que se quedan
+`Medio` · Disco · Jornada/Post · esfuerzo S · verificado · no cambia por lote · abierto
+
+- **Impacto**: 86 MB por hora → 691 MB por jornada de 8 h, **~14 GB al mes por usuario**. Confirmado con
+  una reunión real de 111 min: 160 MB. Ninguna ruta del código borra carpetas de reunión; solo se borran
+  modelos y `.checkpoints`. El pico en disco al hacer el merge es 2× el segmento.
+- **Dónde**: `audio/encode.rs:49-50` (`-b:a 192k`, "increased from 64k") ·
+  `audio/incremental_saver.rs:181` (borra solo `.checkpoints`).
+- **Qué pasa**: el audio **nunca sube a la nube**: el análisis consume solo texto. Se conserva en
+  estéreo L/R para la atribución de hablantes, y eso no depende del bitrate.
+- **Cambio**: `-b:a 64k` (AAC-LC estéreo sigue limpio para voz, −67 %) y un ajuste de retención que
+  borre `audio.mp4` N días después de que la conversación esté sincronizada y analizada.
+- **Riesgo**: expectativas de reproducción local; la transcripción no lo usa. Si se adopta el lote,
+  **medir WER antes de bajar el bitrate** (la transcripción saldría del AAC decodificado).
+
+### #28 · Pool de SQLite sin ajustar: 10 conexiones y `synchronous FULL`
+`Bajo` · RAM/Disco · Post · esfuerzo S · no cambia por lote · abierto
+
+- **Impacto**: hasta 10 × 2 MB de page cache si el pool se abre en abanico (worker, drain y comandos UI
+  abren 3-4 a la vez); un fsync por commit en el cierre de segmento.
+- **Dónde**: `database/manager.rs:39` (`SqlitePool::connect` con defaults de sqlx).
+- **Cambio**: `SqlitePoolOptions::new().max_connections(4)` y `synchronous(Normal)` — WAL ya está
+  activo y NORMAL es igual de durable en WAL. **Riesgo**: ninguno con WAL.
+
+### #29 · Gemma 1B se descarga sin consumidor; un 4B instalado desde Ajustes nunca se puede cargar
+`Bajo` · Disco/Red · Arranque · esfuerzo S · **desaparece por lote** · abierto
+
+- **Impacto**: 1 GB de disco y de red por instalación que nada carga; 2.4 GB del 4B desperdiciados y
+  tips LLM que fallan en silencio en esos usuarios.
+- **Dónde**: `summary/summary_engine/commands.rs:359-372` (recomienda 1B en todo Windows) ·
+  `coach/llama_engine.rs:444-475` (candidatos 4B y qwen, nunca 1B fuera de Low) · `coach/setup.rs:251-257`
+  (descarga a `models/llm`) vs `coach/llm_service.rs:216` (resuelve solo `models/summary`).
+- **Qué pasa**: el onboarding baja el 1B; el coach en Medium/High pide el 4B; el 4B manual va a otra
+  carpeta que el servicio no mira.
+- **Cambio**: añadir el 1B como último candidato en Medium/High (y así el timeout de 30 s es alcanzable)
+  o no descargar Gemma en Windows; resolver la ruta una sola vez con `llama_engine::model_file_path`.
+
+### #30 · El helper crea un `LlamaContext` por request y re-decodifica ~2,000 tokens en cada tip
+`Bajo` · CPU/RAM · Jornada · esfuerzo M · **desaparece por lote** · abierto
+
+- **Impacto**: KV cache y buffers (109 MB en 1B, 570 MB en 4B a n_ctx 4096) asignados y liberados por
+  tip; 850 tokens de prefijo de sistema recalculados cada vez. El timeout de 30 s es **estructuralmente
+  inalcanzable** con el 4B en CPU (60-120 s por tip).
+- **Dónde**: `llama-helper/src/main.rs:199-209` y `:132-138` · `coach/llm_service.rs:39-44` (n_ctx 4096,
+  timeout 30 s) · `coach/prompt.rs:39-90` (2,797 bytes de sistema).
+- **Cambio**: contexto persistente por modelo con caché de prefijo; n_ctx del coach a 3072; una sola
+  Generate en vuelo (`Semaphore(1)`).
+- **Riesgo**: recrear el contexto cuando cambie `context_size` entre coach (4096) y resumen (8192).
+
+### #31 · El workspace ignora el `[profile.release]` del helper y el `[patch.crates-io]` de cpal
+`Medio` · CPU/Disco · Arranque · esfuerzo S · verificado · no cambia por lote · abierto
+
+- **Impacto**: ambos binarios se compilan con los defaults de Cargo (sin LTO, 16 codegen-units, sin
+  strip): exe de 72 MB, NSIS de 26.5 MB. Y `Cargo.lock` resuelve **cpal 0.15.3 desde crates.io**, no la
+  rev `51c3b43` del fork que el manifiesto cree usar: **el backend de audio en producción no es el que
+  se pineó**.
+- **Dónde**: `Cargo.toml` (raíz): sin `[profile.release]` ni `[patch]` ·
+  `frontend/src-tauri/Cargo.toml:294-296` (`[patch.crates-io]` ignorado por no ser raíz) ·
+  `Cargo.lock:1131-1134` · `llama-helper/Cargo.toml:19-22` · `llama-helper/src/main.rs:159`
+  (`n_gpu_layers 999`) · `.github/workflows/build-windows.yml:646` y `:677`.
+- **Qué pasa**: Cargo solo honra profiles y patches del paquete **raíz** del workspace. Además el
+  feature de GPU del binario principal lo decide `auto-detect-gpu.js` en la máquina que compila.
+- **Cambio**: mover `[profile.release]` y el `[patch]` a la raíz; **antes, decidir a conciencia si se
+  quiere el fork de cpal, porque cambiará el audio**. Fijar `TAURI_GPU_FEATURE` en el skill `/build` y
+  en CI.
+- **Riesgo**: activar el patch cambia el backend de audio real: probar captura y hot-swap. Mantener
+  `panic = "unwind"` por los hooks de Sentry y `telemetry/panics.rs`.
+
+### #32 · En Windows ffmpeg se descarga en runtime, en el primer checkpoint
+`Alto` · Disco/Red/RAM · Jornada/Post · esfuerzo M · verificado · no cambia por lote · abierto
+
+- **Impacto**: ~100 MB de descarga desde gyan.dev **que el usuario nunca aceptó**, desempaquetados en
+  287 MB (ffmpeg, ffplay y ffprobe; solo `ffmpeg.exe` se ejecuta). En una red de 3 Mbps son ~5 min con
+  el `Lazy` bloqueando a todos los llamadores: cada checkpoint de 30 s que llega ya lleva sus
+  11.5-23 MB de muestras → 115-230 MB de RAM inmovilizados, y posible timeout de 300 s al parar.
+- **Dónde**: `audio/ffmpeg.rs:1-3` y `:189` · `audio/encode.rs:30` (primer llamador, desde el
+  checkpoint) · `tauri.conf.json:137` (`externalBin` solo llama-helper) · `msix_staging`
+  (`ffprobe.exe` de 99 MB, sin uso).
+- **Cambio**: empaquetar un `ffmpeg.exe` mínimo LGPL para Windows **como ya hace macOS** (solo
+  f32le→aac/mp4 y concat `-c copy`, 5-10 MB) vía `bundle.externalBin`. Mientras tanto: resolver
+  `find_ffmpeg_path()` al arrancar fuera de la ruta de audio y borrar ffplay/ffprobe tras desempaquetar.
+- **Riesgo**: receta de build MSVC/mingw; actualizar el skill `store-msix`, que copia ambos binarios a
+  mano.
+
+### #33 · DirectML y D3D12 son imports de carga del exe aunque el motor por defecto corre en CPU
+`Bajo` · RAM/CPU · Arranque · esfuerzo S · verificado · no cambia por lote · abierto
+
+- **Impacto**: `directml.dll`, `d3d12.dll`, `dxcore.dll` y `dxgi.dll` se mapean en cada arranque (3-8 MB
+  de RSS privado estimados, latencia y un toque al driver de GPU); el EP de DML enlazado estáticamente
+  son 15-25 MB del exe de 72 MB.
+- **Dónde**: `frontend/src-tauri/Cargo.toml:236` · `audio/transcription/onnx_providers.rs:112-121` (DML
+  solo para Moonshine y Canary) · `parakeet_engine/model.rs:120` (`prefer_gpu = false`).
+- **Cambio**: quitar directml en Windows (solo CPU EP) o dejarlo tras un feature de Cargo.
+- **Riesgo**: Moonshine y Canary pierden GPU; ambos son opcionales.
+
+### #34 · Los segmentos descartados por contenido dejan su carpeta huérfana con el audio dentro
+`Medio` · Disco · Post · esfuerzo S · verificado · no cambia por lote · abierto
+
+- **Impacto**: cada segmento por debajo de 250 palabras (en el piloto, **más de la mitad**) deja
+  `audio.mp4` de hasta 130 MB, `transcripts.json` y `metadata.json` en `Music/maity-recordings` sin fila
+  en la DB ni entrada en la UI. Nadie los borra.
+- **Dónde**: `scheduled_recording/service.rs:1107-1114` (Discarded sin tocar la carpeta) ·
+  `RecordingPostProcessingProvider.tsx` (marca guardado, no borra).
+- **Cambio**: `remove_dir_all(folder)` al devolver `Discarded`, o conservar el audio detrás de un
+  ajuste; la telemetría ya lleva `words_total`.
+- **Riesgo**: decisión de producto sobre conservar audio de segmentos sin conversación.
+
+### #35 · Dos pilas HTTP/TLS, crates duplicados y dependencias muertas
+`Bajo` · Disco/CPU · Arranque · esfuerzo S · no cambia por lote · abierto
+
+- **Impacto**: reqwest 0.12 y 0.13 (plugin updater), rustls 0.22 y 0.23, dos rustls-native-certs, cuatro
+  versiones de windows-sys, clap v3 y v4, zip 2 y 4: 3-6 MB de exe estimados, dos cargadores de root
+  store y compilaciones más largas. `clap`, `esaxx-rs` y `symphonia` no tienen un solo call site;
+  `@remirror` y `@tiptap` (12 paquetes npm) tienen cero imports.
+- **Dónde**: `frontend/src-tauri/Cargo.toml:75`, `:155-156` · `cargo tree -d` · `frontend/package.json`.
+- **Cambio**: reqwest a 0.13, sentry con rustls 0.23, nnnoiseless sin default-features, borrar clap,
+  esaxx-rs, symphonia y los paquetes remirror/tiptap.
+- **Riesgo**: reqwest 0.13 renombró los flags de TLS.
+
+---
+
+## Plan por fases
+
+Lo que ya está en main se publica primero porque es lo que más devuelve por cero esfuerzo adicional.
+
+### Fase 0 — ya en main, sin release
+- Tier Low sin LLM del coach y sin descarga de Gemma.
+- Back-off del scheduler por causa (fin de las 965 filas por día).
+- Umbral de 250 palabras, `started_at` sellado, tope de 90 min.
+- **Además, cerrado el 2026-09-02**: #05, #07 y #08.
+
+> Recupera ~1 GB de RSS en el 55 % del parque y elimina 55 reinicios de sidecar por cada 62 sesiones.
+
+### Fase 1 — cambios S, un ciclo
+`trim_start_silence()` en el VAD fuera de voz (#1) · precarga de Parakeet y warmup del sidecar solo con
+sesión (#2, #4) · latch en la tormenta de `snapshot_now` (#13) y muestreador sin `disk_usage` (#14) ·
+idle-kill del sidecar desacoplado del breaker (#3) · filtro `ort=warn` y consola solo en debug (#19) ·
+polls del frontend (#15) · cliente HTTP compartido (#20), poda de `sync_queue` (#26), perfil y patch a
+la raíz del workspace (#31) · borrar la carpeta de los segmentos descartados (#34); resolver ffmpeg al
+arrancar y borrar ffplay/ffprobe (#32).
+
+> Quita el crecimiento de hasta 700 MB por segmento, unos 600 MB en reposo antes de grabar y 190 MB de
+> binarios muertos en disco.
+
+### Fase 2 — cambios M
+Descarga de Parakeet en reposo fuera de la ventana de jornada y recarga desde el tick del scheduler
+(#2) · reciclado drop-then-load e inferencia en `spawn_blocking` (#2, #16) · ventana principal "dormida"
+al ocultar (#6) · política de presión de memoria con acciones (#22) · latido de salud emitido desde Rust
+por el outbox (punto ciego) · ffmpeg mínimo LGPL empaquetado en Windows (#32); retención de audio con
+borrado diferido (#27).
+
+> Presupuesto objetivo en tier Low grabando: **~700 MB** contra ~1 GB hoy y ~2 GB en 0.2.57; disco de
+> 0.7 GB por día a 0.23 GB y con caducidad.
+
+### Fase 3 — decisiones de producto
+Coach-float cerrado mientras la main está oculta (#7) · hilos del VAD y spin de ORT: medir RTF antes y
+después (#12) · bitrate 192 → 64 kbps (#27) · activar o retirar el fork de cpal (#31) · borrar
+`/meeting-details` y su árbol BlockNote/tiptap (#24) · **transcribir la jornada por lote** (abajo).
+
+> Cada punto necesita una medición o una decisión explícita antes de tocar código.
+
+---
+
+## Alternativa: transcribir la jornada por lote
+
+La pregunta que reordena el plan: **qué pasaría si la jornada dejara de forzar a Parakeet en tiempo real
+y transcribiera cada hora al cerrar el segmento, sin transcript en vivo.** De los 35 hallazgos, 6
+desaparecen, 7 se encogen y 22 no cambian; pero los que desaparecen son los más pesados del día.
+
+### Hoy (streaming)
+1. Micrófono y sistema entran al pipeline cada 10 ms.
+2. El VAD de Silero corta tramos de voz al vuelo, en dos canales.
+3. Cada tramo va a Parakeet de inmediato: **el modelo vive en RAM las 9 horas**.
+4. El transcript se pinta en la ventana, aunque esté oculta en la bandeja.
+5. El coach lee ese transcript y pide tips al sidecar.
+6. Al cerrar la hora se guarda lo transcrito y se sube.
+
+> Todo corre a la vez que la captura. En tier Low son ~1 GB de RSS durante toda la jornada.
+
+### Por lote (al cerrar el segmento)
+1. Durante la hora, Maity solo captura y guarda checkpoints de 30 s. **Ya lo hace hoy.**
+2. Al cerrar el segmento carga Parakeet, transcribe la hora desde el audio saltando el silencio con una
+   compuerta de energía, y **lo descarga**.
+3. Cuenta palabras, decide si el segmento vale, guarda y sube.
+4. Sin transcript en vivo ni tips durante la hora.
+
+> Captura sola: ~80 MB. El lote concentra el costo en 3 a 25 minutos por hora y el resto del tiempo la
+> máquina queda libre.
+
+### Presupuesto de RAM en tier Low grabando
+
+Estimación a partir de la telemetría y del código; **el pico del lote necesita medirse**.
+
+| Componente | Hoy | Por lote |
+|---|---:|---:|
+| Rust en reposo grabando | ~650 MB | ~80 MB |
+| VAD de Silero en silencio | 0 a 700 MB por segmento | 0 |
+| Sidecar LLM (Medium y High) | 1.2 a 3 GB intermitentes | 0 |
+| Pico del lote por hora | no aplica | ~700 MB durante 3 a 25 min |
+
+### Qué se mueve
+
+- **Desaparecen por construcción (6)**: el buffer de silencio del VAD (#1), la tormenta de
+  `snapshot_now` (#13), y toda la familia del sidecar: idle-kill contra breaker (#3), warmup al arranque
+  (#4), contexto por request (#30) y Gemma sin consumidor (#29). **Los tips LLM viven del transcript en
+  vivo; sin él, el sidecar no tiene razón de existir durante la grabación.**
+- **Se encogen (7)**: Parakeet residente (#2) pasa a cargarse por lote y descargarse, pero hay que
+  escribirlo. Los hilos del VAD (#12) y la inferencia en el runtime (#16) salen de la ventana de
+  grabación. Dos de los tres canales sin límite (#9). De los polls (#15), la ventana oculta (#6) y el
+  log (#19) se va lo ligado al transcript.
+- **No cambian (22)**: WebView2 y el coach-float (#7), la lista de conversaciones (#5), el encoder de
+  checkpoints (#8), el muestreador (#14), ffmpeg en runtime (#32), el audio sin retención (#27), el
+  patch de cpal (#31) y todo lo de disco, red y build.
+
+### Lo que cuesta y los riesgos nuevos
+
+- **El lote compite con la siguiente hora de grabación.** A RTF 0.39, una hora de audio son 23 min de
+  CPU; con compuerta de energía sobre los checkpoints, en una jornada típica del piloto serían 3 a
+  7 min. Se puede diferir a después de las 18:00 si el análisis puede llegar al final del día.
+- **Cargar Parakeet tiene un pico transitorio cercano a 1.3 GB** mientras ORT parsea el modelo. Un pico
+  así cada hora en una máquina de 5 GB **puede ser peor que la residencia constante**: medirlo, y cargar
+  solo sin presión de memoria. La política de presión (#22) deja de ser opcional.
+- **El audio pasa a ser la única fuente de verdad.** La pregunta abierta de las carpetas de jornada con
+  8 KB de audio por hora tiene que resolverse antes: si los checkpoints fallan en silencio, hoy
+  sobreviven los transcripts y mañana no sobrevive nada.
+- **Se pierde el panel en vivo y los tips que leen texto.** Los heurísticos basados en niveles de audio
+  (proporción de habla, monólogo) pueden seguir. Falta confirmar cuáles del coach dependen del texto.
+- **La transcripción sale del AAC decodificado** en vez del PCM crudo. A 96 kbps o más no debería
+  notarse; a 64 kbps conviene medir WER antes de bajar el bitrate (#27).
+
+### Recomendación: modo por disparador, no un cambio global
+
+La jornada del scheduler arranca sin ventana, nadie mira el transcript y el valor llega al final con la
+minuta y el análisis. **Ahí el lote es la arquitectura correcta**: paga el mismo costo total de CPU,
+pero concentrado en unos minutos por hora, y sin nada residente el resto del tiempo. La grabación manual
+con el coach abierto es el caso donde el usuario paga voluntariamente el pipeline en vivo, y puede
+seguir en streaming.
+
+**Prerrequisitos**: checkpoints fiables y el pico de carga de Parakeet medido en una máquina de 5 GB.
+
+---
+
+## Verificado y en orden
+
+Lo que se revisó y **no** necesita cambio, para no volver a auditarlo.
+
+- El audio completo del segmento no vive en RAM: la mezcla estéreo se vuelca a un checkpoint AAC cada
+  30 s y el `audio.mp4` final es un concat con `-c copy`, sin recodificar.
+- El ring buffer de mezcla, los buffers de staging del VAD y la cola del worker (256 × ≤384 KB) están
+  acotados con drop-oldest.
+- Solo un modelo STT queda residente por defecto; Whisper, Moonshine y Canary son perezosos. RNNoise
+  está apagado.
+- Las 79 líneas de "DeviceBasedPartition" del log son subgrafos de **una misma** construcción de sesión
+  ONNX (ráfagas en el mismo milisegundo), no 79 sesiones.
+- El estado de transcripción del frontend está acotado a 500 items, virtualizado y con dedup por `Set`;
+  IndexedDB se limpia a los 7 días.
+- Los listeners de Tauri pasan por grupos con unlisten seguro; un `emit` broadcast no cuesta nada en
+  ventanas sin listener.
+- Runtime de tokio por defecto, sin bucles de espera activa; el trabajo de proceso va en
+  `spawn_blocking`. `perf_debug!` compila a nada en release.
+- Cloud sync y drenador de telemetría no giran sin sesión; back-off exponencial con tope de 15 min.
+  PostHog es un stub sin autocapture.
+- La rotación es secuencial: nunca conviven dos pipelines, dos workers de Parakeet ni dos concat.
+- Sin recursos remotos en runtime: fuentes autohospedadas, sin video ni audio montados, iframe de
+  YouTube solo en el registro.
+- El audio **nunca sale de la máquina** ni se vuelve a leer entero: a la nube viajan solo JSON de
+  transcripts e ids; cero lecturas de `audio.mp4` ni base64 en el código embarcado.
+- Las descargas de Parakeet y Gemma reanudan con Range y verifican sha256; la guarda de descargas
+  activas es atómica.
+- Todo el grafo de Windows va sobre rustls (sin OpenSSL ni native-tls); sqlx compila solo sqlite; tokio
+  no lleva full; whisper-rs es CPU-only en los builds locales.
+
+---
+
+## Mediciones pendientes
+
+Lo que hay que medir en una laptop de 6 GB antes de cerrar cifras.
+
+- Delta de RSS de la precarga de Parakeet y pico del reciclado (ya hay `snapshot_now("onnx-recycle")`).
+- Sierra de `session_audio` del VAD en una jornada tranquila: debería verse como +4 MB/min por canal en
+  los `[METRIC] mem-sample` de los pilotos.
+- Reparto de RSS de WebView2 entre ventana principal oculta, coach-float y device-picker.
+- CPU real del renderer del coach-float a 10 Hz con y sin `backdrop-filter`. *(El #07 ya quitó el blur;
+  la medición sirve ahora para cuantificar la ganancia.)*
+- Costo de `refresh_processes` en una máquina con 300+ procesos.
+- Tokens por segundo del helper con 1B Q8 y 4B Q4 a 2 hilos; si iSWA está activo en la llama.cpp
+  pineada.
+- Si `hide()` produce `visibilityState = hidden` en WebView2 y cuándo entra el throttling intensivo.
+- **Posible bug de rotación**: `SEQUENCE_COUNTER` se reinicia por sesión pero el frontend solo limpia
+  `seenSequenceIds` en el arranque manual; el panel en vivo podría congelarse tras la primera rotación.
+- Carpetas de jornada de esta máquina con 8 KB a 21 MB de audio por hora (12 de 20 sin transcripts):
+  ¿el encoder AAC comprime el silencio o fallan checkpoints en silencio? `incremental_saver.rs:207-210`
+  solo avisa y salta el archivo ausente, **sin telemetría**.
+- Con qué features de GPU se compiló el `setup.exe` publicado en GitHub: la selección depende del
+  entorno de la máquina que compila (#31). Revisar sus imports.
+
+---
+
+## Método
+
+Consultas sobre `maity.platform_logs` (heartbeat, `device.profile`, `coach.session_summary`,
+`recording_stopped`); cinco auditorías de código en paralelo (audio y STT, tareas de fondo Rust, coach y
+sidecar, frontend, post-procesado y build); verificación manual de las líneas citadas en los hallazgos
+de mayor peso.
+
+Los porcentajes de CPU son **estimaciones a partir del código**: la telemetría no mide CPU por proceso
+(punto ciego nº 2).
