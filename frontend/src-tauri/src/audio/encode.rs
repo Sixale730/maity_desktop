@@ -15,6 +15,66 @@ pub struct AudioInput {
     pub device: Arc<AudioDevice>,
 }
 
+/// Argumentos EXACTOS con los que se encodea cada checkpoint de 30 s a AAC-LC.
+///
+/// Función PURA (no toca disco, procesos ni entorno) por una razón concreta: es
+/// la ÚNICA forma de blindar estos flags con un test. `encode_single_audio`
+/// llama a `find_ffmpeg_path()`, que en una máquina sin ffmpeg intentaría
+/// DESCARGARLO (287 MB) y colgaría el test — es exactamente el motivo del
+/// `#[ignore]` de `incremental_saver::tests::test_checkpoint_creation`. Antes de
+/// esta extracción, `encode.rs` no tenía un solo `#[cfg(test)]`.
+///
+/// **Bitrate 64k (sep-2026).** Estaba en `192k` con el comentario heredado
+/// "Increased from 64k for better audio quality (especially for speech)". Ese
+/// comentario NO tiene commit ni razonamiento detrás: `git log -S "192k"` y
+/// `git log -S "64k"` sobre este archivo devuelven un único commit, el squash
+/// inicial `dbc1bc7`, o sea que la subida viene heredada del upstream
+/// (screenpipe/meetily). No hay consumidor de esa calidad: la transcripción
+/// consume el `f32` crudo del pipeline (nunca el mp4) y el análisis es sólo
+/// texto. 64k baja el costo en disco de ~86 MB/h a ~28.8 MB/h.
+///
+/// Ojo con el orden: `-ar`/`-ac` van ANTES de `-i`, así que describen el INPUT
+/// crudo `f32le`; la salida no lleva `-ar`/`-ac` y hereda 48 kHz estéreo — es
+/// lo que conserva la atribución de hablante por canal L/R. NO añadir `-ar` de
+/// salida "de paso".
+pub(crate) fn encode_args(sample_rate: u32, channels: u16, output_path: &str) -> Vec<String> {
+    vec![
+        // No imprimir la cabecera de versión/config en cada checkpoint
+        "-hide_banner".to_string(),
+        // Solo errores reales, no el spam de progreso por defecto
+        "-loglevel".to_string(),
+        "error".to_string(),
+        // Sin la línea de stats que ffmpeg reescribe en stderr
+        "-nostats".to_string(),
+        "-f".to_string(),
+        "f32le".to_string(),
+        "-ar".to_string(),
+        sample_rate.to_string(),
+        "-ac".to_string(),
+        channels.to_string(),
+        "-i".to_string(),
+        "pipe:0".to_string(),
+        "-c:a".to_string(),
+        "aac".to_string(),
+        "-b:a".to_string(),
+        "64k".to_string(),
+        // AAC-LC: el AudioSpecificConfig resultante es idéntico entre versiones
+        // del binario, que es lo que permite que `merge_checkpoints` haga
+        // `concat -c copy` sin re-encodear.
+        "-profile:a".to_string(),
+        "aac_low".to_string(),
+        // Un AAC de 30 s no necesita más; así no compite por CPU con Parakeet
+        // en equipos de gama baja.
+        "-threads".to_string(),
+        "1".to_string(),
+        "-movflags".to_string(),
+        "+faststart".to_string(),
+        "-f".to_string(),
+        "mp4".to_string(),
+        output_path.to_string(),
+    ]
+}
+
 pub fn encode_single_audio(
     data: &[u8],
     sample_rate: u32,
@@ -33,35 +93,13 @@ pub fn encode_single_audio(
 
     debug!("Using FFmpeg at: {:?}", ffmpeg_path);
 
+    let output = output_path
+        .to_str()
+        .ok_or_else(|| anyhow::anyhow!("Output path contains invalid UTF-8: {:?}", output_path))?;
+
     let mut command = Command::new(ffmpeg_path);
     command
-        .args([
-            "-hide_banner", // No imprimir la cabecera de versión/config en cada checkpoint
-            "-loglevel",
-            "error", // Solo errores reales, no el spam de progreso por defecto
-            "-nostats", // Sin la línea de stats que ffmpeg reescribe en stderr
-            "-f",
-            "f32le",
-            "-ar",
-            &sample_rate.to_string(),
-            "-ac",
-            &channels.to_string(),
-            "-i",
-            "pipe:0",
-            "-c:a",
-            "aac",
-            "-b:a",
-            "192k", // Increased from 64k for better audio quality (especially for speech)
-            "-profile:a",
-            "aac_low", // Use AAC-LC profile for better compatibility
-            "-threads",
-            "1", // Un AAC de 30s no necesita más; así no compite por CPU con Parakeet en equipos de gama baja
-            "-movflags",
-            "+faststart", // Optimize for web streaming
-            "-f",
-            "mp4",
-            output_path.to_str().ok_or_else(|| anyhow::anyhow!("Output path contains invalid UTF-8: {:?}", output_path))?,
-        ])
+        .args(encode_args(sample_rate, channels, output))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -126,4 +164,98 @@ pub fn encode_single_audio(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::encode_args;
+
+    /// El bitrate es el único lever de tamaño presente en el encode y no lo
+    /// cubría ningún test. Si alguien vuelve a subirlo "por calidad", esto falla.
+    #[test]
+    fn encode_args_fija_bitrate_64k_y_perfil_aac_low() {
+        let args = encode_args(48_000, 2, "audio_chunk_000.mp4");
+
+        let b = args
+            .iter()
+            .position(|a| a.as_str() == "-b:a")
+            .expect("falta el flag -b:a");
+        assert_eq!(
+            args[b + 1].as_str(),
+            "64k",
+            "el bitrate del checkpoint debe seguir en 64k (ver CLAUDE.md § Rendimiento de Audio)"
+        );
+
+        let p = args
+            .iter()
+            .position(|a| a.as_str() == "-profile:a")
+            .expect("falta el flag -profile:a");
+        assert_eq!(
+            args[p + 1].as_str(),
+            "aac_low",
+            "AAC-LC es lo que hace compatible el `concat -c copy` de merge_checkpoints"
+        );
+    }
+
+    /// `-ar`/`-ac` describen el INPUT crudo f32le: si migraran detrás de `-i`
+    /// pasarían a ser parámetros de SALIDA y el mp4 dejaría de ser 48 kHz
+    /// estéreo, rompiendo la atribución de hablante por canal L/R.
+    #[test]
+    fn encode_args_describe_el_input_crudo_antes_de_i() {
+        let args = encode_args(48_000, 2, "salida.mp4");
+
+        let ar = args.iter().position(|a| a.as_str() == "-ar").unwrap();
+        let ac = args.iter().position(|a| a.as_str() == "-ac").unwrap();
+        let i = args.iter().position(|a| a.as_str() == "-i").unwrap();
+
+        assert!(ar < i, "-ar debe ir antes de -i (describe el input)");
+        assert!(ac < i, "-ac debe ir antes de -i (describe el input)");
+        assert_eq!(args[ar + 1].as_str(), "48000");
+        assert_eq!(args[ac + 1].as_str(), "2");
+        assert_eq!(args[i + 1].as_str(), "pipe:0");
+        assert_eq!(
+            args.last().unwrap().as_str(),
+            "salida.mp4",
+            "el output SIEMPRE va al final"
+        );
+    }
+
+    /// Golden master del vector completo: cualquier flag añadido, quitado o
+    /// reordenado tiene que ser una decisión consciente.
+    #[test]
+    fn encode_args_orden_completo_es_estable() {
+        let args = encode_args(16_000, 1, "x.mp4");
+        let esperado: Vec<String> = vec![
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-nostats",
+            "-f",
+            "f32le",
+            "-ar",
+            "16000",
+            "-ac",
+            "1",
+            "-i",
+            "pipe:0",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "64k",
+            "-profile:a",
+            "aac_low",
+            "-threads",
+            "1",
+            "-movflags",
+            "+faststart",
+            "-f",
+            "mp4",
+            "x.mp4",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+
+        assert_eq!(args, esperado);
+    }
 }

@@ -1110,6 +1110,53 @@ async fn finalize_segment_native<R: Runtime>(
             words_total, MIN_SEGMENT_WORDS
         );
         emit_segment_discarded(app, words_total, trigger).await;
+
+        // Carpeta HUÉRFANA: el descarte retorna antes de tocar SQLite, así que
+        // esta carpeta nunca tendrá fila en `meetings` ni `folder_path` que la
+        // apunte — el barrido de retención (que trabaja sobre `folder_path`) no
+        // la vería JAMÁS y su `audio.mp4` se quedaría en disco para siempre. Es
+        // el único punto donde todavía sabemos dónde está.
+        //
+        // Se liberan sólo los artefactos de AUDIO y se conservan
+        // `transcripts.json` + `metadata.json` como rastro auditable de por qué
+        // se descartó (y porque el filtro de fantasmas del frontend nunca toca
+        // disco: borrar la carpeta entera sería quitarle su red de seguridad).
+        //
+        // NO consulta `RecordingPreferences::audio_retention_days`: aquí el
+        // borrado es inmediato aunque el usuario haya elegido "nunca borrar".
+        // Respetarla equivaldría a conservar para siempre un audio que ningún
+        // otro camino puede volver a encontrar (sin fila en `meetings`, no hay
+        // `folder_path`, y el barrido periódico parte de ahí). La opción de la
+        // UI lo dice: "de las reuniones guardadas".
+        //
+        // Seguro por construcción: `folder_path` es la carpeta del segmento YA
+        // cerrado (se captura antes del `stop_recording` en `close_scheduled` y
+        // `rotate_scheduled`, y el `stop` ya ocurrió), y ninguno de los dos
+        // callers vuelve a leer `folder` después de esta llamada — sólo usan el
+        // `SegmentOutcome`.
+        //
+        // Best-effort: un fallo aquí no cambia el desenlace del segmento.
+        let folder = std::path::PathBuf::from(folder_path);
+        let folder_para_log = folder_path.to_string();
+        match tokio::task::spawn_blocking(move || {
+            crate::audio::audio_retention::remove_audio_artifacts(&folder)
+        })
+        .await
+        {
+            Ok(Ok(bytes)) => info!(
+                "[scheduled] segmento descartado: liberados {} bytes de audio en {}",
+                bytes, folder_para_log
+            ),
+            Ok(Err(e)) => warn!(
+                "[scheduled] segmento descartado: no se pudo liberar el audio de {}: {}",
+                folder_para_log, e
+            ),
+            Err(e) => warn!(
+                "[scheduled] segmento descartado: tarea de borrado abortada ({}): {}",
+                folder_para_log, e
+            ),
+        }
+
         return SegmentOutcome::Discarded;
     }
 

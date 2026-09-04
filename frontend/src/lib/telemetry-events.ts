@@ -25,6 +25,9 @@ export const TELEMETRY_EVENTS = {
   //    scheduled_recording/service.rs::finalize_segment_native) ──
   RECORDING_SEGMENT_DISCARDED: 'recording.segment_discarded',
 
+  // ── Retención de audio local (emisor: Rust, audio/audio_retention.rs) ──
+  AUDIO_RETENTION_SWEPT: 'audio.retention_swept',
+
   // ── App / salud (emisor: platformLogger; app.error también Rust vía panics.rs) ──
   APP_OPEN: 'app.open',
   APP_CLOSE: 'app.close',

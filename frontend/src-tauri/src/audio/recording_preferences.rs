@@ -27,10 +27,31 @@ pub struct RecordingPreferences {
     /// Higher values boost the captured system audio without changing OS volume.
     #[serde(default = "default_system_audio_gain")]
     pub system_audio_gain: f32,
+    /// Días que se conserva el `audio.mp4` de una reunión ya sincronizada Y
+    /// analizada antes de que `audio::audio_retention` lo libere. `0` = nunca
+    /// borrar. Lo consume `audio_retention::sweep_once` vía
+    /// `effective_retention_days`, que además impone un mínimo de 1 día.
+    ///
+    /// Vive AQUÍ y no en un store propio porque `RecordingSettings.tsx` ya
+    /// cablea `get_recording_preferences`/`set_recording_preferences`: un store
+    /// nuevo serían dos comandos más y una segunda fuente de verdad para el
+    /// mismo panel. `#[serde(default = ...)]` es lo que hace el campo aditivo
+    /// sobre los `recording_preferences.json` ya escritos (mismo patrón que
+    /// `system_audio_gain`).
+    #[serde(default = "default_audio_retention_days")]
+    pub audio_retention_days: u32,
 }
 
 fn default_system_audio_gain() -> f32 {
     1.5
+}
+
+/// 30 días: cubre de sobra la ventana en la que alguien todavía abre la carpeta
+/// de una reunión desde el Explorador (único consumidor real del audio: no hay
+/// reproductor in-app — `useAudioPlayer.ts` es un hook huérfano sin un solo
+/// importador).
+fn default_audio_retention_days() -> u32 {
+    30
 }
 
 impl Default for RecordingPreferences {
@@ -44,6 +65,7 @@ impl Default for RecordingPreferences {
             #[cfg(target_os = "macos")]
             system_audio_backend: Some("coreaudio".to_string()),
             system_audio_gain: default_system_audio_gain(),
+            audio_retention_days: default_audio_retention_days(),
         }
     }
 }

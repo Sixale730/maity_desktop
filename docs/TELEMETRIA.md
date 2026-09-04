@@ -130,6 +130,28 @@ drena `drain.rs`; en el payload: `trigger` (`ui|tray|scheduler|scheduler_rotatio
 > `code` (para agrupar en SQL sin parsear `error`) y `suppressed` (volumen
 > descartado), así que el descarte es visible en vez de silencioso.
 
+**Mantenimiento local — emisor Rust.** Fuera del ciclo de vida de grabación: son
+tareas de proceso, así que su payload **no** lleva `trigger` ni
+`recording_session_id` y el `session_id` de la columna es el de proceso
+(`process_session_id()`).
+
+| event_type | Cuándo | Payload clave |
+|---|---|---|
+| `audio.retention_swept` | Una pasada de `audio_retention::sweep_once` liberó audio (sólo se emite si `meetings_swept > 0` o `failed > 0`) | `meetings_swept`, `bytes_freed`, `retention_days`, `failed`; `status` = `ok` \| `partial` |
+
+> **`audio.retention_swept` (sep-2026, #27).** Ninguna ruta de código borraba
+> carpetas de reunión: el `audio.mp4` se acumulaba para siempre (~29 MB/h con el
+> bitrate nuevo, ~86 MB/h con el viejo). El barrido libera `audio.mp4` y el
+> `.checkpoints/` residual de las reuniones con un `finalize_conversation`
+> completado hace al menos `audio_retention_days` días, y **conserva siempre**
+> `transcripts.json` y `metadata.json`. Se emite **sólo cuando hubo trabajo**: un
+> evento cada 6 h diciendo "no había nada" sería la misma tormenta de filas que
+> costó 965 eventos en 8 h en el piloto Dingler. `status` distingue una pasada
+> limpia (`ok`) de una con reuniones que fallaron y se reintentarán (`partial`).
+> El emisor es Rust vía `emit_event` → outbox → `drain.rs`; el `session_id` de la
+> columna es el de proceso (`process_session_id()`), porque el barrido no
+> pertenece a ninguna grabación.
+
 **App / salud — emisor `platformLogger` (JS) salvo donde se indica.**
 
 | event_type | Quién lo emite | Cuándo | Payload clave |

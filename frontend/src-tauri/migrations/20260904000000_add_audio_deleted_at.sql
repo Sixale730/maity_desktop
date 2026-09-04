@@ -1,0 +1,13 @@
+-- Marca de barrido de retencion del audio local de una reunion.
+--
+-- La escribe `audio_retention::sweep_once` (frontend/src-tauri/src/audio/audio_retention.rs)
+-- cuando ya libero `audio.mp4` y `.checkpoints/` de la carpeta apuntada por
+-- `folder_path`. Se escribe TAMBIEN cuando el archivo ya no existia: sin la
+-- marca el barrido re-visitaria la misma fila cada 6 h y volveria a stat-ear el
+-- disco para nada.
+--
+-- Lo que se conserva SIEMPRE en la carpeta: `transcripts.json` y `metadata.json`.
+--
+-- NULL = audio intacto (o reunion anterior a esta migracion). Migracion ADITIVA:
+-- ninguna fila existente cambia de significado.
+ALTER TABLE meetings ADD COLUMN audio_deleted_at TEXT;

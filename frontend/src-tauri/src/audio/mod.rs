@@ -28,6 +28,7 @@ pub mod recording_commands;
 pub mod recording_preferences;
 pub mod recording_saver;
 pub mod incremental_saver;  // NEW: Incremental audio saving with checkpoints
+pub mod audio_retention;    // Barrido periódico del audio.mp4 de reuniones ya sincronizadas y analizadas
 pub mod level_monitor;
 pub mod simple_level_monitor;
 pub mod buffer_pool;

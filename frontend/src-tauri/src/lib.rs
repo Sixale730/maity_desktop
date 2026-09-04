@@ -990,6 +990,17 @@ pub fn run() {
             // este (single-writer — syncToCloud() del frontend se eliminó).
             logging::telemetry::drain::spawn(_app.handle().clone());
 
+            // Barrido de retención del audio local: libera `audio.mp4` +
+            // `.checkpoints/` de las reuniones ya sincronizadas Y analizadas.
+            // Tarea PROPIA a propósito: `cloud_sync::worker` se auto-gatea por
+            // sesión Supabase, así que colgado ahí el barrido moriría con la
+            // sesión aunque las reuniones que toca lleven semanas sincronizadas;
+            // y el tick del `mem_sampler` mueve un `System` dentro y fuera de
+            // `spawn_blocking` — un `remove_file` ahí contaminaría el timing de
+            // la muestra. Arranca con 120 s de retraso para no cruzarse con la
+            // auto-recuperación de grabaciones interrumpidas.
+            audio::audio_retention::spawn(_app.handle().clone());
+
             // Panics → outbox: hook encadenado (el de main.rs sigue mandando a
             // tracing + Sentry) que escribe a un .jsonl síncrono; los panics
             // del proceso ANTERIOR se importan aquí y la drenadora los sube.

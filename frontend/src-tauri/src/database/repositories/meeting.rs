@@ -355,6 +355,80 @@ impl MeetingsRepository {
         transaction.commit().await?;
         Ok(true)
     }
+
+    /// Reuniones candidatas al barrido de retención de audio.
+    ///
+    /// La condición de "ya se puede borrar" es LOCAL y no necesitó columnas
+    /// nuevas: una fila de `sync_queue` con `job_type='finalize_conversation'`
+    /// y `status='completed'` significa que la conversación existe en Supabase
+    /// **con sus segmentos** (la cadena `depends_on` lo garantiza) y que la nube
+    /// ya dijo lo suyo del análisis; `completed_at` da la edad. Esas filas
+    /// además no se purgan nunca: `SyncQueueRepository::cleanup_old_completed`
+    /// no tiene un solo call site en producción.
+    ///
+    /// El predicado de edad es el mismo de `cleanup_old_completed`
+    /// (`datetime('now', '-' || ? || ' days')`) y compara contra el
+    /// `datetime('now')` que escribe `complete_job` — mismo formato de texto,
+    /// comparación lexicográfica correcta.
+    ///
+    /// Devuelve `(id, folder_path)`. `folder_path` es la ÚNICA verdad sobre
+    /// dónde está la carpeta: `RecordingSaver::initialize_meeting_folder` usa
+    /// `get_default_recordings_folder()` y NO `preferences.save_folder`, así que
+    /// escanear la carpeta de preferencias barrería el directorio equivocado.
+    pub async fn list_audio_retention_candidates(
+        pool: &SqlitePool,
+        days: i64,
+        limit: i64,
+    ) -> Result<Vec<(String, String)>, SqlxError> {
+        let rows: Vec<(String, String)> = sqlx::query_as(
+            "SELECT m.id, m.folder_path
+             FROM meetings m
+             WHERE m.folder_path IS NOT NULL
+               AND m.audio_deleted_at IS NULL
+               AND EXISTS (
+                   SELECT 1 FROM sync_queue q
+                   WHERE q.meeting_id = m.id
+                     AND q.job_type = 'finalize_conversation'
+                     AND q.status = 'completed'
+                     AND q.completed_at IS NOT NULL
+                     AND q.completed_at <= datetime('now', '-' || ? || ' days')
+               )
+             ORDER BY m.created_at ASC
+             LIMIT ?",
+        )
+        .bind(days)
+        .bind(limit)
+        .fetch_all(pool)
+        .await?;
+
+        Ok(rows)
+    }
+
+    /// Marca el audio de una reunión como barrido.
+    ///
+    /// Se llama TAMBIÉN cuando el `audio.mp4` ya no existía (borrado a mano por
+    /// el usuario, carpeta movida): sin la marca, esa fila volvería a salir
+    /// candidata cada 6 h y el barrido gastaría un `stat` por pasada para nada.
+    /// El `AND audio_deleted_at IS NULL` la hace idempotente: una segunda
+    /// llamada devuelve `false` sin pisar la fecha original.
+    pub async fn mark_audio_deleted(
+        pool: &SqlitePool,
+        meeting_id: &str,
+    ) -> Result<bool, SqlxError> {
+        if meeting_id.trim().is_empty() {
+            return Err(SqlxError::Protocol("meeting_id cannot be empty".to_string()));
+        }
+
+        let result = sqlx::query(
+            "UPDATE meetings SET audio_deleted_at = datetime('now')
+             WHERE id = ? AND audio_deleted_at IS NULL",
+        )
+        .bind(meeting_id)
+        .execute(pool)
+        .await?;
+
+        Ok(result.rows_affected() > 0)
+    }
 }
 
 async fn delete_meeting_with_transaction(
@@ -410,4 +484,171 @@ async fn delete_meeting_with_transaction(
         .await?;
 
     Ok(result.rows_affected() > 0)
+}
+
+#[cfg(test)]
+mod tests {
+    //! Tests del barrido de retención de audio a nivel repositorio.
+    //!
+    //! Pool `:memory:` con las MIGRACIONES REALES (`sqlx::migrate!`), no un
+    //! SCHEMA a mano: la consulta cruza `meetings.audio_deleted_at` (columna
+    //! recién migrada) con `sync_queue.completed_at`, y un esquema hand-written
+    //! se desincroniza en silencio (es justo lo que documenta el harness de
+    //! `scheduled_recording/service.rs`).
+
+    use super::*;
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    async fn setup_pool() -> SqlitePool {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1) // `:memory:` da una DB por conexión; capar a 1 mantiene una sola.
+            .connect(":memory:")
+            .await
+            .expect("in-memory sqlite");
+        sqlx::migrate!("./migrations")
+            .run(&pool)
+            .await
+            .expect("run migrations");
+        pool
+    }
+
+    async fn insert_meeting_con_carpeta(pool: &SqlitePool, id: &str, folder: &str) {
+        sqlx::query(
+            "INSERT INTO meetings (id, title, created_at, updated_at, folder_path)
+             VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(id)
+        .bind("Reunión de prueba")
+        .bind("2026-01-01T00:00:00Z")
+        .bind("2026-01-01T00:00:00Z")
+        .bind(folder)
+        .execute(pool)
+        .await
+        .expect("insert meeting");
+    }
+
+    /// `dias_atras` negativo hacia el pasado: 40 = el finalize completó hace 40 días.
+    async fn insert_finalize_job(pool: &SqlitePool, meeting_id: &str, status: &str, dias_atras: i64) {
+        sqlx::query(
+            "INSERT INTO sync_queue (job_type, meeting_id, payload, status, completed_at)
+             VALUES ('finalize_conversation', ?, '{}', ?, datetime('now', '-' || ? || ' days'))",
+        )
+        .bind(meeting_id)
+        .bind(status)
+        .bind(dias_atras)
+        .execute(pool)
+        .await
+        .expect("insert sync_queue job");
+    }
+
+    #[tokio::test]
+    async fn candidata_elegible_cuando_el_finalize_completo_hace_mas_de_n_dias() {
+        let pool = setup_pool().await;
+        insert_meeting_con_carpeta(&pool, "m1", "C:/rec/m1").await;
+        insert_finalize_job(&pool, "m1", "completed", 40).await;
+
+        let rows = MeetingsRepository::list_audio_retention_candidates(&pool, 30, 200)
+            .await
+            .expect("query");
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].0, "m1");
+        assert_eq!(rows[0].1, "C:/rec/m1");
+    }
+
+    #[tokio::test]
+    async fn no_elegible_si_el_finalize_es_mas_reciente_que_la_retencion() {
+        let pool = setup_pool().await;
+        insert_meeting_con_carpeta(&pool, "m1", "C:/rec/m1").await;
+        insert_finalize_job(&pool, "m1", "completed", 3).await;
+
+        let rows = MeetingsRepository::list_audio_retention_candidates(&pool, 30, 200)
+            .await
+            .expect("query");
+
+        assert!(rows.is_empty(), "3 días < 30 de retención: el audio no se toca");
+    }
+
+    /// Sin `finalize_conversation` completado la reunión NO está confirmada en la
+    /// nube; borrar su audio sería tirar el único respaldo que queda.
+    #[tokio::test]
+    async fn no_elegible_sin_finalize_completed() {
+        let pool = setup_pool().await;
+        insert_meeting_con_carpeta(&pool, "sin_job", "C:/rec/a").await;
+
+        insert_meeting_con_carpeta(&pool, "pendiente", "C:/rec/b").await;
+        insert_finalize_job(&pool, "pendiente", "pending", 40).await;
+
+        insert_meeting_con_carpeta(&pool, "fallido", "C:/rec/c").await;
+        insert_finalize_job(&pool, "fallido", "failed", 40).await;
+
+        let rows = MeetingsRepository::list_audio_retention_candidates(&pool, 30, 200)
+            .await
+            .expect("query");
+
+        assert!(rows.is_empty(), "sólo cuenta un finalize_conversation 'completed'");
+    }
+
+    #[tokio::test]
+    async fn no_elegible_si_ya_esta_marcada_como_barrida() {
+        let pool = setup_pool().await;
+        insert_meeting_con_carpeta(&pool, "m1", "C:/rec/m1").await;
+        insert_finalize_job(&pool, "m1", "completed", 40).await;
+
+        assert!(MeetingsRepository::mark_audio_deleted(&pool, "m1").await.unwrap());
+
+        let rows = MeetingsRepository::list_audio_retention_candidates(&pool, 30, 200)
+            .await
+            .expect("query");
+
+        assert!(rows.is_empty(), "audio_deleted_at evita re-visitar la misma fila");
+    }
+
+    #[tokio::test]
+    async fn no_elegible_sin_folder_path() {
+        let pool = setup_pool().await;
+        sqlx::query("INSERT INTO meetings (id, title, created_at, updated_at) VALUES (?,?,?,?)")
+            .bind("sin_carpeta")
+            .bind("Sin carpeta")
+            .bind("2026-01-01T00:00:00Z")
+            .bind("2026-01-01T00:00:00Z")
+            .execute(&pool)
+            .await
+            .unwrap();
+        insert_finalize_job(&pool, "sin_carpeta", "completed", 40).await;
+
+        let rows = MeetingsRepository::list_audio_retention_candidates(&pool, 30, 200)
+            .await
+            .expect("query");
+
+        assert!(rows.is_empty());
+    }
+
+    #[tokio::test]
+    async fn el_limite_capa_la_pasada() {
+        let pool = setup_pool().await;
+        for i in 0..5 {
+            let id = format!("m{}", i);
+            insert_meeting_con_carpeta(&pool, &id, &format!("C:/rec/{}", id)).await;
+            insert_finalize_job(&pool, &id, "completed", 40).await;
+        }
+
+        let rows = MeetingsRepository::list_audio_retention_candidates(&pool, 30, 2)
+            .await
+            .expect("query");
+
+        assert_eq!(rows.len(), 2, "el tope por pasada acota el trabajo de una corrida");
+    }
+
+    #[tokio::test]
+    async fn mark_audio_deleted_es_idempotente() {
+        let pool = setup_pool().await;
+        insert_meeting_con_carpeta(&pool, "m1", "C:/rec/m1").await;
+
+        assert!(MeetingsRepository::mark_audio_deleted(&pool, "m1").await.unwrap());
+        assert!(
+            !MeetingsRepository::mark_audio_deleted(&pool, "m1").await.unwrap(),
+            "la segunda llamada no debe pisar la fecha original"
+        );
+    }
 }

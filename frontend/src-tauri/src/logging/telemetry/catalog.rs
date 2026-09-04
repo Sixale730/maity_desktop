@@ -26,6 +26,9 @@ pub const RECORDING_STOPPED: &str = "recording_stopped"; // legacy
 //    `scheduled_recording/service.rs::finalize_segment_native`) ──
 pub const RECORDING_SEGMENT_DISCARDED: &str = "recording.segment_discarded";
 
+// ── Retención de audio local (emisor: Rust, `audio/audio_retention.rs`) ──
+pub const AUDIO_RETENTION_SWEPT: &str = "audio.retention_swept";
+
 // ── App / salud (emisor: platformLogger; `app.error` también Rust vía
 //    panics.rs, `health.heartbeat` también Rust vía mem_sampler.rs) ──
 pub const APP_OPEN: &str = "app.open";

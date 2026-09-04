@@ -35,6 +35,13 @@ export interface RecordingPreferences {
   preferred_system_device: string | null;
   /** Gain multiplier for system audio (0.5–3.0, default 1.5) */
   system_audio_gain?: number;
+  /**
+   * Días que se conserva el audio.mp4 de una reunión ya sincronizada y
+   * analizada. 0 = nunca borrar. Opcional porque el estado inicial de
+   * RecordingSettings se construye antes del primer get_recording_preferences;
+   * Rust siempre lo devuelve (serde default = 30).
+   */
+  audio_retention_days?: number;
 }
 
 // Subset of RecordingPreferences for device-only config

@@ -16,13 +16,21 @@ interface RecordingSettingsProps {
   onSave?: (preferences: RecordingPreferences) => void;
 }
 
+// El control de retención de audio vive DENTRO de este componente a propósito.
+// `set_recording_preferences` REEMPLAZA el objeto entero (no mergea), así que un
+// componente hermano con su propio get/set produciría una carrera: el que
+// guarde segundo pisa el campo que el otro acababa de cambiar. Mismo motivo por
+// el que `ConfigContext.updateSelectedDevices` hace read-merge-write serializado
+// (ver CLAUDE.md § Convenciones). Cualquier preferencia nueva de
+// `RecordingPreferences` debe entrar por este mismo objeto de estado.
 export function RecordingSettings({ onSave }: RecordingSettingsProps) {
   const [preferences, setPreferences] = useState<RecordingPreferences>({
     save_folder: '',
     auto_save: true,
     file_format: 'mp4',
     preferred_mic_device: null,
-    preferred_system_device: null
+    preferred_system_device: null,
+    audio_retention_days: 30
   });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -81,6 +89,26 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
     });
   };
 
+  const handleRetentionChange = async (days: number) => {
+    const newPreferences = { ...preferences, audio_retention_days: days };
+    setPreferences(newPreferences);
+    // Toast propio: el de por defecto habla de micrófono y audio del sistema, y
+    // aquí lo que cambió es una preferencia cuyo efecto es BORRAR archivos.
+    // Confirmar un cambio destructivo con la descripción de otra cosa es peor
+    // que no confirmarlo.
+    await savePreferences(newPreferences, {
+      title: 'Retención de audio actualizada',
+      description:
+        days === 0
+          ? 'El audio de las reuniones guardadas no se borrará automáticamente.'
+          : `El audio se conservará ${days} días después de sincronizar la reunión.`
+    });
+
+    await Analytics.track('audio_retention_days_changed', {
+      days: days.toString()
+    });
+  };
+
   const handleDeviceChange = async (devices: SelectedDevices) => {
     const newPreferences = {
       ...preferences,
@@ -131,18 +159,28 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
     }
   };
 
-  const savePreferences = async (prefs: RecordingPreferences) => {
+  // `successToast` lo pasa quien cambió algo que NO son los dispositivos: el
+  // mensaje por defecto describe micrófono y audio del sistema, así que usarlo
+  // para otra preferencia confirma un cambio distinto del que hizo el usuario.
+  const savePreferences = async (
+    prefs: RecordingPreferences,
+    successToast?: { title: string; description?: string }
+  ) => {
     setSaving(true);
     try {
       await invoke('set_recording_preferences', { preferences: prefs });
       onSave?.(prefs);
 
-      // Show success toast with device details
-      const micDevice = prefs.preferred_mic_device || 'Default';
-      const systemDevice = prefs.preferred_system_device || 'Default';
-      toast.success("Preferencias de dispositivo guardadas", {
-        description: `Micrófono: ${micDevice}, Audio del Sistema: ${systemDevice}`
-      });
+      if (successToast) {
+        toast.success(successToast.title, { description: successToast.description });
+      } else {
+        // Show success toast with device details
+        const micDevice = prefs.preferred_mic_device || 'Default';
+        const systemDevice = prefs.preferred_system_device || 'Default';
+        toast.success("Preferencias de dispositivo guardadas", {
+          description: `Micrófono: ${micDevice}, Audio del Sistema: ${systemDevice}`
+        });
+      }
     } catch (error) {
       console.error('Failed to save recording preferences:', error);
       toast.error("Error al guardar preferencias de dispositivo", {
@@ -268,6 +306,41 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
           <span>50%</span>
           <span>150% (predeterminado)</span>
           <span>300%</span>
+        </div>
+      </div>
+
+      {/* Retención de Audio */}
+      <div className="p-4 border rounded-lg">
+        <div className="font-medium mb-1">Conservar el Audio de las Reuniones</div>
+        <div className="text-sm text-[#4a4a4c] dark:text-gray-300 mb-3">
+          Después de este tiempo se libera el archivo de audio de las reuniones que
+          ya se sincronizaron y analizaron. La transcripción y los datos de la
+          reunión se conservan siempre: sólo se borra el audio.
+        </div>
+        <select
+          value={preferences.audio_retention_days ?? 30}
+          onChange={(e) => handleRetentionChange(parseInt(e.target.value, 10))}
+          disabled={saving}
+          className="w-full px-3 py-2 text-sm border border-[#d0d0d3] dark:border-gray-600 rounded-md bg-transparent disabled:opacity-50"
+        >
+          {/*
+            El texto dice "de las reuniones guardadas" y no "Nunca borrar el audio"
+            a secas porque esta preferencia NO gobierna todo el audio del disco: los
+            segmentos de jornada que se descartan por contenido insuficiente
+            (< 250 palabras) liberan su audio de inmediato, sin consultarla —
+            su carpeta nunca llega a ser una reunión guardada y nadie más podría
+            alcanzarla después. Ver CLAUDE.md § Umbral de contenido de la jornada.
+          */}
+          <option value={0}>Nunca borrar el audio de las reuniones guardadas</option>
+          <option value={7}>7 días</option>
+          <option value={30}>30 días (recomendado)</option>
+          <option value={90}>90 días</option>
+        </select>
+        <div className="text-xs text-[#8a8a8d] mt-2">
+          Una hora de reunión ocupa alrededor de 29 MB. Con &quot;Nunca borrar&quot; el
+          espacio en disco crece sin límite. Los segmentos de jornada que se
+          descartan por no tener suficiente conversación liberan su audio de
+          inmediato en cualquier caso.
         </div>
       </div>
 
