@@ -26,7 +26,8 @@ pub const RECORDING_STOPPED: &str = "recording_stopped"; // legacy
 //    `scheduled_recording/service.rs::finalize_segment_native`) ──
 pub const RECORDING_SEGMENT_DISCARDED: &str = "recording.segment_discarded";
 
-// ── App / salud (emisor: platformLogger; `app.error` también Rust vía panics.rs) ──
+// ── App / salud (emisor: platformLogger; `app.error` también Rust vía
+//    panics.rs, `health.heartbeat` también Rust vía mem_sampler.rs) ──
 pub const APP_OPEN: &str = "app.open";
 pub const APP_CLOSE: &str = "app.close";
 pub const APP_ERROR: &str = "app.error";

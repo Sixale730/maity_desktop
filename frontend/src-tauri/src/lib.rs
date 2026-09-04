@@ -1103,12 +1103,17 @@ pub fn run() {
                     log::info!("Skipping Summary ModelManager - using cloud provider: {}", summary_provider);
                 }
 
-                // Telemetría de RSS: [METRIC] mem-sample cada 30s al log
-                // rotativo (maity-desktop, llama-helper, WebView2, sistema).
-                // Sin esto, "la memoria no se libera" es indemostrable en campo
-                // (auditoría jul-2026: cero señales de memoria en 60 MB de logs).
-                // Recibe el AppHandle para armar el incidente con consentimiento
-                // (#61) cuando app-rss-critical / system-memory-pressure se sostienen.
+                // Telemetría de RSS: [METRIC] mem-sample al log rotativo
+                // (maity-desktop, llama-helper, WebView2, sistema), cada 30 s
+                // grabando y 60 s en idle. Sin esto, "la memoria no se libera"
+                // es indemostrable en campo (auditoría jul-2026: cero señales
+                // de memoria en 60 MB de logs). Recibe el AppHandle para (a)
+                // armar el incidente con consentimiento (#61) cuando
+                // app-rss-critical / system-memory-pressure se sostienen y (b)
+                // emitir el latido nativo `health.heartbeat` cuando el webview
+                // lleva >20 min sin pedir get_health_snapshot (tray/ventana
+                // congelada: WebView2 suspende el JS y el heartbeat del
+                // frontend desaparece justo cuando una fuga importa).
                 logging::mem_sampler::start(app_handle_for_config.clone());
 
                 // Preload the configured STT model into RAM so the first

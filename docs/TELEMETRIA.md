@@ -137,7 +137,7 @@ drena `drain.rs`; en el payload: `trigger` (`ui|tray|scheduler|scheduler_rotatio
 | `app.open` / `app.close` | `layout.tsx` (`AppContent`) | arranque / cierre de la ventana main | — |
 | `nav.page_view` | `usePageViewTracker` | cada navegación | ruta |
 | `device.profile` | `healthHeartbeatService.start()` (comando `get_device_profile`) | **1× por sesión** | `cpu_cores`, `gpu_type`, `memory_gb`, `os`, `os_version`, `arch`, `build_channel`, `performance_tier` — *resource attributes*, NO se repiten en cada heartbeat (ver cardinalidad abajo) |
-| `health.heartbeat` | `healthHeartbeatService` | cada 5 min activo / 15 min idle + start/stop de grabación | ver abajo (+ `err_budget`, `performance_tier`) |
+| `health.heartbeat` | `healthHeartbeatService` (JS) **y `logging/mem_sampler.rs` (Rust, `reason:"native"`)** | JS: cada 5 min activo / 15 min idle + start/stop de grabación. Rust: cada 15 min, SOLO si el webview lleva >20 min sin pedir `get_health_snapshot` (tray / ventana congelada) | ver abajo (+ `err_budget`, `performance_tier`). Etiquetar con `event_data->'ctx'->>'emitter'` (`webview` vs `rust`); para unir la serie de un mismo proceso, agrupar por `event_data->'ctx'->>'session_id'` (la COLUMNA `session_id` difiere entre emisores) |
 | `coach.session_summary` | `useCoachMetricsTelemetry` (evento Rust `coach-metrics`) | al cerrar sesión de coach | métricas LLM + sidecar (timeouts, restarts, breaker) + picos de RAM + tier |
 | `app.error` | `errorTelemetry` (JS) y **`telemetry/panics.rs` (Rust, `source:"rust-panic"`)** | error no manejado / boundary / panic (al outbox; se drena en el siguiente arranque) | ver abajo |
 
@@ -160,21 +160,26 @@ stub de PostHog) es analítica de producto de la UI (`coach_float.*`,
 `// telemetry-allow:`. Si algún día se quiere inventariar, entra por la regla de
 3 entradas.
 
-### `health.heartbeat` (nuevo, jul-2026)
+### `health.heartbeat` (jul-2026; doble emisor desde sep-2026)
 
 Fuente Rust: comando `get_health_snapshot` (`logging/commands.rs`) — UNA
-invocación IPC que junta: el último `MemSample` del sampler periódico de 30s
-(`logging/mem_sampler.rs`, costo ~0, `cpu_pct` real), fase de grabación
-(`recording_phase`, lock-free) y lag de transcripción (AtomicU64).
+invocación IPC que junta: el último `MemSample` del sampler periódico
+(`logging/mem_sampler.rs`, **30 s grabando / 60 s en idle**, costo ~0,
+`cpu_pct` y `proc_cpu_pct` reales), fase de grabación (`recording_phase`,
+lock-free) y lag de transcripción (AtomicU64). La frescura del sample **no es
+un techo fijo**: leerla de `mem_sample_age_s`, nunca asumir 30 s.
 
 `event_data`:
 
 ```jsonc
 {
-  "reason": "initial | interval | recording-start | recording-stop",
+  "reason": "initial | interval | recording-start | recording-stop | native",
+  //          └─ los 4 primeros: emisor JS (ctx.emitter="webview")
+  //             "native": emisor Rust del mem_sampler (ctx.emitter="rust")
   "phase": "idle | starting | recording | paused | stopping",
-  "uptime_s": 3600,            // desde el arranque del heartbeat (post-auth)
-  "seq": 12,                   // contador por sesión; gaps delatan sleep del laptop
+  "uptime_s": 3600,            // JS: desde el arranque del heartbeat (post-auth).
+                               // Rust: desde el arranque del sampler (≈ del proceso).
+  "seq": 12,                   // contador por emisor; gaps delatan sleep del laptop
   "mem": {                     // MemSample del sampler (null si aún no hay tick)
     "app_rss_mb": 512,         // RSS del proceso maity-desktop
     "llama_rss_mb": 1024,      // suma de llama-helper por NOMBRE (caza huérfanos)
@@ -183,21 +188,54 @@ invocación IPC que junta: el último `MemSample` del sampler periódico de 30s
     "webview_procs": 4,
     "ffmpeg_procs": 0,
     "sys_avail_mb": 8000, "sys_total_mb": 16000,
-    "cpu_pct": 12.5
+    "cpu_pct": 12.5,           // CPU del SISTEMA (0-100), de global_cpu_usage()
+    "proc_cpu_pct": 37.5       // CPU de maity-desktop, normalizado ×nb_cpus:
+                               // 100 % = UN core, NO la máquina entera.
+                               // 0 en snapshots ad-hoc y en la primera muestra.
   },
-  "mem_sample_age_s": 7,       // null = fallback fresco (cpu_pct sale 0)
+  "mem_sample_age_s": 7,       // null = fallback fresco (cpu_pct sale 0); 0 en el nativo
   "peaks": { ... },            // SessionPeaks; OJO: el coach los resetea por sesión
   "lag_seconds": 0,
-  "queue": { ... } | null      // último transcription-lag-update (6 campos); null en idle
+  "queue": { ... } | null      // último transcription-lag-update (6 campos); null en
+                               // idle. AUSENTE en el nativo: lo alimenta un listener
+                               // del webview, que es justo lo que está muerto.
 }
 ```
 
-Diseño: un solo interval de 5 min; la cadencia real la decide
+> El nativo tampoco lleva `err_budget.webview` (limiter del JS) y manda
+> `performance_tier: null`.
+
+Diseño (emisor JS): un solo interval de 5 min; la cadencia real la decide
 `shouldEmitHeartbeat` por timestamps (sleep-safe: tras resume emite UNA vez).
 Gate de sesión Supabase por tick (sin login → cero RPCs). Solo la ventana
 principal lo corre (`isAuxWindowPath` excluye coach-float/recording-widget/
 device-picker). Sin retry offline: un heartbeat perdido no se encola (mentiría
 sobre `created_at`).
+
+Diseño (emisor Rust, sep-2026 — hallazgo #14 de la auditoría de recursos): el
+JS vive dentro de `AuthGate` y WebView2 **suspende el JS con la ventana
+oculta**, así que en tray o con el webview congelado el latido desaparece justo
+cuando una fuga importa. El loop de `mem_sampler` emite entonces el MISMO
+`event_type` con `reason:"native"` cada 15 min, gateado por
+`crate::state::has_session`. Desduplicación: `get_health_snapshot` tiene UN solo
+invoker en todo el frontend, así que cada llamada marca "el webview está vivo"
+(`mem_sampler::record_js_snapshot`) y el nativo solo emite si ese sello lleva
+>20 min sin refrescarse (umbral por encima de los 15 min de la cadencia idle
+del JS, para que un idle sano nunca produzca dos series).
+**A diferencia del JS, el nativo SÍ se encola**: va por el outbox
+(`emit_event` → `recording_logs` → `drain.rs`, single-writer), así que un latido
+sin red se sube al reconectar. La frase "sin retry offline" de arriba aplica
+SOLO al emisor JS; para el nativo el event time real está en
+`ctx.occurred_at`, no en `created_at`.
+**Consecuencia para el análisis:** la COLUMNA `session_id` difiere entre
+emisores — el JS manda el suyo (`desktop-…`, de `platformLogger`) y el nativo el
+de proceso (`proc-…`, de `context::process_session_id()`) —, así que agrupar por
+esa columna **parte en dos** la serie de un mismo proceso; mezclarlas es
+imposible, son valores distintos. Lo que SÍ une a los dos emisores es
+`event_data->'ctx'->>'session_id'`, idéntico en ambos por el contrato `ctx` de
+arriba (el JS lo toma de Rust vía `get_telemetry_context`). `emitter` no
+desmezcla nada: sirve para ETIQUETAR y filtrar (p. ej. `emitter='rust' and
+reason='native'` = jornada sin webview).
 
 ### `app.error` (jul-2026)
 
@@ -236,7 +274,14 @@ componentStack 1000).
 (JS) exponen `{sent, dropped_dedup, dropped_cap, dropped_gap, dropped_channel}`
 — invariante `sent + Σdropped == intentos` — y viajan como `err_budget` en cada
 `health.heartbeat` (contadores **monótonos por sesión** → en SQL, `max()` por
-sesión y luego sumar). El dedup de Rust pasó de `BTreeSet` a `BTreeMap<String,u32>`
+sesión y luego sumar). **Ojo con `err_budget.rust` desde el doble emisor
+(sep-2026):** ese contador es del proceso y lo publican LOS DOS latidos (el JS
+lo reenvía dentro del snapshot), pero bajo columnas `session_id` distintas
+(`desktop-…` vs `proc-…`) — hacer `max()` por esa columna y sumar cuenta el
+mismo presupuesto dos veces. Agrupar por `event_data->'ctx'->>'session_id'` (id
+de proceso) o restringir a `emitter='webview'`.
+
+El dedup de Rust pasó de `BTreeSet` a `BTreeMap<String,u32>`
 y publica `{top_suppressed ×3, suppressed_total}` (conteos, no texto). Gotcha
 arreglado: el dedup miraba lo VISTO, no lo ENVIADO — un drop por gap
 envenenaba el dedup y el primer error de cada ráfaga se perdía para siempre.
@@ -262,11 +307,21 @@ pathname, dedup_key, seq, session_uptime_s}` + columna `error` = message.
 
 - **Log rotativo** (`logging/file_logger.rs`): todo `tracing`/`log` de Rust +
   lo que el frontend manda por `log_frontend_event`.
-- **`[METRIC] mem-sample`** (`logging/mem_sampler.rs`, del ciclo RAM 0.2.53):
-  cada 30s, RSS por proceso + lag; snapshots extra en 7 eventos de alta señal
-  (recording-start/stop, post-stop-60s/120s, transcription-backlog,
-  onnx-recycle, sidecar-timeout). Warnings con umbral y rate-limit 10 min
-  (`sidecar-pool-multiple`, `app-rss-critical`, `system-memory-pressure`...).
+- **`[METRIC] mem-sample`** (`logging/mem_sampler.rs`, del ciclo RAM 0.2.53;
+  cadencia por fase desde sep-2026): **30 s grabando / 60 s en idle**, RSS por
+  proceso + `cpu_pct` (sistema) + `proc_cpu_pct` (Maity, ×nb_cpus) + lag;
+  snapshots extra en 8 call sites de alta señal, con **8 valores distintos de
+  `reason`** (los que se grepean en el log): `recording-start`,
+  `recording-stop`, `post-stop-60s`, `post-stop-120s`, `transcription-backlog`,
+  `onnx-recycle`, `sidecar-timeout-strikes` y `sidecar-timeout-legacy`.
+  El refresh de procesos pide un `ProcessRefreshKind` **ligero** (solo
+  `with_memory()`): `name`/`parent` salen del snapshot del OS y no dependen del
+  kind, así que el sampler dejó de pagar `GetProcessIoCounters` y
+  `GetProcessTimes`+`GetSystemTimes` sobre ~300 procesos **en cada tick** (más
+  `GetModuleFileNameExW`, que con el kind viejo era `with_exe(OnlyIfNotSet)`:
+  1× por proceso NUEVO, no por tick).
+  Warnings con umbral y rate-limit 10 min (`sidecar-pool-multiple`,
+  `app-rss-critical`, `system-memory-pressure`...).
 - **Export**: Settings → Logging → Export (`export_logs`) genera ZIP con logs +
   `system_info.txt` + `recording_lifecycle_logs.json` (SQLite).
 - **Bundle de incidente con consentimiento** (#61, ago-2026;
@@ -282,8 +337,11 @@ pathname, dedup_key, seq, session_uptime_s}` + columna `error` = message.
   transcripciones, sin SQLite. **Nunca automático, nunca reintentos** (bucket
   ausente → error corto al usuario; el ZIP local sigue disponible).
   - Triggers (`kind`): `app-rss-critical` (>4000 MB RSS, inmediato),
-    `system-memory-pressure` (<1024 MB disponibles **sostenido 2 ticks = 60 s**;
-    un pico de un tick no pregunta), `rust-panic` (al arranque siguiente, desde
+    `system-memory-pressure` (<1024 MB disponibles **sostenido ≥60 s reales**,
+    ventana medida con `Instant` desde el primer sample bajo umbral — ya NO es
+    un conteo de ticks: con la cadencia por fase "2 ticks" valdría 60 s
+    grabando y 120 s en idle; un pico de un tick no pregunta), `rust-panic`
+    (al arranque siguiente, desde
     `panics.rs::import_pending`), `manual` (Ajustes → Diagnóstico y Soporte →
     "Enviar diagnóstico").
   - Dedupe (`incident::arm`): 1 prompt por `kind` por proceso + cooldown
@@ -307,27 +365,46 @@ Serie de tiempo de RAM — LA query para cazar fugas:
 
 ```sql
 select created_at, session_id, app_version,
+       -- 'webview' = heartbeat del JS · 'rust' = latido nativo del mem_sampler.
+       -- La COLUMNA session_id ya difiere entre ambos (desktop-… vs proc-…), así
+       -- que un proceso aparece como DOS series; emitter es la etiqueta que las
+       -- explica. Para unirlas: event_data->'ctx'->>'session_id'.
+       event_data->'ctx'->>'emitter' as emitter,
        (event_data->'mem'->>'app_rss_mb')::int  as app_mb,
        (event_data->'mem'->>'llama_rss_mb')::int as llama_mb,
        (event_data->'mem'->>'webview_rss_mb')::int as webview_mb,
+       (event_data->'mem'->>'proc_cpu_pct')::float as proc_cpu_pct, -- ×nb_cpus: 100 = 1 core
        event_data->>'phase' as phase, event_data->>'reason' as reason
 from maity.platform_logs
 where platform='desktop' and event_type='health.heartbeat'
   and created_at > now() - interval '7 days'
-order by session_id, created_at;
+order by emitter, session_id, created_at;
 ```
 
 Pendiente de crecimiento por versión (¿la versión X arregló la fuga?):
 
 ```sql
-select app_version, session_id,
+select app_version,
+       event_data->'ctx'->>'emitter' as emitter,
+       event_data->'ctx'->>'install_id' as install_id,
+       session_id,
        max((event_data->'mem'->>'app_rss_mb')::int) -
        min((event_data->'mem'->>'app_rss_mb')::int) as growth_mb,
        count(*) as beats
 from maity.platform_logs
 where platform='desktop' and event_type='health.heartbeat'
-group by 1, 2 having count(*) >= 3 order by growth_mb desc;
+group by 1, 2, 3, 4 having count(*) >= 3 order by growth_mb desc;
 ```
+
+> La COLUMNA `session_id` del latido nativo es el id de PROCESO
+> (`proc-<epoch>-<rand>`) y la del JS es la suya (`desktop-…`). Son valores
+> distintos, así que esta query devuelve **dos filas por proceso** (una por
+> emisor) aunque no se agrupe por `emitter`: la segmentación no evita ninguna
+> mezcla, solo etiqueta lo que ya viene partido. Para el crecimiento del proceso
+> COMPLETO hay que agrupar por `event_data->'ctx'->>'session_id'`, que sí es el
+> mismo en ambos emisores. Para "¿hubo jornada sin webview?":
+> `emitter='rust' and reason='native'` — cada fila es 15 min de app viva con el
+> frontend suspendido.
 
 Top de errores por versión:
 

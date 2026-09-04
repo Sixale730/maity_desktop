@@ -17,6 +17,11 @@
  *   payload: el worker solo emite durante grabación, así el heartbeat de stop
  *   sale con los valores finales de la cola.
  * - Gate de sesión Supabase por tick: sin login, cero RPCs.
+ * - Punto ciego cubierto desde Rust: con la ventana en tray WebView2 suspende
+ *   este JS y el latido desaparece. `logging/mem_sampler.rs` emite entonces un
+ *   `health.heartbeat` nativo (`reason:"native"`, `ctx.emitter:"rust"`) cada
+ *   15 min, y usa la llamada a `get_health_snapshot` de este servicio como
+ *   prueba de vida para no duplicar la serie.
  * - Fire-and-forget total: la telemetría jamás rompe la app. Sin `logger.*` ni
  *   `console.*` en el path de envío (evita bucles con errorTelemetry).
  */
@@ -34,6 +39,11 @@ export const IDLE_EMIT_EVERY_MS = 15 * 60_000
 /** Jitter del interval: un tick a los 4:59.9 no debe saltarse. */
 export const HEARTBEAT_TOLERANCE_MS = 5_000
 
+/**
+ * Razones que emite ESTE servicio. Rust tiene además `'native'`
+ * (`logging/mem_sampler.rs`), que nunca pasa por aquí: se distingue en SQL por
+ * `ctx.emitter = 'rust'`.
+ */
 export type HeartbeatReason = 'initial' | 'interval' | 'recording-start' | 'recording-stop'
 
 /** Espejo de `MemSample` (Rust, logging/mem_sampler.rs). */
@@ -46,7 +56,10 @@ interface MemSample {
   ffmpeg_procs: number
   sys_avail_mb: number
   sys_total_mb: number
+  /** CPU del SISTEMA completo (0-100). */
   cpu_pct: number
+  /** CPU del proceso maity-desktop, normalizado ×nb_cpus: 100 % = UN core. */
+  proc_cpu_pct: number
 }
 
 /** Espejo de `SessionPeaks` (Rust). Ojo: el ciclo del coach los resetea. */

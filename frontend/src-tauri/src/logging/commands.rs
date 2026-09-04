@@ -312,9 +312,11 @@ pub fn log_frontend_event(
 
 /// Snapshot combinado de salud para el heartbeat de telemetría del frontend.
 ///
-/// `mem` sale del cache del sampler periódico de `mem_sampler` (edad ≤30s,
-/// `cpu_pct` real por el delta del System persistente); el fallback fresco
-/// solo corre antes del primer tick y se distingue por `mem_sample_age_s: None`.
+/// `mem` sale del cache del sampler periódico de `mem_sampler` (edad ≤30 s
+/// grabando / ≤60 s en idle — la cadencia depende de la fase, así que hay que
+/// mirar `mem_sample_age_s`, no asumir un techo; `cpu_pct` y `proc_cpu_pct`
+/// reales por el delta del System persistente); el fallback fresco solo corre
+/// antes del primer tick y se distingue por `mem_sample_age_s: None`.
 /// `peaks` se resetea con `reset_session_peaks()` (lo hace el ciclo del coach),
 /// así que son informativos por tramo, no acumulados de toda la app.
 #[derive(Debug, serde::Serialize)]
@@ -336,6 +338,12 @@ pub struct HealthSnapshot {
 /// + clone de struct chico + lecturas atómicas).
 #[tauri::command]
 pub async fn get_health_snapshot() -> Result<HealthSnapshot, String> {
+    // Prueba de vida del webview: este comando tiene UN solo invoker en todo
+    // el frontend (`healthHeartbeatService.ts`), así que su llamada equivale a
+    // "el heartbeat JS está corriendo". El sampler lo usa para NO duplicar el
+    // latido con su emisión nativa.
+    mem_sampler::record_js_snapshot();
+
     let (mem, mem_sample_age_s) = match mem_sampler::last_sample() {
         Some((s, age)) => (Some(s), Some(age)),
         None => {
@@ -449,6 +457,7 @@ mod health_snapshot_tests {
                 sys_avail_mb: 8000,
                 sys_total_mb: 16000,
                 cpu_pct: 12.5,
+                proc_cpu_pct: 37.5,
             }),
             mem_sample_age_s: Some(7),
             peaks: SessionPeaks {
@@ -469,6 +478,10 @@ mod health_snapshot_tests {
         assert_eq!(v["mem_sample_age_s"], 7);
         assert_eq!(v["mem"]["app_rss_mb"], 512);
         assert_eq!(v["mem"]["cpu_pct"], 12.5);
+        assert_eq!(
+            v["mem"]["proc_cpu_pct"], 37.5,
+            "espejo de healthHeartbeatService.ts: si esta key cambia, el TS deja de leerla"
+        );
         assert_eq!(v["peaks"]["app_rss_peak_mb"], 900);
         assert_eq!(v["peaks"]["sys_avail_min_mb"], 3000);
     }
