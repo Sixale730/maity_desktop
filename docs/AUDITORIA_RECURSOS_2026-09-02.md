@@ -137,6 +137,15 @@ conclusión sobre la jornada; por eso van antes de los hallazgos.
    principal oculta frente al coach-float. Decidir si el coach se cierra en la jornada exige ese reparto
    por ventana.
 
+> **Actualización 2026-09-07.** Los puntos 1 y 2 tienen arreglo en `main` desde `0506582` (#14, 04-sep):
+> el `mem_sampler` emite el mismo `health.heartbeat` con `reason:"native"` cada 15 min por el outbox (solo
+> con sesión y solo si el webview lleva > 20 min sin pedir `get_health_snapshot`), y el latido lleva el campo
+> nuevo `proc_cpu_pct` (CPU del proceso propio ×nb_cpus; `cpu_pct` sigue siendo del sistema a propósito).
+> **Ningún release lo lleva todavía**: a 07-sep `platform_logs` tiene 0 latidos con `reason:"native"` y solo
+> 4 con `proc_cpu_pct`, todos de builds 0.2.58 de desarrollo; en campo (0.2.57) los dos huecos siguen
+> abiertos y falta el smoke de una jornada en bandeja. El punto 3 sigue abierto en código: `webview_rss_mb`
+> es una sola suma, sin reparto por ventana. Detalle en `docs/TELEMETRIA.md` § `health.heartbeat`.
+
 ---
 
 ## Los 35 hallazgos
