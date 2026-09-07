@@ -28,6 +28,18 @@ pub enum PerformanceTier {
     Ultra,    // High-end hardware with fast GPU
 }
 
+impl PerformanceTier {
+    /// Etiqueta en minúsculas para telemetría (misma que `device.profile`).
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            PerformanceTier::Low => "low",
+            PerformanceTier::Medium => "medium",
+            PerformanceTier::High => "high",
+            PerformanceTier::Ultra => "ultra",
+        }
+    }
+}
+
 /// Adaptive Whisper configuration based on hardware
 #[derive(Debug, Clone)]
 pub struct AdaptiveWhisperConfig {

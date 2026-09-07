@@ -5,24 +5,30 @@
 use super::deepgram_provider::DeepgramRealtimeTranscriber;
 use super::provider::TranscriptionProvider;
 use log::{info, warn, error};
-use std::sync::{Arc, LazyLock, RwLock};
+use std::sync::{Arc, LazyLock, Mutex, RwLock};
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 
+use crate::audio::recording_phase::{self, RecordingPhase};
 use crate::events;
 
 // ============================================================================
 // FAST PATH: PRELOADED ENGINE FLAG
 // ============================================================================
 //
-// Cuando preload_transcription_engine() carga el modelo en startup, registra
-// (provider, model) en este flag global. validate_transcription_model_ready
-// consulta el flag ANTES de leer SQLite — si coincide, retorna Ok(()) en <1ms
-// en lugar de hacer round-trip a la DB (3-100ms).
+// Cuando `ensure_stt_warm` (o la carga on-demand de `validate_transcription_
+// model_ready`) deja el modelo en RAM, registra (provider, model) en este flag
+// global. `validate_transcription_model_ready` lo consulta ANTES de tocar el
+// motor — si coincide, retorna Ok(()) en <1 ms en lugar de re-validar.
 //
-// El flag debe re-actualizarse via mark_preloaded(...) cuando el usuario
-// cambia el modelo desde Settings, para que validate no devuelva un modelo
-// viejo. Cada *_engine commands handler que cambie modelo activo debe llamar
-// mark_preloaded(provider, nuevo_model).
+// El flag NO comprueba `is_model_loaded()`: por eso se lee y se limpia SIEMPRE
+// bajo `STT_WARM_LOCK`, y `clear_preloaded()` va DESPUÉS de `unload_model()`.
+// Un unload que dejara el flag armado haría que la siguiente grabación saltara
+// la carga y muriera en `get_or_init_transcription_engine` con "no model loaded".
+//
+// Pendiente conocido: ningún handler de Ajustes llama a `mark_preloaded` al
+// cambiar el modelo activo, y `parakeet_validate_model_ready_with_config`
+// devuelve Ok con cualquier modelo cargado aunque la config pida otro.
 
 static PRELOADED_ENGINE: LazyLock<RwLock<Option<(String, String)>>> =
     LazyLock::new(|| RwLock::new(None));
@@ -38,8 +44,7 @@ pub fn mark_preloaded(provider: &str, model: &str) {
     }
 }
 
-/// Limpia el flag de preload. Llamar tras unload o cuando el modelo deja de estar listo.
-#[allow(dead_code)]
+/// Limpia el flag de preload. Llamar tras unload, bajo `STT_WARM_LOCK`.
 pub fn clear_preloaded() {
     if let Ok(mut guard) = PRELOADED_ENGINE.write() {
         *guard = None;
@@ -53,6 +58,327 @@ fn fast_path_match(provider: &str, model: &str) -> bool {
         .and_then(|g| g.clone())
         .map(|(p, m)| p == provider && m == model)
         .unwrap_or(false)
+}
+
+// ============================================================================
+// CICLO DE VIDA DEL MOTOR STT LOCAL (sep-2026, #02 de la auditoría de recursos)
+// ============================================================================
+//
+// Hasta sep-2026 el modelo se precargaba en el `setup()` de lib.rs sin mirar
+// sesión ni registro (~600 MB residentes en la pantalla de login y en la
+// bandeja, sin consumidor posible) y nada lo descargaba jamás. Hoy la carga
+// vive detrás de `ensure_stt_warm` (login, registro, fin de descarga, prewarm
+// de jornada) y la descarga detrás de `unload_stt` (logout en todo tier; reposo
+// prolongado en tier Low vía `idle_unload.rs`).
+//
+// `STT_WARM_LOCK` serializa TRES cosas: la precarga, la carga on-demand de
+// `validate_transcription_model_ready` y el unload. Sostener el write lock del
+// motor durante el check de fase NO bastaría: `validate` devuelve Ok tras un
+// `is_model_loaded()` y suelta todo, y entre ese Ok y la primera inferencia
+// pasan cientos de ms en los que un unload que ya pasó su check de fase vacía
+// el modelo y el worker salta la grabación entera (worker.rs: chunk sin modelo
+// = chunk descartado). Con el flag, la carga y el check de fase bajo el mismo
+// mutex —y `StartGate` (fase `Starting`) adquirido ANTES de que `validate`
+// pida el lock— todos los órdenes terminan bien: o el unload ve `Starting` y
+// rehúsa, o `validate` ve el flag limpio y recarga.
+//
+// Orden de locks: `STT_WARM_LOCK` es SIEMPRE el más externo. Dentro sólo se
+// toman los statics `*_ENGINE` (std Mutex, bloque corto para clonar el `Arc`,
+// nunca a través de un await) y los `RwLock` tokio de cada motor.
+
+static STT_WARM_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// Resultado de `ensure_stt_warm`.
+#[derive(Debug)]
+pub enum WarmOutcome {
+    /// Se cargó un modelo en esta llamada.
+    Loaded {
+        provider: String,
+        model: String,
+        elapsed: Duration,
+    },
+    /// El modelo configurado ya estaba en RAM: no se hizo nada.
+    AlreadyLoaded,
+    SkippedNoSession,
+    SkippedRegistration,
+    /// Provider en la nube (Deepgram): no hay nada que cargar.
+    SkippedCloud,
+}
+
+/// Resultado de `unload_stt`.
+#[derive(Debug)]
+pub enum UnloadOutcome {
+    /// `(provider, modelo)` por cada motor que tenía algo residente.
+    Unloaded(Vec<(&'static str, String)>),
+    NothingLoaded,
+    /// Hay una grabación en curso (o arrancando / cerrando): no se toca.
+    RefusedPhase(RecordingPhase),
+}
+
+/// ¿Se puede descargar el motor en esta fase? Sólo en `Idle`. `Stopping` también
+/// rehúsa: el drenaje final de la cola de transcripción aún usa el modelo.
+/// Pura, para poder tabularla en tests.
+pub(crate) fn unload_allowed(phase: RecordingPhase) -> bool {
+    phase == RecordingPhase::Idle
+}
+
+fn is_local_provider(provider: &str) -> bool {
+    matches!(provider, "parakeet" | "localWhisper" | "moonshine" | "canary")
+}
+
+fn default_transcript_config() -> crate::api::TranscriptConfig {
+    crate::api::TranscriptConfig {
+        provider: "parakeet".to_string(),
+        model: "parakeet-tdt-0.6b-v3-int8".to_string(),
+        api_key: None,
+        language: Some("es-419".to_string()),
+    }
+}
+
+/// Config de transcripción desde SQLite, con el default histórico (Parakeet)
+/// si no hay fila o la lectura falla. `Err` sólo si `AppState` no existe aún.
+async fn read_transcript_config<R: Runtime>(
+    app: &AppHandle<R>,
+) -> Result<crate::api::TranscriptConfig, String> {
+    let app_state = app
+        .try_state::<crate::state::AppState>()
+        .ok_or_else(|| "Database not initialized — cannot read transcript config".to_string())?;
+    match crate::api::api_get_transcript_config(app.clone(), app_state, None).await {
+        Ok(Some(config)) => Ok(config),
+        Ok(None) => {
+            info!("📝 No transcript config found, defaulting to parakeet");
+            Ok(default_transcript_config())
+        }
+        Err(e) => {
+            warn!("⚠️ Failed to get transcript config: {}, defaulting to parakeet", e);
+            Ok(default_transcript_config())
+        }
+    }
+}
+
+/// Clona el `Arc` de un motor desde su static, sin sostener el std Mutex.
+fn clone_engine<T>(slot: &Mutex<Option<Arc<T>>>) -> Option<Arc<T>> {
+    match slot.lock() {
+        Ok(guard) => guard.as_ref().cloned(),
+        Err(_) => {
+            warn!("engine slot poisoned; treating as uninitialized");
+            None
+        }
+    }
+}
+
+/// Nombre del modelo residente del provider configurado, si lo hay.
+async fn loaded_model_for(provider: &str) -> Option<String> {
+    match provider {
+        "parakeet" => {
+            let e = clone_engine(&crate::parakeet_engine::commands::PARAKEET_ENGINE)?;
+            if e.is_model_loaded().await { e.get_current_model().await } else { None }
+        }
+        "localWhisper" => {
+            let e = clone_engine(&crate::whisper_engine::commands::WHISPER_ENGINE)?;
+            if e.is_model_loaded().await { e.get_current_model().await } else { None }
+        }
+        "moonshine" => {
+            let e = clone_engine(&crate::moonshine_engine::commands::MOONSHINE_ENGINE)?;
+            if e.is_model_loaded().await { e.get_current_model().await } else { None }
+        }
+        "canary" => {
+            let e = clone_engine(&crate::canary_engine::commands::CANARY_ENGINE)?;
+            if e.is_model_loaded().await { e.get_current_model().await } else { None }
+        }
+        _ => None,
+    }
+}
+
+/// Descarga TODO motor local que tenga algo residente, sin mirar el provider
+/// configurado: cubre al usuario que cambió de provider en Ajustes con el
+/// modelo viejo aún en RAM. Deepgram no tiene nada que descargar.
+async fn unload_all_local_engines() -> Vec<(&'static str, String)> {
+    let mut out = Vec::new();
+    if let Some(e) = clone_engine(&crate::parakeet_engine::commands::PARAKEET_ENGINE) {
+        if e.is_model_loaded().await {
+            let m = e.get_current_model().await.unwrap_or_default();
+            if e.unload_model().await {
+                out.push(("parakeet", m));
+            }
+        }
+    }
+    if let Some(e) = clone_engine(&crate::whisper_engine::commands::WHISPER_ENGINE) {
+        if e.is_model_loaded().await {
+            let m = e.get_current_model().await.unwrap_or_default();
+            if e.unload_model().await {
+                out.push(("localWhisper", m));
+            }
+        }
+    }
+    if let Some(e) = clone_engine(&crate::moonshine_engine::commands::MOONSHINE_ENGINE) {
+        if e.is_model_loaded().await {
+            let m = e.get_current_model().await.unwrap_or_default();
+            if e.unload_model().await {
+                out.push(("moonshine", m));
+            }
+        }
+    }
+    if let Some(e) = clone_engine(&crate::canary_engine::commands::CANARY_ENGINE) {
+        if e.is_model_loaded().await {
+            let m = e.get_current_model().await.unwrap_or_default();
+            if e.unload_model().await {
+                out.push(("canary", m));
+            }
+        }
+    }
+    out
+}
+
+/// Evento `stt.engine_lifecycle` al outbox. Sólo se emite en cargas y descargas
+/// REALES (unas pocas por día): `set_registration_status` reinvoca
+/// `ensure_stt_warm` en cada refetch y un "ya estaba" no debe dejar fila.
+async fn emit_engine_lifecycle<R: Runtime>(
+    app: &AppHandle<R>,
+    action: &str,
+    reason: &str,
+    provider: &str,
+    model: &str,
+    elapsed_ms: Option<u64>,
+    status: &str,
+) {
+    let tier = crate::audio::hardware_detector::HardwareProfile::detect()
+        .performance_tier
+        .as_str();
+    crate::logging::telemetry::emit::emit_event(
+        app,
+        crate::logging::telemetry::context::process_session_id(),
+        crate::logging::telemetry::catalog::STT_ENGINE_LIFECYCLE,
+        serde_json::json!({
+            "action": action,
+            "reason": reason,
+            "provider": provider,
+            "model": model,
+            "elapsed_ms": elapsed_ms,
+            "tier": tier,
+        }),
+        Some(status),
+        None,
+        None,
+    )
+    .await;
+}
+
+/// Carga el modelo del provider local configurado si no está ya en RAM.
+/// REQUIERE `STT_WARM_LOCK` tomado por el caller. Nunca descarga un modelo
+/// (`validate_*_with_config` de cada motor falla con error claro si falta).
+async fn load_configured_model_locked<R: Runtime>(
+    app: &AppHandle<R>,
+    config: &crate::api::TranscriptConfig,
+) -> Result<WarmOutcome, String> {
+    if !is_local_provider(&config.provider) {
+        return Ok(WarmOutcome::SkippedCloud);
+    }
+    if let Some(loaded) = loaded_model_for(&config.provider).await {
+        info!(
+            "🦜 Motor STT ya residente ({}={}), no se recarga",
+            config.provider, loaded
+        );
+        mark_preloaded(&config.provider, &config.model);
+        return Ok(WarmOutcome::AlreadyLoaded);
+    }
+
+    // Evidencia local del pico de carga (~1.3 GB transitorio con Parakeet int8).
+    crate::logging::mem_sampler::snapshot_now("stt-warm");
+    info!("🔥 Cargando motor STT (provider: {}, model: {})", config.provider, config.model);
+    let start = Instant::now();
+    validate_local_provider(app, &config.provider).await?;
+    let elapsed = start.elapsed();
+    info!("✅ Motor STT cargado en {:?}", elapsed);
+    mark_preloaded(&config.provider, &config.model);
+    Ok(WarmOutcome::Loaded {
+        provider: config.provider.clone(),
+        model: config.model.clone(),
+        elapsed,
+    })
+}
+
+/// Precarga gateada e idempotente del motor STT. Punto de entrada de login,
+/// registro completado, fin de descarga del modelo y prewarm de jornada.
+///
+/// Sin sesión o sin registro confirmado no carga nada (fail-closed, mismo gate
+/// que el embudo de grabación). Re-chequea la sesión DESPUÉS de esperar el
+/// lock: si un logout ganó mientras esperábamos, no hay que recargar lo que
+/// `clear_current_user` acaba de soltar.
+pub async fn ensure_stt_warm<R: Runtime>(
+    app: &AppHandle<R>,
+    reason: &'static str,
+) -> Result<WarmOutcome, String> {
+    if !crate::state::has_session(app).await {
+        return Ok(WarmOutcome::SkippedNoSession);
+    }
+    if !crate::state::registration_completed(app).await {
+        return Ok(WarmOutcome::SkippedRegistration);
+    }
+    let config = read_transcript_config(app).await?;
+    if !is_local_provider(&config.provider) {
+        info!("☁️ Provider '{}' es nube, sin precarga", config.provider);
+        return Ok(WarmOutcome::SkippedCloud);
+    }
+
+    let outcome = {
+        let _flight = STT_WARM_LOCK.lock().await;
+        if !crate::state::has_session(app).await {
+            return Ok(WarmOutcome::SkippedNoSession);
+        }
+        load_configured_model_locked(app, &config).await?
+    };
+
+    if let WarmOutcome::Loaded { provider, model, elapsed } = &outcome {
+        // Disponible para un indicador de UI ("Modelo listo"); hoy sin listener.
+        let _ = app.emit(
+            events::TRANSCRIPTION_PRELOAD_COMPLETED,
+            serde_json::json!({
+                "provider": provider,
+                "model": model,
+                "elapsed_ms": elapsed.as_millis() as u64,
+            }),
+        );
+        emit_engine_lifecycle(
+            app,
+            "loaded",
+            reason,
+            provider,
+            model,
+            Some(elapsed.as_millis() as u64),
+            "ok",
+        )
+        .await;
+    }
+    Ok(outcome)
+}
+
+/// Descarga todo motor STT local residente. Rehúsa si hay grabación (fase
+/// distinta de `Idle`). Limpia el fast path DESPUÉS de descargar y bajo el
+/// mismo lock, para que ningún `validate` concurrente vea el flag armado con
+/// el modelo ya fuera de RAM.
+pub async fn unload_stt<R: Runtime>(app: &AppHandle<R>, reason: &'static str) -> UnloadOutcome {
+    let unloaded = {
+        let _flight = STT_WARM_LOCK.lock().await;
+        let phase = recording_phase::current_phase();
+        if !unload_allowed(phase) {
+            info!("STT unload ({}) rehusado: fase {:?}", reason, phase);
+            return UnloadOutcome::RefusedPhase(phase);
+        }
+        let unloaded = unload_all_local_engines().await;
+        clear_preloaded();
+        unloaded
+    };
+
+    if unloaded.is_empty() {
+        return UnloadOutcome::NothingLoaded;
+    }
+    crate::logging::mem_sampler::snapshot_now("stt-unload");
+    for (provider, model) in &unloaded {
+        info!("📉 Motor STT descargado ({}): {}={}", reason, provider, model);
+        emit_engine_lifecycle(app, "unloaded", reason, provider, model, None, "ok").await;
+    }
+    UnloadOutcome::Unloaded(unloaded)
 }
 
 // ============================================================================
@@ -149,150 +475,97 @@ impl TranscriptionEngine {
 // MODEL VALIDATION AND INITIALIZATION
 // ============================================================================
 
-/// Preload the configured STT model into RAM at app startup so the first
-/// recording feels instant (no multi-second cold start from a ~150MB ONNX
-/// read when the user clicks Record).
+/// Validate that transcription models are ready before starting recording.
 ///
-/// Safe by design:
-///   - reads config from local SQLite (no auth required)
-///   - delegates to `validate_transcription_model_ready`, which never
-///     triggers an implicit download — it fails with a clear error when
-///     the model is not on disk, leaving the existing auto-download flow
-///     (`useParakeetAutoDownload` after auth) untouched
-///   - cloud providers (Deepgram) are skipped entirely — nothing to load
-///
-/// Fire-and-forget from `.setup()`. Any failure is logged and ignored.
-pub async fn preload_transcription_engine<R: Runtime>(app: AppHandle<R>) {
-    // Let the window render and the DB pool settle before we start chewing
-    // disk IO on a large ONNX load.
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+/// Es la carga ON-DEMAND: tray, scheduler y botón pasan por aquí vía
+/// `initialize_recording`, con la fase ya en `Starting` (`StartGate`). Si el
+/// motor fue descargado (logout / reposo en tier Low), aquí se recarga: 3-10 s
+/// que la auditoría #02 acepta a cambio de no tener 600 MB residentes sin
+/// consumidor. El fast path y la carga van bajo `STT_WARM_LOCK` (ver arriba).
+pub async fn validate_transcription_model_ready<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
+    // Defensive: AppState may not be managed if DB init failed silently
+    // (e.g. sqlx migration checksum mismatch). Convert what would be a panic
+    // from `app.state::<AppState>()` into an actionable error event.
+    if app.try_state::<crate::state::AppState>().is_none() {
+        let msg = "Database not initialized — cannot validate transcription. \
+                   Check earlier logs for DB init errors (sqlx migration checksum mismatch?).";
+        log::error!("{}", msg);
+        let _ = app.emit(
+            events::TRANSCRIPTION_ERROR,
+            serde_json::json!({
+                "error": msg,
+                "userMessage": "La base de datos no se pudo inicializar. Reinicia la app o contacta soporte si persiste.",
+                "actionable": true
+            }),
+        );
+        return Err(msg.to_string());
+    }
 
-    let config = match crate::api::api_get_transcript_config(
-        app.clone(),
-        app.clone().state(), // state-allow: pre-existing, refactor in separate PR
-        None,
-    )
-    .await
-    {
-        Ok(Some(c)) => c,
-        _ => crate::api::TranscriptConfig {
-            provider: "parakeet".to_string(),
-            model: "parakeet-tdt-0.6b-v3-int8".to_string(),
-            api_key: None,
-            language: Some("es-419".to_string()),
-        },
-    };
+    let config = read_transcript_config(app).await?;
+    info!(
+        "📝 Transcript config - provider: {}, model: {}",
+        config.provider, config.model
+    );
 
     match config.provider.as_str() {
         "parakeet" | "localWhisper" | "moonshine" | "canary" => {
-            info!("🔥 Preloading STT model (provider: {})", config.provider);
-            let start = std::time::Instant::now();
-            match validate_transcription_model_ready(&app).await {
-                Ok(_) => {
-                    let elapsed = start.elapsed();
-                    info!("✅ STT model preloaded in {:?}", elapsed);
-                    // FAST PATH: registrar el modelo precargado. validate_transcription_model_ready
-                    // posteriores devolveran Ok inmediato sin tocar SQLite mientras coincida.
-                    mark_preloaded(&config.provider, &config.model);
-                    // Available for a future UI indicator ("Modelo listo"
-                    // toast). No frontend subscriber required today.
-                    let _ = app.emit(
-                        events::TRANSCRIPTION_PRELOAD_COMPLETED,
-                        serde_json::json!({
-                            "provider": config.provider,
-                            "model": config.model,
-                            "elapsed_ms": elapsed.as_millis() as u64,
-                        }),
+            let outcome = {
+                let _flight = STT_WARM_LOCK.lock().await;
+                // FAST PATH: el flag coincide con el (provider, model) configurado
+                // -> Ok inmediato (<1 ms) sin re-validar. Leído bajo el lock.
+                if fast_path_match(&config.provider, &config.model) {
+                    info!(
+                        "⚡ FAST PATH validate: {}={} ya precargado",
+                        config.provider, config.model
                     );
+                    return Ok(());
                 }
-                Err(e) => {
-                    // Expected when the model has not been downloaded yet.
-                    // The auto-download flow that runs after Supabase auth
-                    // will handle it — we just skip the preload.
-                    info!("ℹ️ STT preload skipped: {}", e);
-                }
+                load_configured_model_locked(app, &config).await?
+            };
+            if let WarmOutcome::Loaded { provider, model, elapsed } = &outcome {
+                emit_engine_lifecycle(
+                    app,
+                    "loaded",
+                    "recording_start",
+                    provider,
+                    model,
+                    Some(elapsed.as_millis() as u64),
+                    "ok",
+                )
+                .await;
+            }
+            Ok(())
+        }
+        "deepgram" => {
+            info!("🔍 Validating Deepgram cloud provider...");
+
+            // Check if we have a valid proxy config (obtained from Vercel API)
+            if super::deepgram_commands::has_cached_proxy_config() {
+                info!("✅ Deepgram proxy config disponible, transcripción en la nube lista");
+                Ok(())
+            } else {
+                // No proxy config available - user needs to be authenticated
+                warn!("⚠️ No hay configuración de proxy Deepgram disponible");
+                warn!("   El frontend debe obtener la configuración del proxy antes de iniciar la grabación");
+                Err(
+                    "Configuración de Deepgram no disponible. Por favor asegúrate de estar autenticado con tu cuenta de Google.".to_string()
+                )
             }
         }
         other => {
-            info!("☁️ Provider '{}' is cloud, no preload needed", other);
+            warn!("❌ Unsupported transcription provider: {}", other);
+            Err(format!(
+                "El proveedor '{}' no es compatible. Por favor selecciona 'deepgram', 'localWhisper', 'parakeet', o 'moonshine'.",
+                other
+            ))
         }
     }
 }
 
-/// Validate that transcription models (Whisper or Parakeet) are ready before starting recording
-pub async fn validate_transcription_model_ready<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
-    // FAST PATH: si preload_transcription_engine ya cargo el modelo Y el provider/model
-    // configurado coincide, retornar Ok(()) sin tocar SQLite. Ahorra 3-100ms por llamada
-    // (importante en cambios de grabacion frecuentes y al disparar set_active model).
-    // El flag se actualiza solo cuando el modelo realmente esta listo en memoria.
-
-    // Defensive: AppState may not be managed if DB init failed silently
-    // (e.g. sqlx migration checksum mismatch). Convert what would be a panic
-    // from `app.state::<AppState>()` into an actionable error event.
-    let app_state = match app.try_state::<crate::state::AppState>() {
-        Some(s) => s,
-        None => {
-            let msg = "Database not initialized — cannot validate transcription. \
-                       Check earlier logs for DB init errors (sqlx migration checksum mismatch?).";
-            log::error!("{}", msg);
-            let _ = app.emit(
-                events::TRANSCRIPTION_ERROR,
-                serde_json::json!({
-                    "error": msg,
-                    "userMessage": "La base de datos no se pudo inicializar. Reinicia la app o contacta soporte si persiste.",
-                    "actionable": true
-                }),
-            );
-            return Err(msg.to_string());
-        }
-    };
-
-    let config = match crate::api::api_get_transcript_config(
-        app.clone(),
-        app_state,
-        None,
-    )
-    .await
-    {
-        Ok(Some(config)) => {
-            info!(
-                "📝 Found transcript config - provider: {}, model: {}",
-                config.provider, config.model
-            );
-            config
-        }
-        Ok(None) => {
-            info!("📝 No transcript config found, defaulting to parakeet");
-            crate::api::TranscriptConfig {
-                provider: "parakeet".to_string(),
-                model: "parakeet-tdt-0.6b-v3-int8".to_string(),
-                api_key: None,
-                language: Some("es-419".to_string()),
-            }
-        }
-        Err(e) => {
-            warn!("⚠️ Failed to get transcript config: {}, defaulting to parakeet", e);
-            crate::api::TranscriptConfig {
-                provider: "parakeet".to_string(),
-                model: "parakeet-tdt-0.6b-v3-int8".to_string(),
-                api_key: None,
-                language: Some("es-419".to_string()),
-            }
-        }
-    };
-
-    // FAST PATH: el flag PRELOADED_ENGINE coincide con el (provider, model)
-    // que pide el caller -> retornar Ok inmediato (<1ms) sin re-validar.
-    if fast_path_match(&config.provider, &config.model) {
-        info!(
-            "⚡ FAST PATH validate: {}={} ya precargado",
-            config.provider, config.model
-        );
-        return Ok(());
-    }
-
-    // Validate based on provider
-    match config.provider.as_str() {
+/// Inicializa el motor del provider local y carga su modelo (auto-descubrimiento
+/// incluido; nunca descarga). Sólo llamar desde `load_configured_model_locked`.
+async fn validate_local_provider<R: Runtime>(app: &AppHandle<R>, provider: &str) -> Result<(), String> {
+    match provider {
         "localWhisper" => {
             info!("🔍 Validating Whisper model...");
             // Ensure whisper engine is initialized first
@@ -383,29 +656,51 @@ pub async fn validate_transcription_model_ready<R: Runtime>(app: &AppHandle<R>) 
                 }
             }
         }
-        "deepgram" => {
-            info!("🔍 Validating Deepgram cloud provider...");
+        other => Err(format!("validate_local_provider: '{}' no es un provider local", other)),
+    }
+}
 
-            // Check if we have a valid proxy config (obtained from Vercel API)
-            if super::deepgram_commands::has_cached_proxy_config() {
-                info!("✅ Deepgram proxy config disponible, transcripción en la nube lista");
-                Ok(())
-            } else {
-                // No proxy config available - user needs to be authenticated
-                warn!("⚠️ No hay configuración de proxy Deepgram disponible");
-                warn!("   El frontend debe obtener la configuración del proxy antes de iniciar la grabación");
-                Err(
-                    "Configuración de Deepgram no disponible. Por favor asegúrate de estar autenticado con tu cuenta de Google.".to_string()
-                )
-            }
+#[cfg(test)]
+mod stt_lifecycle_tests {
+    use super::*;
+
+    /// El flag es la única memoria del fast path: armarlo, cotejarlo y limpiarlo
+    /// tiene que ser exacto por (provider, model), no por provider.
+    #[test]
+    fn fast_path_coteja_provider_y_modelo_exactos() {
+        clear_preloaded();
+        assert!(!fast_path_match("parakeet", "parakeet-tdt-0.6b-v3-int8"));
+        mark_preloaded("parakeet", "parakeet-tdt-0.6b-v3-int8");
+        assert!(fast_path_match("parakeet", "parakeet-tdt-0.6b-v3-int8"));
+        assert!(!fast_path_match("parakeet", "parakeet-tdt-0.6b-v2-int8"));
+        assert!(!fast_path_match("localWhisper", "parakeet-tdt-0.6b-v3-int8"));
+        clear_preloaded();
+        assert!(!fast_path_match("parakeet", "parakeet-tdt-0.6b-v3-int8"));
+    }
+
+    /// Sólo `Idle` permite descargar: `Stopping` aún drena la cola con el modelo
+    /// y `Starting` ya tiene un `validate` en vuelo que cuenta con él.
+    #[test]
+    fn unload_solo_en_idle() {
+        let casos = [
+            (RecordingPhase::Idle, true),
+            (RecordingPhase::Starting, false),
+            (RecordingPhase::Recording, false),
+            (RecordingPhase::Paused, false),
+            (RecordingPhase::Stopping, false),
+        ];
+        for (phase, esperado) in casos {
+            assert_eq!(unload_allowed(phase), esperado, "fase {:?}", phase);
         }
-        other => {
-            warn!("❌ Unsupported transcription provider: {}", other);
-            Err(format!(
-                "El proveedor '{}' no es compatible. Por favor selecciona 'deepgram', 'localWhisper', 'parakeet', o 'moonshine'.",
-                other
-            ))
+    }
+
+    #[test]
+    fn providers_locales_vs_nube() {
+        for p in ["parakeet", "localWhisper", "moonshine", "canary"] {
+            assert!(is_local_provider(p), "{}", p);
         }
+        assert!(!is_local_provider("deepgram"));
+        assert!(!is_local_provider(""));
     }
 }
 

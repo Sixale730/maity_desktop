@@ -621,9 +621,11 @@ pub async fn stop_recording_reporting<R: Runtime>(
         info!("No transcription task found to wait for");
     }
 
-    // Step 3: Keep transcription model loaded in memory for fast recording restart
-    // ~600MB RAM footprint is acceptable for a desktop meeting app.
-    // Avoids 2-8s model reload delay on next recording start.
+    // Step 3: el modelo STT se deja cargado AQUÍ a propósito (la siguiente
+    // grabación arranca sin los 3-10 s de carga). La política de descarga vive
+    // en otro sitio: `clear_current_user` (logout, todo tier) y
+    // `transcription::idle_unload` (tier Low, ≥10 min en reposo fuera de la
+    // ventana de jornada). Ver CLAUDE.md § Gate de Sesión, #02.
     info!("Transcription model kept loaded in memory for next recording");
 
     // Evidencia de liberación post-stop: si a los 120s el RSS no volvió al

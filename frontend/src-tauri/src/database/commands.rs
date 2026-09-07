@@ -1,4 +1,4 @@
-use log::{error, info};
+use log::{error, info, warn};
 use serde::Serialize;
 use std::path::PathBuf;
 use tauri::{AppHandle, Emitter, Manager, Runtime};
@@ -460,6 +460,16 @@ pub async fn set_current_user<R: Runtime>(
     // flotante solo aparece cuando hay usuario logueado. Respeta la pref de
     // visibilidad y el override de STARTED_AT_BOOT (ver open_coach_on_login).
     if was_logged_out {
+        // Precarga del motor STT (#02): también vive en la transición de login,
+        // no en el setup. Gateada por registro dentro de `ensure_stt_warm`; si
+        // el registro llega después, `set_registration_status` la reintenta.
+        let app_warm = app.clone();
+        tauri::async_runtime::spawn(async move {
+            match crate::audio::transcription::ensure_stt_warm(&app_warm, "login").await {
+                Ok(outcome) => info!("[AppState] STT warm tras login: {:?}", outcome),
+                Err(e) => warn!("[AppState] STT warm tras login falló: {}", e),
+            }
+        });
         tauri::async_runtime::spawn(async move {
             crate::coach::commands::open_coach_on_login(app).await;
         });
@@ -482,7 +492,13 @@ pub async fn clear_current_user<R: Runtime>(
     info!("[AppState] current_user_id cleared (logout)");
     // Sin sesión no hay coach-float. Idempotente (no-op si no existe la ventana);
     // también dispara al montar AuthContext con maityUser aún null — inofensivo.
-    let _ = crate::coach::commands::close_floating_coach(app).await;
+    let _ = crate::coach::commands::close_floating_coach(app.clone()).await;
+    // Sin sesión tampoco hay consumidor para el motor STT (#02): se descarga en
+    // todo tier. Si rehúsa por fase (carrera con un stop que aún drena) no se
+    // reintenta aquí: en tier Low lo recoge la tarea de reposo; en el resto
+    // queda residente hasta el siguiente login.
+    let outcome = crate::audio::transcription::unload_stt(&app, "logout").await;
+    info!("[AppState] STT unload tras logout: {:?}", outcome);
     Ok(())
 }
 

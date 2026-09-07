@@ -138,6 +138,20 @@ tareas de proceso, así que su payload **no** lleva `trigger` ni
 | event_type | Cuándo | Payload clave |
 |---|---|---|
 | `audio.retention_swept` | Una pasada de `audio_retention::sweep_once` liberó audio (sólo se emite si `meetings_swept > 0` o `failed > 0`) | `meetings_swept`, `bytes_freed`, `retention_days`, `failed`; `status` = `ok` \| `partial` |
+| `stt.engine_lifecycle` | Carga o descarga **real** de un motor STT local (`engine.rs::ensure_stt_warm` / `unload_stt`, y el reciclado de `parakeet_engine.rs`) | `action` = `loaded` \| `unloaded`; `reason` = `login` \| `registration` \| `prewarm` \| `recording_start` \| `download_complete` \| `logout` \| `idle` \| `recycle_failed`; `provider`, `model`, `elapsed_ms` (sólo en `loaded`), `tier`; `status` = `ok` \| `error` |
+
+> **`stt.engine_lifecycle` (sep-2026, #02).** Parakeet se precargaba en el
+> `setup()` sin sesión y nunca se descargaba: 600 MB residentes desde el login
+> para siempre. Hoy la carga va gateada por sesión + registro y la descarga
+> ocurre en logout (todo tier) y en reposo fuera de la ventana de jornada (tier
+> Low). Este evento fecha cada transición; **no** se metió como campo de
+> `health.heartbeat` porque tocar `MemSample` rompe cuatro sitios a la vez y un
+> booleano cada 15 min no dice *cuándo* ni *por qué* cambió. Sólo se emite en
+> transiciones reales: `set_registration_status` reinvoca la precarga en cada
+> refetch y un "ya estaba cargado" no deja fila. `status = error` con
+> `reason = recycle_failed` significa que el reciclado drop-then-load (tier Low)
+> soltó la sesión y no pudo recargarla: el worker del transcriptor alimenta su
+> breaker y reintenta a los 5 min.
 
 > **`audio.retention_swept` (sep-2026, #27).** Ninguna ruta de código borraba
 > carpetas de reunión: el `audio.mp4` se acumulaba para siempre (~29 MB/h con el

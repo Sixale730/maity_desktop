@@ -455,8 +455,12 @@ impl ParakeetEngine {
 
         match model_info.status {
             ModelStatus::Available => {
-                // Check if this model is already loaded
-                if let Some(current_model) = self.current_model_name.read().await.as_ref() {
+                // Check if this model is already loaded. Snapshot en statement
+                // propio: con `if let … .read().await.as_ref()` el guard vive todo
+                // el bloque y `unload_model` pide el write del mismo lock →
+                // self-deadlock al cambiar de modelo A→B (sep-2026, #02).
+                let current = self.current_model_name.read().await.clone();
+                if let Some(current_model) = current {
                     if current_model == model_name {
                         log::info!("Parakeet model {} is already loaded, skipping reload", model_name);
                         return Ok(());

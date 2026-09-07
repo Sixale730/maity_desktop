@@ -726,8 +726,8 @@ pub fn run() {
             // toca disco (`current_exe`, `which`, `read_dir`) y en Linux / dev sin
             // bundle puede llegar hasta la descarga de `ffmpeg-sidecar`: por eso va
             // en `spawn_blocking` y SUELTO — nunca dentro del spawn secuencial de
-            // config, donde bloquearía `preload_transcription_engine`, ni en la ruta
-            // caliente del primer checkpoint de 30 s (que es exactamente el bug).
+            // config (bloquearía la init de motores y del mem_sampler), ni en la
+            // ruta caliente del primer checkpoint de 30 s (que es exactamente el bug).
             // Es seguro que falle: el resolver sólo cachea el ÉXITO, así que el
             // primer encode reintenta.
             let _ = tauri::async_runtime::spawn_blocking(|| {
@@ -1144,13 +1144,12 @@ pub fn run() {
                 // frontend desaparece justo cuando una fuga importa).
                 logging::mem_sampler::start(app_handle_for_config.clone());
 
-                // Preload the configured STT model into RAM so the first
-                // recording feels instant. The `*_init` calls above only
-                // create the engine structs; this actually reads the ONNX
-                // from disk into memory. Safe by design: never triggers an
-                // implicit download — if the model is missing the
-                // post-auth auto-download flow handles it as before.
-                audio::transcription::preload_transcription_engine(app_handle_for_config.clone()).await;
+                // El modelo STT ya NO se precarga aquí (sep-2026, #02 de la
+                // auditoría de recursos): los `*_init` de arriba sólo crean los
+                // structs. La carga vive en `ensure_stt_warm`, disparada por la
+                // transición de login (`set_current_user`), el registro
+                // completado, el fin de descarga del modelo y el prewarm de
+                // jornada — sin sesión no hay consumidor para 600 MB de RAM.
 
                 // Preload el sidecar Built-in AI (Gemma) en background para que
                 // el primer tip/chat sea rápido. Sin esto, la primera interacción

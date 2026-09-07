@@ -31,7 +31,10 @@ pub use deepgram_commands::{
 pub use engine::{
     TranscriptionEngine,
     validate_transcription_model_ready,
-    preload_transcription_engine,
+    ensure_stt_warm,
+    unload_stt,
+    WarmOutcome,
+    UnloadOutcome,
     get_or_init_transcription_engine,
     get_or_init_whisper
 };

@@ -28,6 +28,9 @@ export const TELEMETRY_EVENTS = {
   // ── Retención de audio local (emisor: Rust, audio/audio_retention.rs) ──
   AUDIO_RETENTION_SWEPT: 'audio.retention_swept',
 
+  // ── Ciclo de vida del motor STT local (emisor: Rust, audio/transcription/engine.rs) ──
+  STT_ENGINE_LIFECYCLE: 'stt.engine_lifecycle',
+
   // ── App / salud (emisor: platformLogger; app.error también Rust vía panics.rs) ──
   APP_OPEN: 'app.open',
   APP_CLOSE: 'app.close',

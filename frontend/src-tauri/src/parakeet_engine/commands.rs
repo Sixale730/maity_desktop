@@ -443,6 +443,20 @@ pub async fn parakeet_download_model<R: Runtime>(
                 log::info!("Parakeet model download complete - updating tray menu");
                 crate::tray::update_tray_menu(&app_handle);
 
+                // Cuenta nueva: login y registro pudieron ocurrir antes de que el
+                // modelo estuviera en disco. Gateado por sesión/registro dentro.
+                let app_warm = app_handle.clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Err(e) = crate::audio::transcription::ensure_stt_warm(
+                        &app_warm,
+                        "download_complete",
+                    )
+                    .await
+                    {
+                        log::warn!("STT warm tras descarga falló: {}", e);
+                    }
+                });
+
                 Ok(())
             }
             Err(e) => {

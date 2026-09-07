@@ -111,6 +111,19 @@ pub async fn set_registration_status<R: Runtime>(
     if applies_to_live {
         *state.registration_completed.write().await = Some(completed);
         info!("[registration] registration_completed = {} (user {})", completed, user_id);
+        // Precarga del motor STT (#02): el login pudo llegar con el registro aún
+        // desconocido. Idempotente y barato cuando ya está cargado (el frontend
+        // reinvoca este comando en cada refetch de `my_status`).
+        if completed {
+            let app_warm = app.clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(e) =
+                    crate::audio::transcription::ensure_stt_warm(&app_warm, "registration").await
+                {
+                    warn!("[registration] STT warm falló: {}", e);
+                }
+            });
+        }
     } else {
         warn!(
             "[registration] set_registration_status({}) para {} con sesión de {:?} — solo caché",
