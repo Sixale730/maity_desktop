@@ -555,10 +555,15 @@ mod tests {
     use super::super::recording_state::DeviceType;
 
     #[tokio::test]
-    #[ignore] // Requiere ffmpeg real en el PATH: find_ffmpeg_path() intentaría
-              // DESCARGARLO (287MB) si no lo encuentra, así que no corre por
-              // default. Correr a mano con `cargo test -- --ignored` en una
-              // máquina con ffmpeg instalado.
+    #[ignore] // Requiere ffmpeg real EN EL PATH. Que macOS y Windows lo bundleen
+              // (#77, #32) NO ayuda aquí: el binario de test vive en
+              // target/debug/deps/ y el externalBin en target/debug/, así que la
+              // rama "junto al exe" de find_ffmpeg_path no lo ve. Sin ffmpeg en
+              // PATH se caería en handle_ffmpeg_installation() → descarga real, y
+              // tokio bloquea el Drop del runtime del test hasta que termine el
+              // spawn_blocking: se colgaría en vez de fallar rápido. Correr a mano
+              // con `cargo test -p maity-desktop -- --ignored` en una máquina con
+              // ffmpeg instalado.
     async fn test_checkpoint_creation() {
         // Create temp meeting folder
         let temp_dir = tempdir().unwrap();
@@ -611,14 +616,15 @@ mod tests {
     ///
     /// Deliberadamente NO llama a `flush_checkpoint()`/`spawn_checkpoint_encode()`
     /// con el permiso libre: hacerlo despacharía un `spawn_blocking` real hacia
-    /// `encode_single_audio` → `find_ffmpeg_path()`, que en esta máquina (sin
-    /// ffmpeg instalado ni cacheado) puede intentar una descarga real de ~287MB
-    /// — y como tokio bloquea el Drop del runtime del test hasta que ese
-    /// `spawn_blocking` termine, un test así podría colgarse esperando red. Es
-    /// exactamente el riesgo por el que `test_checkpoint_creation` de arriba
-    /// quedó `#[ignore]`. En vez de eso, esta prueba verifica la contabilidad
-    /// del semáforo directamente (que el permiso se libera correctamente al
-    /// soltar el guard sostenido a mano).
+    /// `encode_single_audio` → `find_ffmpeg_path()`. Bajo `cargo test` eso NO se
+    /// resuelve con el ffmpeg bundleado (el binario de test corre desde
+    /// `target/debug/deps/` y el externalBin está en `target/debug/`), así que en
+    /// una máquina sin ffmpeg en PATH acabaría en una descarga real — y como tokio
+    /// bloquea el `Drop` del runtime del test hasta que ese `spawn_blocking`
+    /// termine, el test se colgaría esperando red. Es el mismo riesgo por el que
+    /// `test_checkpoint_creation` de arriba quedó `#[ignore]`. En vez de eso, esta
+    /// prueba verifica la contabilidad del semáforo directamente (que el permiso se
+    /// libera al soltar el guard sostenido a mano).
     #[tokio::test]
     async fn test_checkpoint_defers_without_dropping_audio_when_encode_busy() {
         let temp_dir = tempdir().unwrap();

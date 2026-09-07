@@ -86,6 +86,32 @@ if (process.platform === 'darwin') {
     console.log('[pre-build] OK: bundled ffmpeg ready');
 }
 
+// Windows: ffmpeg LGPL prebuilt (BtbN, tag + SHA-256 pineados) como sidecar
+// externalBin de tauri.windows.conf.json. Tiene que existir ANTES de que el
+// bundler recoja externalBin: sin el, `tauri build` falla por binario ausente, y
+// antes de #32 la app lo DESCARGABA en runtime (gyan.dev, 106 MB, GPLv3) dentro
+// del primer checkpoint de 30 s. Idempotente por stamp: si ya esta al dia sale en
+// milisegundos; la primera vez baja ~146 MB.
+if (process.platform === 'win32') {
+    console.log('[pre-build] Staging bundled ffmpeg (Windows, LGPL, prebuilt)...');
+    const ffmpegWinResult = spawnSync(process.execPath, [path.join(__dirname, 'stage-ffmpeg-windows.js')], {
+        stdio: 'inherit',
+        shell: false,
+    });
+
+    if (ffmpegWinResult.status !== 0) {
+        console.error('');
+        console.error('[pre-build] FAIL: no se pudo stagear/verificar el ffmpeg bundleado de Windows.');
+        console.error('  Sin binaries/ffmpeg-x86_64-pc-windows-msvc.exe el bundler de Tauri falla');
+        console.error('  (externalBin declarado en tauri.windows.conf.json) y, si se saltara, la app');
+        console.error('  volveria a descargar ffmpeg en runtime al primer checkpoint de 30 s.');
+        console.error('  Regenerar: node scripts/stage-ffmpeg-windows.js --fix');
+        process.exit(1);
+    }
+
+    console.log('[pre-build] OK: bundled ffmpeg (Windows) ready');
+}
+
 console.log('[pre-build] Running state-access lint...');
 
 const result = spawnSync(BASH, [BASH_LINT_SCRIPT], {

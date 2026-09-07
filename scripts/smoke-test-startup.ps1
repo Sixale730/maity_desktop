@@ -216,8 +216,64 @@ if ($expectedVersion -and $versionJson.version -ne $expectedVersion) {
     exit 1
 }
 
+# ---------------------------------------------------------------------------
+# ffmpeg bundleado (externalBin, sep-2026, #32). Tauri lo copia junto al exe.
+# Tres cosas: que exista, que sea EXACTAMENTE el de binaries/ (desde que
+# find_ffmpeg_path mira primero la carpeta del exe en Windows, un ffmpeg.exe
+# viejo de gyan.dev en target\debug le ganaria al PATH) y que sea el build LGPL.
+# OJO: los builds win64-lgpl de BtbN NO pasan --disable-gpl a configure, asi que
+# ese flag nunca aparece; el discriminante es la AUSENCIA de --enable-gpl.
+# ---------------------------------------------------------------------------
+$ffmpeg = "C:\maity_desktop\target\debug\ffmpeg.exe"
+$bundledFfmpeg = "C:\maity_desktop\frontend\src-tauri\binaries\ffmpeg-x86_64-pc-windows-msvc.exe"
+
+if (-not (Test-Path $ffmpeg)) {
+    Write-Host ""
+    Write-Host "FAIL: ffmpeg.exe no encontrado junto al exe ($ffmpeg)" -ForegroundColor Red
+    Write-Host "   El externalBin no se bundleo. Revisar tauri.windows.conf.json y correr:" -ForegroundColor Yellow
+    Write-Host "   cd frontend; node scripts/stage-ffmpeg-windows.js --fix" -ForegroundColor Yellow
+    exit 1
+}
+
+if (-not (Test-Path $bundledFfmpeg)) {
+    Write-Host ""
+    Write-Host "FAIL: falta $bundledFfmpeg" -ForegroundColor Red
+    Write-Host "   Regenerar: cd frontend; node scripts/stage-ffmpeg-windows.js --fix" -ForegroundColor Yellow
+    exit 1
+}
+
+$f1 = (Get-FileHash -Algorithm SHA256 $ffmpeg).Hash
+$f2 = (Get-FileHash -Algorithm SHA256 $bundledFfmpeg).Hash
+if ($f1 -ne $f2) {
+    Write-Host ""
+    Write-Host "FAIL: el ffmpeg junto al exe difiere del de src-tauri/binaries" -ForegroundColor Red
+    Write-Host "   junto al exe : $f1" -ForegroundColor Yellow
+    Write-Host "   binaries/    : $f2" -ForegroundColor Yellow
+    Write-Host "   Sospecha: un ffmpeg.exe viejo (gyan.dev, GPLv3) quedo en target\debug." -ForegroundColor Yellow
+    Write-Host "   Borrarlo y rebuildear: Remove-Item $ffmpeg" -ForegroundColor Yellow
+    exit 1
+}
+
+$ffmpegVersion = (& $ffmpeg -hide_banner -version 2>$null | Out-String)
+$ffmpegHeadline = (($ffmpegVersion -split "`r?`n") | Select-Object -First 1)
+
+if ($ffmpegVersion.Contains('--enable-gpl') -or $ffmpegVersion.Contains('--enable-nonfree')) {
+    Write-Host ""
+    Write-Host "FAIL: el ffmpeg bundleado reporta GPL/nonfree, no es el build LGPL pineado" -ForegroundColor Red
+    Write-Host "   $ffmpegHeadline" -ForegroundColor Yellow
+    exit 1
+}
+
+if (-not $ffmpegVersion.Contains('--enable-version3')) {
+    Write-Host ""
+    Write-Host "FAIL: el ffmpeg bundleado no reporta --enable-version3 (los lgpl de BtbN si)" -ForegroundColor Red
+    Write-Host "   $ffmpegHeadline" -ForegroundColor Yellow
+    exit 1
+}
+
 Write-Host ""
 Write-Host "OK: Startup smoke test passed" -ForegroundColor Green
 Write-Host "   - No panic patterns detected"
 Write-Host "   - AppState managed successfully"
 Write-Host "   - llama-helper v$($versionJson.version) (protocol $($versionJson.protocol)) responde al handshake"
+Write-Host "   - $ffmpegHeadline (LGPL: sin --enable-gpl ni --enable-nonfree)"

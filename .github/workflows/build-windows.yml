@@ -658,6 +658,26 @@ jobs:
           Write-Host "Final binaries directory:"
           Get-ChildItem "frontend/src-tauri/binaries/"
 
+      - name: Cache ffmpeg zip (LGPL prebuilt)
+        uses: actions/cache@v4
+        with:
+          path: ~\.cache\maity-ffmpeg-windows
+          key: ffmpeg-windows-${{ hashFiles('frontend/scripts/stage-ffmpeg-windows.js') }}
+
+      - name: Stage ffmpeg sidecar (LGPL)
+        shell: pwsh
+        run: |
+          $env:FFMPEG_WORK_DIR = "$env:USERPROFILE\.cache\maity-ffmpeg-windows"
+          node frontend/scripts/stage-ffmpeg-windows.js --fix
+
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "Failed to stage bundled ffmpeg"
+            exit $LASTEXITCODE
+          }
+
+          Write-Host "Final binaries directory:"
+          Get-ChildItem "frontend/src-tauri/binaries/"
+
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
         env:

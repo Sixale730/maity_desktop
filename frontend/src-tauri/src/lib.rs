@@ -722,6 +722,23 @@ pub fn run() {
                 }
             }
 
+            // Warm-up de ffmpeg, DETACHED (sep-2026, #32). `find_ffmpeg_path()`
+            // toca disco (`current_exe`, `which`, `read_dir`) y en Linux / dev sin
+            // bundle puede llegar hasta la descarga de `ffmpeg-sidecar`: por eso va
+            // en `spawn_blocking` y SUELTO — nunca dentro del spawn secuencial de
+            // config, donde bloquearía `preload_transcription_engine`, ni en la ruta
+            // caliente del primer checkpoint de 30 s (que es exactamente el bug).
+            // Es seguro que falle: el resolver sólo cachea el ÉXITO, así que el
+            // primer encode reintenta.
+            let _ = tauri::async_runtime::spawn_blocking(|| {
+                match crate::audio::ffmpeg::find_ffmpeg_path() {
+                    Some(path) => log::info!("ffmpeg listo (warm-up): {:?}", path),
+                    None => log::warn!(
+                        "ffmpeg no resuelto en el warm-up; se reintentará en el primer encode"
+                    ),
+                }
+            });
+
             // Puente Rust ERROR → frontend (telemetría app.error source:'rust',
             // issue #60): arranca la task drenadora del canal que llenó el layer
             // de logging/rust_error_bridge.rs. Los ERROR entre el init del

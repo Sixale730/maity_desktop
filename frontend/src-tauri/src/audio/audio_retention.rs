@@ -341,7 +341,9 @@ async fn emit_retention_swept<R: Runtime>(
 mod tests {
     //! Los archivos de prueba se crean con `std::fs::write`, JAMÁS encodeando:
     //! un test que llame a `encode_single_audio` dispara `find_ffmpeg_path()`,
-    //! que en una máquina sin ffmpeg intentaría DESCARGAR 287 MB y colgaría el
+    //! que bajo `cargo test` NO ve el ffmpeg bundleado (el binario de test vive
+    //! en `target/debug/deps/` y el externalBin en `target/debug/`), así que en
+    //! una máquina sin ffmpeg en PATH acabaría en una descarga real y colgaría el
     //! runtime en el Drop (es el motivo del `#[ignore]` de
     //! `incremental_saver::tests::test_checkpoint_creation`).
 

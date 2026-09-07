@@ -1,9 +1,14 @@
 {
     "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
     "bundle": {
+        "externalBin": [
+            "binaries/llama-helper",
+            "binaries/ffmpeg"
+        ],
         "resources": {
             "templates/*.json": "templates/",
-            "vcredist/*.dll": ""
+            "vcredist/*.dll": "",
+            "binaries/ffmpeg-LICENSE.txt": ""
         }
     }
 }

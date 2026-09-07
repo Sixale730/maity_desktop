@@ -130,13 +130,23 @@ Ejecutar `uname -s` para determinar la plataforma:
      - Falta slice arm64 o x86_64: `resource path 'binaries/llama-helper-<triple>' doesn't exist` durante `cargo build` por arch.
      - Falta el universal: `failed to bundle project Failed to copy external binaries: resource path 'binaries/llama-helper-universal-apple-darwin' doesn't exist` durante el bundling final.
 
-5. (macOS) El segundo sidecar, **`ffmpeg`**, NO se copia a mano: `run-pre-build-checks.js`
-   ejecuta `scripts/build-ffmpeg-macos.sh`, que compila desde la fuente oficial (SHA-256
-   pineado) un ffmpeg minimo **LGPL** y deja los tres `binaries/ffmpeg-{aarch64,x86_64,universal}-apple-darwin`
-   (issue #77; receta en `docs/THIRD-PARTY-NOTICES.md`). Primera vez ~1 min; despues sale
-   por el stamp. Si el bundling falla con `resource path 'binaries/ffmpeg-...' doesn't exist`,
-   corre el script a mano (`--force` si cambio la receta). No sustituirlo por un ffmpeg
-   de brew o prehecho: son GPL y no son distribuibles en la Mac App Store.
+5. El segundo sidecar, **`ffmpeg`**, NO se copia a mano en NINGUNA de las dos
+   plataformas: lo deja `run-pre-build-checks.js`, que corre dentro de `tauri:build`.
+   - **(Windows)** ejecuta `scripts/stage-ffmpeg-windows.js`, que descarga el prebuilt
+     `win64-lgpl` de BtbN con tag y SHA-256 pineados y deja
+     `binaries/ffmpeg-x86_64-pc-windows-msvc.exe` + `ffmpeg-LICENSE.txt` (issue #32).
+     Primera vez ~146 MB; despues sale por el stamp. Si el bundling —o el propio
+     `cargo build`— falla con
+     `resource path 'binaries/ffmpeg-x86_64-pc-windows-msvc.exe' doesn't exist`, correr
+     `node scripts/stage-ffmpeg-windows.js --fix` (`--force` si cambio el pin). No
+     sustituirlo por el ffmpeg de gyan.dev ni por uno de choco: son GPL.
+   - **(macOS)** ejecuta `scripts/build-ffmpeg-macos.sh`, que compila desde la fuente
+     oficial (SHA-256 pineado) un ffmpeg minimo **LGPL** y deja los tres
+     `binaries/ffmpeg-{aarch64,x86_64,universal}-apple-darwin` (issue #77; receta en
+     `docs/THIRD-PARTY-NOTICES.md`). Primera vez ~1 min; despues sale por el stamp. Si
+     el bundling falla con `resource path 'binaries/ffmpeg-...' doesn't exist`, corre el
+     script a mano (`--force` si cambio la receta). No sustituirlo por un ffmpeg de brew
+     o prehecho: son GPL y no son distribuibles en la Mac App Store.
 
 ### Paso 0c: Limpieza pre-build (CRITICO en macOS)
 

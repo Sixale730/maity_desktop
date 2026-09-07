@@ -19,8 +19,9 @@ pub struct AudioInput {
 ///
 /// Función PURA (no toca disco, procesos ni entorno) por una razón concreta: es
 /// la ÚNICA forma de blindar estos flags con un test. `encode_single_audio`
-/// llama a `find_ffmpeg_path()`, que en una máquina sin ffmpeg intentaría
-/// DESCARGARLO (287 MB) y colgaría el test — es exactamente el motivo del
+/// llama a `find_ffmpeg_path()`, que bajo `cargo test` no ve el externalBin (el
+/// test corre desde `target/debug/deps/`) y en una máquina sin ffmpeg en PATH
+/// intentaría DESCARGARLO, colgando el test — es exactamente el motivo del
 /// `#[ignore]` de `incremental_saver::tests::test_checkpoint_creation`. Antes de
 /// esta extracción, `encode.rs` no tenía un solo `#[cfg(test)]`.
 ///

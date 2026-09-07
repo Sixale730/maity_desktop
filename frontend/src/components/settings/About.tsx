@@ -32,9 +32,13 @@ export function About() {
         }
     };
 
-    // Aviso LGPL: el bundle embarca un ffmpeg propio (macOS: compilado por
-    // scripts/build-ffmpeg-macos.sh; Windows: ffmpeg.exe en el MSIX). La LGPL pide
-    // atribución visible y acceso a la fuente — ver docs/THIRD-PARTY-NOTICES.md.
+    // Aviso LGPL: el bundle embarca un ffmpeg propio como sidecar externalBin en
+    // AMBAS plataformas (macOS: compilado desde fuente por
+    // scripts/build-ffmpeg-macos.sh, LGPL-2.1+; Windows: prebuilt win64-lgpl de
+    // BtbN pineado por tag + SHA-256 por scripts/stage-ffmpeg-windows.js,
+    // LGPL-3.0 porque BtbN pasa --enable-version3). El texto de abajo dice "LGPL
+    // v2.1 o posterior", que cubre a los dos. La LGPL pide atribución visible y
+    // acceso a la fuente — ver docs/THIRD-PARTY-NOTICES.md.
     const handleFfmpegClick = async () => {
         try {
             await invoke('open_external_url', { url: 'https://ffmpeg.org' });
