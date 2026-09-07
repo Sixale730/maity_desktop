@@ -43,9 +43,9 @@ exactamente lo cerrado. La tabla de abajo es una foto del estado; la verdad es l
 
 | # | Hallazgo | Sev | Recursos | Etapa | Esf | L | Estado |
 |---|---|---|---|---|---|---|---|
-| 01 | VAD de Silero guarda cada muestra de silencio | Crítico | RAM | Jornada | S | ✗ | abierto |
-| 02 | Parakeet se carga al arrancar y nunca se descarga | Crítico | RAM | Idle/Arranque/Jornada | M | ↓ | abierto |
-| 03 | Idle-kill del sidecar coincide con el cooldown del breaker | Alto | RAM/CPU/Disco | Jornada | S | ✗ | abierto |
+| 01 | VAD de Silero guarda cada muestra de silencio | Crítico | RAM | Jornada | S | ✗ | **cerrado** `a62c4ef` |
+| 02 | Parakeet se carga al arrancar y nunca se descarga | Crítico | RAM | Idle/Arranque/Jornada | M | ↓ | **cerrado** `252ed41` |
+| 03 | Idle-kill del sidecar coincide con el cooldown del breaker | Alto | RAM/CPU/Disco | Jornada | S | ✗ | **cerrado** `167df50` |
 | 04 | Warmup del sidecar carga Gemma antes del login | Medio | RAM/CPU/Disco | Arranque/Idle | S | ✗ | abierto |
 | 05 | Lista de conversaciones con `select(*)` sin límite | Alto | RAM/Red/CPU | Post/Idle/Jornada | M | = | **cerrado** `1571eda` |
 | 06 | Ocultar a la bandeja no pausa nada de la main | Alto | RAM/CPU | Jornada/Idle | M | ↓ | abierto |
@@ -56,7 +56,7 @@ exactamente lo cerrado. La tabla de abajo es una foto del estado; la verdad es l
 | 11 | El normalizador EBU R128 guarda historial ilimitado | Bajo | RAM | Jornada | S | = | abierto |
 | 12 | El VAD usa 4 hilos intra-op por sesión, dos sesiones | Alto | CPU | Jornada | M | ↓ | abierto |
 | 13 | Tormenta de `snapshot_now` con backlog múltiplo de 30 | Alto | CPU | Jornada | S | ✗ | abierto |
-| 14 | El muestreador de memoria refresca más de lo que lee | Medio | CPU | Jornada/Idle/Arranque | S | = | abierto |
+| 14 | El muestreador de memoria refresca más de lo que lee | Medio | CPU | Jornada/Idle/Arranque | S | = | **cerrado** `0506582` |
 | 15 | Sondeos del frontend por IPC que no hacen falta | Medio | CPU | Jornada/Idle | S | ↓ | abierto |
 | 16 | La inferencia de Parakeet corre en un hilo de tokio | Medio | CPU | Jornada | M | ↓ | abierto |
 | 17 | El monitor re-enumera endpoints WASAPI cada 5 s | Bajo | CPU | Jornada | S | = | abierto |
@@ -69,12 +69,12 @@ exactamente lo cerrado. La tabla de abajo es una foto del estado; la verdad es l
 | 24 | Bundle de arranque de 2.1 MB con librerías pesadas | Bajo | RAM/CPU/Disco | Arranque | M | = | abierto |
 | 25 | El logging diagnóstico escribe por IPC en cada poll | Bajo | Disco/CPU | Post | S | = | abierto |
 | 26 | `sync_queue` nunca se poda | Bajo | Disco | Post | S | = | abierto |
-| 27 | Audio AAC 192 kbps y ningún borrado: 0.7 GB/día | Medio | Disco | Jornada/Post | S | = | abierto |
+| 27 | Audio AAC 192 kbps y ningún borrado: 0.7 GB/día | Medio | Disco | Jornada/Post | S | = | **cerrado** `f52472d` |
 | 28 | Pool de SQLite sin ajustar | Bajo | RAM/Disco | Post | S | = | abierto |
 | 29 | Gemma 1B se descarga sin consumidor | Bajo | Disco/Red | Arranque | S | ✗ | abierto |
 | 30 | El helper crea un `LlamaContext` por request | Bajo | CPU/RAM | Jornada | M | ✗ | abierto |
 | 31 | El workspace ignora el `[profile.release]` y el `[patch]` de cpal | Medio | CPU/Disco | Arranque | S | = | abierto |
-| 32 | En Windows ffmpeg se descarga en runtime | Alto | Disco/Red/RAM | Jornada/Post | M | = | abierto |
+| 32 | En Windows ffmpeg se descarga en runtime | Alto | Disco/Red/RAM | Jornada/Post | M | = | **cerrado** `6b906a6` |
 | 33 | DirectML y D3D12 son imports de carga del exe | Bajo | RAM/CPU | Arranque | S | = | abierto |
 | 34 | Los segmentos descartados dejan su carpeta huérfana | Medio | Disco | Post | S | = | abierto |
 | 35 | Dos pilas HTTP/TLS, crates duplicados y deps muertas | Bajo | Disco/CPU | Arranque | S | = | abierto |
@@ -153,7 +153,7 @@ conclusión sobre la jornada; por eso van antes de los hallazgos.
 Ordenados por impacto estimado en RAM, luego CPU, luego disco y red.
 
 ### #01 · El VAD de Silero guarda cada muestra de silencio hasta el próximo fin de voz
-`Crítico` · RAM · Jornada · esfuerzo S · verificado · **desaparece por lote** · abierto
+`Crítico` · RAM · Jornada · esfuerzo S · verificado · **desaparece por lote** · **CERRADO** `a62c4ef`
 
 - **Impacto**: de 0 a ~700 MB por segmento de 90 min: 230 MB/h por canal, dos canales, en sierra que
   solo se vacía al rotar.
@@ -170,7 +170,7 @@ Ordenados por impacto estimado en RAM, luego CPU, luego disco y red.
   pública pensada para esto.
 
 ### #02 · Parakeet se carga al arrancar, antes del login, y nunca se descarga
-`Crítico` · RAM · Idle/Arranque/Jornada · esfuerzo M · verificado · **se encoge por lote** · abierto
+`Crítico` · RAM · Idle/Arranque/Jornada · esfuerzo M · verificado · **se encoge por lote** · **CERRADO** `252ed41`
 
 - **Impacto**: ~600 MB residentes desde el arranque para siempre; pico de ~1.3 GB al cargar y de
   +700 MB durante el reciclado, que carga el modelo nuevo antes de soltar el viejo.
@@ -187,7 +187,7 @@ Ordenados por impacto estimado en RAM, luego CPU, luego disco y red.
   carga hasta que alguien inicia sesión, que es lo deseado.
 
 ### #03 · Idle-kill del sidecar (300 s) coincide con el cooldown del breaker (300 s)
-`Alto` · RAM/CPU/Disco · Jornada · esfuerzo S · **desaparece por lote** · abierto
+`Alto` · RAM/CPU/Disco · Jornada · esfuerzo S · **desaparece por lote** · **CERRADO** `167df50`
 
 - **Impacto**: por ciclo, relectura de 1.0 GB (1B) o 2.4 GB (4B) del GGUF y 50-90 s de 2-4 núcleos. Es
   el mecanismo detrás de los 55 reinicios en 62 sesiones Low de 0.2.57.
@@ -201,6 +201,17 @@ Ordenados por impacto estimado en RAM, luego CPU, luego disco y red.
   abrir el breaker e idle ≥ 2× cooldown); reiniciar el contador de fallos al abrir para que half-open
   exija 3 fallos nuevos.
 - **Riesgo**: mantiene 1.2-3 GB residentes durante todo el segmento: solo en Medium+ (ya es así).
+- **Cierre (2026-09-07, `167df50`)**: se tomó la primera opción, como *lease* de sesión en vez de gate
+  por fase: `SidecarManager::keepalive()` (guard RAII) lo toma `live_feedback::start` sólo con
+  `LLM_TIPS_ENABLED`, vía `SidecarPool::get_or_create` (sin spawn), y el idle loop lo trata como un
+  request en vuelo. El breaker pasó a `coach/breaker.rs` y reinicia el contador al abrir;
+  `LlmError::Cancelled` no cuenta. Sin tocar constantes. Verificación en producción:
+  `coach.session_summary.sidecar_idle_kills` debe ser 0 en Medium+. **Fuera del cierre, candidato a
+  hallazgo propio**: `CoachLlmService::generate_internal` hace `manager.shutdown()` al cancelar un
+  tip en vuelo (`coach/llm_service.rs`, brazo `token.cancelled()`), así que cada rotación por hora
+  que cae a media generación sigue costando un spawn frío al segmento siguiente. Con ids confirmados
+  el kill ya no haría falta (la respuesta tardía se drena por id); la arista es una escritura parcial
+  en el pipe si la cancelación cae a media `write_all`.
 
 ### #04 · El warmup del sidecar al arranque carga Gemma antes del login y lo tira a los 5 minutos
 `Medio` · RAM/CPU/Disco · Arranque/Idle · esfuerzo S · **desaparece por lote** · abierto
@@ -344,7 +355,7 @@ Ordenados por impacto estimado en RAM, luego CPU, luego disco y red.
   el emit de lag. **Riesgo**: ninguno.
 
 ### #14 · El muestreador de memoria refresca más de lo que lee, cada 30 s, incluso en el login
-`Medio` · CPU · Jornada/Idle/Arranque · esfuerzo S · verificado · no cambia por lote · abierto
+`Medio` · CPU · Jornada/Idle/Arranque · esfuerzo S · verificado · no cambia por lote · **CERRADO** `0506582`
 
 - **Impacto**: `refresh_processes(All, true)` abre un handle por proceso para IoCounters y exe en
   250-400 procesos: 10-40 ms por tick, 1,080 ticks por jornada, desde el arranque.
@@ -503,7 +514,7 @@ Ordenados por impacto estimado en RAM, luego CPU, luego disco y red.
 - **Riesgo**: mantener 7 días: `sync_queue_get_finalize_result` lee `result_data` de jobs recientes.
 
 ### #27 · Audio AAC estéreo a 192 kbps para voz, y ningún borrado: 0.7 GB por día que se quedan
-`Medio` · Disco · Jornada/Post · esfuerzo S · verificado · no cambia por lote · abierto
+`Medio` · Disco · Jornada/Post · esfuerzo S · verificado · no cambia por lote · **CERRADO** `f52472d`
 
 - **Impacto**: 86 MB por hora → 691 MB por jornada de 8 h, **~14 GB al mes por usuario**. Confirmado con
   una reunión real de 111 min: 160 MB. Ninguna ruta del código borra carpetas de reunión; solo se borran
@@ -571,7 +582,7 @@ Ordenados por impacto estimado en RAM, luego CPU, luego disco y red.
   `panic = "unwind"` por los hooks de Sentry y `telemetry/panics.rs`.
 
 ### #32 · En Windows ffmpeg se descarga en runtime, en el primer checkpoint
-`Alto` · Disco/Red/RAM · Jornada/Post · esfuerzo M · verificado · no cambia por lote · abierto
+`Alto` · Disco/Red/RAM · Jornada/Post · esfuerzo M · verificado · no cambia por lote · **CERRADO** `6b906a6`
 
 - **Impacto**: ~100 MB de descarga desde gyan.dev **que el usuario nunca aceptó**, desempaquetados en
   287 MB (ffmpeg, ffplay y ffprobe; solo `ffmpeg.exe` se ejecuta). En una red de 3 Mbps son ~5 min con
