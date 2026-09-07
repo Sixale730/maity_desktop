@@ -17,6 +17,7 @@ use tauri::{AppHandle, Manager, Runtime};
 
 use crate::coach::llm_service::CoachLlmService;
 use crate::summary::summary_engine::client::get_sidecar_pool;
+use crate::summary::summary_engine::sidecar::SidecarKeepAlive;
 
 /// Construye un `CoachLlmService` con el modelo configurado en
 /// `coach_settings.tips_model_id` (o default si no hay setting).
@@ -57,4 +58,30 @@ pub async fn build_coach_service_with_model<R: Runtime>(
         app_data_dir,
         model_name,
     )))
+}
+
+/// Toma un lease de sesión sobre el sidecar de `builtin_model` SIN spawnearlo
+/// (`SidecarPool::get_or_create`): el proceso sigue naciendo lazy en el primer
+/// tick LLM. Mientras el lease viva, el idle loop del sidecar no lo mata
+/// (#03 de la auditoría de recursos). `builtin_model` debe ser la MISMA clave
+/// con la que `CoachLlmService` pide el sidecar (`map_to_builtin_id`).
+pub async fn acquire_sidecar_keepalive<R: Runtime>(
+    app: &AppHandle<R>,
+    builtin_model: &str,
+) -> Result<SidecarKeepAlive, String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("app_data_dir: {}", e))?;
+
+    let pool = get_sidecar_pool(&app_data_dir)
+        .await
+        .map_err(|e| format!("SidecarPool: {}", e))?;
+
+    let manager = pool
+        .get_or_create(builtin_model)
+        .await
+        .map_err(|e| format!("SidecarManager: {}", e))?;
+
+    Ok(manager.keepalive())
 }

@@ -174,7 +174,7 @@ tareas de proceso, así que su payload **no** lleva `trigger` ni
 | `nav.page_view` | `usePageViewTracker` | cada navegación | ruta |
 | `device.profile` | `healthHeartbeatService.start()` (comando `get_device_profile`) | **1× por sesión** | `cpu_cores`, `gpu_type`, `memory_gb`, `os`, `os_version`, `arch`, `build_channel`, `performance_tier` — *resource attributes*, NO se repiten en cada heartbeat (ver cardinalidad abajo) |
 | `health.heartbeat` | `healthHeartbeatService` (JS) **y `logging/mem_sampler.rs` (Rust, `reason:"native"`)** | JS: cada 5 min activo / 15 min idle + start/stop de grabación. Rust: cada 15 min, SOLO si el webview lleva >20 min sin pedir `get_health_snapshot` (tray / ventana congelada) | ver abajo (+ `err_budget`, `performance_tier`). Etiquetar con `event_data->'ctx'->>'emitter'` (`webview` vs `rust`); para unir la serie de un mismo proceso, agrupar por `event_data->'ctx'->>'session_id'` (la COLUMNA `session_id` difiere entre emisores) |
-| `coach.session_summary` | `useCoachMetricsTelemetry` (evento Rust `coach-metrics`) | al cerrar sesión de coach | métricas LLM + sidecar (timeouts, restarts, breaker) + picos de RAM + tier |
+| `coach.session_summary` | `useCoachMetricsTelemetry` (evento Rust `coach-metrics`) | al cerrar sesión de coach | métricas LLM + sidecar (timeouts, restarts, cooldowns, idle_kills, breaker) + picos de RAM + tier. `sidecar_idle_kills` debe ser 0 en Medium+ con tips LLM (lease de sesión, #03 auditoría) |
 | `app.error` | `errorTelemetry` (JS) y **`telemetry/panics.rs` (Rust, `source:"rust-panic"`)** | error no manejado / boundary / panic (al outbox; se drena en el siguiente arranque) | ver abajo |
 
 **Guardado post-grabación — emisor `recordingLogService` (JS → outbox `recording_logs`).**
@@ -459,6 +459,7 @@ group by 1, 2 order by sesiones desc limit 20;
    colapsa? ¿en qué `phase` crece?
 2. `app.error` de sus sesiones → ¿algo truena antes del síntoma?
 3. `coach.session_summary` → ¿sidecar_restarts/breaker_opens altos?
+   ¿`sidecar_idle_kills > 0` en Medium+? = regresión del lease de #03.
 4. Solo si falta detalle: pedirle el Export ZIP (nivel 3) **o** que use
    Ajustes → "Enviar diagnóstico" (bundle en Storage
    `incident-bundles/{auth_uid}/`, ~200 KB de tail; si el incidente fue de RAM

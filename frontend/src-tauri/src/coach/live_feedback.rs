@@ -4,9 +4,15 @@
 //! corre NudgeEngine (heurístico puro) y TriggerEngine (señales léxicas),
 //! llama Ollama gemma3:4b cuando hay señal y emite "coach-tip-update".
 
+use crate::coach::breaker::{
+    CoachBreaker, FailureOutcome, COOLDOWN as BREAKER_COOLDOWN,
+    FAIL_THRESHOLD as BREAKER_FAIL_THRESHOLD,
+};
 use crate::coach::llama_engine;
-use crate::coach::llm_helper::build_coach_service_with_model;
+use crate::coach::llm_helper::{acquire_sidecar_keepalive, build_coach_service_with_model};
 use crate::coach::nudge_engine::{evaluate_nudge, ConversationSnapshot};
+use crate::llm::LlmError;
+use crate::summary::summary_engine::sidecar::SidecarKeepAlive;
 use crate::coach::prompt::{build_user_prompt, MeetingType, COACH_SYSTEM_PROMPT, DEFAULT_TIPS_MODEL};
 use crate::coach::trigger::{analyze_turn_with_context, SignalPriority, TurnContext};
 use crate::events;
@@ -35,25 +41,26 @@ static FEEDBACK_STATE: Lazy<Mutex<Option<Arc<Mutex<FeedbackState>>>>> =
 static LLM_PARSE_TOTAL: AtomicU64 = AtomicU64::new(0);
 static LLM_PARSE_FAILED: AtomicU64 = AtomicU64::new(0);
 
-// Circuit breaker del LLM del coach (patrón Fowler/Release It!). Antes, cada tick
-// (30s) reintentaba a ciegas tras un fallo: si el sidecar no podía cargar el modelo
-// bajo carga, el coach lo martillaba durante horas (death spiral, logs jul-2026).
-// Tras N fallos consecutivos el circuito abre COACH_BREAKER_COOLDOWN y los ticks se
-// saltan la llamada LLM (los tips heurísticos siguen por su propio loop). Pasado el
-// cooldown, el siguiente tick actúa como half-open: un intento de prueba; si falla,
-// re-abre; si funciona, cierra y resetea. Reset en start().
-static COACH_LLM_CONSEC_FAILS: AtomicU64 = AtomicU64::new(0);
-static COACH_BREAKER_OPEN_UNTIL_MS: AtomicU64 = AtomicU64::new(0);
-const COACH_BREAKER_FAIL_THRESHOLD: u64 = 3;
-const COACH_BREAKER_COOLDOWN: Duration = Duration::from_secs(300);
+// Circuit breaker del LLM del coach: política y doc en `coach::breaker`. Los
+// ticks con el circuito abierto se saltan la llamada LLM (los heurísticos siguen
+// por su propio loop); al vencer el cooldown el siguiente tick es el probe
+// half-open. Reset en start(); `opens()` alimenta el session-summary.
+static COACH_BREAKER: CoachBreaker = CoachBreaker::new();
 
-// Observabilidad de la supervisión (WS3): cuántas veces abrió el breaker en la
-// sesión (reset en start()) + snapshot de los contadores del sidecar al inicio
-// de sesión para reportar el DELTA en el session-summary de stop().
-static COACH_BREAKER_OPENS: AtomicU64 = AtomicU64::new(0);
+// Lease de sesión sobre el sidecar del modelo de tips (#03 de la auditoría de
+// recursos). Con el breaker abierto nadie llama a `ensure_running`, así que sin
+// esto el idle loop del sidecar (300 s, igual que el cooldown) mataba el helper
+// justo antes del probe half-open y cada apertura terminaba en spawn frío. Lo
+// toma `start()` sólo cuando `LLM_TIPS_ENABLED` resolvió `true` (tier Low y
+// modelo ausente no lo toman); lo suelta `stop()`. `Mutex` es `std::sync`.
+static COACH_SIDECAR_LEASE: Mutex<Option<SidecarKeepAlive>> = Mutex::new(None);
+
+// Observabilidad de la supervisión (WS3): snapshot de los contadores del sidecar
+// al inicio de sesión para reportar el DELTA en el session-summary de stop().
 static SIDECAR_TIMEOUTS_AT_START: AtomicU64 = AtomicU64::new(0);
 static SIDECAR_RESTARTS_AT_START: AtomicU64 = AtomicU64::new(0);
 static SIDECAR_COOLDOWNS_AT_START: AtomicU64 = AtomicU64::new(0);
+static SIDECAR_IDLE_KILLS_AT_START: AtomicU64 = AtomicU64::new(0);
 
 fn epoch_ms() -> u64 {
     std::time::SystemTime::now()
@@ -502,17 +509,16 @@ pub async fn start<R: Runtime + 'static>(app: AppHandle<R>) -> Result<(), String
     // FeedbackState::new() resetea los campos del state mas abajo automaticamente.
     LLM_PARSE_TOTAL.store(0, Ordering::Relaxed);
     LLM_PARSE_FAILED.store(0, Ordering::Relaxed);
-    COACH_LLM_CONSEC_FAILS.store(0, Ordering::Relaxed);
-    COACH_BREAKER_OPEN_UNTIL_MS.store(0, Ordering::Relaxed);
-    COACH_BREAKER_OPENS.store(0, Ordering::Relaxed);
+    COACH_BREAKER.reset();
 
     // Snapshot de los contadores de supervisión del sidecar (proceso-globales,
     // solo crecen): stop() reporta la diferencia = actividad de ESTA sesión.
-    let (sc_timeouts, sc_restarts, sc_cooldowns) =
+    let (sc_timeouts, sc_restarts, sc_cooldowns, sc_idle_kills) =
         crate::summary::summary_engine::sidecar::supervision_counters();
     SIDECAR_TIMEOUTS_AT_START.store(sc_timeouts, Ordering::Relaxed);
     SIDECAR_RESTARTS_AT_START.store(sc_restarts, Ordering::Relaxed);
     SIDECAR_COOLDOWNS_AT_START.store(sc_cooldowns, Ordering::Relaxed);
+    SIDECAR_IDLE_KILLS_AT_START.store(sc_idle_kills, Ordering::Relaxed);
 
     // Picos de memoria por sesión (los reporta el session-summary del stop)
     crate::logging::mem_sampler::reset_session_peaks();
@@ -559,6 +565,26 @@ pub async fn start<R: Runtime + 'static>(app: AppHandle<R>) -> Result<(), String
             }
         }
     };
+
+    // Lease de sesión sobre el sidecar (ver `COACH_SIDECAR_LEASE`). Best-effort:
+    // sin lease el coach funciona igual, sólo vuelve el idle-kill de #03. La
+    // clave es el builtin id, la misma con la que `call_ollama_and_emit` pide el
+    // sidecar; NO spawnea (el proceso nace en el primer tick, como siempre).
+    if LLM_TIPS_ENABLED.load(Ordering::Relaxed) {
+        let builtin = llama_engine::map_to_builtin_id(&model);
+        match acquire_sidecar_keepalive(&app, builtin).await {
+            Ok(lease) => {
+                if let Ok(mut slot) = COACH_SIDECAR_LEASE.lock() {
+                    *slot = Some(lease);
+                }
+                info!("Coach: lease del sidecar '{}' tomado para la sesión", builtin);
+            }
+            Err(e) => warn!(
+                "Coach: sin lease del sidecar ({}); el idle-kill sigue activo esta sesión",
+                e
+            ),
+        }
+    }
     let window_secs = cfg.as_ref().map(|c| c.context_window_secs).unwrap_or(180);
     // §5.6 Default 15s (antes 45s). El nudge loop evalua talk_ratio/monologo/preguntas y
     // dispara tips de pacing. A 45s se pierden monologos cortos: si el usuario empieza a
@@ -1001,6 +1027,14 @@ pub fn stop<R: Runtime>(app: &AppHandle<R>) {
             token.cancel();
         }
     }
+    // Soltar el lease: el idle loop del sidecar vuelve a aplicar con ≥300 s de
+    // pista (refrescaba en cada tick mientras el lease vivía), que cubre el
+    // hueco stop→start de la rotación por hora.
+    if let Ok(mut slot) = COACH_SIDECAR_LEASE.lock() {
+        if slot.take().is_some() {
+            info!("Coach: lease del sidecar liberado; el idle-kill vuelve a aplicar");
+        }
+    }
     if let Ok(mut lock) = EVENT_LISTENER.lock() {
         if let Some(id) = lock.take() {
             app.unlisten(id);
@@ -1033,7 +1067,7 @@ pub fn stop<R: Runtime>(app: &AppHandle<R>) {
     // Observabilidad de la supervisión (WS3): delta de los contadores del
     // sidecar respecto al snapshot de start() = actividad de esta sesión.
     // saturating_sub por si stop() corre sin un start() previo (delta 0).
-    let (sc_timeouts, sc_restarts, sc_cooldowns) =
+    let (sc_timeouts, sc_restarts, sc_cooldowns, sc_idle_kills) =
         crate::summary::summary_engine::sidecar::supervision_counters();
     let sidecar_timeouts =
         sc_timeouts.saturating_sub(SIDECAR_TIMEOUTS_AT_START.load(Ordering::Relaxed));
@@ -1041,7 +1075,10 @@ pub fn stop<R: Runtime>(app: &AppHandle<R>) {
         sc_restarts.saturating_sub(SIDECAR_RESTARTS_AT_START.load(Ordering::Relaxed));
     let sidecar_cooldowns =
         sc_cooldowns.saturating_sub(SIDECAR_COOLDOWNS_AT_START.load(Ordering::Relaxed));
-    let breaker_opens = COACH_BREAKER_OPENS.load(Ordering::Relaxed);
+    // Debe ser 0 en Medium+ con tips LLM (#03): el lease impide el idle-kill.
+    let sidecar_idle_kills =
+        sc_idle_kills.saturating_sub(SIDECAR_IDLE_KILLS_AT_START.load(Ordering::Relaxed));
+    let breaker_opens = COACH_BREAKER.opens();
 
     // Picos de memoria de la sesión + contexto de hardware: viajan enteros a
     // maity.platform_logs vía useCoachMetricsTelemetry (spread del objeto),
@@ -1050,9 +1087,9 @@ pub fn stop<R: Runtime>(app: &AppHandle<R>) {
     let hw = crate::audio::hardware_detector::HardwareProfile::detect();
 
     info!(
-        "[METRIC] session-summary llm_parse_total={} llm_parse_failed={} ({:.1}%) llm_latency_p95_ms={:?} tips_from_llm={} tips_from_heuristic={} heuristic_pct={:.1}% sidecar_timeouts={} sidecar_restarts={} sidecar_cooldowns={} breaker_opens={} mem_app_rss_peak_mb={} mem_llama_rss_peak_mb={} mem_webview_rss_peak_mb={} sys_avail_min_mb={} llama_procs_max={}",
+        "[METRIC] session-summary llm_parse_total={} llm_parse_failed={} ({:.1}%) llm_latency_p95_ms={:?} tips_from_llm={} tips_from_heuristic={} heuristic_pct={:.1}% sidecar_timeouts={} sidecar_restarts={} sidecar_cooldowns={} sidecar_idle_kills={} breaker_opens={} mem_app_rss_peak_mb={} mem_llama_rss_peak_mb={} mem_webview_rss_peak_mb={} sys_avail_min_mb={} llama_procs_max={}",
         parse_total, parse_failed, parse_failed_pct, p95_ms, tips_llm, tips_heur, heur_pct,
-        sidecar_timeouts, sidecar_restarts, sidecar_cooldowns, breaker_opens,
+        sidecar_timeouts, sidecar_restarts, sidecar_cooldowns, sidecar_idle_kills, breaker_opens,
         peaks.app_rss_peak_mb, peaks.llama_rss_peak_mb, peaks.webview_rss_peak_mb,
         peaks.sys_avail_min_mb, peaks.llama_procs_max
     );
@@ -1070,6 +1107,7 @@ pub fn stop<R: Runtime>(app: &AppHandle<R>) {
                 "sidecar_timeouts": sidecar_timeouts,
                 "sidecar_restarts": sidecar_restarts,
                 "sidecar_cooldowns": sidecar_cooldowns,
+                "sidecar_idle_kills": sidecar_idle_kills,
                 "breaker_opens": breaker_opens,
                 "mem_app_rss_peak_mb": peaks.app_rss_peak_mb,
                 "mem_llama_rss_peak_mb": peaks.llama_rss_peak_mb,
@@ -1134,11 +1172,10 @@ async fn call_ollama_and_emit<R: Runtime>(
     // Circuit breaker: con el circuito abierto, saltarse la llamada LLM por completo.
     // Reintentar cada 30s contra un sidecar que no puede cargar el modelo solo
     // amplifica la sobrecarga (cada intento fallido costaba una recarga de 2.4 GB).
-    let breaker_until = COACH_BREAKER_OPEN_UNTIL_MS.load(Ordering::Relaxed);
-    if breaker_until > 0 && epoch_ms() < breaker_until {
+    if let Some(remaining_ms) = COACH_BREAKER.open_remaining_ms(epoch_ms()) {
         info!(
             "Coach: breaker abierto ({}s restantes) — tick LLM omitido, heurísticos siguen activos",
-            (breaker_until.saturating_sub(epoch_ms())) / 1000
+            remaining_ms / 1000
         );
         if let Ok(mut st) = state.lock() {
             st.last_tip_at = None;
@@ -1204,8 +1241,7 @@ async fn call_ollama_and_emit<R: Runtime>(
         match result {
             Ok(raw) => {
                 // El LLM respondió: cerrar/resetear el breaker (éxito en half-open).
-                COACH_LLM_CONSEC_FAILS.store(0, Ordering::Relaxed);
-                COACH_BREAKER_OPEN_UNTIL_MS.store(0, Ordering::Relaxed);
+                COACH_BREAKER.record_success();
                 if let Ok(mut st) = state.lock() {
                     st.push_llm_latency(latency_ms);
                 }
@@ -1228,22 +1264,28 @@ async fn call_ollama_and_emit<R: Runtime>(
                 );
                 last_raw = Some(raw);
             }
+            Err(LlmError::Cancelled) => {
+                // stop()/rotación canceló el tick a media generación: no es salud
+                // del sidecar y no debe contar para el breaker (inflaba
+                // `breaker_opens` justo al cerrar la sesión).
+                info!("Coach: tick LLM cancelado (fin de sesión) — no cuenta para el breaker");
+                if let Ok(mut st) = state.lock() {
+                    st.last_tip_at = None;
+                }
+                return;
+            }
             Err(e) => {
-                let fails = COACH_LLM_CONSEC_FAILS.fetch_add(1, Ordering::Relaxed) + 1;
-                warn!(
-                    "Coach LLM call failed ({}/{} antes de abrir breaker): {}",
-                    fails, COACH_BREAKER_FAIL_THRESHOLD, e
-                );
-                if fails >= COACH_BREAKER_FAIL_THRESHOLD {
-                    COACH_BREAKER_OPEN_UNTIL_MS
-                        .store(epoch_ms() + COACH_BREAKER_COOLDOWN.as_millis() as u64, Ordering::Relaxed);
-                    // Cuenta aperturas y re-aperturas (fallo en half-open) por sesión.
-                    COACH_BREAKER_OPENS.fetch_add(1, Ordering::Relaxed);
-                    error!(
-                        "Coach: {} fallos LLM consecutivos — breaker ABIERTO por {}s (tips heurísticos siguen activos)",
-                        fails,
-                        COACH_BREAKER_COOLDOWN.as_secs()
-                    );
+                match COACH_BREAKER.record_failure(epoch_ms()) {
+                    FailureOutcome::Counting(fails) => warn!(
+                        "Coach LLM call failed ({}/{} antes de abrir breaker): {}",
+                        fails, BREAKER_FAIL_THRESHOLD, e
+                    ),
+                    FailureOutcome::Opened => error!(
+                        "Coach: {} fallos LLM consecutivos — breaker ABIERTO por {}s (tips heurísticos siguen activos): {}",
+                        BREAKER_FAIL_THRESHOLD,
+                        BREAKER_COOLDOWN.as_secs(),
+                        e
+                    ),
                 }
                 if let Ok(mut st) = state.lock() {
                     st.last_tip_at = None;

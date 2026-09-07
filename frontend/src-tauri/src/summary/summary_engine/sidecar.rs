@@ -11,6 +11,10 @@ use anyhow::{anyhow, Context, Result};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::process::Child;
 use tokio::sync::{Mutex, RwLock};
+/// Reloj de `last_activity`. En producción es idéntico a `std::time::Instant`
+/// (sin la feature `test-util`); en tests con `start_paused` sigue el reloj
+/// pausado, que es lo que permite ver pasar los 300 s del idle loop en ms.
+use tokio::time::Instant as ActivityInstant;
 
 /// Handles de I/O del helper como trait objects. En producción son
 /// `ChildStdin`/`ChildStdout`; en tests, mitades de un `tokio::io::duplex`.
@@ -41,6 +45,17 @@ use super::models;
 //    reinicio controlado (distinción liveness/readiness: 1 timeout = lento).
 // 3. Presupuesto de reinicios: máx N spawns por ventana; agotado ⇒ cooldown.
 //    Backoff creciente entre spawns para no martillar CPU/disco.
+//
+// Idle-kill y leases de sesión (sep-2026, #03 de la auditoría de recursos):
+// el idle loop mata al helper tras `idle_timeout_secs` sin actividad, y sólo
+// refrescan la actividad `ensure_running`, el spawn y un Generate exitoso. El
+// cooldown del breaker del coach dura lo mismo (300 s): con el circuito
+// abierto nadie hablaba con el helper, el idle loop lo mataba justo antes del
+// probe half-open y cada apertura terminaba en un spawn frío (1-2.4 GB de
+// GGUF). Un consumidor de larga duración toma un lease (`keepalive()` →
+// `SidecarKeepAlive`) y el idle loop lo trata como un request en vuelo:
+// refresca y sigue. El lease vive en el manager (sobrevive respawns) y NO
+// gobierna strikes, cooldown ni `shutdown_all`: sólo el idle loop.
 
 /// Secuencia global de ids de correlación (compartida entre managers del pool).
 static REQUEST_SEQ: AtomicU64 = AtomicU64::new(1);
@@ -53,13 +68,19 @@ static REQUEST_SEQ: AtomicU64 = AtomicU64::new(1);
 static SIDECAR_TIMEOUTS_TOTAL: AtomicU64 = AtomicU64::new(0);
 static SIDECAR_RESTARTS_TOTAL: AtomicU64 = AtomicU64::new(0);
 static SIDECAR_COOLDOWNS_TOTAL: AtomicU64 = AtomicU64::new(0);
+/// Muertes por idle. Con el lease del coach debe quedar en 0 durante una
+/// grabación con tips LLM (Medium+); >0 en el delta del session-summary es
+/// regresión de #03.
+static SIDECAR_IDLE_KILLS_TOTAL: AtomicU64 = AtomicU64::new(0);
 
-/// Snapshot de los contadores de supervisión: `(timeouts, restarts, cooldowns)`.
-pub fn supervision_counters() -> (u64, u64, u64) {
+/// Snapshot de los contadores de supervisión:
+/// `(timeouts, restarts, cooldowns, idle_kills)`.
+pub fn supervision_counters() -> (u64, u64, u64, u64) {
     (
         SIDECAR_TIMEOUTS_TOTAL.load(Ordering::Relaxed),
         SIDECAR_RESTARTS_TOTAL.load(Ordering::Relaxed),
         SIDECAR_COOLDOWNS_TOTAL.load(Ordering::Relaxed),
+        SIDECAR_IDLE_KILLS_TOTAL.load(Ordering::Relaxed),
     )
 }
 
@@ -110,8 +131,8 @@ pub struct SidecarManager {
     /// Stdout reader for receiving responses
     stdout_reader: Arc<Mutex<Option<SidecarStdout>>>,
 
-    /// Last activity timestamp
-    last_activity: Arc<RwLock<Instant>>,
+    /// Last activity timestamp (reloj de tokio: ver `ActivityInstant`).
+    last_activity: Arc<RwLock<ActivityInstant>>,
 
     /// Health status
     is_healthy: Arc<AtomicBool>,
@@ -121,6 +142,11 @@ pub struct SidecarManager {
 
     /// Active request count (for graceful shutdown)
     active_request_count: Arc<AtomicUsize>,
+
+    /// Leases de sesión (`SidecarKeepAlive`): con >0 el idle loop no mata el
+    /// proceso aunque no haya Generates. Vive en el manager, no en el proceso:
+    /// sobrevive respawns (#03 de la auditoría de recursos).
+    keepalive_holds: Arc<AtomicUsize>,
 
     /// Path to llama-helper binary
     helper_binary_path: PathBuf,
@@ -187,6 +213,46 @@ impl Drop for RequestGuard {
     }
 }
 
+/// Lease de sesión sobre un sidecar (ver la cabecera del módulo, #03).
+///
+/// Sólo sostiene el contador, no el manager: no dispara el `Drop` ruidoso de
+/// `SidecarManager` ni alarga su vida tras `SidecarPool::shutdown_all`. Se
+/// libera al dropear; el idle loop vuelve a aplicar en su siguiente tick con
+/// ≥`idle_timeout_secs` de pista, porque mientras el lease estaba vivo el loop
+/// refrescaba `last_activity` en cada tick.
+pub struct SidecarKeepAlive {
+    holds: Arc<AtomicUsize>,
+}
+
+impl Drop for SidecarKeepAlive {
+    fn drop(&mut self) {
+        let left = self.holds.fetch_sub(1, Ordering::SeqCst) - 1;
+        log::info!("Sidecar keepalive liberado (holds={})", left);
+    }
+}
+
+/// Decisión de un tick del idle loop. Pura a propósito (convención de
+/// `idle_unload.rs` / `next_backoff`): el loop sólo la alimenta.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IdleVerdict {
+    /// Hay demanda (request en vuelo o lease): refrescar `last_activity` y seguir.
+    Refresh,
+    /// Sin demanda y aún dentro del timeout.
+    Wait,
+    /// Sin demanda y `idle_secs > timeout_secs` (estricto, como siempre).
+    Shutdown,
+}
+
+fn idle_verdict(idle_secs: u64, timeout_secs: u64, in_flight: usize, holds: usize) -> IdleVerdict {
+    if in_flight > 0 || holds > 0 {
+        IdleVerdict::Refresh
+    } else if idle_secs > timeout_secs {
+        IdleVerdict::Shutdown
+    } else {
+        IdleVerdict::Wait
+    }
+}
+
 impl SidecarManager {
     /// Create a new sidecar manager
     pub fn new(_app_data_dir: PathBuf) -> Result<Self> {
@@ -208,10 +274,11 @@ impl SidecarManager {
             child_process: Arc::new(Mutex::new(None)),
             stdin_writer: Arc::new(Mutex::new(None)),
             stdout_reader: Arc::new(Mutex::new(None)),
-            last_activity: Arc::new(RwLock::new(Instant::now())),
+            last_activity: Arc::new(RwLock::new(ActivityInstant::now())),
             is_healthy: Arc::new(AtomicBool::new(false)),
             should_shutdown: Arc::new(AtomicBool::new(false)),
             active_request_count: Arc::new(AtomicUsize::new(0)),
+            keepalive_holds: Arc::new(AtomicUsize::new(0)),
             helper_binary_path,
             current_model_path: Arc::new(RwLock::new(None)),
             idle_timeout_secs,
@@ -239,10 +306,11 @@ impl SidecarManager {
             child_process: Arc::new(Mutex::new(None)),
             stdin_writer: Arc::new(Mutex::new(Some(stdin))),
             stdout_reader: Arc::new(Mutex::new(Some(stdout))),
-            last_activity: Arc::new(RwLock::new(Instant::now())),
+            last_activity: Arc::new(RwLock::new(ActivityInstant::now())),
             is_healthy: Arc::new(AtomicBool::new(true)),
             should_shutdown: Arc::new(AtomicBool::new(false)),
             active_request_count: Arc::new(AtomicUsize::new(0)),
+            keepalive_holds: Arc::new(AtomicUsize::new(0)),
             helper_binary_path: PathBuf::new(),
             current_model_path: Arc::new(RwLock::new(Some(PathBuf::from("fake.gguf")))),
             idle_timeout_secs: models::DEFAULT_IDLE_TIMEOUT_SECS,
@@ -654,6 +722,10 @@ impl SidecarManager {
             Ok(Err(e)) => Err(e),
             Err(_) => {
                 SIDECAR_TIMEOUTS_TOTAL.fetch_add(1, Ordering::Relaxed);
+                // Un request que expiró sigue siendo demanda: si expiró en el
+                // piso frío de 120 s, el helper pasó esos segundos cargando el
+                // modelo y matarlo por idle 3 min después tira justo ese trabajo.
+                self.update_activity().await;
                 if self.ids_confirmed.load(Ordering::SeqCst) {
                     // El helper soporta ids: el proceso sigue vivo (request lento ≠
                     // proceso muerto) y la respuesta tardía se descartará por id.
@@ -1025,13 +1097,24 @@ impl SidecarManager {
     /// Update last activity timestamp
     async fn update_activity(&self) {
         let mut last_activity = self.last_activity.write().await;
-        *last_activity = Instant::now();
+        *last_activity = ActivityInstant::now();
     }
 
     /// Get seconds since last activity
     async fn seconds_since_activity(&self) -> u64 {
         let last_activity = self.last_activity.read().await;
         last_activity.elapsed().as_secs()
+    }
+
+    /// Toma un lease de sesión: mientras viva, el idle loop no mata el proceso.
+    /// No spawnea ni toca el proceso — sólo la política de idle. Ver la
+    /// cabecera del módulo (#03).
+    pub fn keepalive(&self) -> SidecarKeepAlive {
+        let n = self.keepalive_holds.fetch_add(1, Ordering::SeqCst) + 1;
+        log::info!("Sidecar keepalive adquirido (holds={})", n);
+        SidecarKeepAlive {
+            holds: self.keepalive_holds.clone(),
+        }
     }
 
     /// Start health check loop (runs in background)
@@ -1097,28 +1180,39 @@ impl SidecarManager {
                     break;
                 }
 
-                // Don't shutdown if we are busy
-                if manager.active_request_count.load(Ordering::SeqCst) > 0 {
-                    // Update activity to prevent timeout immediately after request finishes
-                    manager.update_activity().await;
-                    continue;
-                }
-
+                let in_flight = manager.active_request_count.load(Ordering::SeqCst);
+                let holds = manager.keepalive_holds.load(Ordering::SeqCst);
                 let idle_secs = manager.seconds_since_activity().await;
-                log::debug!("Idle check: {}s since last activity", idle_secs);
 
-                if idle_secs > manager.idle_timeout_secs {
-                    log::info!(
-                        "Sidecar idle for {}s (timeout: {}s), shutting down",
-                        idle_secs,
-                        manager.idle_timeout_secs
-                    );
-
-                    if let Err(e) = manager.shutdown().await {
-                        log::error!("Failed to shutdown idle sidecar: {}", e);
+                match idle_verdict(idle_secs, manager.idle_timeout_secs, in_flight, holds) {
+                    IdleVerdict::Refresh => {
+                        // Request en vuelo o lease de sesión: refrescar para que el
+                        // timeout no dispare justo al terminar / al soltar el lease.
+                        log::debug!(
+                            "Idle check: demanda viva (in_flight={}, holds={}), actividad refrescada",
+                            in_flight,
+                            holds
+                        );
+                        manager.update_activity().await;
+                        continue;
                     }
+                    IdleVerdict::Wait => {
+                        log::debug!("Idle check: {}s since last activity", idle_secs);
+                    }
+                    IdleVerdict::Shutdown => {
+                        SIDECAR_IDLE_KILLS_TOTAL.fetch_add(1, Ordering::Relaxed);
+                        log::info!(
+                            "Sidecar idle for {}s (timeout: {}s), shutting down",
+                            idle_secs,
+                            manager.idle_timeout_secs
+                        );
 
-                    break;
+                        if let Err(e) = manager.shutdown().await {
+                            log::error!("Failed to shutdown idle sidecar: {}", e);
+                        }
+
+                        break;
+                    }
                 }
             }
 
@@ -1254,7 +1348,7 @@ mod handshake_tests {
 
         // Sin correlación confirmada, el PRIMER timeout de request aplica el kill
         // (política conservadora: sin ids no se puede drenar la respuesta tardía).
-        let (timeouts_before, _, _) = supervision_counters();
+        let (timeouts_before, _, _, _) = supervision_counters();
         let err = m
             .send_request(generate_request(), Duration::from_secs(1))
             .await
@@ -1269,7 +1363,7 @@ mod handshake_tests {
     async fn con_ids_confirmados_tres_strikes_antes_de_reiniciar() {
         let (m, _helper) = manager_with(FakeMode::PingOnly);
         assert_eq!(m.probe_capabilities().await, HandshakeOutcome::IdsConfirmed);
-        let (timeouts_before, _, _) = supervision_counters();
+        let (timeouts_before, _, _, _) = supervision_counters();
 
         for strike in 1..=TIMEOUT_STRIKES_BEFORE_RESTART {
             let res = m.send_request(generate_request(), Duration::from_secs(1)).await;
@@ -1325,5 +1419,104 @@ mod handshake_tests {
         );
         assert!(m2.is_healthy(), "strike 1: sin shutdown");
         assert_eq!(m2.consecutive_timeouts.load(Ordering::SeqCst), 1);
+    }
+
+    // ── Idle loop y leases de sesión (#03 de la auditoría de recursos) ──────
+
+    #[test]
+    fn idle_verdict_tabla() {
+        use IdleVerdict::*;
+        let t = models::DEFAULT_IDLE_TIMEOUT_SECS;
+        let casos: &[(u64, usize, usize, IdleVerdict)] = &[
+            (0, 0, 0, Wait),
+            (t, 0, 0, Wait), // estricto: idle == timeout no mata
+            (t + 1, 0, 0, Shutdown),
+            (t + 1, 1, 0, Refresh), // request en vuelo
+            (t + 1, 0, 1, Refresh), // lease de sesión
+            (0, 0, 2, Refresh),
+            (t * 10, 1, 1, Refresh),
+        ];
+        for &(idle, in_flight, holds, esperado) in casos {
+            assert_eq!(
+                idle_verdict(idle, t, in_flight, holds),
+                esperado,
+                "idle={idle} in_flight={in_flight} holds={holds}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn keepalive_cuenta_y_libera_al_drop() {
+        let (m, _helper) = manager_with(FakeMode::Modern);
+        assert_eq!(m.keepalive_holds.load(Ordering::SeqCst), 0);
+        let a = m.keepalive();
+        let b = m.keepalive();
+        assert_eq!(m.keepalive_holds.load(Ordering::SeqCst), 2);
+        drop(a);
+        assert_eq!(m.keepalive_holds.load(Ordering::SeqCst), 1, "soltar uno no libera");
+        drop(b);
+        assert_eq!(m.keepalive_holds.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn sin_lease_el_idle_loop_mata_tras_el_timeout() {
+        let (m, _helper) = manager_with(FakeMode::Modern);
+        assert_eq!(m.probe_capabilities().await, HandshakeOutcome::IdsConfirmed);
+        let (_, _, _, idle_kills_before) = supervision_counters();
+
+        m.start_idle_check_loop(m.spawn_epoch.load(Ordering::SeqCst));
+        // Ticks de 60 s: el de los 360 s ve idle > 300 y mata.
+        tokio::time::sleep(Duration::from_secs(models::DEFAULT_IDLE_TIMEOUT_SECS + 120)).await;
+
+        assert!(!m.is_healthy(), "sin lease ni requests, el idle loop debe matar");
+        assert!(m.should_shutdown.load(Ordering::SeqCst));
+        assert!(m.stdin_writer.lock().await.is_none(), "handles limpiados por shutdown");
+        // Delta y no igualdad: el contador es global y los tests corren en paralelo.
+        assert!(supervision_counters().3 >= idle_kills_before + 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn lease_evita_idle_kill_y_al_soltarla_deja_pista() {
+        let (m, _helper) = manager_with(FakeMode::Modern);
+        assert_eq!(m.probe_capabilities().await, HandshakeOutcome::IdsConfirmed);
+        let t = models::DEFAULT_IDLE_TIMEOUT_SECS;
+
+        let lease = m.keepalive();
+        m.start_idle_check_loop(m.spawn_epoch.load(Ordering::SeqCst));
+
+        // Más de dos timeouts sin un solo Generate: con lease no muere y el loop
+        // refresca la actividad en cada tick.
+        tokio::time::sleep(Duration::from_secs(2 * t + 50)).await;
+        assert!(m.is_healthy(), "con lease el idle loop no debe matar");
+        assert!(!m.should_shutdown.load(Ordering::SeqCst));
+        assert!(
+            m.seconds_since_activity().await <= 60,
+            "el loop refresca la actividad mientras hay lease"
+        );
+
+        // Soltar el lease deja ≥ timeout de pista (hueco stop→start de la rotación).
+        drop(lease);
+        tokio::time::sleep(Duration::from_secs(t / 2)).await;
+        assert!(m.is_healthy(), "recién soltado el lease aún hay pista");
+
+        // Y pasada la pista, el idle-kill vuelve a aplicar.
+        let (_, _, _, idle_kills_before) = supervision_counters();
+        tokio::time::sleep(Duration::from_secs(t)).await;
+        assert!(!m.is_healthy(), "sin lease y sin actividad, muere");
+        assert!(supervision_counters().3 >= idle_kills_before + 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn timeout_de_generate_refresca_actividad() {
+        // Un request que expira en el piso frío (120 s) es demanda: el helper
+        // pasó ese tiempo cargando el modelo y no debe morir por idle 3 min después.
+        let (m, _helper) = manager_with(FakeMode::PingOnly);
+        assert_eq!(m.probe_capabilities().await, HandshakeOutcome::IdsConfirmed);
+        let res = m.send_request(generate_request(), Duration::from_secs(1)).await;
+        assert!(res.is_err(), "PingOnly traga el generate: debe expirar");
+        assert!(
+            m.seconds_since_activity().await < 5,
+            "el timeout debe refrescar last_activity (antes quedaba en ~120 s)"
+        );
     }
 }

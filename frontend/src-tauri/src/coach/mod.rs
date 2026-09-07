@@ -1,5 +1,6 @@
 //! Módulo coach — feedback en vivo y evaluación post-reunión con Ollama.
 
+pub mod breaker;
 pub mod commands;
 pub mod context;
 pub mod evaluator;

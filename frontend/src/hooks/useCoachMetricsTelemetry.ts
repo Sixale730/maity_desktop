@@ -14,6 +14,8 @@ interface CoachSessionSummary {
   sidecar_timeouts?: number
   sidecar_restarts?: number
   sidecar_cooldowns?: number
+  /** Muertes por idle durante la sesión. Debe ser 0 en Medium+ con tips LLM (#03 auditoría). */
+  sidecar_idle_kills?: number
   breaker_opens?: number
 }
 
