@@ -16,7 +16,9 @@
 --   * v4 = analysis_status='completed' con calidad_global y calidad_insumo.nivel <> 'baja'
 --     (mismo predicado que getCommScore en frontend/src/features/conversations/utils/scoring.ts).
 --   * Una dimensión es NO evaluable si puntaje nulo, nivel 'no evaluable' o está en
---     dimensiones_no_aplica → se promedia SOLO lo evaluable y se reporta n_eval / n_total.
+--     dimensiones_no_aplica. Q1/Q2b/Q6 devuelven DOS medias: `media_eval` (solo evaluables,
+--     va al reporte A) y `media_all` (todo puntaje no nulo, va al reporte B). Decisión del
+--     usuario 2026-09-07: en B empatía/adaptación se promedian de todos modos, como las demás.
 --   * Se excluyen conversaciones deleted o discarded.
 -- Verificado 2026-08-28 contra producción con Dingler (f983ab57-c097-4637-a5cf-d24ecd6238c7).
 -- =====================================================================================
@@ -89,14 +91,17 @@ select t.nombre, t.who, fr.q4 puesto, fr.q17 reto, count(c.id) conv,
 from team t left join fr on fr.user_id = t.id left join conv c on c.who = t.who
 group by 1,2,3,4 order by conv desc;
 
--- Q1 · Seis competencias del equipo, SOLO evaluables, con n y distribución de niveles
-select dim, count(*) n_total, count(*) filter (where not no_evaluable) n_eval,
-       round(avg(puntaje) filter (where not no_evaluable),1) media_eval,
-       count(*) filter (where not no_evaluable and nivel='crítico') critico,
-       count(*) filter (where not no_evaluable and nivel='en desarrollo') desarrollo,
-       count(*) filter (where not no_evaluable and nivel in ('competente','sólido')) competente_mas,
-       count(distinct who) filter (where not no_evaluable) personas
-from dims group by dim order by media_eval desc;
+-- Q1 · Seis competencias del equipo: media_eval (A) y media_all (B), con n y distribución de niveles.
+--      Para B usar media_all/n_all y los niveles *_all (por puntaje, no por `nivel`, porque el V4 etiqueta
+--      'no evaluable' en vez de un nivel cuando hay un solo hablante).
+select dim, count(*) n_total,
+       count(*) filter (where not no_evaluable) n_eval, round(avg(puntaje) filter (where not no_evaluable),1) media_eval,
+       count(puntaje) n_all, round(avg(puntaje),1) media_all,
+       count(*) filter (where puntaje < 40) critico_all,
+       count(*) filter (where puntaje >= 40 and puntaje < 60) desarrollo_all,
+       count(*) filter (where puntaje >= 60) competente_mas_all,
+       count(distinct who) filter (where puntaje is not null) personas
+from dims group by dim order by media_all desc;
 
 -- Q1b · "Por qué" del equipo: fortaleza/mejorar más citadas con sus hints + recomendaciones por frecuencia
 select 'mejorar' k, v->'calidad_global'->>'mejorar' dim, count(*) n,
@@ -109,16 +114,19 @@ select 'reco', lower(regexp_replace(r->>'titulo','[.]$','')), count(*),
        left(string_agg(distinct r->>'por_que', ' || '), 300) from v4, jsonb_array_elements(v->'recomendaciones') r group by 2
 order by 1, 3 desc;
 
--- Q1c · Cita representativa por dimensión y nivel (para el "ejemplo → mejor" de cada competencia).
---       Prioriza conversaciones con ≥2 hablantes. LEER cada cita antes de publicar.
+-- Q1c · Citas por dimensión para `competencias[].ejemplos[]` (B pide 3 por competencia, CON nombre:
+--       "si son 50 conversaciones, un ejemplo no basta"). Devuelve hasta 5 candidatas por dimensión de
+--       personas DISTINTAS (una por persona), priorizando ≥2 hablantes. LEER cada cita antes de publicar.
 select dim, nivel, puntaje, hablantes, nombre, left(hh->>'cita',150) cita, left(hh->>'alternativa',180) alternativa,
        left(tu_resultado, 260) tu_resultado
 from (
   select d.*, hh.hh,
-         row_number() over (partition by d.dim, d.nivel in ('crítico','en desarrollo') order by d.hablantes desc, d.puntaje) rn
+         row_number() over (partition by d.dim, d.nombre order by d.hablantes desc, d.puntaje) rn_p
   from dims d, jsonb_array_elements(coalesce(d.hallazgos,'[]'::jsonb)) with ordinality hh(hh,i)
-  where i = 1 and not d.no_evaluable
-) x where rn <= 2 order by dim, nivel, rn;
+  where i = 1 and d.puntaje is not null
+) x where rn_p = 1
+order by dim, hablantes desc, puntaje
+limit 5 * 6;
 
 -- Q2 · Tarjeta por persona (cabecera): n, tier de lectura, modas, conversaciones con dos partes
 select nombre, count(*) n,
@@ -133,19 +141,21 @@ select nombre, count(*) n,
        left(string_agg(distinct lower(regexp_replace(v->'recomendaciones'->0->>'titulo','[.]$','')), ' | '), 400) recos_p1
 from v4 group by nombre order by n desc;
 
--- Q2b · Medias por dimensión por persona (evaluables) — alimenta radar/dumbbell de la tarjeta
-select nombre, dim, count(*) filter (where not no_evaluable) n_eval, count(*) n,
-       round(avg(puntaje) filter (where not no_evaluable),0) media
+-- Q2b · Medias por dimensión por persona — alimenta el radar de la tarjeta (B usa media_all / n_all)
+select nombre, dim, count(*) n,
+       count(*) filter (where not no_evaluable) n_eval, round(avg(puntaje) filter (where not no_evaluable),0) media_eval,
+       count(puntaje) n_all, round(avg(puntaje),0) media_all
 from dims group by 1,2 order by 1,2;
 
--- Q2c · Cita + alternativa de la dimensión "a mejorar" de cada persona (2 candidatas; elegir 1 a mano)
+-- Q2c · Cita + alternativa de la dimensión "a mejorar" de cada persona (hasta 4 candidatas, de
+--       conversaciones DISTINTAS; B pinta 2–3 en `personas[].ejemplos[]`). LEER cada cita.
 select nombre, dim, puntaje, hablantes, left(title,60) titulo, cita, alternativa from (
   select v.nombre, v.v->'calidad_global'->>'mejorar' dim, (v.v->'calidad_global'->>'puntaje')::numeric puntaje, v.hablantes, v.title,
          left(hh->>'cita',160) cita, left(hh->>'alternativa',200) alternativa,
          row_number() over (partition by v.nombre order by v.hablantes desc, (v.v->'calidad_global'->>'puntaje')::numeric desc) rn
   from v4 v, jsonb_array_elements(coalesce(v.v->'dimensiones'->(v.v->'calidad_global'->>'mejorar')->'hallazgos','[]'::jsonb)) with ordinality hh(hh,i)
   where i = 1
-) x where rn <= 2 order by nombre, rn;
+) x where rn <= 4 order by nombre, rn;
 
 -- Q3 · Qué conversaciones tienen: tipo × interlocutor, cómo salen, cuántas son "informales"
 select tipo, interlocutor, count(*) n, round(sum(duration_seconds)/3600.0,1) horas, round(avg(duration_seconds)/60.0,0) min_prom,
@@ -209,9 +219,10 @@ with auto as (
   select t.nombre, x.dim, x.val autoeval from team t join fr on fr.user_id = t.id, lateral (values
     ('claridad',(fr.q5::int+fr.q6::int)*10),('adaptacion',(fr.q7::int+fr.q8::int)*10),('persuasion',(fr.q9::int+fr.q10::int)*10),
     ('estructura',(fr.q11::int+fr.q12::int)*10),('proposito',(fr.q13::int+fr.q14::int)*10),('empatia',(fr.q15::int+fr.q16::int)*10)) x(dim,val)),
-med as (select nombre, dim, count(*) filter (where not no_evaluable) n_eval, round(avg(puntaje) filter (where not no_evaluable),0) medido from dims group by 1,2)
-select a.nombre, a.dim, a.autoeval, m.medido, m.n_eval, (a.autoeval - m.medido) brecha
-from auto a left join med m using (nombre, dim) order by a.nombre, a.dim;
+med as (select nombre, dim, count(*) filter (where not no_evaluable) n_eval, round(avg(puntaje) filter (where not no_evaluable),0) medido_eval,
+               count(puntaje) n_all, round(avg(puntaje),0) medido_all from dims group by 1,2)
+select a.nombre, a.dim, a.autoeval, m.medido_all medido, m.n_all n, m.medido_eval, m.n_eval, (a.autoeval - m.medido_all) brecha
+from auto a left join med m using (nombre, dim) order by a.nombre, a.dim;   -- B: dims[dim] = {medido: medido_all, n: n_all, auto: autoeval}
 
 -- Q7 · Serie por día (para la gráfica) y explicación de picos (qué juntas, quién, qué temas)
 select dia, to_char(dia,'Dy') dow, round(sum(duration_seconds)/3600.0,1) horas,
