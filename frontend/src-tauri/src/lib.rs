@@ -1018,6 +1018,13 @@ pub fn run() {
             // auto-recuperación de grabaciones interrumpidas.
             audio::audio_retention::spawn(_app.handle().clone());
 
+            // Descarga del motor STT en reposo (tier Low) y prewarm 5 min antes
+            // de la jornada (#02 de la auditoría). Tarea propia por el mismo
+            // racional que el barrido: el tick del scheduler sólo corre con la
+            // jornada habilitada y el usuario de grabación manual también
+            // merece el ahorro. Fuera de tier Low retorna sin loop.
+            audio::transcription::idle_unload::spawn(_app.handle().clone());
+
             // Panics → outbox: hook encadenado (el de main.rs sigue mandando a
             // tracing + Sentry) que escribe a un .jsonl síncrono; los panics
             // del proceso ANTERIOR se importan aquí y la drenadora los sube.

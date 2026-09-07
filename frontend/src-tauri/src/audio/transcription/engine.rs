@@ -190,6 +190,17 @@ async fn loaded_model_for(provider: &str) -> Option<String> {
     }
 }
 
+/// ¿Hay algún motor local con modelo en RAM? Lectura sin `STT_WARM_LOCK`: es
+/// una pista para la tarea de reposo, la decisión final la toma `unload_stt`.
+pub(crate) async fn any_local_engine_loaded() -> bool {
+    for p in ["parakeet", "localWhisper", "moonshine", "canary"] {
+        if loaded_model_for(p).await.is_some() {
+            return true;
+        }
+    }
+    false
+}
+
 /// Descarga TODO motor local que tenga algo residente, sin mirar el provider
 /// configurado: cubre al usuario que cambió de provider en Ajustes con el
 /// modelo viejo aún en RAM. Deepgram no tiene nada que descargar.

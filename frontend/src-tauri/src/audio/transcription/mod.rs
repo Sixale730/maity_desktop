@@ -12,6 +12,7 @@ pub mod engine;
 pub mod worker;
 pub mod spanish_postprocess;  // Heuristic post-processor for Spanish transcripts
 pub mod onnx_lifecycle;       // Helper para reciclaje de sesion ONNX en background
+pub mod idle_unload;          // Descarga del motor STT en reposo (tier Low) + prewarm de jornada
 pub mod onnx_providers;       // Helper para seleccion de execution provider (GPU/CPU) en ort
 
 // Re-export commonly used types
