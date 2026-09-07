@@ -14,6 +14,9 @@ export function useWindowCloseGuard(isRecording: boolean) {
   // arrancaba o paraba una grabación (issue #65).
   const isRecordingRef = useRef(isRecording);
   isRecordingRef.current = isRecording;
+  // Re-entrada: tras confirmar se vuelve a pedir close() para que corra el
+  // handler de Rust; esa segunda vuelta no debe volver a preguntar.
+  const forcingHideRef = useRef(false);
 
   useEffect(() => {
     const subs = createSubscriptionGroup();
@@ -23,8 +26,17 @@ export function useWindowCloseGuard(isRecording: boolean) {
         const { getCurrentWindow } = await import('@tauri-apps/api/window');
         const appWindow = getCurrentWindow();
         subs.add(appWindow.onCloseRequested(async (event) => {
+          // SIEMPRE preventDefault, haya grabacion o no. @tauri-apps/api llama
+          // destroy() por su cuenta cuando el handler no previene, y con
+          // core:window:allow-destroy concedido (8bdd3bf) ese destroy() SI
+          // funciona: destruye la ventana y la app sale entera. El hide a la
+          // bandeja ya lo hace Rust (CloseRequested en lib.rs).
+          event.preventDefault();
+          if (forcingHideRef.current) {
+            forcingHideRef.current = false;
+            return;
+          }
           if (isRecordingRef.current) {
-            event.preventDefault();
             const shouldHide = window.confirm(
               'Hay una grabación en progreso. Cerrar la ventana esconderá la app en la bandeja del sistema y la grabación continuará en segundo plano. ¿Continuar?'
             );
@@ -32,6 +44,7 @@ export function useWindowCloseGuard(isRecording: boolean) {
               // Forzar el hide via el handler de Rust: dispara el flujo de
               // cleanup de idle (close coach-float, stop preview monitor)
               // sin detener la grabacion en curso.
+              forcingHideRef.current = true;
               appWindow.close();
             }
           }

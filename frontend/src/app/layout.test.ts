@@ -232,4 +232,55 @@ describe('layout.tsx provider tree invariants', () => {
     }
     // Si no hay position override en el toast, el test pasa — herencia del Toaster.
   });
+
+  // Regresion sep-2026: el listener de telemetria app.close hacia
+  // onCloseRequested SIN preventDefault ("let the window close after we log").
+  // @tauri-apps/api llama destroy() cuando el handler no previene, y desde que
+  // la capability concede core:window:allow-destroy (8bdd3bf, exigido por
+  // lint-tauri-acl.js) ese destroy() SI funciona: la ventana se destruia 40 ms
+  // despues del hide-to-tray de Rust y la app salia entera, jornada incluida.
+  // Embarcado asi en la 0.2.57 de la Store. La X debe ESCONDER; salir es solo
+  // "Salir" del tray. Todo handler de onCloseRequested en layout.tsx debe
+  // llamar preventDefault() sobre su evento.
+  it('todo onCloseRequested de layout.tsx hace event.preventDefault()', () => {
+    const sourceFile = ts.createSourceFile(
+      LAYOUT_PATH,
+      source,
+      ts.ScriptTarget.Latest,
+      true,
+      ts.ScriptKind.TSX,
+    );
+    const handlers: { paramName: string | null; body: string }[] = [];
+
+    function visit(node: ts.Node): void {
+      if (
+        ts.isCallExpression(node) &&
+        ts.isPropertyAccessExpression(node.expression) &&
+        node.expression.name.text === 'onCloseRequested'
+      ) {
+        const handler = node.arguments[0];
+        if (handler && (ts.isArrowFunction(handler) || ts.isFunctionExpression(handler))) {
+          const param = handler.parameters[0];
+          const paramName = param && ts.isIdentifier(param.name) ? param.name.text : null;
+          handlers.push({ paramName, body: handler.body.getText(sourceFile) });
+        } else {
+          handlers.push({ paramName: null, body: '' });
+        }
+      }
+      ts.forEachChild(node, visit);
+    }
+    visit(sourceFile);
+
+    expect(handlers.length, 'onCloseRequested( no encontrado en layout.tsx').toBeGreaterThan(0);
+    for (const h of handlers) {
+      expect(
+        h.paramName,
+        'El handler de onCloseRequested debe recibir el evento como parametro para poder prevenir el destroy().',
+      ).not.toBeNull();
+      expect(
+        h.body.includes(`${h.paramName}.preventDefault()`),
+        `El handler de onCloseRequested no llama ${h.paramName}.preventDefault(): sin eso @tauri-apps/api destruye la ventana y la app sale entera (regresion 0.2.57).`,
+      ).toBe(true);
+    }
+  });
 });

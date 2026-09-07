@@ -446,8 +446,18 @@ function AppContent({ children }: { children: React.ReactNode }) {
     ;(async () => {
       try {
         const { getCurrentWindow } = await import('@tauri-apps/api/window')
-        closeSubs.add(getCurrentWindow().onCloseRequested(() => {
-          // Don't preventDefault — let the window close after we log.
+        closeSubs.add(getCurrentWindow().onCloseRequested((event) => {
+          // SIEMPRE preventDefault. Cerrar la ventana principal significa
+          // "esconder a la bandeja", y ese hide lo hace el handler de
+          // CloseRequested en Rust (lib.rs); salir del todo es solo "Salir"
+          // del tray. @tauri-apps/api llama destroy() por su cuenta cuando el
+          // handler NO previene, y desde que la capability concede
+          // core:window:allow-destroy (8bdd3bf, ago-2026) ese destroy() SÍ
+          // funciona: la ventana se destruía 40 ms después del hide y con ella
+          // salía la app entera, jornada activa incluida. Así se embarcó en la
+          // 0.2.57 de la Store. Antes el ACL lo rechazaba en silencio.
+          // `app.close` sigue significando "el usuario cerró la ventana".
+          event.preventDefault()
           emitClose()
         }))
       } catch {
