@@ -17,8 +17,14 @@
 --     (mismo predicado que getCommScore en frontend/src/features/conversations/utils/scoring.ts).
 --   * Una dimensión es NO evaluable si puntaje nulo, nivel 'no evaluable' o está en
 --     dimensiones_no_aplica. Q1/Q2b/Q6 devuelven DOS medias: `media_eval` (solo evaluables,
---     va al reporte A) y `media_all` (todo puntaje no nulo, va al reporte B). Decisión del
+--     va al reporte A) y `media_all` (todo puntaje REAL, va al reporte B). Decisión del
 --     usuario 2026-09-07: en B empatía/adaptación se promedian de todos modos, como las demás.
+--     GOTCHA verificado 2026-09-07 (Dingler, 84 V4): cuando el modelo NO puede evaluar
+--     empatía/adaptación (un solo hablante) el V4 escribe `puntaje: 0` + `nivel: 'no evaluable'`
+--     como RELLENO, no como medición (68 de 84 filas, todas exactamente 0). Un avg() ingenuo
+--     daba 11/100. Por eso `media_all` excluye `no_evaluable and puntaje = 0`: en la práctica
+--     coincide con media_eval y su n (16 de 84); lo que cambia en B es la PRESENTACIÓN (se
+--     pinta como las otras cuatro, sin párrafo-excusa), no el número.
 --   * Se excluyen conversaciones deleted o discarded.
 -- Verificado 2026-08-28 contra producción con Dingler (f983ab57-c097-4637-a5cf-d24ecd6238c7).
 -- =====================================================================================
@@ -96,12 +102,13 @@ group by 1,2,3,4 order by conv desc;
 --      'no evaluable' en vez de un nivel cuando hay un solo hablante).
 select dim, count(*) n_total,
        count(*) filter (where not no_evaluable) n_eval, round(avg(puntaje) filter (where not no_evaluable),1) media_eval,
-       count(puntaje) n_all, round(avg(puntaje),1) media_all,
-       count(*) filter (where puntaje < 40) critico_all,
-       count(*) filter (where puntaje >= 40 and puntaje < 60) desarrollo_all,
-       count(*) filter (where puntaje >= 60) competente_mas_all,
-       count(distinct who) filter (where puntaje is not null) personas
-from dims group by dim order by media_all desc;
+       count(*) filter (where real) n_all, round(avg(puntaje) filter (where real),1) media_all,
+       count(*) filter (where real and puntaje < 40) critico_all,
+       count(*) filter (where real and puntaje >= 40 and puntaje < 60) desarrollo_all,
+       count(*) filter (where real and puntaje >= 60) competente_mas_all,
+       count(distinct who) filter (where real) personas
+from (select *, (puntaje is not null and not (no_evaluable and puntaje = 0)) real from dims) d
+group by dim order by media_all desc;
 
 -- Q1b · "Por qué" del equipo: fortaleza/mejorar más citadas con sus hints + recomendaciones por frecuencia
 select 'mejorar' k, v->'calidad_global'->>'mejorar' dim, count(*) n,
@@ -144,8 +151,8 @@ from v4 group by nombre order by n desc;
 -- Q2b · Medias por dimensión por persona — alimenta el radar de la tarjeta (B usa media_all / n_all)
 select nombre, dim, count(*) n,
        count(*) filter (where not no_evaluable) n_eval, round(avg(puntaje) filter (where not no_evaluable),0) media_eval,
-       count(puntaje) n_all, round(avg(puntaje),0) media_all
-from dims group by 1,2 order by 1,2;
+       count(*) filter (where real) n_all, round(avg(puntaje) filter (where real),0) media_all
+from (select *, (puntaje is not null and not (no_evaluable and puntaje = 0)) real from dims) d group by 1,2 order by 1,2;
 
 -- Q2c · Cita + alternativa de la dimensión "a mejorar" de cada persona (hasta 4 candidatas, de
 --       conversaciones DISTINTAS; B pinta 2–3 en `personas[].ejemplos[]`). LEER cada cita.
@@ -220,7 +227,8 @@ with auto as (
     ('claridad',(fr.q5::int+fr.q6::int)*10),('adaptacion',(fr.q7::int+fr.q8::int)*10),('persuasion',(fr.q9::int+fr.q10::int)*10),
     ('estructura',(fr.q11::int+fr.q12::int)*10),('proposito',(fr.q13::int+fr.q14::int)*10),('empatia',(fr.q15::int+fr.q16::int)*10)) x(dim,val)),
 med as (select nombre, dim, count(*) filter (where not no_evaluable) n_eval, round(avg(puntaje) filter (where not no_evaluable),0) medido_eval,
-               count(puntaje) n_all, round(avg(puntaje),0) medido_all from dims group by 1,2)
+               count(*) filter (where real) n_all, round(avg(puntaje) filter (where real),0) medido_all
+        from (select *, (puntaje is not null and not (no_evaluable and puntaje = 0)) real from dims) d group by 1,2)
 select a.nombre, a.dim, a.autoeval, m.medido_all medido, m.n_all n, m.medido_eval, m.n_eval, (a.autoeval - m.medido_all) brecha
 from auto a left join med m using (nombre, dim) order by a.nombre, a.dim;   -- B: dims[dim] = {medido: medido_all, n: n_all, auto: autoeval}
 

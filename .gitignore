@@ -127,3 +127,8 @@ Sixale.Maity_cert.pfx
 # (scripts/stage-vcredist.js). NO commitear: debe coincidir con el toolset que
 # compilo el binario, no con una version congelada en git.
 frontend/src-tauri/vcredist/
+
+# Datos de pilotos de clientes (nombres, citas, metricas por persona): NUNCA al repo
+docs/piloto/
+docs/PILOTO_*.md
+.claude/skills/piloto-analisis/report-interno-ejemplo-dingler.html
