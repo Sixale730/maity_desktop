@@ -1,0 +1,31 @@
+[package]
+name = "silero"
+version = "0.1.0"
+repository = "https://github.com/emotechlab/silero-rs"
+readme = "README.md"
+license = "MIT"
+edition = "2021"
+publish = false
+
+# Copia vendorizada de emotechlab/silero-rs @ 1283485dfd4ce6fda25248d52f6f68e27418d46c
+# (main, 2026-07-23) con parches locales. Ver la cabecera de src/lib.rs.
+#
+# Recortes respecto al upstream (deliberados):
+# - Sin feature `audio_resampler` (rubato + audioadapter-buffers): Maity siempre
+#   alimenta 16 kHz, el remuestreo lo hace `audio/vad.rs`.
+# - Sin `[[bench]]` ni dev-deps: los tests con audio real del upstream usan
+#   punteros git-LFS y no se pueden correr desde una copia; los que quedan son
+#   sintéticos y no necesitan `hound`/`tracing-test`.
+
+[features]
+default = ["static-model"]
+static-model = []
+serde = ["dep:serde"]
+
+[dependencies]
+anyhow = "1.0.86"
+ndarray = "0.16"
+ort = "=2.0.0-rc.10"
+serde = { version = "1.0.208", features = ["derive"], optional = true }
+thiserror = "2.0.4"
+tracing = { version = "0.1.40", default-features = false, features = ["std"] }

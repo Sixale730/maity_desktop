@@ -107,7 +107,9 @@ nnnoiseless = "0.5"
 # NOTE: whisper-rs is declared in platform-specific sections below (macOS/Windows/Linux)
 # to ensure correct GPU features are enabled per platform
 futures-util = "0.3"
-silero_rs = { git = "https://github.com/emotechlab/silero-rs", rev = "26a6460", package = "silero" }
+# Copia vendorizada de emotechlab/silero-rs @ 1283485 con parches locales (hallazgo #01 de la
+# auditoría de recursos: `take_until` + `SpeechEnd` hacía panic en upstream). Ver vendor/silero-rs/src/lib.rs.
+silero_rs = { path = "vendor/silero-rs", package = "silero" }
 
 # Parakeet (ONNX-based fast transcription) dependencies
 ort = { version = "2.0.0-rc.10" }  # ONNX Runtime for Parakeet models

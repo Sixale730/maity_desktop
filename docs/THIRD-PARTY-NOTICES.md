@@ -82,3 +82,20 @@ Maity no es obra derivada.
   repositorio; el código de FFmpeg no se modifica.
 
 - **Aviso en la app:** Ajustes → Acerca de → "Incluye FFmpeg (LGPL v2.1 o posterior)".
+
+## Silero VAD (crate vendorizado + modelo embebido)
+
+Excepción a la regla de arriba: va enlazado al ejecutable, pero **no** se resuelve desde
+crates.io ni desde el git del upstream, sino desde una copia dentro del repo, así que
+`Cargo.lock` no dice de dónde sale.
+
+- **Código:** [emotechlab/silero-rs](https://github.com/emotechlab/silero-rs) @
+  `1283485dfd4ce6fda25248d52f6f68e27418d46c` (main, 2026-07-23), copiado a
+  `frontend/src-tauri/vendor/silero-rs/` **con parches locales** (listados en la cabecera
+  de `src/lib.rs`: `take_until` + `SpeechEnd` hacían panic; ver hallazgo #01 de
+  `docs/AUDITORIA_RECURSOS_2026-09-02.md`). Licencia **MIT**, Copyright 2024 Emotech Ltd
+  (`vendor/silero-rs/LICENSE`).
+- **Modelo:** `silero_vad.onnx` (1.7 MB, SHA-256
+  `a35ebf52fd3ce5f1469b2a36158dba761bc47b973ea3382b3186ca15b1f5af28`), el que distribuye
+  el propio silero-rs, embebido en el binario con `include_bytes!`. Licencia **MIT**,
+  [snakers4/silero-vad](https://github.com/snakers4/silero-vad).
