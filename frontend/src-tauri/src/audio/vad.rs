@@ -73,7 +73,9 @@ impl ContinuousVadProcessor {
 
         // CRITICAL FIX: Removed redemption_time capping to support long continuous speech
         // Previous: capped at 400ms, causing VAD to fragment 5-second speech into 40ms segments
-        // New: Use full redemption_time from pipeline (2000ms) to bridge natural pauses
+        // New: Use full redemption_time from pipeline (600 ms hoy, ver pipeline.rs) to bridge
+        // natural pauses. Un utterance "continuo" es lo que no tiene una pausa de esa duración
+        // con probabilidad < negative_speech_threshold.
         config.redemption_time = Duration::from_millis(redemption_time_ms as u64);
         config.pre_speech_pad = Duration::from_millis(200);   // antes 150ms — mas contexto plosivas P/T/K
         config.post_speech_pad = Duration::from_millis(500);  // antes 400ms — mas contexto al final
@@ -146,6 +148,20 @@ impl ContinuousVadProcessor {
         while self.buffer.len() >= self.chunk_size {
             let chunk: Vec<f32> = self.buffer.drain(..self.chunk_size).collect();
             self.process_chunk(&chunk)?;
+
+            // #01 auditoría de recursos: sierra del buffer interno del crate. Cada ~60 s
+            // (2000 chunks de 30 ms). En silencio debe rondar los 200 ms (pre_speech_pad);
+            // en habla, como mucho ~2 s + pads (take_until en cada force-cut). Costo cero
+            // en release.
+            if (self.processed_samples / self.chunk_size) % 2000 == 0 {
+                let (start, end) = self.session.current_buffer_range();
+                perf_debug!(
+                    "VAD crate buffer span={}ms in_speech={} (processed {}s)",
+                    (end - start).as_millis(),
+                    self.in_speech,
+                    self.processed_samples / 16_000
+                );
+            }
 
             // Extract any completed speech segments
             while let Some(segment) = self.speech_segments.pop_front() {
@@ -260,107 +276,23 @@ impl ContinuousVadProcessor {
         // Handle VAD transitions
         for transition in transitions {
             match transition {
-                VadTransition::SpeechStart { timestamp_ms } => {
-                    // Only log if state changed
-                    if !self.last_logged_state {
-                        debug!("VAD: Speech started at {}ms", timestamp_ms);
-                        self.last_logged_state = true;
-                    }
-                    self.in_speech = true;
-                    // FIX UNIDADES: processed_samples cuenta samples a 16kHz (silero_rs
-                    // chunk_size=480 @ 16kHz). Sumar offset también en samples a 16kHz.
-                    self.speech_start_sample = self.processed_samples + (timestamp_ms * 16_000 / 1000);
-                    self.current_speech.clear();
-                    // Reset tracking: nuevo speech segment, no hay force-cuts previos.
-                    self.last_force_cut_end_ms = None;
-                }
+                VadTransition::SpeechStart { timestamp_ms } => self.on_speech_start(timestamp_ms),
                 VadTransition::SpeechEnd { start_timestamp_ms, end_timestamp_ms, samples } => {
-                    // Only log if we were previously in speech state
-                    if self.last_logged_state {
-                        debug!("VAD: Speech ended at {}ms (duration: {}ms)", end_timestamp_ms, end_timestamp_ms - start_timestamp_ms);
-                        self.last_logged_state = false;
-                    }
-                    self.in_speech = false;
-
-                    // Use samples from VAD transition if available, otherwise use accumulated samples
-                    let speech_samples_raw = if !samples.is_empty() {
-                        samples
-                    } else {
-                        self.current_speech.clone()
-                    };
-
-                    // FIX duplicación post force-cut (Patrón #3 del análisis):
-                    // Si hubo force-cuts en este speech segment, silero_rs entrega samples
-                    // que cubren TODO el speech (desde SpeechStart hasta SpeechEnd), incluyendo
-                    // lo ya emitido en los force-cuts. Trim los samples para emitir solo la
-                    // porción posterior al último force-cut.
-                    let (effective_start_ms, speech_samples) = if let Some(last_cut_ms) =
-                        self.last_force_cut_end_ms
-                    {
-                        let start_f = start_timestamp_ms as f64;
-                        if last_cut_ms > start_f {
-                            // Calcular cuántos samples descartar del inicio.
-                            let trim_ms = last_cut_ms - start_f;
-                            let trim_samples = (trim_ms / 1000.0 * 16_000.0) as usize;
-                            if trim_samples >= speech_samples_raw.len() {
-                                // Todos los samples ya se emitieron en force-cuts → descartar.
-                                debug!(
-                                    "VAD natural-drop: todo el speech ya emitido en force-cuts \
-                                     (last_cut={:.1}ms, end={:.1}ms, samples={}, trim={})",
-                                    last_cut_ms, end_timestamp_ms as f64,
-                                    speech_samples_raw.len(), trim_samples
-                                );
-                                self.current_speech.clear();
-                                continue;
-                            }
-                            let trimmed: Vec<f32> = speech_samples_raw[trim_samples..].to_vec();
-                            debug!(
-                                "VAD natural-trim: last_cut={:.1}ms, raw_start={:.1}ms, \
-                                 trimmed {} samples ({:.1}ms) -> effective_start={:.1}ms",
-                                last_cut_ms, start_f, trim_samples,
-                                trim_ms, last_cut_ms
-                            );
-                            (last_cut_ms, trimmed)
-                        } else {
-                            (start_f, speech_samples_raw)
-                        }
-                    } else {
-                        (start_timestamp_ms as f64, speech_samples_raw)
-                    };
-
-                    // Reset tracking: el speech terminó.
-                    self.last_force_cut_end_ms = None;
-
-                    if !speech_samples.is_empty() {
-                        // FIX UNIDADES: derivar end_ms desde samples para garantizar consistencia
-                        // (los timestamps de silero_rs pueden ser inconsistentes con samples).
-                        let derived_end_ms =
-                            effective_start_ms + (speech_samples.len() as f64 / 16.0);
-                        debug!(
-                            "VAD natural-end: start={:.1}ms end={:.1}ms samples={} dur={:.1}ms",
-                            effective_start_ms,
-                            derived_end_ms,
-                            speech_samples.len(),
-                            speech_samples.len() as f64 / 16.0
-                        );
-                        let segment = SpeechSegment {
-                            samples: speech_samples,
-                            start_timestamp_ms: effective_start_ms,
-                            end_timestamp_ms: derived_end_ms,
-                            confidence: 0.9, // VAD confidence
-                            ended_by_silence: true, // SpeechEnd natural de Silero
-                        };
-
-                        debug!("VAD: Completed speech segment: {:.1}ms duration, {} samples",
-                              end_timestamp_ms - start_timestamp_ms, segment.samples.len());
-
-                        self.speech_segments.push_back(segment);
-                    }
-
-                    self.current_speech.clear();
+                    self.on_speech_end(start_timestamp_ms, end_timestamp_ms, samples)
                 }
             }
         }
+
+        // #01 auditoría de recursos: el crate acumula CADA muestra en `session_audio` y sólo
+        // drena al emitir SpeechEnd — en silencio nunca (230 MB/h por canal). Se poda en
+        // cada chunk: en Silence conserva exactamente `pre_speech_pad`; en Speech recorta
+        // hasta el arranque de la elocución (lo que SpeechEnd necesita), así que tras el
+        // primer recorte es un `drain(..0)`. Es seguro en la ventana pre-redemption porque
+        // el crate vendorizado (>= 1283485) lee el `start_ms` del estado, no `speech_start_ms`.
+        // NO condicionar a `current_silence_duration()`: con probabilidad sostenida entre
+        // negative y positive threshold (ruido, música) `silent_samples` se queda en 0 y el
+        // buffer no se podaría nunca.
+        self.session.trim_start_silence();
 
         // Force-cut (patrón Poncho): chequear ANTES de extend_from_slice. El cálculo
         // de end_ms se DERIVA de la duración real de samples, garantizando la
@@ -405,6 +337,25 @@ impl ContinuousVadProcessor {
                 // Trackear el end_ms del último force-cut para luego trim el SpeechEnd
                 // natural y evitar duplicación de audio (ver SpeechEnd handler).
                 self.last_force_cut_end_ms = Some(end_ms);
+
+                // #01 auditoría de recursos: soltar del crate lo que ya viajó en este
+                // force-cut. Sin esto `session_audio` retiene la elocución ENTERA hasta el
+                // SpeechEnd natural (4 MB/min por canal en habla continua) y al cerrar la
+                // clona dos veces. `end_ms` es la frontera del chunk actual en el reloj del
+                // crate (múltiplo de 30 ms) — exige que `speech_start_sample` sea el índice
+                // real del primer chunk acumulado, ver `on_speech_start`. Requiere el crate
+                // vendorizado: en upstream `take_until` + SpeechEnd hace panic (P1).
+                let boundary = Duration::from_millis(end_ms as u64);
+                if boundary <= self.session.session_time() {
+                    let _already_emitted = self.session.take_until(boundary);
+                } else {
+                    warn!(
+                        "VAD force-cut boundary {}ms > session_time {}ms: reloj desincronizado, \
+                         no se poda el buffer del crate",
+                        end_ms as u64,
+                        self.session.session_time().as_millis()
+                    );
+                }
             }
         }
 
@@ -415,6 +366,126 @@ impl ContinuousVadProcessor {
 
         self.processed_samples += chunk.len();
         Ok(())
+    }
+
+    /// Handler de `VadTransition::SpeechStart`. Método aparte para poder testearlo sin que
+    /// Silero tenga que detectar voz real.
+    fn on_speech_start(&mut self, timestamp_ms: usize) {
+        // Only log if state changed
+        if !self.last_logged_state {
+            debug!("VAD: Speech started at {}ms", timestamp_ms);
+            self.last_logged_state = true;
+        }
+        self.in_speech = true;
+        // `speech_start_sample` es el índice (a 16 kHz, reloj absoluto de la sesión) del
+        // PRIMER chunk que entra a `current_speech`: el chunk actual, que se anexa al final
+        // de `process_chunk`. Es el mismo reloj que usa el force-cut (`= processed_samples`)
+        // y el mismo del crate, contra el que `on_speech_end` resta `last_force_cut_end_ms`.
+        //
+        // NO sumar `timestamp_ms * 16`: ese timestamp ya es absoluto desde el inicio de la
+        // sesión (es `start_ms` del crate, el arranque con pre_speech_pad), así que sumarlo
+        // duplicaba el reloj para el primer force-cut. Con exactamente un force-cut,
+        // `last_cut - start` salía ~ el doble del tiempo transcurrido, `trim_samples` superaba
+        // el largo del utterance y `on_speech_end` entraba en `natural-drop`: toda frase de
+        // 2-4 s que empezara después de los primeros ~3 s de grabación perdía lo dicho
+        // después del segundo 2. Con >= 2 cuts el segundo reasignaba `processed_samples`
+        // y el reloj se corregía solo — por eso pasó desapercibido.
+        self.speech_start_sample = self.processed_samples;
+        self.current_speech.clear();
+        // Reset tracking: nuevo speech segment, no hay force-cuts previos.
+        self.last_force_cut_end_ms = None;
+    }
+
+    /// Handler de `VadTransition::SpeechEnd`. `samples` es lo que entrega el crate: con el
+    /// crate vendorizado y `take_until` en cada force-cut, arranca en la frontera del último
+    /// corte (y `start_timestamp_ms == last_force_cut_end_ms`), así que el trim de abajo se
+    /// queda como defensa: si por lo que sea el crate entrega el utterance entero, se
+    /// recorta lo que ya viajó en los force-cuts.
+    fn on_speech_end(&mut self, start_timestamp_ms: usize, end_timestamp_ms: usize, samples: Vec<f32>) {
+        // Only log if we were previously in speech state
+        if self.last_logged_state {
+            debug!("VAD: Speech ended at {}ms (duration: {}ms)", end_timestamp_ms, end_timestamp_ms - start_timestamp_ms);
+            self.last_logged_state = false;
+        }
+        self.in_speech = false;
+
+        // Use samples from VAD transition if available, otherwise use accumulated samples
+        let speech_samples_raw = if !samples.is_empty() {
+            samples
+        } else {
+            self.current_speech.clone()
+        };
+
+        // FIX duplicación post force-cut (Patrón #3 del análisis):
+        // Si hubo force-cuts en este speech segment y el crate entrega samples que cubren
+        // TODO el speech (desde SpeechStart hasta SpeechEnd), incluyendo lo ya emitido en
+        // los force-cuts, trim los samples para emitir solo la porción posterior al último
+        // force-cut.
+        let (effective_start_ms, speech_samples) = if let Some(last_cut_ms) =
+            self.last_force_cut_end_ms
+        {
+            let start_f = start_timestamp_ms as f64;
+            if last_cut_ms > start_f {
+                // Calcular cuántos samples descartar del inicio.
+                let trim_ms = last_cut_ms - start_f;
+                let trim_samples = (trim_ms / 1000.0 * 16_000.0) as usize;
+                if trim_samples >= speech_samples_raw.len() {
+                    // Todos los samples ya se emitieron en force-cuts → descartar.
+                    debug!(
+                        "VAD natural-drop: todo el speech ya emitido en force-cuts \
+                         (last_cut={:.1}ms, end={:.1}ms, samples={}, trim={})",
+                        last_cut_ms, end_timestamp_ms as f64,
+                        speech_samples_raw.len(), trim_samples
+                    );
+                    self.current_speech.clear();
+                    self.last_force_cut_end_ms = None;
+                    return;
+                }
+                let trimmed: Vec<f32> = speech_samples_raw[trim_samples..].to_vec();
+                debug!(
+                    "VAD natural-trim: last_cut={:.1}ms, raw_start={:.1}ms, \
+                     trimmed {} samples ({:.1}ms) -> effective_start={:.1}ms",
+                    last_cut_ms, start_f, trim_samples,
+                    trim_ms, last_cut_ms
+                );
+                (last_cut_ms, trimmed)
+            } else {
+                (start_f, speech_samples_raw)
+            }
+        } else {
+            (start_timestamp_ms as f64, speech_samples_raw)
+        };
+
+        // Reset tracking: el speech terminó.
+        self.last_force_cut_end_ms = None;
+
+        if !speech_samples.is_empty() {
+            // FIX UNIDADES: derivar end_ms desde samples para garantizar consistencia
+            // (los timestamps de silero_rs pueden ser inconsistentes con samples).
+            let derived_end_ms =
+                effective_start_ms + (speech_samples.len() as f64 / 16.0);
+            debug!(
+                "VAD natural-end: start={:.1}ms end={:.1}ms samples={} dur={:.1}ms",
+                effective_start_ms,
+                derived_end_ms,
+                speech_samples.len(),
+                speech_samples.len() as f64 / 16.0
+            );
+            let segment = SpeechSegment {
+                samples: speech_samples,
+                start_timestamp_ms: effective_start_ms,
+                end_timestamp_ms: derived_end_ms,
+                confidence: 0.9, // VAD confidence
+                ended_by_silence: true, // SpeechEnd natural de Silero
+            };
+
+            debug!("VAD: Completed speech segment: {:.1}ms duration, {} samples",
+                  end_timestamp_ms - start_timestamp_ms, segment.samples.len());
+
+            self.speech_segments.push_back(segment);
+        }
+
+        self.current_speech.clear();
     }
 }
 
@@ -678,6 +749,137 @@ mod tests {
             processor.in_speech,
             "in_speech debe seguir true tras force-cut (seguimos detectando voz)"
         );
+    }
+
+    // ─── #01 auditoría de recursos: el buffer del crate queda acotado ─────────
+
+    /// Silencio puro durante 60 s: el buffer interno del crate debe quedarse en
+    /// ~pre_speech_pad (200 ms), no crecer 230 MB/h.
+    #[test]
+    fn test_buffer_del_crate_acotado_en_silencio() {
+        let mut p = ContinuousVadProcessor::new(16_000, 600).unwrap();
+        let silence = vec![0.0_f32; 16_000];
+        for _ in 0..60 {
+            let segs = p.process_audio(&silence).unwrap();
+            assert!(segs.is_empty(), "silencio no produce segments");
+        }
+        let (start, end) = p.session.current_buffer_range();
+        let span = end - start;
+        assert!(
+            span >= Duration::from_millis(200) && span <= Duration::from_millis(260),
+            "span del buffer del crate tras 60 s de silencio: {:?} (esperado ~200 ms)",
+            span
+        );
+        assert!(p.session.session_audio_samples() <= 16_000 / 4 + 480);
+    }
+
+    /// Force-cut con el crate ya avanzado: `take_until` suelta del crate lo emitido y el
+    /// inicio del buffer avanza al menos hasta la frontera del corte.
+    #[test]
+    fn test_force_cut_poda_el_buffer_del_crate() {
+        let mut p = ContinuousVadProcessor::new(16_000, 600).unwrap();
+        // 3 s de ceros → el crate lleva 3000 ms procesados.
+        for _ in 0..3 {
+            p.process_audio(&vec![0.0_f32; 16_000]).unwrap();
+        }
+        p.in_speech = true;
+        p.current_speech = vec![0.5_f32; 32_000];
+        p.speech_start_sample = 8_000; // 500 ms
+        p.processed_samples = 40_000;
+
+        p.process_chunk(&vec![0.0_f32; 480]).unwrap();
+
+        let cut = p.speech_segments.pop_front().expect("force-cut debió emitir un segment");
+        assert!((cut.end_timestamp_ms - 2_500.0).abs() < 1e-6);
+        let (start, _end) = p.session.current_buffer_range();
+        assert!(
+            start >= Duration::from_millis(2_500),
+            "el buffer del crate debe empezar en o después de la frontera del cut: {:?}",
+            start
+        );
+    }
+
+    /// Frontera del force-cut más allá de lo que el crate ha visto (reloj desincronizado):
+    /// no se poda y NO hay panic.
+    #[test]
+    fn test_force_cut_con_frontera_fuera_de_rango_no_hace_panic() {
+        let mut p = ContinuousVadProcessor::new(16_000, 600).unwrap();
+        p.in_speech = true;
+        p.current_speech = vec![0.5_f32; 32_500];
+        p.speech_start_sample = 160_000; // 10 s, pero el crate sólo ha visto 30 ms
+        p.processed_samples = 192_500;
+
+        p.process_chunk(&vec![0.0_f32; 480]).unwrap();
+
+        assert_eq!(p.speech_segments.len(), 1);
+        assert_eq!(p.session.current_buffer_range().0, Duration::ZERO);
+    }
+
+    // ─── Reloj del wrapper: `speech_start_sample` es el índice del chunk actual ────
+
+    /// `SpeechStart.timestamp_ms` ya es absoluto: sumarlo a `processed_samples` duplicaba el
+    /// reloj. El arranque de `current_speech` es el chunk actual.
+    #[test]
+    fn test_speech_start_usa_el_indice_del_chunk_actual_no_el_timestamp_absoluto() {
+        let mut p = ContinuousVadProcessor::new(16_000, 600).unwrap();
+        p.processed_samples = 160_000; // 10 s de sesión
+        p.on_speech_start(9_800); // el crate reporta el arranque con pre_speech_pad (9.8 s)
+        assert_eq!(
+            p.speech_start_sample, 160_000,
+            "speech_start_sample debe ser processed_samples (bug histórico: 160_000 + 9_800*16 = 316_800)"
+        );
+        assert!(p.in_speech);
+        assert!(p.current_speech.is_empty());
+        assert_eq!(p.last_force_cut_end_ms, None);
+    }
+
+    /// Frase de ~2.7 s con exactamente UN force-cut, empezando a los 10 s de grabación: la
+    /// cola posterior al corte DEBE emitirse en el SpeechEnd natural. Con el reloj duplicado
+    /// `trim_samples` superaba el largo del utterance y la cola se tiraba (`natural-drop`).
+    #[test]
+    fn test_cola_tras_un_solo_force_cut_no_se_descarta() {
+        let mut p = ContinuousVadProcessor::new(16_000, 600).unwrap();
+        p.processed_samples = 160_000;
+        p.on_speech_start(9_800);
+
+        // 2 s + 1 chunk de voz acumulada → force-cut en el siguiente process_chunk.
+        p.current_speech = vec![0.5_f32; 32_500];
+        p.processed_samples = 160_000 + 32_500;
+        p.process_chunk(&vec![0.0_f32; 480]).unwrap();
+        let cut = p.speech_segments.pop_front().expect("force-cut");
+        assert!(!cut.ended_by_silence);
+        let cut_end = cut.end_timestamp_ms; // 10_000 + 2_031.25
+        assert!((cut_end - 12_031.25).abs() < 1e-6);
+        assert_eq!(p.last_force_cut_end_ms, Some(cut_end));
+
+        // SpeechEnd natural: el crate entrega el utterance entero, 9_800..12_500 ms.
+        let raw_len = (12_500 - 9_800) * 16; // 43_200 samples
+        p.on_speech_end(9_800, 12_500, vec![0.5_f32; raw_len]);
+
+        let tail = p
+            .speech_segments
+            .pop_front()
+            .expect("la cola posterior al force-cut debe emitirse, no descartarse");
+        assert!(tail.ended_by_silence);
+        let expected_tail = raw_len - ((cut_end - 9_800.0) / 1000.0 * 16_000.0) as usize;
+        assert_eq!(tail.samples.len(), expected_tail);
+        assert!((tail.start_timestamp_ms - cut_end).abs() < 1e-6);
+        assert!(!p.in_speech);
+        assert_eq!(p.last_force_cut_end_ms, None);
+    }
+
+    /// Con el crate vendorizado, el SpeechEnd tras un force-cut ya llega recortado
+    /// (`start == last_cut`): el trim defensivo no debe tocar nada.
+    #[test]
+    fn test_speech_end_ya_recortado_por_el_crate_no_se_vuelve_a_recortar() {
+        let mut p = ContinuousVadProcessor::new(16_000, 600).unwrap();
+        p.in_speech = true;
+        p.last_force_cut_end_ms = Some(12_000.0);
+        p.on_speech_end(12_000, 12_500, vec![0.5_f32; 8_000]);
+        let tail = p.speech_segments.pop_front().expect("segment");
+        assert_eq!(tail.samples.len(), 8_000);
+        assert!((tail.start_timestamp_ms - 12_000.0).abs() < 1e-6);
+        assert!((tail.end_timestamp_ms - 12_500.0).abs() < 1e-6);
     }
 }
 
