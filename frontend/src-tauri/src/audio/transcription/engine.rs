@@ -244,7 +244,7 @@ async fn unload_all_local_engines() -> Vec<(&'static str, String)> {
 /// Evento `stt.engine_lifecycle` al outbox. Sólo se emite en cargas y descargas
 /// REALES (unas pocas por día): `set_registration_status` reinvoca
 /// `ensure_stt_warm` en cada refetch y un "ya estaba" no debe dejar fila.
-async fn emit_engine_lifecycle<R: Runtime>(
+pub(crate) async fn emit_engine_lifecycle<R: Runtime>(
     app: &AppHandle<R>,
     action: &str,
     reason: &str,

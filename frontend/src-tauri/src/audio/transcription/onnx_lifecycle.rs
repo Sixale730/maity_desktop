@@ -22,6 +22,13 @@
 //!     Ok(())
 //! });
 //! ```
+//!
+//! Qué pasa si `recycle_fn` falla depende de la estrategia del cierre
+//! (`parakeet_engine::recycle_strategy`, sep-2026 #02): con `LoadThenSwap`
+//! el modelo viejo queda intacto; con `DropThenLoad` (tier Low, sin el pico
+//! de +700 MB) el viejo ya se soltó y el motor queda SIN modelo hasta que el
+//! breaker del worker lo recargue vía `recycle_now`. Este helper no distingue
+//! los dos casos: sólo garantiza single-flight y anti-storm.
 
 use std::future::Future;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -71,8 +78,8 @@ impl OnnxSessionLifecycle {
     ///   solo UNO dispara el recycle, los demás retornan sin spawn.
     /// - El counter se resetea atómicamente vía `compare_exchange` (no se queda
     ///   atascado en N*threshold como el bug del UX-012 viejo).
-    /// - Si `recycle_fn` falla, el modelo viejo permanece intacto (responsabilidad
-    ///   del cierre: cargar a variable local primero, swap solo si Ok).
+    /// - Qué queda cargado si `recycle_fn` falla es responsabilidad del cierre
+    ///   (ver el doc del módulo: `LoadThenSwap` conserva el viejo, `DropThenLoad` no).
     pub fn maybe_recycle<F, Fut>(&self, recycle_fn: F)
     where
         F: FnOnce() -> Fut + Send + 'static,
@@ -122,8 +129,7 @@ impl OnnxSessionLifecycle {
                     started.elapsed()
                 ),
                 Err(e) => log::warn!(
-                    "ONNX session recycle ({}) failed: {} — \
-                     existing session retained, will retry on next threshold",
+                    "ONNX session recycle ({}) failed: {} — will retry on next threshold",
                     label,
                     e
                 ),
@@ -169,7 +175,7 @@ impl OnnxSessionLifecycle {
                     started.elapsed()
                 ),
                 Err(e) => log::warn!(
-                    "ONNX session recycle ({}) error-triggered falló: {} — sesión previa retenida",
+                    "ONNX session recycle ({}) error-triggered falló: {}",
                     label,
                     e
                 ),

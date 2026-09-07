@@ -1,3 +1,4 @@
+use crate::audio::hardware_detector::{HardwareProfile, PerformanceTier};
 use crate::parakeet_engine::manifest::{self, FileSpec};
 use crate::parakeet_engine::model::ParakeetModel;
 use anyhow::{anyhow, Result};
@@ -139,6 +140,36 @@ const PARAKEET_RECYCLE_EVERY: u64 = 2700;
 /// disco innecesariamente. 5 min da margen cómodo para que un bug así
 /// aparezca en logs antes de que se encadenen reciclajes.
 const PARAKEET_RECYCLE_MIN_GAP_SECS: u64 = 300;
+
+/// Intentos de carga en el reciclado drop-then-load antes de rendirse.
+const PARAKEET_RECYCLE_LOAD_ATTEMPTS: u32 = 3;
+/// Pausa entre intentos (con el write lock tomado: el worker espera, no salta).
+const PARAKEET_RECYCLE_RETRY_GAP: Duration = Duration::from_secs(2);
+
+/// Cómo reemplazar la sesión ONNX al reciclar (sep-2026, #02 de la auditoría).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RecycleStrategy {
+    /// Carga la sesión nueva en una variable local y hace swap: durante 3-6 s
+    /// coexisten las dos (pico ~+700 MB) pero un fallo deja la vieja intacta.
+    LoadThenSwap,
+    /// Suelta la vieja ANTES de cargar, bajo el write lock: sin pico, a cambio
+    /// de 3-6 s con el worker esperando y de que un fallo total deje el motor
+    /// sin modelo hasta que el breaker del worker lo recargue.
+    DropThenLoad,
+}
+
+/// Tier Low (5-7 GB, 11 de 20 usuarios del piloto): el pico de +700 MB cae
+/// justo cuando Parakeet y FFmpeg más memoria necesitan (mínimos de 74 MB
+/// libres). En el resto de tiers el pico es inocuo y se conserva la garantía
+/// de "si falla la carga, el modelo viejo queda intacto". Pura, con tabla.
+pub(crate) fn recycle_strategy(tier: &PerformanceTier) -> RecycleStrategy {
+    match tier {
+        PerformanceTier::Low => RecycleStrategy::DropThenLoad,
+        PerformanceTier::Medium | PerformanceTier::High | PerformanceTier::Ultra => {
+            RecycleStrategy::LoadThenSwap
+        }
+    }
+}
 
 pub struct ParakeetEngine {
     models_dir: PathBuf,
@@ -589,9 +620,9 @@ impl ParakeetEngine {
         })
     }
 
-    /// Reload de sesión compartido por el recycle periódico y el error-triggered:
-    /// carga el modelo a variable LOCAL y hace swap atómico solo si el usuario no
-    /// cambió de modelo durante la carga. Si falla, la sesión previa queda intacta.
+    /// Reload de sesión compartido por el recycle periódico y el error-triggered.
+    /// La estrategia depende del tier (`recycle_strategy`): swap tras cargar, o
+    /// soltar-y-cargar bajo el write lock en tier Low.
     async fn recycle_reload(
         current_model: Arc<RwLock<Option<ParakeetModel>>>,
         current_model_name: Arc<RwLock<Option<String>>>,
@@ -619,6 +650,19 @@ impl ParakeetEngine {
             }
         };
         let quantized = matches!(model_info.quantization, QuantizationType::Int8);
+
+        if recycle_strategy(&HardwareProfile::detect().performance_tier)
+            == RecycleStrategy::DropThenLoad
+        {
+            return Self::recycle_drop_then_load(
+                current_model,
+                current_model_name,
+                model_info.path,
+                quantized,
+                model_name,
+            )
+            .await;
+        }
 
         // Durante el reload coexisten sesión vieja + nueva (pico ~2x del
         // modelo): dejar evidencia de memoria antes de pagar el pico.
@@ -650,6 +694,87 @@ impl ParakeetEngine {
         drop(model_guard);
 
         Ok(())
+    }
+
+    /// Reciclado SIN pico (tier Low): suelta la sesión vieja bajo el write lock
+    /// y carga la nueva en `spawn_blocking`, reintentando hasta
+    /// `PARAKEET_RECYCLE_LOAD_ATTEMPTS`. Mientras dura, `transcribe_audio` y el
+    /// `is_model_loaded()` del worker esperan en el lock (la cola mpsc absorbe
+    /// hasta 256 chunks): se encola, no se pierde. Orden de locks model → name,
+    /// igual que `unload_model`.
+    ///
+    /// Si se agotan los intentos, `current_model` queda `None` y
+    /// `current_model_name` queda `Some`: esa combinación es la señal que el
+    /// worker usa para alimentar su breaker y reintentar con `force_recycle`
+    /// (sujeto a `PARAKEET_RECYCLE_MIN_GAP_SECS`). El sleep entre intentos va
+    /// deliberadamente CON el lock tomado: soltarlo sin modelo haría que el
+    /// worker saltara chunks en vez de esperar.
+    async fn recycle_drop_then_load(
+        current_model: Arc<RwLock<Option<ParakeetModel>>>,
+        current_model_name: Arc<RwLock<Option<String>>>,
+        model_path: PathBuf,
+        quantized: bool,
+        model_name: String,
+    ) -> Result<()> {
+        let mut model_guard = current_model.write().await;
+        if current_model_name.read().await.as_deref() != Some(&model_name) {
+            log::info!(
+                "Parakeet recycle (drop-then-load) aborted: model changed before the swap"
+            );
+            return Ok(());
+        }
+        // Un `unload_model` deliberado limpia TAMBIÉN el nombre, así que aquí
+        // `None` sólo puede ser el estado huérfano de un reciclado anterior que
+        // agotó sus intentos: no hay nada que soltar, pero SÍ hay que cargar —
+        // es exactamente el reintento que pide el breaker del worker.
+        if model_guard.is_some() {
+            crate::logging::mem_sampler::snapshot_now("onnx-recycle");
+            *model_guard = None; // aquí baja el RSS; no hay pico
+            log::info!(
+                "Parakeet recycle (drop-then-load): sesión vieja liberada, cargando {}",
+                model_name
+            );
+        } else {
+            log::info!(
+                "Parakeet recycle (drop-then-load): motor sin modelo tras un fallo previo, recargando {}",
+                model_name
+            );
+        }
+
+        let mut last_err: Option<anyhow::Error> = None;
+        for attempt in 1..=PARAKEET_RECYCLE_LOAD_ATTEMPTS {
+            let path = model_path.clone();
+            match tokio::task::spawn_blocking(move || ParakeetModel::new(&path, quantized)).await {
+                Ok(Ok(model)) => {
+                    *model_guard = Some(model);
+                    return Ok(());
+                }
+                Ok(Err(e)) => {
+                    log::warn!(
+                        "Parakeet recycle (drop-then-load) intento {}/{} falló: {}",
+                        attempt, PARAKEET_RECYCLE_LOAD_ATTEMPTS, e
+                    );
+                    last_err = Some(anyhow!(e));
+                }
+                Err(join) => {
+                    log::warn!(
+                        "Parakeet recycle (drop-then-load) intento {}/{}: la carga entró en pánico: {}",
+                        attempt, PARAKEET_RECYCLE_LOAD_ATTEMPTS, join
+                    );
+                    last_err = Some(anyhow!("load task panicked: {}", join));
+                }
+            }
+            if attempt < PARAKEET_RECYCLE_LOAD_ATTEMPTS {
+                tokio::time::sleep(PARAKEET_RECYCLE_RETRY_GAP).await;
+            }
+        }
+        crate::logging::mem_sampler::snapshot_now("onnx-recycle-failed");
+        Err(anyhow!(
+            "drop-then-load agotó {} intentos para {}: {}",
+            PARAKEET_RECYCLE_LOAD_ATTEMPTS,
+            model_name,
+            last_err.map(|e| e.to_string()).unwrap_or_default()
+        ))
     }
 
     /// Get the models directory path
@@ -1457,5 +1582,20 @@ fn classify_http_status(name: &str, status: reqwest::StatusCode) -> FileDownload
         FileDownloadError::Transient(err)
     } else {
         FileDownloadError::Permanent(err)
+    }
+}
+
+#[cfg(test)]
+mod recycle_strategy_tests {
+    use super::*;
+
+    /// Sólo tier Low paga el reciclado sin pico; el resto conserva la garantía
+    /// de sesión vieja intacta ante un fallo de carga.
+    #[test]
+    fn drop_then_load_solo_en_tier_low() {
+        assert_eq!(recycle_strategy(&PerformanceTier::Low), RecycleStrategy::DropThenLoad);
+        for tier in [PerformanceTier::Medium, PerformanceTier::High, PerformanceTier::Ultra] {
+            assert_eq!(recycle_strategy(&tier), RecycleStrategy::LoadThenSwap, "{:?}", tier);
+        }
     }
 }

@@ -37,6 +37,9 @@ pub static SESSION_EMPTY_RESULTS: AtomicU64 = AtomicU64::new(0);
 static CONSEC_ENGINE_FAILURES: AtomicU64 = AtomicU64::new(0);
 static ERROR_RECYCLES_TRIGGERED: AtomicU64 = AtomicU64::new(0);
 static PERSISTENT_ENGINE_ERROR_EMITTED: AtomicBool = AtomicBool::new(false);
+/// Latch por sesión del evento `stt.engine_lifecycle {reason: recycle_failed}`:
+/// el worker detecta el reciclado fallido chunk a chunk y sólo debe fecharlo una vez.
+static RECYCLE_FAILED_EMITTED: AtomicBool = AtomicBool::new(false);
 /// Fallos consecutivos que disparan el reinicio de sesion (patron circuit breaker,
 /// espejo del breaker del coach en live_feedback.rs).
 const ENGINE_BREAKER_THRESHOLD: u64 = 5;
@@ -81,9 +84,58 @@ pub fn reset_session_counters() {
     CONSEC_ENGINE_FAILURES.store(0, Ordering::SeqCst);
     ERROR_RECYCLES_TRIGGERED.store(0, Ordering::SeqCst);
     PERSISTENT_ENGINE_ERROR_EMITTED.store(false, Ordering::SeqCst);
+    RECYCLE_FAILED_EMITTED.store(false, Ordering::SeqCst);
     TRANSCRIPTION_LAG_SECONDS.store(0, Ordering::SeqCst);
     reset_speech_detected_flag();
     info!("Session counters reset: SEQUENCE_COUNTER=0, SPEECH_DETECTED=false, CANCEL_PENDING=false");
+}
+
+/// Breaker de motor: con `fails >= ENGINE_BREAKER_THRESHOLD` pide un reinicio
+/// de la sesión ONNX (`force_recycle`, sujeto al `min_gap` anti-storm de
+/// `OnnxSessionLifecycle`) hasta `ENGINE_BREAKER_MAX_RECYCLES` veces; después
+/// avisa UNA vez al usuario. Lo alimentan dos caminos: los fallos de
+/// inferencia y, desde sep-2026 (#02), los chunks saltados porque un
+/// reciclado drop-then-load dejó el motor sin modelo. Mientras `force_recycle`
+/// devuelva `false` (min_gap vigente) el contador no se resetea, así que cada
+/// chunk siguiente vuelve a pedirlo hasta que el gap venza.
+fn trip_engine_breaker<R: Runtime>(
+    engine: &TranscriptionEngine,
+    app: &AppHandle<R>,
+    worker_id: usize,
+    fails: u64,
+) {
+    if fails < ENGINE_BREAKER_THRESHOLD {
+        return;
+    }
+    let TranscriptionEngine::Parakeet(parakeet) = engine else {
+        return;
+    };
+    let recycles = ERROR_RECYCLES_TRIGGERED.load(Ordering::SeqCst);
+    if recycles < ENGINE_BREAKER_MAX_RECYCLES {
+        if parakeet.force_recycle() {
+            ERROR_RECYCLES_TRIGGERED.fetch_add(1, Ordering::SeqCst);
+            CONSEC_ENGINE_FAILURES.store(0, Ordering::SeqCst);
+            error!(
+                "Worker {}: breaker de motor ABIERTO ({} fallos consecutivos) — reiniciando sesión ONNX (reciclo {}/{})",
+                worker_id, fails, recycles + 1, ENGINE_BREAKER_MAX_RECYCLES
+            );
+        }
+    } else if !PERSISTENT_ENGINE_ERROR_EMITTED.swap(true, Ordering::SeqCst) {
+        // Ya reiniciamos la sesion 2 veces y sigue fallando:
+        // avisar UNA vez al usuario en vez de fallar en silencio.
+        error!(
+            "Worker {}: motor sigue fallando tras {} reinicios de sesión — notificando al usuario",
+            worker_id, ENGINE_BREAKER_MAX_RECYCLES
+        );
+        let _ = app.emit(
+            events::TRANSCRIPTION_ERROR,
+            &serde_json::json!({
+                "error": "engine_persistent_failure",
+                "userMessage": "La transcripción está fallando repetidamente. El audio se sigue grabando; reinicia la app para restablecer la transcripción.",
+                "actionable": true
+            }),
+        );
+    }
 }
 
 /// Resumen de descartes de la sesión (para el log periódico y el cierre de sesión).
@@ -361,6 +413,23 @@ pub fn start_transcription_task<R: Runtime>(
                             // Check if model is still loaded before processing
                             if !engine_clone.is_model_loaded().await {
                                 warn!("⚠️ Worker {}: Model unloaded, but continuing to preserve chunk {}", worker_id, chunk.chunk_id);
+                                // Modelo ausente con NOMBRE presente = reciclado
+                                // drop-then-load que agotó sus intentos (tier Low),
+                                // no un unload deliberado. Sin esto el chunk se
+                                // saltaría sin contar como fallo y el breaker jamás
+                                // dispararía: pérdida silenciosa del resto de la
+                                // grabación (sep-2026, #02).
+                                if engine_clone.get_current_model().await.is_some() {
+                                    if !RECYCLE_FAILED_EMITTED.swap(true, Ordering::SeqCst) {
+                                        let model = engine_clone.get_current_model().await.unwrap_or_default();
+                                        super::engine::emit_engine_lifecycle(
+                                            &app_clone, "unloaded", "recycle_failed",
+                                            "parakeet", &model, None, "error",
+                                        ).await;
+                                    }
+                                    let fails = CONSEC_ENGINE_FAILURES.fetch_add(1, Ordering::SeqCst) + 1;
+                                    trip_engine_breaker(&engine_clone, &app_clone, worker_id, fails);
+                                }
                                 // Still count as completed even if we can't process
                                 chunks_completed_clone.fetch_add(1, Ordering::SeqCst);
                                 continue;
@@ -518,36 +587,7 @@ pub fn start_transcription_task<R: Runtime>(
                                             // Breaker de motor: N fallos consecutivos => sesion ONNX
                                             // probablemente corrupta -> reinicio en background.
                                             let fails = CONSEC_ENGINE_FAILURES.fetch_add(1, Ordering::SeqCst) + 1;
-                                            if fails >= ENGINE_BREAKER_THRESHOLD {
-                                                if let TranscriptionEngine::Parakeet(parakeet) = &engine_clone {
-                                                    let recycles = ERROR_RECYCLES_TRIGGERED.load(Ordering::SeqCst);
-                                                    if recycles < ENGINE_BREAKER_MAX_RECYCLES {
-                                                        if parakeet.force_recycle() {
-                                                            ERROR_RECYCLES_TRIGGERED.fetch_add(1, Ordering::SeqCst);
-                                                            CONSEC_ENGINE_FAILURES.store(0, Ordering::SeqCst);
-                                                            error!(
-                                                                "Worker {}: breaker de motor ABIERTO ({} fallos consecutivos) — reiniciando sesión ONNX (reciclo {}/{})",
-                                                                worker_id, fails, recycles + 1, ENGINE_BREAKER_MAX_RECYCLES
-                                                            );
-                                                        }
-                                                    } else if !PERSISTENT_ENGINE_ERROR_EMITTED.swap(true, Ordering::SeqCst) {
-                                                        // Ya reiniciamos la sesion 2 veces y sigue fallando:
-                                                        // avisar UNA vez al usuario en vez de fallar en silencio.
-                                                        error!(
-                                                            "Worker {}: motor sigue fallando tras {} reinicios de sesión — notificando al usuario",
-                                                            worker_id, ENGINE_BREAKER_MAX_RECYCLES
-                                                        );
-                                                        let _ = app_clone.emit(
-                                                            events::TRANSCRIPTION_ERROR,
-                                                            &serde_json::json!({
-                                                                "error": "engine_persistent_failure",
-                                                                "userMessage": "La transcripción está fallando repetidamente. El audio se sigue grabando; reinicia la app para restablecer la transcripción.",
-                                                                "actionable": true
-                                                            }),
-                                                        );
-                                                    }
-                                                }
-                                            }
+                                            trip_engine_breaker(&engine_clone, &app_clone, worker_id, fails);
                                         }
                                     }
                                 }
