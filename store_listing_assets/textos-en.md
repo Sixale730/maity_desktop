@@ -25,6 +25,20 @@ Maity is free to download and use. The free plan has daily and monthly usage lim
 ```
 
 ## 4) What's new in this version
+
+Version 0.2.58 (Sep 2026):
+```
+- Closing the window no longer quits Maity: it stays in the tray and your workday keeps recording
+- Uses far less memory during the workday, especially on PCs with 8 GB or less
+- Meeting audio takes a third of the space and is cleaned up automatically once the meeting is synced and analyzed
+- Workday recording no longer saves stretches with no conversation
+- Clear notices when the microphone or Windows permission is missing, with no endless retries
+- Maity lets you know when a new version is available in the Microsoft Store
+- You can send a diagnostic report from Settings if something goes wrong
+- Faster conversation list and stability improvements
+```
+
+Version 0.2.57 (Aug 2026), for reference:
 ```
 - Faster, more reliable Maity Chat, with document reading and presentation generation
 - Calendar integration and proactive daily briefing

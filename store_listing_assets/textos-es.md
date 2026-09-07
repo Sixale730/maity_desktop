@@ -47,6 +47,20 @@ Maity es gratis para descargar y usar. El plan gratuito tiene límites de uso di
 ```
 
 ## 4) What's new in this version
+
+Versión 0.2.58 (sep-2026):
+```
+- Cerrar la ventana ya no cierra Maity: se queda en la bandeja y la jornada sigue grabando
+- Usa mucha menos memoria durante la jornada, sobre todo en equipos con 8 GB o menos
+- El audio de las reuniones ocupa una tercera parte y se limpia solo cuando la reunión ya está sincronizada y analizada
+- La jornada ya no guarda tramos sin conversación
+- Avisos claros cuando falta el micrófono o el permiso de Windows, sin reintentos infinitos
+- Maity te avisa cuando hay una versión nueva en la Microsoft Store
+- Puedes enviar un reporte de diagnóstico desde Ajustes si algo falla
+- Lista de conversaciones más rápida y mejoras de estabilidad
+```
+
+Versión 0.2.57 (ago-2026), por referencia:
 ```
 - Maity Chat más rápido y confiable, con lectura de documentos y generación de presentaciones
 - Integración con el calendario y briefing diario proactivo
