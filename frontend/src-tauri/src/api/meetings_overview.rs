@@ -537,6 +537,34 @@ mod tests {
         assert_eq!(summary.analysis_status.as_deref(), Some("quota_skipped"));
     }
 
+    /// La poda de la cola (#26 de la auditoría) vacía el `payload` de los
+    /// completados viejos pero deja la fila y su `result_data`: la lista sigue
+    /// viendo el sync completo y la cuota agotada. Un `DELETE` reprobaría este
+    /// test (la fila caería a "none" y el badge desaparecería a los 7 días).
+    #[tokio::test]
+    async fn la_poda_de_payloads_no_borra_lo_que_lee_la_lista() {
+        use crate::database::repositories::sync_queue::SyncQueueRepository;
+
+        let pool = setup_pool().await;
+        sqlx::query(
+            "INSERT INTO sync_queue (job_type, meeting_id, payload, status, result_data, user_id, completed_at)
+             VALUES ('finalize_conversation', 'm1', '{\"duration_seconds\":60}', 'completed',
+                     '{\"ok\":true,\"conversation_id\":\"c1\",\"analysis_status\":\"quota_skipped\"}', ?,
+                     datetime('now', '-30 days'))",
+        )
+        .bind(TEST_USER)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        assert_eq!(SyncQueueRepository::trim_completed_payloads(&pool, 7).await.unwrap(), 1);
+
+        let states = sync_states(&pool, TEST_USER).await.unwrap();
+        let summary = states.get("m1").unwrap();
+        assert_eq!(summary.state, "completed");
+        assert_eq!(summary.analysis_status.as_deref(), Some("quota_skipped"));
+    }
+
     #[tokio::test]
     async fn analysis_status_ausente_cuando_no_hay_finalize_utilizable() {
         let pool = setup_pool().await;

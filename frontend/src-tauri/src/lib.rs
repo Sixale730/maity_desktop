@@ -1017,6 +1017,13 @@ pub fn run() {
             // auto-recuperación de grabaciones interrumpidas.
             audio::audio_retention::spawn(_app.handle().clone());
 
+            // Poda diaria de `sync_queue` (#26 de la auditoría): vacía el
+            // `payload` de los jobs completados hace ≥7 días SIN borrar filas
+            // (el barrido de audio, la lista y los hijos diferidos por cuota
+            // leen esas filas). Tarea propia: ni en el `block_on` del arranque
+            // de `reset_stale_jobs` ni en el worker, que se gatea por sesión.
+            database::maintenance::spawn(_app.handle().clone());
+
             // Descarga del motor STT en reposo (tier Low) y prewarm 5 min antes
             // de la jornada (#02 de la auditoría). Tarea propia por el mismo
             // racional que el barrido: el tick del scheduler sólo corre con la

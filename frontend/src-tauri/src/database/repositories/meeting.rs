@@ -363,10 +363,13 @@ impl MeetingsRepository {
     /// y `status='completed'` significa que la conversación existe en Supabase
     /// **con sus segmentos** (la cadena `depends_on` lo garantiza) y que la nube
     /// ya dijo lo suyo del análisis; `completed_at` da la edad. Esas filas
-    /// además no se purgan nunca: `SyncQueueRepository::cleanup_old_completed`
-    /// no tiene un solo call site en producción.
+    /// además no se purgan nunca: la poda de la cola
+    /// (`SyncQueueRepository::trim_completed_payloads`, #26 de la auditoría)
+    /// vacía el `payload` pero conserva la fila, su `status` y su
+    /// `completed_at` justo para que esta consulta siga viéndolas; la vieja
+    /// `cleanup_old_completed` (un `DELETE` sin call sites) se borró por eso.
     ///
-    /// El predicado de edad es el mismo de `cleanup_old_completed`
+    /// El predicado de edad es el mismo de `trim_completed_payloads`
     /// (`datetime('now', '-' || ? || ' days')`) y compara contra el
     /// `datetime('now')` que escribe `complete_job` — mismo formato de texto,
     /// comparación lexicográfica correcta.

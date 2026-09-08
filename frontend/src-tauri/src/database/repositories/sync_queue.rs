@@ -443,13 +443,47 @@ impl SyncQueueRepository {
         .await
     }
 
-    /// Clean up old completed jobs (older than N days)
-    pub async fn cleanup_old_completed(
+    /// Poda de la cola: vacía el `payload` de los jobs completados hace ≥ `days`
+    /// días. **NO borra filas** — devuelve cuántas recortó.
+    ///
+    /// Lo que pesa en la tabla es el `payload` (`save_conversation` lleva el
+    /// `transcript_text` entero y `save_transcript_segments` todos los
+    /// `segments`), y un job `completed` nunca vuelve a ejecutarse
+    /// (`retry_failed_for_meeting` revive `failed`, `reset_stale_jobs` toca
+    /// `in_progress`, `cancel_jobs_for_meeting` borra pending/in_progress), así
+    /// que ese texto es puro lastre pasados unos días. El `result_data` es chico
+    /// (`{"conversation_id"}` o la `FinalizeResponse`) y se conserva.
+    ///
+    /// Por qué NO es un `DELETE` (existió una `cleanup_old_completed` que lo era,
+    /// sin un solo call site; se borró en sep-2026, #26 de la auditoría de
+    /// recursos, porque llamarla rompía tres consumidores de las filas
+    /// completadas):
+    /// 1. `MeetingsRepository::list_audio_retention_candidates` exige un
+    ///    `finalize_conversation` completado con `completed_at` de ≥
+    ///    `audio_retention_days` (default 30): sin la fila, el barrido de audio
+    ///    no encuentra candidatas jamás.
+    /// 2. `api::meetings_overview::sync_states` deriva `sync_state` del
+    ///    `MAX(status)` y lee `analysis_status` (`quota_skipped`) del
+    ///    `result_data` del finalize completado.
+    /// 3. Un hijo `pending` con cuota diferida (`defer_job`, puede ser semanas)
+    ///    necesita el `result_data` de su padre completado; con la FK
+    ///    `ON DELETE SET NULL`, borrar al padre lo vuelve "listo" sin
+    ///    `conversation_id` → error `validation:` permanente y esa conversación
+    ///    no se finaliza nunca, ni después del upgrade.
+    ///
+    /// `'{}'` respeta el `NOT NULL` y sigue siendo JSON válido; el
+    /// `payload <> '{}'` hace la pasada idempotente (la segunda devuelve 0). El
+    /// predicado de edad es el mismo de `list_audio_retention_candidates`.
+    pub async fn trim_completed_payloads(
         pool: &SqlitePool,
         days: i64,
     ) -> Result<u64, SqlxError> {
         let result = sqlx::query(
-            "DELETE FROM sync_queue WHERE status = 'completed' AND completed_at <= datetime('now', '-' || ? || ' days')",
+            "UPDATE sync_queue SET payload = '{}'
+             WHERE status = 'completed'
+               AND completed_at IS NOT NULL
+               AND completed_at <= datetime('now', '-' || ? || ' days')
+               AND payload <> '{}'",
         )
         .bind(days)
         .execute(pool)
@@ -847,6 +881,144 @@ mod tests {
 
         let result = SyncQueueRepository::get_completed_finalize_result(&pool, "m1").await.unwrap();
         assert_eq!(result.as_deref(), Some(r#"{"conversation_id":"x"}"#));
+    }
+
+    // ---------- poda de payloads (#26 de la auditoría) ----------
+
+    /// Job completado con `payload` gordo y `completed_at` hace `days_ago` días.
+    async fn completed_with_payload(
+        pool: &SqlitePool,
+        job_type: &str,
+        payload: &str,
+        result_data: Option<&str>,
+        depends_on: Option<i64>,
+        days_ago: i64,
+    ) -> i64 {
+        let id = SyncQueueRepository::enqueue(pool, job_type, "m1", payload, 3, depends_on, TEST_USER)
+            .await
+            .unwrap();
+        SyncQueueRepository::claim_job(pool, id, TEST_LEASE).await.unwrap();
+        SyncQueueRepository::complete_job(pool, id, result_data).await.unwrap();
+        sqlx::query(
+            "UPDATE sync_queue SET completed_at = datetime('now', '-' || ? || ' days') WHERE id = ?",
+        )
+        .bind(days_ago)
+        .bind(id)
+        .execute(pool)
+        .await
+        .unwrap();
+        id
+    }
+
+    #[tokio::test]
+    async fn trim_vacia_el_payload_y_conserva_todo_lo_demas() {
+        let pool = setup_pool().await;
+        let id = completed_with_payload(
+            &pool,
+            "save_conversation",
+            r#"{"transcript_text":"hola mundo, esto pesa"}"#,
+            Some(r#"{"conversation_id":"c1"}"#),
+            None,
+            10,
+        )
+        .await;
+        let before = SyncQueueRepository::get_job_by_id(&pool, id).await.unwrap().unwrap();
+
+        assert_eq!(SyncQueueRepository::trim_completed_payloads(&pool, 7).await.unwrap(), 1);
+
+        let after = SyncQueueRepository::get_job_by_id(&pool, id).await.unwrap().unwrap();
+        assert_eq!(after.payload, "{}");
+        assert_eq!(after.status, "completed");
+        assert_eq!(
+            after.completed_at, before.completed_at,
+            "la edad que lee el barrido de audio no se toca"
+        );
+        assert_eq!(after.result_data.as_deref(), Some(r#"{"conversation_id":"c1"}"#));
+
+        // Idempotente: la segunda pasada no encuentra nada que recortar.
+        assert_eq!(SyncQueueRepository::trim_completed_payloads(&pool, 7).await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn trim_no_toca_recientes_ni_pending_ni_failed_ni_in_progress() {
+        let pool = setup_pool().await;
+        let fat = r#"{"segments":[1,2,3]}"#;
+        let recent = completed_with_payload(&pool, "save_transcript_segments", fat, None, None, 3).await;
+        let pending = SyncQueueRepository::enqueue(&pool, "a", "m1", fat, 3, None, TEST_USER).await.unwrap();
+        let in_progress = SyncQueueRepository::enqueue(&pool, "b", "m1", fat, 3, None, TEST_USER).await.unwrap();
+        SyncQueueRepository::claim_job(&pool, in_progress, TEST_LEASE).await.unwrap();
+        let failed = SyncQueueRepository::enqueue(&pool, "c", "m1", fat, 1, None, TEST_USER).await.unwrap();
+        SyncQueueRepository::claim_job(&pool, failed, TEST_LEASE).await.unwrap();
+        SyncQueueRepository::fail_job(&pool, failed, "boom", None).await.unwrap();
+
+        assert_eq!(SyncQueueRepository::trim_completed_payloads(&pool, 7).await.unwrap(), 0);
+        for id in [recent, pending, in_progress, failed] {
+            let job = SyncQueueRepository::get_job_by_id(&pool, id).await.unwrap().unwrap();
+            assert_eq!(job.payload, fat, "job {} ({}) no debía recortarse", id, job.status);
+        }
+    }
+
+    /// El test que un `DELETE` reprobaría: un hijo diferido por cuota sigue
+    /// resolviendo el `conversation_id` de su padre después de la poda, y sigue
+    /// saliendo en `get_ready_jobs` con su propio payload intacto.
+    #[tokio::test]
+    async fn trim_conserva_el_result_data_que_necesita_un_hijo_pendiente() {
+        let pool = setup_pool().await;
+        let parent = completed_with_payload(
+            &pool,
+            "save_conversation",
+            r#"{"transcript_text":"..."}"#,
+            Some(r#"{"conversation_id":"c1"}"#),
+            None,
+            20,
+        )
+        .await;
+        let child = completed_with_payload(
+            &pool,
+            "save_transcript_segments",
+            r#"{"segments":[1,2,3]}"#,
+            Some(r#"{"conversation_id":"c1"}"#),
+            Some(parent),
+            20,
+        )
+        .await;
+        // Nieto: finalize diferido por cuota (`defer_job` lo deja 'pending' con
+        // next_retry_at futuro). Aquí el retry ya venció.
+        let grandchild = SyncQueueRepository::enqueue(
+            &pool,
+            "finalize_conversation",
+            "m1",
+            r#"{"duration_seconds":60}"#,
+            3,
+            Some(child),
+            TEST_USER,
+        )
+        .await
+        .unwrap();
+        SyncQueueRepository::claim_job(&pool, grandchild, TEST_LEASE).await.unwrap();
+        SyncQueueRepository::defer_job(&pool, grandchild, "2020-01-01 00:00:00", "quota:daily")
+            .await
+            .unwrap();
+
+        assert_eq!(SyncQueueRepository::trim_completed_payloads(&pool, 7).await.unwrap(), 2);
+
+        let ready = SyncQueueRepository::get_ready_jobs(&pool, 10, TEST_USER).await.unwrap();
+        assert_eq!(ready.iter().map(|j| j.id).collect::<Vec<_>>(), vec![grandchild]);
+        assert_eq!(
+            ready[0].payload,
+            r#"{"duration_seconds":60}"#,
+            "el payload de un job pending no se toca"
+        );
+        assert_eq!(
+            SyncQueueRepository::get_dependency_result(&pool, grandchild)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some(r#"{"conversation_id":"c1"}"#)
+        );
+        let c = SyncQueueRepository::get_job_by_id(&pool, child).await.unwrap().unwrap();
+        assert_eq!(c.payload, "{}");
+        assert_eq!(c.depends_on, Some(parent), "la cadena depends_on sigue intacta");
     }
 
     // ---------- lease ----------
