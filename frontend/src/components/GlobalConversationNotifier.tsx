@@ -8,7 +8,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { supabase } from '@/lib/supabase';
 import { isAuxWindowPath } from '@/lib/auxWindows';
 import { logger } from '@/lib/logger';
-import { logPoll } from '@/lib/diagnostics';
+import { logPoll, logPollIfChanged } from '@/lib/diagnostics';
 import type { OmiConversation } from '@/features/conversations/services/conversations.service';
 
 const REALTIME_CONNECT_TIMEOUT_MS = 5_000;
@@ -334,11 +334,19 @@ export function GlobalConversationNotifier() {
           (payload) => {
             const newRow = payload.new as Partial<OmiConversation>;
             // Instrumentation: confirm Realtime is actually delivering UPDATE events.
-            logPoll('realtime_update', {
-              id: newRow?.id ?? null,
-              analysis_status: newRow?.analysis_status ?? null,
-              updated_at: newRow?.updated_at ?? null,
-            });
+            // Muestreado por status (#25): el heartbeat de la nube manda un UPDATE
+            // cada 30 s con el mismo status mientras analiza; se colapsa a un
+            // latido por minuto y un cambio de status sale al instante.
+            logPollIfChanged(
+              `realtime_update:${newRow?.id ?? 'unknown'}`,
+              'realtime_update',
+              {
+                id: newRow?.id ?? null,
+                analysis_status: newRow?.analysis_status ?? null,
+                updated_at: newRow?.updated_at ?? null,
+              },
+              [newRow?.analysis_status ?? null],
+            );
             logger.warn(
               `[GlobalConversationNotifier] Realtime UPDATE id=${newRow?.id} status=${newRow?.analysis_status} title=${(newRow?.title ?? '').slice(0, 30)}`,
             );

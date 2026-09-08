@@ -32,6 +32,79 @@ export function logPoll(event: string, data: Record<string, unknown> = {}): void
   fileLogger.info('POLL', event, entry);
 }
 
+/** Latido del muestreo: aunque nada cambie, cada clave emite al menos una
+ *  línea por minuto para que el log siga probando que el poll está vivo. */
+export const POLL_LOG_HEARTBEAT_MS = 60_000;
+/** Tope de claves vivas en el dedupe (una por evento × conversación abierta). */
+const POLL_LOG_MAX_KEYS = 256;
+
+interface PollLogEntry {
+  sig: string;
+  at: number;
+  suppressed: number;
+}
+
+const pollLogState = new Map<string, PollLogEntry>();
+
+/**
+ * `logPoll` muestreado para call sites CALIENTES (#25 de la auditoría de
+ * recursos): el poll de 3 s del detalle y los UPDATE de Realtime emitían
+ * ~60-80 IPC + líneas de log por minuto con un detalle abierto, casi todas
+ * idénticas (TanStack evalúa la función `refetchInterval` en cada render y
+ * en cada cambio de estado de la query). Emite sólo si `signature` cambió
+ * respecto a la última emisión de `key`, o si pasó `POLL_LOG_HEARTBEAT_MS`
+ * desde ella (latido). El latido lleva `heartbeat: true` y `suppressed: n`
+ * — cuántas llamadas se callaron desde la emisión anterior — al estilo del
+ * limiter de `emit_start_failed` en Rust.
+ *
+ * La `signature` la elige el caller a propósito: campos que cambian en cada
+ * tick sin decir nada nuevo (`fetch_status`, el `updated_at` del heartbeat de
+ * la nube) pueden seguir viajando en `data` sin reventar el dedupe.
+ *
+ * Diagnosticabilidad: un poll atorado se ve como latidos de
+ * `refetchInterval_eval` sin ningún `queryFn_success` entre medio; cualquier
+ * cambio de estado sale al instante, como antes.
+ */
+export function logPollIfChanged(
+  key: string,
+  event: string,
+  data: Record<string, unknown>,
+  signature: unknown[],
+): void {
+  const now = Date.now();
+  const sig = JSON.stringify(signature);
+  const prev = pollLogState.get(key);
+
+  if (prev !== undefined && prev.sig === sig && now - prev.at < POLL_LOG_HEARTBEAT_MS) {
+    prev.suppressed += 1;
+    return;
+  }
+
+  const isHeartbeat = prev !== undefined && prev.sig === sig;
+  const suppressed = prev?.suppressed ?? 0;
+
+  // Re-insertar mueve la clave al final del Map: el tope descarta la más vieja.
+  pollLogState.delete(key);
+  if (pollLogState.size >= POLL_LOG_MAX_KEYS) {
+    const oldest = pollLogState.keys().next().value;
+    if (oldest !== undefined) pollLogState.delete(oldest);
+  }
+  pollLogState.set(key, { sig, at: now, suppressed: 0 });
+
+  if (isHeartbeat) {
+    logPoll(event, { ...data, heartbeat: true, suppressed });
+  } else if (suppressed > 0) {
+    logPoll(event, { ...data, suppressed });
+  } else {
+    logPoll(event, data);
+  }
+}
+
+/** Sólo para tests: olvida lo emitido. */
+export function resetPollLogState(): void {
+  pollLogState.clear();
+}
+
 declare global {
   interface Window {
     __pollDebug?: {

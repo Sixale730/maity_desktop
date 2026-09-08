@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { logger } from '@/lib/logger';
-import { logPoll } from '@/lib/diagnostics';
+import { logPoll, logPollIfChanged } from '@/lib/diagnostics';
 import { getOmiConversation, reanalyzeConversation } from '../services/conversations.service';
 import type { OmiConversation } from '../services/conversations.service';
 import { derivePhase, isTerminalPhase, type AnalysisPhase } from '../utils/derivePhase';
@@ -57,24 +57,43 @@ export function useConversationLive(
   const query = useQuery({
     queryKey: conversationQueryKey(conversationId),
     queryFn: async () => {
-      logPoll('queryFn_start', { conversationId });
+      // Sin `queryFn_start`: su única utilidad (timing) viaja como `elapsed_ms`
+      // en success/error. Ambos van muestreados (#25): un poll de 3 s que no
+      // cambia nada se colapsa a un latido por minuto.
+      const t0 = performance.now();
       try {
         const fresh = await getOmiConversation(conversationId);
-        logPoll('queryFn_success', {
-          conversationId,
-          found: Boolean(fresh),
-          analysis_status: fresh?.analysis_status ?? null,
-          updated_at: fresh?.updated_at ?? null,
-          has_v4: Boolean(fresh?.communication_feedback_v4),
-          has_minuta: Boolean(fresh?.meeting_minutes_data),
-        });
+        const found = Boolean(fresh);
+        const analysisStatus = fresh?.analysis_status ?? null;
+        const updatedAt = fresh?.updated_at ?? null;
+        const hasV4 = Boolean(fresh?.communication_feedback_v4);
+        const hasMinuta = Boolean(fresh?.meeting_minutes_data);
+        logPollIfChanged(
+          `queryFn_success:${conversationId}`,
+          'queryFn_success',
+          {
+            conversationId,
+            found,
+            analysis_status: analysisStatus,
+            updated_at: updatedAt,
+            has_v4: hasV4,
+            has_minuta: hasMinuta,
+            elapsed_ms: Math.round(performance.now() - t0),
+          },
+          [found, analysisStatus, updatedAt, hasV4, hasMinuta],
+        );
         if (!fresh) throw new Error(`Conversation not found: ${conversationId}`);
         return fresh;
       } catch (err) {
-        logPoll('queryFn_error', {
-          conversationId,
-          error: err instanceof Error ? err.message : String(err),
-        });
+        const error = err instanceof Error ? err.message : String(err);
+        // El primer error siempre sale; uno persistente se colapsa a 1/min
+        // (el patrón de tormenta de los 965 eventos del piloto Dingler).
+        logPollIfChanged(
+          `queryFn_error:${conversationId}`,
+          'queryFn_error',
+          { conversationId, error, elapsed_ms: Math.round(performance.now() - t0) },
+          [error],
+        );
         throw err;
       }
     },
@@ -94,17 +113,32 @@ export function useConversationLive(
           : phase === 'stalled'
             ? STALLED_POLL_INTERVAL_MS
             : POLL_INTERVAL_MS;
-      logPoll('refetchInterval_eval', {
-        conversationId,
-        phase,
-        analysis_status: data?.analysis_status ?? null,
-        updated_at: data?.updated_at ?? null,
-        next_interval_ms: next,
-        has_v4: Boolean(data?.communication_feedback_v4),
-        has_minuta: Boolean(data?.meeting_minutes_data),
-        fetch_status: q.state.fetchStatus,
-        error: q.state.error?.message ?? null,
-      });
+      // TanStack evalúa esta función en CADA render (useBaseQuery llama a
+      // setOptions en un useEffect) y en cada cambio de estado de la query:
+      // sin muestreo eran ~60-80 IPC/min con un detalle abierto (#25).
+      // `fetch_status` queda fuera de la firma: alterna fetching/idle en cada
+      // poll y reventaría el dedupe; sigue viajando en el payload.
+      const analysisStatus = data?.analysis_status ?? null;
+      const updatedAt = data?.updated_at ?? null;
+      const hasV4 = Boolean(data?.communication_feedback_v4);
+      const hasMinuta = Boolean(data?.meeting_minutes_data);
+      const error = q.state.error?.message ?? null;
+      logPollIfChanged(
+        `refetchInterval_eval:${conversationId}`,
+        'refetchInterval_eval',
+        {
+          conversationId,
+          phase,
+          analysis_status: analysisStatus,
+          updated_at: updatedAt,
+          next_interval_ms: next,
+          has_v4: hasV4,
+          has_minuta: hasMinuta,
+          fetch_status: q.state.fetchStatus,
+          error,
+        },
+        [phase, analysisStatus, updatedAt, next, hasV4, hasMinuta, error],
+      );
       return next;
     },
     retry: 2,
@@ -205,6 +239,12 @@ export function useConversationLive(
   // cargando, cerrar+abrir lo arregla". Mientras el bug se reproduce y los
   // logs `[POLL]` confirman la causa raiz, este watchdog evita que el usuario
   // quede colgado.
+  //
+  // Los logs `[POLL]` del poll van MUESTREADOS (`logPollIfChanged`, #25 de la
+  // auditoria de recursos): un poll atorado se lee como latidos de
+  // `refetchInterval_eval` (uno por minuto, con `suppressed`) sin ningun
+  // `queryFn_success` entre medio; todo cambio de estado sigue saliendo al
+  // instante.
   //
   // Resetea el contador ante cualquier signal de progreso (cambio en
   // analysis_status o updated_at). `window.location.reload()` preserva la URL
