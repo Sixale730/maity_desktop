@@ -120,7 +120,7 @@ clean_start_backend.cmd               # Iniciar servidor
 | Modulo | Descripcion |
 |--------|-------------|
 | `audio/` | Pipeline de audio completo (46 archivos): captura, VAD, mezcla, grabacion, transcripcion |
-| `whisper_engine/` | Motor Whisper.cpp con procesamiento paralelo y aceleracion GPU |
+| `whisper_engine/` | Motor Whisper.cpp con aceleracion GPU (el "procesamiento paralelo" se borró en sep-2026, #21 de la auditoría: nadie lo invocaba) |
 | `parakeet_engine/` | Motor Parakeet ONNX (~150MB, rapido on-device) |
 | `moonshine_engine/` | Motor Moonshine ONNX (ultra-rapido, dual decoder) |
 | `canary_engine/` | Motor NVIDIA NeMo Canary (mejor espanol, **existe pero NO expuesto en lib.rs**) |
@@ -235,7 +235,7 @@ audio/
 
 | Motor | Tipo | Archivos | Caracteristicas |
 |-------|------|----------|-----------------|
-| **Whisper** | Local, GPU | `whisper_engine/` (6 archivos) | Procesamiento paralelo, Metal/CUDA/Vulkan, modelos tiny→large-v3 |
+| **Whisper** | Local, GPU | `whisper_engine/` (3 archivos) | Metal/CUDA/Vulkan, modelos tiny→large-v3 |
 | **Parakeet** | Local, ONNX | `parakeet_engine/` (4 archivos) | ~150MB, rapido on-device, auto-download |
 | **Moonshine** | Local, ONNX | `moonshine_engine/` (4 archivos) | Ultra-rapido, dual decoder (encoder-only + with-past) |
 | **Canary** | Local, ONNX | `canary_engine/` (5 archivos) | NVIDIA NeMo, mejor espanol (2.69% WER), **NO EXPUESTO en lib.rs** |
@@ -289,7 +289,7 @@ Comandos via `invoke()` (Frontend->Rust), Eventos via `emit()`/`listen()` (Rust-
 - **Grabacion**: `start_recording`, `stop_recording`, `pause_recording`, `resume_recording`, `is_recording_paused`, `get_recording_state`, `get_meeting_folder_path`
 - **Dispositivos**: `list_audio_devices`, `switch_audio_device`, `poll_audio_device_events`, `get_active_audio_output` — la auto-reconexión reusa `switch_audio_device`: el frontend lo invoca al recibir `DeviceReconnected` del polling (los comandos `attempt_device_reconnect`/`get_reconnection_status` y el flag `is_reconnecting` fueron eliminados en ago-2026, eran código muerto)
 - **Transcripcion**: `cancel_pending_transcription`, `recover_audio_from_checkpoints`, `cleanup_checkpoints`, `has_audio_checkpoints`
-- **Whisper paralelo**: `initialize_parallel_processor`, `start_parallel_processing`, `pause/resume/stop_parallel_processing`, `get_parallel_processing_status`, `get_system_resources`
+- **Whisper paralelo**: ELIMINADO en sep-2026 (#21 de la auditoría de recursos). Los 11 comandos (`initialize_parallel_processor`, `get_system_resources`, …) no tenían un solo call site en el frontend y su estado se registraba con `manage()` antes del `setup()` pagando un `System::new_all()` en cada arranque. Recuperable de git.
 - **Deepgram proxy**: `fetch_deepgram_proxy_config`, `set/get/clear_deepgram_proxy_config`, `has_valid_deepgram_proxy_config`
 - **Sync queue**: `sync_queue_enqueue`, `sync_queue_claim_job`, `sync_queue_complete_job`, `sync_queue_fail_job`, `sync_queue_get_all_statuses`, `sync_queue_cancel_meeting`, etc.
 - **Meeting detector**: `start/stop_meeting_detector`, `is_meeting_detector_running`, `get_active_meetings`, `check_for_meetings_now`, `respond_to_meeting_detection`, `set_meeting_auto_record`, etc.

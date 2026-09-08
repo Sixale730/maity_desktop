@@ -380,15 +380,12 @@ pub async fn builtin_ai_get_recommended_model() -> Result<String, String> {
     Ok(recommended.to_string())
 }
 
-/// Get total system RAM in gigabytes
+/// RAM total en GB, del perfil de hardware cacheado (`OnceLock`): cero
+/// syscalls tras la primera lectura y el mismo número que usan el tier y
+/// `summary_engine::models`. Antes hacía `System::new_all()` — la tabla
+/// completa de procesos (entornos y cmdlines de 250-400 procesos) para leer
+/// un solo entero (#21 de la auditoría de recursos). Respeta el override
+/// `MEMORY_GB` de QA, igual que el tier.
 fn get_system_ram_gb() -> Result<u64, String> {
-    use sysinfo::System;
-
-    let mut sys = System::new_all();
-    sys.refresh_memory();
-
-    let total_memory_bytes = sys.total_memory();
-    let total_memory_gb = total_memory_bytes / (1024 * 1024 * 1024);
-
-    Ok(total_memory_gb)
+    Ok(crate::audio::hardware_detector::HardwareProfile::detect().memory_gb as u64)
 }

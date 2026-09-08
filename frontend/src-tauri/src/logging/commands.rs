@@ -185,8 +185,14 @@ pub(super) fn generate_system_info() -> String {
     info.push_str(&format!("OS: {}\n", std::env::consts::OS));
     info.push_str(&format!("Architecture: {}\n", std::env::consts::ARCH));
 
-    // System memory info
-    let sys = sysinfo::System::new_all();
+    // System memory info. Sólo RAM + lista de CPUs: `new_all()` traía además
+    // la tabla completa de procesos para tres campos que no la usan (#21 de
+    // la auditoría de recursos).
+    let sys = sysinfo::System::new_with_specifics(
+        sysinfo::RefreshKind::new()
+            .with_memory(sysinfo::MemoryRefreshKind::new().with_ram())
+            .with_cpu(sysinfo::CpuRefreshKind::new()),
+    );
     info.push_str(&format!("Total Memory: {} MB\n", sys.total_memory() / 1024 / 1024));
     info.push_str(&format!("Available Memory: {} MB\n", sys.available_memory() / 1024 / 1024));
     info.push_str(&format!("CPU Count: {}\n", sys.cpus().len()));
