@@ -59,8 +59,8 @@ exactamente lo cerrado. La tabla de abajo es una foto del estado; la verdad es l
 | 14 | El muestreador de memoria refresca más de lo que lee | Medio | CPU | Jornada/Idle/Arranque | S | = | **cerrado** `0506582` |
 | 15 | Sondeos del frontend por IPC que no hacen falta | Medio | CPU | Jornada/Idle | S | ↓ | abierto |
 | 16 | La inferencia de Parakeet corre en un hilo de tokio | Medio | CPU | Jornada | M | ↓ | abierto |
-| 17 | El monitor re-enumera endpoints WASAPI cada 5 s | Bajo | CPU | Jornada | S | = | abierto |
-| 18 | El concat final de ffmpeg corre síncrono en una `async fn` | Bajo | CPU | Post | S | = | abierto |
+| 17 | El monitor re-enumera endpoints WASAPI cada 5 s | Bajo | CPU | Jornada | S | = | **cerrado** `475e071` |
+| 18 | El concat final de ffmpeg corre síncrono en una `async fn` | Bajo | CPU | Post | S | = | **cerrado** `475e071` |
 | 19 | ONNX Runtime escribe a INFO: 35-64 % del log | Medio | Disco/CPU | Jornada/Arranque | S | ↓ | abierto |
 | 20 | `reqwest::Client` se construye por request en ~20 sitios | Bajo | CPU/Red | Post/Jornada | S | = | abierto |
 | 21 | `System::new_all()` para un procesador que nadie invoca | Bajo | RAM/CPU | Arranque | S | = | abierto |
@@ -398,23 +398,39 @@ Ordenados por impacto estimado en RAM, luego CPU, luego disco y red.
 - **Riesgo**: el swap del reciclado debe seguir usando el mismo lock.
 
 ### #17 · El monitor de dispositivos re-enumera todos los endpoints WASAPI cada 5 s mientras graba
-`Bajo` · CPU · Jornada · esfuerzo S · no cambia por lote · abierto
+`Bajo` · CPU · Jornada · esfuerzo S · no cambia por lote · **CERRADO** `475e071`
 
 - **Impacto**: 20-100 ms por sondeo (0.4-2 % de un núcleo) más asignaciones; el stop ya tuvo que
   tratarlo aparte porque la enumeración "corre 90+ s" en el teardown.
 - **Dónde**: `audio/device_monitor.rs:171`, `:186`, `:255-258` · `audio/recording_manager.rs:259-264`.
-- **Cambio**: intervalo de 30 s, o callbacks `IMMNotificationClient` de cambio de dispositivo.
-- **Riesgo**: con callbacks, la reconexión deja de depender del polling.
+- **Cambio aplicado** (2026-09-08): la causa real era peor que "leer el nombre de cada endpoint": en
+  cpal 0.15 `input_devices()`/`output_devices()` filtran con `supported_*_configs()`, que en WASAPI
+  **activa un `IAudioClient` por endpoint** + `GetMixFormat` + varios `IsFormatSupported` — dos
+  enumeraciones completas con activación de TODOS los endpoints por tick, incluido el de captura de un
+  headset BT (lo que `bluetooth_guard.rs` existe para evitar). El tick usa ahora
+  `snapshot_device_names` → `platform::snapshot_active_endpoints` (sólo property store +
+  `IMMEndpoint::GetDataFlow`, en `spawn_blocking`); `ComScope`/`read_string_property` pasan a
+  `devices/platform/wasapi_com.rs`, compartidos con el guard. **Ni intervalo de 30 s ni callbacks**:
+  los umbrales de desconexión se cuentan en ciclos y fijan la latencia del toast y de la
+  auto-reconexión; el ahorro vino de abaratar el tick (~1-2 ms). Lógica del tick pura y con tests.
+  Bonus: el primer tick ya no emite `DeviceListChanged` (comparaba contra una lista vacía → toast
+  "Cambio en dispositivos de audio" en cada grabación manual). Detalle en `CLAUDE.md` §
+  *Convenciones → Sondeo del monitor de dispositivos*.
 
 ### #18 · El concat final de ffmpeg corre síncrono dentro de una función async
-`Bajo` · CPU · Post · esfuerzo S · no cambia por lote · abierto
+`Bajo` · CPU · Post · esfuerzo S · no cambia por lote · **CERRADO** `475e071`
 
 - **Impacto**: bloquea un worker de tokio durante todo el concat en cada rotación; con 8 hilos se
   disimula, con 2-4 se nota en el resto de tareas.
 - **Dónde**: `audio/incremental_saver.rs:233-240` (`Command::output()` en `async fn`) · `:157-165`
   (spin-wait de 50 ms hasta `pending = 0`).
-- **Cambio**: `tokio::process::Command` o `spawn_blocking`; sustituir el spin-wait por un `Notify`.
-- **Riesgo**: ninguno. *(Anotado también en `CLAUDE.md` al cerrar #08.)*
+- **Cambio aplicado** (2026-09-08): `run_ffmpeg_concat` con `tokio::process::Command` (stdin nulo +
+  `-nostdin` porque el `output()` de tokio no anula stdin; `kill_on_drop`) para `merge_checkpoints` y
+  `recover_audio_from_checkpoints`; flags en `concat_args`, pura y con golden test. El spin-wait no se
+  cambió por un `Notify` sino por el permiso de `encode_slots` que #08 ya había introducido (sostenerlo
+  ⇔ ningún encode en vuelo), con `timeout_at` y UNA fecha límite de 300 s que cubre también el flush
+  del último tramo — que hasta ahora esperaba SIN timeout. `pending_encodes`/`PendingGuard`
+  eliminados. Detalle en `CLAUDE.md` § *Rendimiento de Audio* (blockquote de #08).
 
 ### #19 · ONNX Runtime escribe a nivel INFO y es del 35 al 64 % del log
 `Medio` · Disco/CPU · Jornada/Arranque · esfuerzo S · verificado · **se encoge por lote** · abierto
