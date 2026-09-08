@@ -62,8 +62,8 @@ exactamente lo cerrado. La tabla de abajo es una foto del estado; la verdad es l
 | 17 | El monitor re-enumera endpoints WASAPI cada 5 s | Bajo | CPU | Jornada | S | = | **cerrado** `475e071` |
 | 18 | El concat final de ffmpeg corre síncrono en una `async fn` | Bajo | CPU | Post | S | = | **cerrado** `475e071` |
 | 19 | ONNX Runtime escribe a INFO: 35-64 % del log | Medio | Disco/CPU | Jornada/Arranque | S | ↓ | abierto |
-| 20 | `reqwest::Client` se construye por request en ~20 sitios | Bajo | CPU/Red | Post/Jornada | S | = | abierto |
-| 21 | `System::new_all()` para un procesador que nadie invoca | Bajo | RAM/CPU | Arranque | S | = | abierto |
+| 20 | `reqwest::Client` se construye por request en ~20 sitios | Bajo | CPU/Red | Post/Jornada | S | = | **cerrado** `9b6879c` |
+| 21 | `System::new_all()` para un procesador que nadie invoca | Bajo | RAM/CPU | Arranque | S | = | **cerrado** `37c6e7c` |
 | 22 | La presión de memoria se observa pero no se actúa | Alto | RAM | Jornada/Post | M | = | abierto |
 | 23 | Las ventanas auxiliares cargan el grafo del layout raíz | Bajo | RAM/CPU | Arranque/Jornada | M | = | abierto |
 | 24 | Bundle de arranque de 2.1 MB con librerías pesadas | Bajo | RAM/CPU/Disco | Arranque | M | = | abierto |
@@ -445,7 +445,7 @@ Ordenados por impacto estimado en RAM, luego CPU, luego disco y red.
 - **Riesgo**: ninguno; la diagnosticabilidad mejora porque las líneas propias dejan de ahogarse.
 
 ### #20 · `reqwest::Client` se construye por request en unos 20 sitios
-`Bajo` · CPU/Red · Post/Jornada · esfuerzo S · verificado · no cambia por lote · abierto
+`Bajo` · CPU/Red · Post/Jornada · esfuerzo S · verificado · no cambia por lote · **CERRADO** `9b6879c`
 
 - **Impacto**: cada construcción enumera y parsea el root store de Windows (100-300 certificados) y tira
   el pool: 5-30 ms de CPU, ~1 MB transitorio y un handshake TLS completo por request. Un cierre de
@@ -455,12 +455,23 @@ Ordenados por impacto estimado en RAM, luego CPU, luego disco y red.
   `logging/incident.rs:416`.
 - **Qué pasa**: el patrón correcto **ya existe** en `coach/commands.rs:50`
   (`static HTTP_CLIENT: Lazy<Client>`).
-- **Cambio**: un `pub static HTTP: Lazy<reqwest::Client>` con timeout de 30 s en `api/mod.rs`,
-  compartido por drain, executors, session, finalize, retry e incident.
-- **Riesgo**: ninguno; reqwest cierra las conexiones ociosas a los 90 s.
+- **Cambio aplicado** (2026-09-08): `api/http.rs` → `pub static HTTP: Lazy<reqwest::Client>` con
+  timeout total de 30 s, re-exportado como `crate::api::HTTP`. Lo usan los siete sitios de arriba más
+  `api/regenerate_minutes.rs`, `deepgram_commands.rs`, `api/client.rs` y los tres de `api/endpoints.rs`
+  (12 sitios; de 26 construcciones quedan 14, todas deliberadas). **El "timeout de 30 s" plano de este
+  hallazgo estaba mal para `finalize`**: el handler de la nube (`api/conversations.ts`) corre DOS LLM
+  síncronos dentro del request (`processLongTranscript` para título/overview y luego
+  `extractMemoriesFromTranscript`) y cobra la cuota (`recordUsage`) antes de responder; con 30 s el job
+  quedaba en `retrying` y el reintento cobraba la unidad otra vez. Lleva override por request de 300 s
+  (`FINALIZE_TIMEOUT`, tope de Vercel Fluid) — `RequestBuilder::timeout` sobreescribe el del cliente
+  sólo para ese request; `regenerate_minutes` conserva sus 180 s. Fuera a propósito (allow-list):
+  descargas de modelos (perfil 1 h + `tcp_nodelay`), Ollama (localhost, timeouts por request),
+  OpenRouter (`blocking`), y los LLM del coach y del resumen (sin timeout). Fitness test
+  `solo_los_sitios_permitidos_construyen_un_client` recorre `src/` y falla ante una construcción nueva
+  fuera de la lista o una entrada obsoleta. Sigue cierto que reqwest cierra las ociosas a los 90 s.
 
 ### #21 · `System::new_all()` completo al construir la app para un procesador que nadie invoca
-`Bajo` · RAM/CPU · Arranque · esfuerzo S · verificado · no cambia por lote · abierto
+`Bajo` · RAM/CPU · Arranque · esfuerzo S · verificado · no cambia por lote · **CERRADO** `37c6e7c`
 
 - **Impacto**: 1-5 MB retenidos toda la vida del proceso (entornos y cmdlines de 250-400 procesos) y
   50-200 ms de arranque; el mismo patrón en `builtin_ai_get_recommended_model` solo para leer la RAM
@@ -468,9 +479,18 @@ Ordenados por impacto estimado en RAM, luego CPU, luego disco y red.
 - **Dónde**: `lib.rs:669` → `whisper_engine/system_monitor.rs:46-47` ·
   `summary/summary_engine/commands.rs:387` · frontend: cero call sites de
   `initialize_parallel_processor` / `get_system_resources`.
-- **Cambio**: quitar el estado del `manage()` o hacer el monitor perezoso; `System::new()` +
-  `refresh_memory()` para la RAM total, como ya hace `hardware_detector.rs:130`.
-- **Riesgo**: ninguno: inalcanzable o one-shot.
+- **Cambio aplicado** (2026-09-08): ni "perezoso" ni sólo quitar el `manage()`: se **borraron**
+  `whisper_engine/{system_monitor,parallel_processor,parallel_commands}.rs` (1,032 líneas, con un
+  `AudioChunk` duplicado del de `audio::recording_state`), el `manage()` y las 11 entradas del
+  `generate_handler!` — los 11 comandos tenían cero call sites en el frontend (grep por cada nombre) y
+  el módulo sólo se referenciaba a sí mismo. Recuperables de git. La RAM total sale del
+  `HardwareProfile` cacheado (`OnceLock`, respeta `MEMORY_GB`), como ya hacía
+  `summary_engine::models:271`: una sola fuente para el tier y el modelo recomendado, cero syscalls
+  tras la primera lectura. Bonus: `logging/commands.rs:189` (`generate_system_info`, export de logs y
+  bundle de incidente) era el tercer `new_all()` del crate y no estaba anotado; ahora pide sólo RAM +
+  lista de CPUs con `new_with_specifics` (verificado en sysinfo 0.32.1 que `refresh_cpu_specifics`
+  inicializa la lista desde un `System::new()` vacío en Windows/macOS/Linux). No queda ningún
+  `new_all()` ni `refresh_all()` en el crate. CLAUDE.md actualizado (3 menciones).
 
 ### #22 · La presión de memoria se observa pero nunca se actúa sobre ella
 `Alto` · RAM · Jornada/Post · esfuerzo M · verificado · no cambia por lote · abierto
