@@ -67,8 +67,8 @@ exactamente lo cerrado. La tabla de abajo es una foto del estado; la verdad es l
 | 22 | La presión de memoria se observa pero no se actúa | Alto | RAM | Jornada/Post | M | = | abierto |
 | 23 | Las ventanas auxiliares cargan el grafo del layout raíz | Bajo | RAM/CPU | Arranque/Jornada | M | = | abierto |
 | 24 | Bundle de arranque de 2.1 MB con librerías pesadas | Bajo | RAM/CPU/Disco | Arranque | M | = | abierto |
-| 25 | El logging diagnóstico escribe por IPC en cada poll | Bajo | Disco/CPU | Post | S | = | abierto |
-| 26 | `sync_queue` nunca se poda | Bajo | Disco | Post | S | = | abierto |
+| 25 | El logging diagnóstico escribe por IPC en cada poll | Bajo | Disco/CPU | Post | S | = | **cerrado** `3793da7` |
+| 26 | `sync_queue` nunca se poda | Bajo | Disco | Post | S | = | **cerrado** `a783644` |
 | 27 | Audio AAC 192 kbps y ningún borrado: 0.7 GB/día | Medio | Disco | Jornada/Post | S | = | **cerrado** `f52472d` |
 | 28 | Pool de SQLite sin ajustar | Bajo | RAM/Disco | Post | S | = | abierto |
 | 29 | Gemma 1B se descarga sin consumidor | Bajo | Disco/Red | Arranque | S | ✗ | abierto |
@@ -530,16 +530,28 @@ Ordenados por impacto estimado en RAM, luego CPU, luego disco y red.
   `/meeting-details` con su árbol; una sola familia tipográfica. **Riesgo**: bajo.
 
 ### #25 · El logging diagnóstico escribe al log de Rust por IPC en cada tick de poll
-`Bajo` · Disco/CPU · Post · esfuerzo S · no cambia por lote · abierto
+`Bajo` · Disco/CPU · Post · esfuerzo S · no cambia por lote · **CERRADO** `3793da7`
 
 - **Impacto**: ~60 IPC y 60 líneas por minuto con un detalle en procesado abierto; también en cada
   UPDATE de Realtime.
 - **Dónde**: `lib/diagnostics.ts:28-33` (`logPoll` = console.log + `fileLogger.info` → invoke) ·
   `features/conversations/hooks/useConversationLive.ts:60`, `:63`, `:97`.
 - **Cambio**: muestrear `logPoll` o dejarlo tras una preferencia de debug. **Riesgo**: ninguno.
+- **Cierre (08-sep)**: la causa era más ancha que "cada tick": TanStack 5.90 evalúa la **función**
+  `refetchInterval` en `setOptions()` (que `useBaseQuery` llama en un `useEffect` en cada render) y en
+  cada cambio de estado de la query, así que eran ≥4 IPC por poll de 3 s más una por re-render.
+  Se muestreó, no se gateó: `logPollIfChanged(key, event, data, signature)` en `lib/diagnostics.ts`
+  emite sólo si la firma cambia o si pasó el latido de 60 s (`heartbeat: true`, `suppressed: n`),
+  aplicado a `refetchInterval_eval` (sin `fetch_status` en la firma), `queryFn_success`/`_error`
+  (`queryFn_start` se eliminó; su timing viaja como `elapsed_ms`) y `realtime_update` (firma =
+  `analysis_status`, así el heartbeat de la nube cada 30 s se colapsa). Los eventos one-shot
+  (`stalled_*`, `watchdog_*`) siguen incondicionales. Un poll atorado se lee como latidos de
+  `refetchInterval_eval` sin `queryFn_success` entre medio. Se descartó la preferencia de debug: no
+  existe ninguna hoy y un gate apagado por default silenciaría la traza que existe para cazar el bug
+  intermitente en producción. Tests en `lib/diagnostics.test.ts`.
 
 ### #26 · `sync_queue` nunca se poda: cada job completado conserva su payload completo
-`Bajo` · Disco · Post · esfuerzo S · verificado · no cambia por lote · abierto
+`Bajo` · Disco · Post · esfuerzo S · verificado · no cambia por lote · **CERRADO** `a783644`
 
 - **Impacto**: en la DB de desarrollo 37 jobs retienen 606 KB de 1.67 MB (36 %); un usuario de jornada
   crea ~24 jobs/día: 50-100 MB al año, más los backups con `VACUUM INTO`.
@@ -548,6 +560,28 @@ Ordenados por impacto estimado en RAM, luego CPU, luego disco y red.
 - **Cambio**: llamar `cleanup_old_completed(pool, 7)` tras `reset_stale_jobs` o una vez al día desde el
   sweep del worker.
 - **Riesgo**: mantener 7 días: `sync_queue_get_finalize_result` lee `result_data` de jobs recientes.
+- **CORRECCIÓN al remedio (08-sep)**: `cleanup_old_completed` era un `DELETE`, y llamarlo con 7 días
+  habría roto tres cosas que dependen de las filas completadas: (1) el barrido de audio de **#27**
+  exige un `finalize_conversation` completado con `completed_at` ≥ `audio_retention_days` (default
+  30) → sin la fila, cero candidatas para siempre; (2) `api_get_meetings_overview::sync_states`
+  deriva `sync_state` del `MAX(status)` y lee el badge "Cuota agotada" del `result_data` del
+  finalize; (3) un `finalize` diferido por cuota (`defer_job`, semanas en el piloto Dingler) necesita
+  el `result_data` de su padre — con la FK `ON DELETE SET NULL`, borrar al padre lo vuelve "listo"
+  sin `conversation_id` → `validation:` permanente y esa conversación no se finaliza nunca. Lo que
+  pesa es el `payload` (`transcript_text` en `save_conversation`, `segments` en
+  `save_transcript_segments`), no la fila ni el `result_data` (que es chico: `{"conversation_id"}` o
+  la `FinalizeResponse`, **no** la respuesta con el análisis). Y `payload` sólo lo lee `execute()`
+  para jobs `pending → in_progress`: un completado nunca se re-ejecuta.
+- **Cierre (08-sep)**: `SyncQueueRepository::trim_completed_payloads(pool, 7)` hace `UPDATE … SET
+  payload='{}'` sobre los `completed` de ≥7 días (idempotente por `payload <> '{}'`) y conserva
+  fila, `status`, `completed_at`, `result_data` y `depends_on`; `cleanup_old_completed` se
+  **borró**. Corre desde `database/maintenance.rs` (tarea propia, molde `audio_retention.rs`: 120 s
+  de retraso y luego cada 24 h) — ni en el `block_on` del arranque (hilo principal) ni en el tick del
+  worker (se gatea por sesión y esto no necesita usuario). El riesgo anotado arriba desaparece
+  porque `result_data` no se toca. SQLite reutiliza las páginas: el archivo deja de crecer, no se
+  encoge; los backups con `VACUUM INTO` sí. Tests: `trim_*` en `sync_queue.rs` (incluido el que un
+  `DELETE` reprobaría: hijo diferido por cuota sigue resolviendo el `conversation_id` del padre) y
+  `la_poda_de_payloads_no_borra_lo_que_lee_la_lista` en `meetings_overview.rs`.
 
 ### #27 · Audio AAC estéreo a 192 kbps para voz, y ningún borrado: 0.7 GB por día que se quedan
 `Medio` · Disco · Jornada/Post · esfuerzo S · verificado · no cambia por lote · **CERRADO** `f52472d`
