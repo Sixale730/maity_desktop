@@ -61,8 +61,9 @@ struct RetryAnalysisRequest {
 /// Re-dispara el análisis de `conversation_id` en la nube.
 ///
 /// El endpoint marca la fila `processing` y despacha el análisis de forma
-/// asíncrona, así que la respuesta llega enseguida: no hace falta el timeout
-/// largo de `regenerate_minutes` (ahí sí corre un LLM dentro del request).
+/// asíncrona, así que la respuesta llega enseguida: basta el timeout por
+/// defecto de 30 s de `api::HTTP`, sin el override largo de `finalize` o
+/// `regenerate_minutes` (ahí sí corre un LLM dentro del request).
 ///
 /// # Arguments
 /// * `conversation_id` - UUID de la conversación en omi_conversations
@@ -74,15 +75,13 @@ pub async fn retry_analysis_cloud(
 ) -> Result<RetryAnalysisResponse, String> {
     info!("Calling retry_analysis for conversation: {}", conversation_id);
 
-    let client = reqwest::Client::new();
-    let response = client
+    let response = crate::api::HTTP
         .post("https://www.maity.cloud/api/conversations")
         .header("Authorization", format!("Bearer {}", access_token))
         .json(&RetryAnalysisRequest {
             action: "retry_analysis".to_string(),
             conversation_id: conversation_id.clone(),
         })
-        .timeout(std::time::Duration::from_secs(30))
         .send()
         .await
         .map_err(|e| {

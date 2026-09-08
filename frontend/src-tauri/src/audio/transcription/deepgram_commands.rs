@@ -122,8 +122,7 @@ pub async fn fetch_deepgram_proxy_config(access_token: String) -> Result<Deepgra
     info!("Fetching Deepgram proxy config from Vercel API...");
 
     // Make the HTTP request from Rust (no CORS restrictions)
-    let client = reqwest::Client::new();
-    let response = client
+    let response = crate::api::HTTP
         .get("https://www.maity.cloud/api/deepgram-token")
         .header("Authorization", format!("Bearer {}", access_token))
         .send()

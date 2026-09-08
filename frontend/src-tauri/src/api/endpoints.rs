@@ -807,7 +807,7 @@ pub async fn test_backend_connection<R: Runtime>(
 ) -> Result<String, String> {
     log_debug!("Testing backend connection...");
 
-    let client = reqwest::Client::new();
+    let client: &reqwest::Client = &super::HTTP;
     let server_url = get_server_address(&app).await?;
 
     log_debug!("Testing connection to: {}", server_url);
@@ -849,7 +849,7 @@ pub async fn debug_backend_connection<R: Runtime>(app: AppHandle<R>) -> Result<S
     };
 
     // Test 2: Make a simple HTTP request to the backend
-    let client = reqwest::Client::new();
+    let client: &reqwest::Client = &super::HTTP;
     let test_url = format!("{}/docs", server_url); // Try the docs endpoint which should be public
 
     log_debug!("Testing connection to: {}", test_url);
@@ -1041,15 +1041,13 @@ pub async fn api_test_custom_openai_connection<R: Runtime>(
         "max_tokens": 5
     });
 
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
-        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
-
-    let mut request = client
+    // Timeout explícito por request: el endpoint lo configura el usuario y la
+    // prueba no debe colgar la UI de Ajustes.
+    let mut request = super::HTTP
         .post(&url)
         .header("Content-Type", "application/json")
-        .json(&test_request);
+        .json(&test_request)
+        .timeout(std::time::Duration::from_secs(30));
 
     // Add authorization if API key provided
     if let Some(key) = api_key.filter(|k| !k.trim().is_empty()) {

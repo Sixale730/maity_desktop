@@ -59,8 +59,7 @@ pub async fn regenerate_minutes_cloud(
         conversation_id
     );
 
-    let client = reqwest::Client::new();
-    let response = client
+    let response = crate::api::HTTP
         .post("https://www.maity.cloud/api/conversations")
         .header("Authorization", format!("Bearer {}", access_token))
         .json(&RegenerateMinutesRequest {
@@ -68,7 +67,8 @@ pub async fn regenerate_minutes_cloud(
             conversation_id: conversation_id.clone(),
         })
         // LLM call inside — Vercel Fluid Compute allows up to 300s. Keep
-        // client-side slack above what the server budgets internally.
+        // client-side slack above what the server budgets internally. Este
+        // timeout por request sobreescribe el default de 30 s de `api::HTTP`.
         .timeout(std::time::Duration::from_secs(180))
         .send()
         .await

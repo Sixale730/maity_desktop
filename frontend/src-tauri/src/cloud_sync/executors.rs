@@ -273,7 +273,7 @@ pub async fn execute_save_conversation<R: Runtime>(
         )
     };
 
-    let response = reqwest::Client::new()
+    let response = crate::api::HTTP
         .post(&url)
         .header("apikey", anon_key.as_str())
         .header("Authorization", format!("Bearer {}", token))
@@ -337,7 +337,7 @@ pub async fn execute_save_transcript_segments<R: Runtime>(
     let (base_url, anon_key, token) = auth_context(app).await?;
     let url = format!("{}/rest/v1/omi_transcript_segments", base_url);
 
-    let response = reqwest::Client::new()
+    let response = crate::api::HTTP
         .post(&url)
         .header("apikey", anon_key.as_str())
         .header("Authorization", format!("Bearer {}", token))

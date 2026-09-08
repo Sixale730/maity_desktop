@@ -97,6 +97,15 @@ pub(crate) fn parse_quota_403(body: &str) -> Option<String> {
     )
 }
 
+/// Timeout del request de finalize, por encima del default de 30 s de
+/// `api::HTTP`. **NO bajarlo**: la nube corre DOS LLM síncronos dentro del
+/// request (título/overview vía `processLongTranscript`, y después
+/// `extractMemoriesFromTranscript`) y cobra la cuota (`recordUsage`) antes de
+/// responder. Un cliente que corte antes deja el job en `retrying`; el
+/// siguiente intento vuelve a cobrar la unidad y regenera las memorias.
+/// 300 s es el tope de Vercel Fluid Compute: más allá la nube ya contestó 504.
+const FINALIZE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+
 /// Request body for the consolidated conversations endpoint
 #[derive(Debug, Serialize)]
 struct FinalizeRequest {
@@ -142,8 +151,7 @@ pub async fn finalize_impl(
         conversation_id, duration_seconds, recording_mode
     );
 
-    let client = reqwest::Client::new();
-    let response = client
+    let response = crate::api::HTTP
         .post("https://www.maity.cloud/api/conversations")
         .header("Authorization", format!("Bearer {}", access_token))
         .json(&FinalizeRequest {
@@ -152,6 +160,7 @@ pub async fn finalize_impl(
             duration_seconds,
             recording_mode,
         })
+        .timeout(FINALIZE_TIMEOUT)
         .send()
         .await
         .map_err(|e| {

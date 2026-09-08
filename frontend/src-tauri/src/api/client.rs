@@ -48,7 +48,7 @@ pub async fn make_api_request<R: Runtime, T: for<'de> Deserialize<'de>>(
     additional_headers: Option<HashMap<String, String>>,
     auth_token: Option<String>, // Pass auth token from frontend
 ) -> Result<T, String> {
-    let client = reqwest::Client::new();
+    let client: &reqwest::Client = &super::HTTP;
     let server_url = get_server_address(app).await?;
 
     let url = format!("{}{}", server_url, endpoint);

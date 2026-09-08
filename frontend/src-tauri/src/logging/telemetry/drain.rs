@@ -90,11 +90,13 @@ async fn drain_once<R: Runtime>(app: &AppHandle<R>) {
     // NO lleva `Content-Profile: maity`; ese header es para las TABLAS de
     // executors.rs. public es el profile default de PostgREST.
     let url = format!("{}/rest/v1/rpc/insert_platform_log", base_url);
-    let client = reqwest::Client::new();
+    // Cliente compartido (#20 de la auditoría): antes se construía uno por
+    // tick, con su enumeración del root store y su handshake TLS.
+    let client: &reqwest::Client = &crate::api::HTTP;
 
     let mut synced_ids: Vec<i64> = Vec::new();
     for row in &rows {
-        match post_row(&client, &url, &session.anon_key, &token, row).await {
+        match post_row(client, &url, &session.anon_key, &token, row).await {
             Ok(()) => synced_ids.push(row.id),
             Err(status) if status == 401 || status == 403 => {
                 // Token rechazado: cortar el lote entero; el siguiente tick

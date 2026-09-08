@@ -207,7 +207,7 @@ async fn refresh<R: Runtime>(
     );
     info!("cloud_sync: refrescando sesión Supabase (headless)");
 
-    let response = reqwest::Client::new()
+    let response = crate::api::HTTP
         .post(&endpoint)
         .header("apikey", current.anon_key.as_str())
         .header("Content-Type", "application/json")

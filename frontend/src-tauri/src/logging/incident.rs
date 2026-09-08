@@ -413,18 +413,17 @@ pub async fn upload_incident_bundle<R: Runtime>(
         path
     );
 
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(UPLOAD_TIMEOUT_SECS))
-        .build()
-        .map_err(|e| format!("HTTP client: {}", e))?;
     let bytes = body.len();
-    let response = client
+    let response = crate::api::HTTP
         .post(&url)
         .header("apikey", &session.anon_key)
         .bearer_auth(&token)
         .header("Content-Type", "text/plain; charset=utf-8")
         .header("x-upsert", "false")
         .body(body)
+        // Explícito aunque coincida con el default del cliente compartido: es
+        // el contrato del bundle (una subida acotada, sin reintentos).
+        .timeout(std::time::Duration::from_secs(UPLOAD_TIMEOUT_SECS))
         .send()
         .await
         .map_err(|e| format!("Sin conexión con el servidor ({})", e))?;
