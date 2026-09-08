@@ -49,6 +49,33 @@ pub async fn list_audio_devices() -> Result<Vec<AudioDevice>> {
     Ok(devices)
 }
 
+/// Snapshot LIGERO de los dispositivos activos (nombre + tipo), para sondeos
+/// periódicos como el del monitor de dispositivos.
+///
+/// En Windows NO pasa por cpal: `list_audio_devices()` → `input_devices()` /
+/// `output_devices()` activan el `IAudioClient` de cada endpoint (ver
+/// `platform::snapshot_active_endpoints`), y hacerlo cada 5 s durante toda la
+/// jornada era el hallazgo #17 de la auditoría de recursos. Aquí se lee sólo el
+/// property store, en `spawn_blocking` porque es COM síncrono (~1-2 ms, pero es
+/// la misma higiene que exige #18). Fuera de Windows la enumeración de cpal es
+/// barata y se reusa tal cual.
+///
+/// NO sustituye a `list_audio_devices()` donde haga falta el `cpal::Device`
+/// real (arranque, `switch_audio_device`, IPC `get_audio_devices`).
+pub async fn snapshot_device_names() -> Result<Vec<AudioDevice>> {
+    #[cfg(target_os = "windows")]
+    {
+        tokio::task::spawn_blocking(platform::snapshot_active_endpoints)
+            .await
+            .map_err(|e| anyhow::anyhow!("device snapshot task panicked: {e}"))?
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        list_audio_devices().await
+    }
+}
+
 /// Probe honesta del micrófono: abre y suelta un stream de captura corto.
 ///
 /// `None` = el micrófono está listo. `Some(err)` = falla clasificada.

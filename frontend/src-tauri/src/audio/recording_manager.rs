@@ -256,8 +256,12 @@ impl RecordingManager {
     pub async fn stop_streams_and_force_flush(&mut self) -> Result<()> {
         info!("🚀 Stopping recording streams with IMMEDIATE pipeline flush");
 
-        // CRITICAL: Stop device monitor FIRST to prevent continuous WASAPI polling on Windows
-        // This fixes the slow shutdown issue where device enumeration runs for 90+ seconds
+        // Parar el monitor PRIMERO, para que ningún sondeo se cruce con el
+        // teardown de los streams. Hasta sep-2026 esto era además un parche: el
+        // sondeo enumeraba con cpal y activaba el IAudioClient de cada endpoint,
+        // lo que alargaba el cierre "90+ s". Hoy el snapshot lee sólo el property
+        // store (#17 de la auditoría de recursos) y este orden es simplemente el
+        // correcto.
         if let Some(ref mut monitor) = self.device_monitor {
             info!("Stopping device monitor first...");
             monitor.stop_monitoring().await;

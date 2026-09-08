@@ -5,6 +5,15 @@ use log::{debug, info, warn};
 use crate::audio::devices::configuration::{AudioDevice, DeviceType};
 use crate::audio::devices::device_name_matcher::is_same_device;
 
+use super::wasapi_com::{read_string_property, ComScope};
+use windows::core::Interface;
+use windows::Win32::Devices::FunctionDiscovery::PKEY_Device_FriendlyName;
+use windows::Win32::Media::Audio::{
+    eAll, eCapture, EDataFlow, IMMDevice, IMMDeviceEnumerator, IMMEndpoint, MMDeviceEnumerator,
+    DEVICE_STATE_ACTIVE,
+};
+use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_ALL};
+
 /// Open a CPAL input device and pick the best available stream config.
 /// Preference order: F32 stereo → any F32 → first config.
 fn open_input_device(
@@ -272,4 +281,69 @@ pub fn get_windows_device(audio_device: &AudioDevice) -> Result<(cpal::Device, c
     }
 
     Err(anyhow!("Device not found or no compatible configuration available: {}", audio_device.name))
+}
+
+/// Dirección (captura/render) de un endpoint, vía `IMMEndpoint`. No activa nada.
+unsafe fn data_flow_of(device: &IMMDevice) -> windows::core::Result<EDataFlow> {
+    let endpoint: IMMEndpoint = device.cast()?;
+    endpoint.GetDataFlow()
+}
+
+/// Snapshot de los endpoints ACTIVOS de WASAPI (nombre + dirección) leyendo
+/// SOLO el property store: **nunca activa el `IAudioClient`** de ningún endpoint.
+///
+/// Existe porque `list_audio_devices()` no sirve para un sondeo periódico: en
+/// cpal 0.15 `input_devices()`/`output_devices()` filtran con
+/// `supported_input/output_configs()`, y en WASAPI eso activa un `IAudioClient`
+/// por endpoint y hace `GetMixFormat` + varios `IsFormatSupported`. El monitor
+/// de dispositivos pagaba DOS enumeraciones completas con activación de todos
+/// los endpoints cada 5 s durante toda la jornada (#17 de la auditoría de
+/// recursos) — y activaba 720 veces por hora el endpoint de captura de un
+/// headset BT, justo lo que `bluetooth_guard.rs` existe para evitar.
+///
+/// El nombre es `PKEY_Device_FriendlyName`, la MISMA propiedad que lee
+/// `cpal::Device::name()`, así que coincide byte a byte con lo que devuelve
+/// `list_audio_devices()` y `switch_audio_device` sigue casando con `==`. Un
+/// endpoint sin nombre o sin dirección legible se omite (no es un error).
+pub fn snapshot_active_endpoints() -> Result<Vec<AudioDevice>> {
+    // PRIMER local a propósito: Rust suelta en orden inverso, así que el scope
+    // COM sobrevive a la colección y a cada IMMDevice/IMMEndpoint de abajo. Sólo
+    // salen `String`s, nada COM escapa de la función.
+    let _com = ComScope::enter();
+    unsafe {
+        let enumerator: IMMDeviceEnumerator = CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
+            .map_err(|e| anyhow!("No se pudo crear el enumerador WASAPI: {e:?}"))?;
+        let collection = enumerator
+            .EnumAudioEndpoints(eAll, DEVICE_STATE_ACTIVE)
+            .map_err(|e| anyhow!("No se pudieron enumerar los endpoints activos: {e:?}"))?;
+        let count = collection
+            .GetCount()
+            .map_err(|e| anyhow!("No se pudo contar los endpoints activos: {e:?}"))?;
+
+        let mut devices = Vec::with_capacity(count as usize);
+        for i in 0..count {
+            let Ok(device) = collection.Item(i) else {
+                continue;
+            };
+            let Some(name) = read_string_property(&device, &PKEY_Device_FriendlyName) else {
+                debug!("snapshot_active_endpoints: endpoint {i} sin FriendlyName, se omite");
+                continue;
+            };
+            let flow = match data_flow_of(&device) {
+                Ok(flow) => flow,
+                Err(e) => {
+                    debug!("snapshot_active_endpoints: '{name}' sin data flow ({e:?}), se omite");
+                    continue;
+                }
+            };
+            let device_type = if flow == eCapture {
+                DeviceType::Input
+            } else {
+                DeviceType::Output
+            };
+            devices.push(AudioDevice::new(name, device_type));
+        }
+
+        Ok(devices)
+    }
 }

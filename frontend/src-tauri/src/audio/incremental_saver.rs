@@ -1,14 +1,24 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::Duration;
 use anyhow::{Result, anyhow};
 use log::{info, warn, error};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio::time::{timeout_at, Instant};
 use super::encode::encode_single_audio;
 use super::recording_state::AudioChunk;
 use serde::{Serialize, Deserialize};
 
 use super::ffmpeg::find_ffmpeg_path;
+
+/// Tope para que `finalize()` deje de esperar al encode en vuelo. Cubre las DOS
+/// esperas (el flush del último tramo y la barrera previa al merge) con una sola
+/// fecha límite: antes el flush esperaba el permiso SIN timeout y sólo el
+/// spin-wait posterior tenía los 300 s, así que un ffmpeg colgado congelaba
+/// `finalize()` antes de llegar siquiera ahí.
+const FINALIZE_ENCODE_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Incremental audio saver that writes checkpoints every 30 seconds
 /// to minimize memory usage and enable crash recovery
@@ -23,7 +33,6 @@ pub struct IncrementalAudioSaver {
     checkpoint_buffer: Vec<f32>,
     checkpoint_interval_samples: usize,  // 30s at 48kHz = 1,440,000 samples (per channel)
     checkpoint_count: u32,
-    pending_encodes: Arc<AtomicU32>,  // background encodes still in flight
     encode_errors: Arc<AtomicU32>,
     /// Acota a 1 el número de encodes de checkpoint en vuelo a la vez. Sin
     /// esto, un encode lento (máquina cargada) dejaba que los checkpoints se
@@ -31,6 +40,10 @@ pub struct IncrementalAudioSaver {
     /// con su propio proceso ffmpeg y sus ~23MB de buffer. Es POR SAVER, no
     /// un `OnceLock` global: solo hay un saver vivo a la vez y así los tests
     /// no comparten estado entre sí.
+    ///
+    /// Es también la ÚNICA señal de "hay un encode en vuelo": cada encode
+    /// retiene el permiso hasta que su closure termina, así que `finalize()`
+    /// espera el permiso en vez de sondear un contador aparte (#18).
     encode_slots: Arc<Semaphore>,
     /// Momento en que el flush quedo diferido por falta de permiso, o `None`
     /// si no lo esta. Es un LATCH para el log, no estado funcional: sin el,
@@ -69,7 +82,6 @@ impl IncrementalAudioSaver {
             checkpoint_buffer: Vec::with_capacity(checkpoint_interval_samples),
             checkpoint_interval_samples,
             checkpoint_count: 0,
-            pending_encodes: Arc::new(AtomicU32::new(0)),
             encode_errors: Arc::new(AtomicU32::new(0)),
             encode_slots: Arc::new(Semaphore::new(1)),
             deferred_since: None,
@@ -108,8 +120,11 @@ impl IncrementalAudioSaver {
     /// Lanza el encode en el pool blocking de tokio con el buffer ya tomado
     /// y el permiso del semáforo ya en mano. El FFmpeg encode toma 1-4s en
     /// máquinas cargadas; correrlo inline bloquearía un worker de tokio (y el
-    /// AsyncMutex del saver) ese tiempo cada 30s. `finalize()` espera
-    /// `pending_encodes` antes de mergear.
+    /// AsyncMutex del saver) ese tiempo cada 30s. El permiso vive DENTRO del
+    /// closure y se suelta al terminar por cualquier camino (también al
+    /// desenrollar un panic: `spawn_blocking` lo captura y suelta los locales),
+    /// así que "permiso libre" ⇔ "ningún encode en vuelo" — es lo que
+    /// `finalize()` espera antes de mergear.
     fn dispatch_checkpoint_encode(&mut self, buf: Vec<f32>, permit: OwnedSemaphorePermit) {
         let checkpoint_path = self.checkpoints_dir
             .join(format!("audio_chunk_{:03}.mp4", self.checkpoint_count));
@@ -118,22 +133,12 @@ impl IncrementalAudioSaver {
 
         let sample_rate = self.sample_rate;
         let channels = self.channels;
-        let pending = self.pending_encodes.clone();
         let errors = self.encode_errors.clone();
-        pending.fetch_add(1, Ordering::SeqCst);
 
         tokio::task::spawn_blocking(move || {
-            // Decrementa pending_encodes Y suelta el permiso del semáforo
-            // incluso si el encode entra en pánico (el permit vive dentro
-            // del guard, así que su Drop libera el slot para el siguiente
-            // checkpoint).
-            struct PendingGuard(Arc<AtomicU32>, #[allow(dead_code)] OwnedSemaphorePermit);
-            impl Drop for PendingGuard {
-                fn drop(&mut self) {
-                    self.0.fetch_sub(1, Ordering::SeqCst);
-                }
-            }
-            let _guard = PendingGuard(pending, permit);
+            // Retenido hasta el final del closure: libera el slot para el
+            // siguiente checkpoint y destraba la barrera de `finalize()`.
+            let _permit = permit;
 
             match encode_single_audio(
                 bytemuck::cast_slice(&buf),
@@ -200,26 +205,34 @@ impl IncrementalAudioSaver {
         self.dispatch_checkpoint_encode(buf, permit);
     }
 
+    /// Espera el único permiso del semáforo hasta `deadline`. Tenerlo en mano
+    /// demuestra que el encode anterior terminó (su closure lo retenía).
+    async fn acquire_encode_slot(&self, deadline: Instant, what: &str) -> Result<OwnedSemaphorePermit> {
+        match timeout_at(deadline, self.encode_slots.clone().acquire_owned()).await {
+            Ok(Ok(permit)) => Ok(permit),
+            // Solo ocurre si el semáforo se cerrara explícitamente (nunca lo hacemos).
+            Ok(Err(_)) => Err(anyhow!("encode_slots semaphore closed unexpectedly during finalize")),
+            Err(_) => Err(anyhow!(
+                "Timed out waiting for the in-flight checkpoint encode to finish ({what})"
+            )),
+        }
+    }
+
     /// Versión forzada para `finalize()`: espera (await) el permiso en vez
     /// de solo intentarlo. Sin este flush forzado, el último checkpoint de
     /// la grabación podría quedar diferido para siempre si el encode
-    /// anterior seguía en vuelo justo cuando la grabación terminó.
-    async fn flush_checkpoint(&mut self) {
+    /// anterior seguía en vuelo justo cuando la grabación terminó. La espera
+    /// está acotada por `deadline` (antes no lo estaba: ver
+    /// `FINALIZE_ENCODE_TIMEOUT`).
+    async fn flush_checkpoint(&mut self, deadline: Instant) -> Result<()> {
         if self.checkpoint_buffer.is_empty() {
-            return;
+            return Ok(());
         }
 
-        let permit = match self.encode_slots.clone().acquire_owned().await {
-            Ok(permit) => permit,
-            Err(_) => {
-                // Solo ocurre si el semáforo se cerrara explícitamente (nunca lo hacemos).
-                error!("encode_slots semaphore closed unexpectedly during finalize");
-                return;
-            }
-        };
-
+        let permit = self.acquire_encode_slot(deadline, "before the final flush").await?;
         let buf = self.take_buffer_for_checkpoint();
         self.dispatch_checkpoint_encode(buf, permit);
+        Ok(())
     }
 
     /// Finalize the recording: save final checkpoint, merge all checkpoints, cleanup
@@ -228,24 +241,24 @@ impl IncrementalAudioSaver {
     pub async fn finalize(&mut self) -> Result<PathBuf> {
         info!("Finalizing incremental recording...");
 
+        // Una sola fecha límite para las dos esperas de abajo.
+        let deadline = Instant::now() + FINALIZE_ENCODE_TIMEOUT;
+
         // Save final buffer if not empty (flush forzado: espera el permiso en vez
         // de solo intentarlo, para no perder el último tramo de audio).
         if !self.checkpoint_buffer.is_empty() {
             info!("Saving final checkpoint with remaining {} samples", self.checkpoint_buffer.len());
-            self.flush_checkpoint().await;
+            self.flush_checkpoint(deadline).await?;
         }
 
-        // Wait for background encodes: their files must exist before the merge
-        let wait_start = std::time::Instant::now();
-        while self.pending_encodes.load(Ordering::SeqCst) > 0 {
-            if wait_start.elapsed() > std::time::Duration::from_secs(300) {
-                return Err(anyhow!(
-                    "Timed out waiting for {} checkpoint encode(s) to finish",
-                    self.pending_encodes.load(Ordering::SeqCst)
-                ));
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        }
+        // Barrera: los archivos del encode en vuelo deben existir antes del
+        // merge. Sostener el único permiso ⇔ ningún encode en vuelo, porque
+        // cada encode lo retiene hasta que su closure termina y aquí tenemos
+        // `&mut self` (ningún `add_chunk` puede colarse). Sustituye al spin-wait
+        // de 50 ms sobre un contador aparte (#18). Se suelta enseguida: sólo
+        // sirve como prueba de que el encode anterior terminó.
+        let barrier = self.acquire_encode_slot(deadline, "before the merge").await?;
+        drop(barrier);
         let failed = self.encode_errors.load(Ordering::SeqCst);
         if failed > 0 {
             warn!("{} checkpoint(s) failed to encode; merge will skip their files", failed);
@@ -308,39 +321,10 @@ impl IncrementalAudioSaver {
             .ok_or_else(|| anyhow!("FFmpeg not found. Please install FFmpeg to finalize recordings."))?;
         info!("Using FFmpeg at: {:?}", ffmpeg_path);
 
-        // Run FFmpeg concat command
-        // Using concat demuxer with copy codec for fast merging (no re-encoding)
-        
-        let mut command = std::process::Command::new(ffmpeg_path);
-        
-        command.args(&[
-            "-f", "concat",          // Use concat demuxer
-            "-safe", "0",            // Allow absolute paths
-            "-i", list_file.to_str().ok_or_else(|| anyhow::anyhow!("List file path contains invalid UTF-8: {:?}", list_file))?,
-            "-c", "copy",            // Copy codec - no re-encoding!
-            "-y",                    // Overwrite output file
-            output.to_str().ok_or_else(|| anyhow::anyhow!("Output path contains invalid UTF-8: {:?}", output))?
-        ]);
-
-        // Hide console window on Windows to prevent CMD popup during finalization
-        #[cfg(target_os = "windows")]
-        {
-            use std::os::windows::process::CommandExt;
-            const CREATE_NO_WINDOW: u32 = 0x08000000;
-            command.creation_flags(CREATE_NO_WINDOW);
-        }
-
-        let ffmpeg_output = command.output()?;
-
-        if !ffmpeg_output.status.success() {
-            let stderr = String::from_utf8_lossy(&ffmpeg_output.stderr);
-            error!("FFmpeg merge failed: {}", stderr);
-            return Err(anyhow!("FFmpeg concat failed: {}", stderr));
-        }
-
-        // Verify output file was created
-        if !output.exists() {
-            return Err(anyhow!("Merged audio file was not created: {}", output.display()));
+        // Concat demuxer con copy codec (sin re-encodear), sin bloquear el worker.
+        if let Err(e) = run_ffmpeg_concat(ffmpeg_path, &list_file, output).await {
+            error!("FFmpeg merge failed: {}", e);
+            return Err(e);
         }
 
         info!("Successfully merged {} checkpoints → {}",
@@ -358,6 +342,91 @@ impl IncrementalAudioSaver {
     pub fn get_checkpoint_count(&self) -> u32 {
         self.checkpoint_count
     }
+}
+
+/// Argumentos EXACTOS del concat final (`merge_checkpoints`) y de la
+/// recuperación post-crash (`recover_audio_from_checkpoints`). Función PURA con
+/// golden test, por la misma razón que `encode::encode_args`: es la única forma
+/// de blindar los flags sin necesitar ffmpeg en el test.
+///
+/// `-c copy` exige AudioSpecificConfig compatible entre checkpoints (AAC-LC /
+/// 48 kHz / estéreo, que garantiza `encode_args`); el bitrate no forma parte.
+/// `-nostdin` va con el `Stdio::null()` de `run_ffmpeg_concat`: el `output()`
+/// de `tokio::process`, a diferencia del de `std`, NO anula stdin, y ffmpeg lo
+/// lee en modo interactivo si lo hereda.
+pub(crate) fn concat_args(list_file: &str, output: &str) -> Vec<String> {
+    [
+        // No imprimir la cabecera de versión/config
+        "-hide_banner",
+        // Solo errores reales, no el spam de progreso por defecto
+        "-loglevel",
+        "error",
+        // Sin la línea de stats que ffmpeg reescribe en stderr
+        "-nostats",
+        // No leer stdin (ver arriba)
+        "-nostdin",
+        // Demuxer concat con rutas absolutas (safe mode off)
+        "-f",
+        "concat",
+        "-safe",
+        "0",
+        "-i",
+        list_file,
+        // Copy codec: sin re-encodear
+        "-c",
+        "copy",
+        // Sobrescribir la salida si existe
+        "-y",
+        output,
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect()
+}
+
+/// Corre el concat de ffmpeg SIN bloquear un worker de tokio (#18 de la
+/// auditoría de recursos). Antes `std::process::Command::output()` dentro de
+/// una `async fn` bloqueaba el worker Y el AsyncMutex del saver durante todo el
+/// concat en cada rotación de jornada. `tokio::process` drena stdout y stderr en
+/// paralelo (sin el deadlock de pipes de #08) y `kill_on_drop` termina al hijo
+/// si el futuro se cancela a mitad (tokio no tiene reaper de huérfanos en
+/// Windows). Verifica además que el archivo de salida exista.
+async fn run_ffmpeg_concat(ffmpeg_path: PathBuf, list_file: &Path, output: &Path) -> Result<()> {
+    let list_str = list_file
+        .to_str()
+        .ok_or_else(|| anyhow!("List file path contains invalid UTF-8: {:?}", list_file))?;
+    let output_str = output
+        .to_str()
+        .ok_or_else(|| anyhow!("Output path contains invalid UTF-8: {:?}", output))?;
+
+    let mut command = tokio::process::Command::new(ffmpeg_path);
+    command
+        .args(concat_args(list_str, output_str))
+        .stdin(Stdio::null())
+        .kill_on_drop(true);
+
+    // Hide console window on Windows to prevent CMD popup during finalization
+    #[cfg(target_os = "windows")]
+    {
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    let ffmpeg_output = command
+        .output()
+        .await
+        .map_err(|e| anyhow!("Failed to run FFmpeg: {}", e))?;
+
+    if !ffmpeg_output.status.success() {
+        let stderr = String::from_utf8_lossy(&ffmpeg_output.stderr);
+        return Err(anyhow!("FFmpeg concat failed: {}", stderr.trim()));
+    }
+
+    if !output.exists() {
+        return Err(anyhow!("Merged audio file was not created: {}", output.display()));
+    }
+
+    Ok(())
 }
 
 /// Audio recovery status for transcript recovery feature
@@ -445,29 +514,11 @@ pub async fn recover_audio_from_checkpoints(
         .ok_or_else(|| "FFmpeg not found. Please install FFmpeg to recover audio.".to_string())?;
     info!("Using FFmpeg at: {:?}", ffmpeg_path);
 
-    let mut command = std::process::Command::new(ffmpeg_path);
-
-    command.args(&[
-        "-f", "concat",
-        "-safe", "0",
-        "-i", concat_file_path.to_str().ok_or_else(|| format!("Concat file path contains invalid UTF-8: {:?}", concat_file_path))?,
-        "-c", "copy",
-        "-y", // Overwrite if exists
-        &output_path_str
-    ]);
-
-    // Hide console window on Windows
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x08000000;
-        command.creation_flags(CREATE_NO_WINDOW);
-    }
-
-    let ffmpeg_result = command.output();
-
-    match ffmpeg_result {
-        Ok(output) if output.status.success() => {
+    // Mismo runner asíncrono que el merge normal (#18). Un fallo de ffmpeg se
+    // reporta como `status: "failed"`, NUNCA como Err del comando: el diálogo de
+    // recuperación distingue "no había checkpoints" de "ffmpeg falló".
+    match run_ffmpeg_concat(ffmpeg_path, &concat_file_path, &output_path).await {
+        Ok(()) => {
             // Clean up concat file
             let _ = std::fs::remove_file(concat_file_path);
 
@@ -481,25 +532,14 @@ pub async fn recover_audio_from_checkpoints(
                 message: format!("Successfully recovered {} audio chunks", chunk_count),
             })
         }
-        Ok(output) => {
-            let error = String::from_utf8_lossy(&output.stderr);
-            error!("FFmpeg recovery failed: {}", error);
-            Ok(AudioRecoveryStatus {
-                status: "failed".to_string(),
-                chunk_count,
-                estimated_duration_seconds: estimated_duration,
-                audio_file_path: None,
-                message: format!("FFmpeg failed: {}", error),
-            })
-        }
         Err(e) => {
-            error!("Failed to run FFmpeg: {}", e);
+            error!("FFmpeg recovery failed: {}", e);
             Ok(AudioRecoveryStatus {
                 status: "failed".to_string(),
                 chunk_count,
                 estimated_duration_seconds: estimated_duration,
                 audio_file_path: None,
-                message: format!("Failed to run FFmpeg: {}", e),
+                message: format!("FFmpeg failed: {}", e),
             })
         }
     }
@@ -732,5 +772,91 @@ mod tests {
         let result = saver.finalize().await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("No audio checkpoints"));
+    }
+
+    /// #18: la barrera previa al merge espera el permiso del semáforo con
+    /// timeout, no un contador con spin-wait. Con el permiso ocupado (un encode
+    /// "colgado"), `finalize()` debe rendirse con "Timed out" en vez de esperar
+    /// para siempre. Tiempo pausado: tokio auto-avanza los 300 s del deadline en
+    /// cuanto no queda trabajo listo, así que el test tarda milisegundos.
+    #[tokio::test(start_paused = true)]
+    async fn test_finalize_expira_si_el_encode_en_vuelo_no_termina() {
+        let temp_dir = tempdir().unwrap();
+        let meeting_folder = temp_dir.path().join("Hung_Encode_Test");
+        std::fs::create_dir_all(&meeting_folder).unwrap();
+        std::fs::create_dir_all(meeting_folder.join(".checkpoints")).unwrap();
+
+        let mut saver = IncrementalAudioSaver::new(meeting_folder.clone(), 48000, 2).unwrap();
+
+        // Simula un encode que nunca termina: el permiso queda en manos del test.
+        let _held = saver.encode_slots.clone().try_acquire_owned()
+            .expect("el semáforo debe nacer con 1 permiso libre");
+
+        let err = saver.finalize().await.expect_err("con el slot ocupado finalize debe expirar");
+        assert!(err.to_string().contains("Timed out"), "error inesperado: {err}");
+        assert!(err.to_string().contains("before the merge"), "debe expirar en la barrera: {err}");
+    }
+
+    /// El flush del último tramo también está acotado por el MISMO deadline.
+    /// Antes esperaba el permiso sin timeout: un ffmpeg colgado congelaba
+    /// `finalize()` antes de llegar al spin-wait que sí tenía los 300 s. El
+    /// chunk empujado queda por debajo del umbral de 30 s, así que `add_chunk`
+    /// no intenta despachar nada y el buffer llega lleno a `finalize()`.
+    #[tokio::test(start_paused = true)]
+    async fn test_flush_final_expira_con_el_mismo_deadline() {
+        let temp_dir = tempdir().unwrap();
+        let meeting_folder = temp_dir.path().join("Hung_Flush_Test");
+        std::fs::create_dir_all(&meeting_folder).unwrap();
+        std::fs::create_dir_all(meeting_folder.join(".checkpoints")).unwrap();
+
+        let mut saver = IncrementalAudioSaver::new(meeting_folder.clone(), 48000, 2).unwrap();
+        saver.add_chunk(AudioChunk {
+            data: vec![0.5f32; 48000],
+            sample_rate: 48000,
+            timestamp: 0.0,
+            chunk_id: 0,
+            device_type: DeviceType::Mixed,
+            ended_by_silence: true,
+        }).unwrap();
+        assert!(!saver.checkpoint_buffer.is_empty());
+
+        let _held = saver.encode_slots.clone().try_acquire_owned().unwrap();
+
+        let err = saver.finalize().await.expect_err("el flush final debe expirar");
+        assert!(err.to_string().contains("Timed out"), "error inesperado: {err}");
+        assert!(err.to_string().contains("before the final flush"), "debe expirar en el flush: {err}");
+        // El audio no se tiró: sigue en el buffer para quien quiera rescatarlo.
+        assert_eq!(saver.checkpoint_buffer.len(), 48000);
+    }
+
+    /// Golden master de los flags del concat (mismo molde que
+    /// `encode::encode_args_orden_completo_es_estable`): cualquier flag añadido,
+    /// quitado o reordenado tiene que ser una decisión consciente. `-nostdin`
+    /// es el que acompaña al `Stdio::null()` de `run_ffmpeg_concat`.
+    #[test]
+    fn concat_args_orden_completo_es_estable() {
+        let args = concat_args("C:\\m\\.checkpoints\\concat_list.txt", "C:\\m\\audio.mp4");
+        let esperado: Vec<String> = vec![
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-nostats",
+            "-nostdin",
+            "-f",
+            "concat",
+            "-safe",
+            "0",
+            "-i",
+            "C:\\m\\.checkpoints\\concat_list.txt",
+            "-c",
+            "copy",
+            "-y",
+            "C:\\m\\audio.mp4",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+
+        assert_eq!(args, esperado);
     }
 }

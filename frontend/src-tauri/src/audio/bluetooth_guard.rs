@@ -172,8 +172,12 @@ where
 mod platform {
     use super::{classify_enumerator, BtTransport};
     use crate::audio::devices::device_name_matcher;
+    // `ComScope` y `read_string_property` nacieron aquí y viven ahora en
+    // `devices::platform::wasapi_com`, para que el snapshot del monitor de
+    // dispositivos comparta el mismo invariante (property store sí,
+    // `IAudioClient` no) — #17 de la auditoría de recursos.
+    use crate::audio::devices::platform::wasapi_com::{read_string_property, ComScope};
     use log::{debug, warn};
-    use windows::core::PCWSTR;
     use windows::Win32::Devices::FunctionDiscovery::{
         PKEY_Device_EnumeratorName, PKEY_Device_FriendlyName,
     };
@@ -181,55 +185,7 @@ mod platform {
         eCapture, eConsole, eRender, IMMDevice, IMMDeviceEnumerator, MMDeviceEnumerator,
         DEVICE_STATE_ACTIVE,
     };
-    use windows::Win32::System::Com::StructuredStorage::PropVariantToStringAlloc;
-    use windows::Win32::System::Com::{
-        CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize, CLSCTX_ALL,
-        COINIT_MULTITHREADED, STGM_READ,
-    };
-    use windows::Win32::UI::Shell::PropertiesSystem::PROPERTYKEY;
-
-    /// COM scope tolerante: si el hilo ya tiene COM inicializado en otro modelo
-    /// (`RPC_E_CHANGED_MODE`), seguimos adelante SIN ser dueños de la init y sin
-    /// llamar `CoUninitialize` al salir. El `ComRuntime` de `wasapi_loopback.rs`
-    /// trata ese caso como error fatal; aquí no puede serlo, porque corremos en
-    /// hilos del pool de tokio que no controlamos.
-    struct ComScope {
-        owns: bool,
-    }
-
-    impl ComScope {
-        fn enter() -> Self {
-            let hr = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
-            // S_OK / S_FALSE = inicializado por nosotros; RPC_E_CHANGED_MODE = ya
-            // había COM en STA, usable igual para lecturas del property store.
-            Self { owns: hr.is_ok() }
-        }
-    }
-
-    impl Drop for ComScope {
-        fn drop(&mut self) {
-            if self.owns {
-                unsafe { CoUninitialize() };
-            }
-        }
-    }
-
-    /// Lee una propiedad string del property store de un endpoint.
-    ///
-    /// SOLO abre el property store: no activa el `IAudioClient`, así que es
-    /// seguro llamarlo sobre el endpoint de captura de un headset Bluetooth sin
-    /// provocar la conmutación de perfil.
-    unsafe fn read_string_property(device: &IMMDevice, key: &PROPERTYKEY) -> Option<String> {
-        let store = device.OpenPropertyStore(STGM_READ).ok()?;
-        let value = store.GetValue(key).ok()?;
-        if value.is_empty() {
-            return None;
-        }
-        let pwstr = PropVariantToStringAlloc(&value).ok()?;
-        let text = pwstr.to_string().ok();
-        CoTaskMemFree(Some(pwstr.0 as *const _));
-        text
-    }
+    use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_ALL};
 
     unsafe fn transport_of(device: &IMMDevice) -> BtTransport {
         match read_string_property(device, &PKEY_Device_EnumeratorName) {
@@ -297,10 +253,6 @@ mod platform {
             BtTransport::Unknown
         }
     }
-
-    // Silencia el warning de import no usado cuando el linter analiza sin COM.
-    #[allow(dead_code)]
-    fn _unused(_: PCWSTR) {}
 }
 
 // ============================================================================

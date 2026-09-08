@@ -3,6 +3,11 @@
 #[cfg(target_os = "windows")]
 pub mod windows;
 
+// Lecturas del property store WASAPI sin activar el IAudioClient (compartido
+// por bluetooth_guard.rs y por el snapshot del monitor de dispositivos).
+#[cfg(target_os = "windows")]
+pub mod wasapi_com;
+
 #[cfg(target_os = "macos")]
 pub mod macos;
 
@@ -11,7 +16,7 @@ pub mod linux;
 
 // Re-export platform-specific functions
 #[cfg(target_os = "windows")]
-pub use windows::{configure_windows_audio, get_windows_device};
+pub use windows::{configure_windows_audio, get_windows_device, snapshot_active_endpoints};
 
 #[cfg(target_os = "macos")]
 pub use macos::configure_macos_audio;
