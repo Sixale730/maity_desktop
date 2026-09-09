@@ -43,9 +43,10 @@ pub use trigger::coach_analyze_trigger;
 ///
 /// **No se re-enciende al terminar la grabación.** El sidecar local no tiene
 /// ningún otro consumidor vivo: Maity Chat corre en la nube, la minuta y el
-/// análisis V4 también, y `coach_chat` / `coach_evaluate_meeting` / el resumen
-/// local de `/meeting-details` no tienen call sites en el frontend. Ver
-/// CLAUDE.md § "Resumen built-in (Gemma)".
+/// análisis V4 también, y `coach_chat` / `coach_evaluate_meeting` /
+/// `api_process_transcript` (el resumen local; su única ruta, `/meeting-details`,
+/// se borró en sep-2026, #24 de la auditoría) no tienen call sites en el
+/// frontend. Ver docs/COACH_LLM_ARCHITECTURE.md § Apéndice.
 pub fn should_use_llm_tips() -> bool {
     use crate::audio::hardware_detector::{HardwareProfile, PerformanceTier};
     HardwareProfile::detect().performance_tier != PerformanceTier::Low

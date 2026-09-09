@@ -462,7 +462,7 @@ Las secciones siguientes son el estado VIGENTE y de cumplimiento obligatorio; pr
 | `coach_chat` (Rust) | **Código muerto**: registrado en `lib.rs`, cero call sites en TS. Su helper `call_coach_builtin` muere con él. |
 | `coach_evaluate_meeting` | **Código muerto**: cero call sites en TS. |
 | Minuta / análisis V4 | **Nube**: `api/finalize.rs` → `POST www.maity.cloud/api/conversations`. |
-| Resumen local (`api_process_transcript` → `LLMProvider::BuiltInAI`) | **Inalcanzable en la práctica**: vive tras `/meeting-details`, ruta **sin un solo enlace entrante**; y el provider por defecto de una instalación limpia es `'ollama'`, no `'builtin-ai'`. |
+| Resumen local (`api_process_transcript` → `LLMProvider::BuiltInAI`) | **Sin call site en TS** desde sep-2026: su única ruta, `/meeting-details`, **se borró con su árbol (BlockNote/tiptap/prosemirror) en #24 de la auditoría de recursos** porque no tenía un solo enlace entrante. El comando sigue registrado en `lib.rs` (junto con `api_cancel_summary`, `api_list_templates`, `api_save_meeting_summary`, `open_meeting_folder`, `api_get_meeting_transcripts`) por la decisión de abajo; el provider por defecto de una instalación limpia sigue siendo `'ollama'`, no `'builtin-ai'`. |
 
 No se borró nada de eso (decisión de ago-2026: documentar, no borrar — el diff no aporta al usuario). Pero **no asumir que algo "usa Gemma" sin buscar su call site en TS**.
 

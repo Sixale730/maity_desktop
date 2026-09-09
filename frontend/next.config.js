@@ -1,6 +1,10 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  reactStrictMode: false, // Disabled for BlockNote compatibility
+  // Se conserva en false. El motivo original (compatibilidad con BlockNote) se
+  // fue con /meeting-details en sep-2026 (#24 de la auditoría de recursos);
+  // encenderlo cambia el comportamiento en dev (efectos dobles) y es un
+  // cambio aparte con su propia QA.
+  reactStrictMode: false,
   output: 'export',
   images: {
     unoptimized: true,

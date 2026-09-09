@@ -202,7 +202,6 @@ Ubicaciones: dev `frontend/models/`; produccion `~/Library/Application Support/c
 |------|-------------|
 | `/` | Interfaz principal de grabacion (el dashboard gamificado se renderiza AQUÍ, `app/(main)/page.tsx`) |
 | `/conversations` | Lista de conversaciones (local-first); detalle con `?id=` (cloud) o `?localId=` (SQLite) |
-| `/meeting-details` | Detalle de reunion con auto-summary (sin enlaces entrantes) |
 | `/gamification` | Dashboard gamificado (volcan de progreso) |
 | `/notes`, `/tasks` | Notas y tareas extraidas de conversaciones |
 | `/settings` | Configuracion de la app |
@@ -275,7 +274,7 @@ Usuario detiene grabacion
     ↓
 flush buffer (500ms) → Guardar en SQLite local
     ↓
-Navegar a /meeting-details?localId=XXX (instantaneo)
+Navegar a /conversations?localId=XXX&source=recording (instantaneo)
     ↓
 Fire-and-forget: sync cloud via sync_queue (background)
     ↓

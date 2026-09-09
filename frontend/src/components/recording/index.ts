@@ -4,7 +4,6 @@ export { RecordingStatusBar } from './RecordingStatusBar';
 export { AudioLevelMeter, CompactAudioLevelMeter } from './AudioLevelMeter';
 export { AudioBackendSelector } from './AudioBackendSelector';
 export { DeviceSelection } from './DeviceSelection';
-export { BluetoothPlaybackWarning } from './BluetoothPlaybackWarning';
 export { ComplianceNotification } from './ComplianceNotification';
 export { PermissionWarning } from './PermissionWarning';
 export { showRecordingNotification } from './recordingNotification';
