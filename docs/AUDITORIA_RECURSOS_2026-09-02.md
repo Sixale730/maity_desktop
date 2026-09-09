@@ -528,6 +528,13 @@ Ordenados por impacto estimado en RAM, luego CPU, luego disco y red.
 - **Riesgo**: definir la histéresis para no oscilar.
 - **Nota**: si se adopta la transcripción por lote, esta política **deja de ser opcional** (el pico de
   carga de Parakeet cada hora la necesita).
+- **Avance (sep-2026, F0b del modo lote)**: `mem_sampler::pressure_level()` implementado con
+  histéresis doble (`Normal|Elevated|Critical`, detalle en `docs/TELEMETRIA.md` § nivel 3) y TRES
+  consumidores: warmup del sidecar se salta con `Elevated+` (o avail bajo umbral al arranque), el
+  tick LLM del coach cede (`call_ollama_and_emit`), y el `idle_unload` del STT descarga sin esperar
+  los 10 min. Log de transición `[MEM] pressure-level: a->b` con clave sin números. **Pendiente para
+  cerrar**: `SidecarManager::shutdown()` con presión sostenida y sin requests activos, y el consumidor
+  principal — el gate del planner del lote (Fase 2).
 
 ### #23 · Las ventanas auxiliares cargan el grafo completo del layout raíz
 `Bajo` · RAM/CPU · Arranque/Jornada · esfuerzo M · no cambia por lote · **CERRADO** `0528562`
@@ -1020,6 +1027,16 @@ Lo que se revisó y **no** necesita cambio, para no volver a auditarlo.
 Lo que hay que medir en una laptop de 6 GB antes de cerrar cifras.
 
 - Delta de RSS de la precarga de Parakeet y pico del reciclado (ya hay `snapshot_now("onnx-recycle")`).
+  **Procedimiento (F0c del modo lote, sep-2026)** — es el gate de la Fase 2 del lote (calibra el
+  `BATCH_HEADROOM_MB` del planner): en una máquina de 5-6 GB, repetir 5 veces el ciclo login → logout y
+  leer del log rotativo los `[METRIC] mem-sample` etiquetados `stt-warm` (post-carga) y `stt-unload`
+  (post-descarga). Registrar (a) el **delta estable** de `app_rss_mb` entre unload y warm (residencia
+  del modelo) y (b) el **pico transitorio**: el máximo de `app_rss_mb` en los samples `periodic` de los
+  ~60 s posteriores al `stt-warm` (ORT parsea el modelo con buffers temporales; la estimación de la
+  sección "por lote" es ~1.3 GB). Si el pico real ≥ 1.3 GB, el headroom del planner se fija en
+  pico + 300 MB; si durante la carga aparece `[MEM] pressure-level: normal->elevated` (#22, ya
+  implementado), anotarlo — es la evidencia de que cargar por hora sin gate sería peor que la
+  residencia constante.
 - Sierra de `session_audio` del VAD en una jornada tranquila: debería verse como +4 MB/min por canal en
   los `[METRIC] mem-sample` de los pilotos.
 - Reparto de RSS de WebView2 entre ventana principal oculta, coach-float y device-picker.
@@ -1032,8 +1049,12 @@ Lo que hay que medir en una laptop de 6 GB antes de cerrar cifras.
 - **Posible bug de rotación**: `SEQUENCE_COUNTER` se reinicia por sesión pero el frontend solo limpia
   `seenSequenceIds` en el arranque manual; el panel en vivo podría congelarse tras la primera rotación.
 - Carpetas de jornada de esta máquina con 8 KB a 21 MB de audio por hora (12 de 20 sin transcripts):
-  ¿el encoder AAC comprime el silencio o fallan checkpoints en silencio? `incremental_saver.rs:207-210`
-  solo avisa y salta el archivo ausente, **sin telemetría**.
+  ¿el encoder AAC comprime el silencio o fallan checkpoints en silencio? ~~`incremental_saver.rs`
+  solo avisa y salta el archivo ausente, **sin telemetría**~~ — **instrumentado en la F0a del modo
+  lote (sep-2026)**: `finalize()` devuelve un `FinalizeReport` y `stop_and_save` emite
+  `audio.checkpoint_integrity` cuando hay checkpoints perdidos, encodes con error o un merge <100 KB
+  con ≥4 checkpoints (la firma exacta de estas carpetas). Falta esperar datos de campo para responder
+  la pregunta.
 - Con qué features de GPU se compiló el `setup.exe` publicado en GitHub: la selección depende del
   entorno de la máquina que compila (#31). Revisar sus imports.
 

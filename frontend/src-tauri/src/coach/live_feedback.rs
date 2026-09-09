@@ -1201,6 +1201,23 @@ async fn call_ollama_and_emit<R: Runtime>(
         return;
     }
 
+    // Presión de memoria (#22): con el sistema apretado, consultar el sidecar
+    // (~1.2 GB residentes + pico de generación) es exactamente lo que agrava la
+    // presión. Tick LLM cedido con la misma forma que el breaker y el lag: se
+    // libera el rate-limit para que los heurísticos mantengan su cadencia y el
+    // nivel se reevalúa en el siguiente tick (la histéresis vive en mem_sampler).
+    let pressure = crate::logging::mem_sampler::pressure_level();
+    if pressure >= crate::logging::mem_sampler::PressureLevel::Elevated {
+        info!(
+            "Coach: presión de memoria ({}) — tick LLM cedido, heurísticos siguen activos",
+            pressure.as_str()
+        );
+        if let Ok(mut st) = state.lock() {
+            st.last_tip_at = None;
+        }
+        return;
+    }
+
     let builtin_model = llama_engine::map_to_builtin_id(model).to_string();
     info!(
         "🦙 Coach calling sidecar: model={} (builtin={}), prompt_len={} chars",

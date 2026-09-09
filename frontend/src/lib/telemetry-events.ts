@@ -28,6 +28,10 @@ export const TELEMETRY_EVENTS = {
   // ── Retención de audio local (emisor: Rust, audio/audio_retention.rs) ──
   AUDIO_RETENTION_SWEPT: 'audio.retention_swept',
 
+  // ── Integridad de checkpoints al cerrar una grabación (emisor: Rust,
+  //    audio/recording_saver.rs::stop_and_save; solo cierres anómalos) ──
+  AUDIO_CHECKPOINT_INTEGRITY: 'audio.checkpoint_integrity',
+
   // ── Ciclo de vida del motor STT local (emisor: Rust, audio/transcription/engine.rs) ──
   STT_ENGINE_LIFECYCLE: 'stt.engine_lifecycle',
 

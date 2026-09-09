@@ -29,6 +29,10 @@ pub const RECORDING_SEGMENT_DISCARDED: &str = "recording.segment_discarded";
 // ── Retención de audio local (emisor: Rust, `audio/audio_retention.rs`) ──
 pub const AUDIO_RETENTION_SWEPT: &str = "audio.retention_swept";
 
+// ── Integridad de checkpoints al cerrar una grabación (emisor: Rust,
+//    `audio/recording_saver.rs::stop_and_save`; solo cierres anómalos) ──
+pub const AUDIO_CHECKPOINT_INTEGRITY: &str = "audio.checkpoint_integrity";
+
 // ── Ciclo de vida del motor STT local (emisor: Rust, `audio/transcription/engine.rs`) ──
 pub const STT_ENGINE_LIFECYCLE: &str = "stt.engine_lifecycle";
 

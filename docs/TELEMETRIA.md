@@ -151,6 +151,7 @@ tareas de proceso, así que su payload **no** lleva `trigger` ni
 | event_type | Cuándo | Payload clave |
 |---|---|---|
 | `audio.retention_swept` | Una pasada de `audio_retention::sweep_once` liberó audio (sólo se emite si `meetings_swept > 0` o `failed > 0`) | `meetings_swept`, `bytes_freed`, `retention_days`, `failed`; `status` = `ok` \| `partial` |
+| `audio.checkpoint_integrity` | El cierre de una grabación (`recording_saver.rs::stop_and_save` → `IncrementalAudioSaver::finalize`) produjo un `audio.mp4` con huecos o anómalo. Sólo se emite si `FinalizeReport::is_anomalous()`: checkpoint perdido, encode con error, o merge <100 KB con ≥4 checkpoints (la firma de las carpetas de 8 KB/h del piloto). Un cierre sano NO deja fila | `checkpoint_count`, `missing`, `encode_errors`, `merged_bytes`, `merged_duration_est_secs`; `status` = `partial` |
 | `stt.engine_lifecycle` | Carga o descarga **real** de un motor STT local (`engine.rs::ensure_stt_warm` / `unload_stt`, y el reciclado de `parakeet_engine.rs`) | `action` = `loaded` \| `unloaded`; `reason` = `login` \| `registration` \| `prewarm` \| `recording_start` \| `download_complete` \| `logout` \| `idle` \| `recycle_failed`; `provider`, `model`, `elapsed_ms` (sólo en `loaded`), `tier`; `status` = `ok` \| `error` |
 
 > **`stt.engine_lifecycle` (sep-2026, #02).** Parakeet se precargaba en el
@@ -395,6 +396,20 @@ pathname, dedup_key, seq, session_uptime_s}` + columna `error` = message.
   core) para no romper las series históricas.
   Warnings con umbral y rate-limit 10 min (`sidecar-pool-multiple`,
   `app-rss-critical`, `system-memory-pressure`...).
+  **Nivel de presión consultable (#22, sep-2026):** el mismo loop publica
+  `mem_sampler::pressure_level()` (`Normal | Elevated | Critical`, `AtomicU8`) con
+  histéresis doble — subir a `Elevated` exige avail bajo umbral sostenido ≥60 s
+  (la MISMA racha del incidente); `Critical` es inmediato (RSS crítico o avail
+  bajo la mitad del umbral); **bajar** exige avail > umbral+300 MB sostenido
+  ≥60 s, y un `Critical` sin recuperación completa decae a `Elevated`, no a
+  `Normal`. Cada transición deja UNA línea `[MEM] pressure-level: a->b` con clave
+  sin números (las cifras cambiantes se comían plazas de `app.error`).
+  Consumidores actuales: el warmup del sidecar se salta con `Elevated+` (o con
+  avail bajo umbral en el arranque, sample fresco), `call_ollama_and_emit` cede
+  el tick LLM del coach, y el `idle_unload` del STT descarga sin esperar los
+  10 min. Staleness ≤ la cadencia de la fase (60 s en idle): apto para
+  decisiones de minutos, no de milisegundos. Antes del primer tick devuelve
+  `Normal` (fail-open: sin datos no se bloquea nada).
 - **Export**: Settings → Logging → Export (`export_logs`) genera ZIP con logs +
   `system_info.txt` + `recording_lifecycle_logs.json` (SQLite).
 - **Bundle de incidente con consentimiento** (#61, ago-2026;

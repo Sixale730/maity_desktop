@@ -29,6 +29,7 @@ use tauri::{AppHandle, Manager, Runtime};
 
 use crate::audio::hardware_detector::{HardwareProfile, PerformanceTier};
 use crate::audio::recording_phase::{self, RecordingPhase};
+use crate::logging::mem_sampler::PressureLevel;
 use crate::scheduled_recording::commands::ScheduledRecordingState;
 use crate::scheduled_recording::schedule;
 use crate::scheduled_recording::settings::ScheduledRecordingSettings;
@@ -85,11 +86,16 @@ pub(crate) struct UnloadInputs {
     pub next_window_in: Option<Duration>,
     pub has_session: bool,
     pub model_loaded: bool,
+    /// Nivel de presión de memoria del sampler (#22). Con `Elevated+` el
+    /// reposo no espera el umbral: soltar los ~600 MB del motor es la acción
+    /// más barata disponible.
+    pub pressure: PressureLevel,
 }
 
 /// ¿Toca descargar? Sólo con umbral (tier Low), modelo cargado, sesión viva
 /// (sin sesión ya decidió `clear_current_user`), fuera de ventana, con el
-/// reposo cumplido y sin una ventana a menos de `PREWARM_LEAD`.
+/// reposo cumplido — o presión de memoria `Elevated+` (#22), que no espera el
+/// umbral — y sin una ventana a menos de `PREWARM_LEAD`.
 pub(crate) fn should_unload(threshold: Option<Duration>, i: &UnloadInputs) -> bool {
     let Some(threshold) = threshold else {
         return false;
@@ -97,7 +103,7 @@ pub(crate) fn should_unload(threshold: Option<Duration>, i: &UnloadInputs) -> bo
     i.model_loaded
         && i.has_session
         && !i.in_window
-        && i.idle_for >= threshold
+        && (i.idle_for >= threshold || i.pressure >= PressureLevel::Elevated)
         && i.next_window_in.map_or(true, |d| d > PREWARM_LEAD)
 }
 
@@ -211,6 +217,7 @@ async fn tick_once<R: Runtime>(
         next_window_in,
         has_session,
         model_loaded,
+        pressure: crate::logging::mem_sampler::pressure_level(),
     };
     if should_unload(Some(threshold), &inputs) {
         match unload_stt(app, "idle").await {
@@ -250,6 +257,7 @@ mod tests {
             next_window_in: None,
             has_session: true,
             model_loaded: true,
+            pressure: PressureLevel::Normal,
         }
     }
 
@@ -264,7 +272,7 @@ mod tests {
     #[test]
     fn should_unload_tabla() {
         let t = Some(mins(10));
-        let casos: [(&str, Option<Duration>, UnloadInputs, bool); 9] = [
+        let casos: [(&str, Option<Duration>, UnloadInputs, bool); 13] = [
             ("caso base", t, inputs(), true),
             ("sin umbral (tier alto)", None, inputs(), false),
             ("en ventana", t, UnloadInputs { in_window: true, ..inputs() }, false),
@@ -274,6 +282,37 @@ mod tests {
             ("reposo 10 min exactos", t, UnloadInputs { idle_for: mins(10), ..inputs() }, true),
             ("sin sesión", t, UnloadInputs { has_session: false, ..inputs() }, false),
             ("modelo no cargado", t, UnloadInputs { model_loaded: false, ..inputs() }, false),
+            // #22: presión Elevated+ no espera el umbral de reposo…
+            (
+                "presión Elevated con reposo 1 min",
+                t,
+                UnloadInputs { idle_for: mins(1), pressure: PressureLevel::Elevated, ..inputs() },
+                true,
+            ),
+            (
+                "presión Critical con reposo 0",
+                t,
+                UnloadInputs { idle_for: mins(0), pressure: PressureLevel::Critical, ..inputs() },
+                true,
+            ),
+            // …pero no puentea los otros guards.
+            (
+                "presión sin umbral (tier alto): la tarea ni corre",
+                None,
+                UnloadInputs { pressure: PressureLevel::Critical, ..inputs() },
+                false,
+            ),
+            (
+                "presión con ventana a 3 min: el prewarm lo recargaría",
+                t,
+                UnloadInputs {
+                    idle_for: mins(1),
+                    next_window_in: Some(mins(3)),
+                    pressure: PressureLevel::Elevated,
+                    ..inputs()
+                },
+                false,
+            ),
         ];
         for (nombre, threshold, i, esperado) in casos {
             assert_eq!(should_unload(threshold, &i), esperado, "{}", nombre);

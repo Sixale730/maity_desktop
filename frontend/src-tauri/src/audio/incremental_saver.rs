@@ -20,6 +20,53 @@ use super::ffmpeg::find_ffmpeg_path;
 /// `finalize()` antes de llegar siquiera ahí.
 const FINALIZE_ENCODE_TIMEOUT: Duration = Duration::from_secs(300);
 
+/// Umbral de "audio.mp4 sospechosamente chico" para `FinalizeReport::is_anomalous`.
+/// La firma real del campo (Fase 0 del modo lote): carpetas de jornada con
+/// 8 KB de audio por HORA — un merge "exitoso" que no contiene casi nada.
+/// 100 KB con ≥4 checkpoints (≥2 min de grabación a 64 kbps ≈ ~1 MB esperado)
+/// es un orden de magnitud por debajo de lo posible con voz o silencio.
+const ANOMALOUS_MERGED_MIN_BYTES: u64 = 100 * 1024;
+/// Mínimo de checkpoints para aplicar el umbral de tamaño: una grabación de
+/// <2 min legítimamente puede pesar poco.
+const ANOMALOUS_MIN_CHECKPOINTS: u32 = 4;
+
+/// Reporte de integridad del cierre de una grabación incremental. Lo produce
+/// `finalize()` y lo emite el caller con `AppHandle` (el saver no tiene) como
+/// telemetría `audio.checkpoint_integrity` — SOLO cuando `is_anomalous()`:
+/// antes de esto, un checkpoint perdido era un `warn!` local invisible
+/// (`docs/AUDITORIA_RECURSOS_2026-09-02.md` § Mediciones, carpetas de 8 KB/h).
+/// En el modo lote el audio pasa a ser la única fuente de verdad, así que un
+/// fallo silencioso aquí dejaría de costar 30 s de transcript y pasaría a
+/// costar la grabación entera.
+#[derive(Debug, Clone, Serialize)]
+pub struct FinalizeReport {
+    /// Checkpoints que el saver despachó a encode durante la grabación.
+    pub checkpoint_count: u32,
+    /// Archivos ausentes al mergear (encodes que fallaron o no aterrizaron).
+    pub missing: u32,
+    /// Encodes que reportaron error (puede solaparse con `missing`).
+    pub encode_errors: u32,
+    /// Bytes del `audio.mp4` final.
+    pub merged_bytes: u64,
+    /// Duración estimada del audio mergeado: (checkpoints presentes) × 30 s.
+    /// Estimación (el último checkpoint suele ser < 30 s); sirve para el
+    /// análisis de bytes/segundo, no como duración autoritativa.
+    pub merged_duration_est_secs: u32,
+}
+
+impl FinalizeReport {
+    /// ¿El cierre amerita telemetría? Pura, con tests. Cualquier checkpoint
+    /// perdido o con error es anómalo; y un merge "exitoso" pero minúsculo
+    /// (la firma de las carpetas de 8 KB/h) también, aunque nada haya
+    /// reportado error.
+    pub fn is_anomalous(&self) -> bool {
+        self.missing > 0
+            || self.encode_errors > 0
+            || (self.checkpoint_count >= ANOMALOUS_MIN_CHECKPOINTS
+                && self.merged_bytes < ANOMALOUS_MERGED_MIN_BYTES)
+    }
+}
+
 /// Incremental audio saver that writes checkpoints every 30 seconds
 /// to minimize memory usage and enable crash recovery
 pub struct IncrementalAudioSaver {
@@ -237,8 +284,9 @@ impl IncrementalAudioSaver {
 
     /// Finalize the recording: save final checkpoint, merge all checkpoints, cleanup
     ///
-    /// Returns the path to the final merged audio.mp4 file
-    pub async fn finalize(&mut self) -> Result<PathBuf> {
+    /// Returns the path to the final merged audio.mp4 file plus the integrity
+    /// report (F0a del modo lote): el caller decide si emite telemetría.
+    pub async fn finalize(&mut self) -> Result<(PathBuf, FinalizeReport)> {
         info!("Finalizing incremental recording...");
 
         // Una sola fecha límite para las dos esperas de abajo.
@@ -270,7 +318,7 @@ impl IncrementalAudioSaver {
 
         // Merge all checkpoints using FFmpeg concat
         let final_audio_path = self.meeting_folder.join("audio.mp4");
-        self.merge_checkpoints(&final_audio_path).await?;
+        let missing = self.merge_checkpoints(&final_audio_path).await?;
 
         // Clean up checkpoints directory
         info!("Cleaning up {} checkpoint files", self.checkpoint_count);
@@ -279,14 +327,33 @@ impl IncrementalAudioSaver {
             // Non-fatal - user can manually delete
         }
 
-        info!("Finalized recording: {}", final_audio_path.display());
+        let merged_bytes = std::fs::metadata(&final_audio_path)
+            .map(|m| m.len())
+            .unwrap_or(0);
+        let report = FinalizeReport {
+            checkpoint_count: self.checkpoint_count,
+            missing,
+            encode_errors: failed,
+            merged_bytes,
+            merged_duration_est_secs: self.checkpoint_count.saturating_sub(missing) * 30,
+        };
 
-        Ok(final_audio_path)
+        info!(
+            "Finalized recording: {} ({} bytes, {} checkpoints, {} missing, {} encode errors)",
+            final_audio_path.display(),
+            report.merged_bytes,
+            report.checkpoint_count,
+            report.missing,
+            report.encode_errors
+        );
+
+        Ok((final_audio_path, report))
     }
 
     /// Merge all checkpoint files into final audio.mp4 using FFmpeg concat
-    /// Uses concat demuxer for fast merging without re-encoding
-    async fn merge_checkpoints(&self, output: &PathBuf) -> Result<()> {
+    /// Uses concat demuxer for fast merging without re-encoding.
+    /// Devuelve cuántos checkpoints faltaban en disco (para el `FinalizeReport`).
+    async fn merge_checkpoints(&self, output: &PathBuf) -> Result<u32> {
         info!("Merging {} checkpoints into final audio file...", self.checkpoint_count);
 
         // Create concat list file for FFmpeg
@@ -330,7 +397,7 @@ impl IncrementalAudioSaver {
         info!("Successfully merged {} checkpoints → {}",
               self.checkpoint_count, output.display());
 
-        Ok(())
+        Ok(missing)
     }
 
     /// Get the meeting folder path
@@ -639,8 +706,10 @@ mod tests {
         }
 
         // Finalize and verify merge
-        let final_path = saver.finalize().await.unwrap();
+        let (final_path, report) = saver.finalize().await.unwrap();
         assert!(final_path.exists());
+        assert_eq!(report.missing, 0);
+        assert!(!report.is_anomalous());
 
         // Verify checkpoints directory deleted
         assert!(!meeting_folder.join(".checkpoints").exists());
@@ -827,6 +896,44 @@ mod tests {
         assert!(err.to_string().contains("before the final flush"), "debe expirar en el flush: {err}");
         // El audio no se tiró: sigue en el buffer para quien quiera rescatarlo.
         assert_eq!(saver.checkpoint_buffer.len(), 48000);
+    }
+
+    /// F0a del modo lote: la política de "¿esto amerita telemetría?" es pura.
+    /// Cualquier checkpoint perdido o con error es anómalo; y el merge
+    /// minúsculo (firma de las carpetas de 8 KB/h) también, pero solo con
+    /// suficientes checkpoints para que el tamaño sea imposible.
+    #[test]
+    fn finalize_report_is_anomalous_tabla() {
+        let base = FinalizeReport {
+            checkpoint_count: 10,
+            missing: 0,
+            encode_errors: 0,
+            merged_bytes: 5_000_000,
+            merged_duration_est_secs: 300,
+        };
+        let casos = [
+            ("cierre sano", FinalizeReport { ..base.clone() }, false),
+            ("un checkpoint perdido", FinalizeReport { missing: 1, ..base.clone() }, true),
+            ("un encode con error", FinalizeReport { encode_errors: 1, ..base.clone() }, true),
+            (
+                "merge de 8 KB con una hora de checkpoints",
+                FinalizeReport { merged_bytes: 8 * 1024, ..base.clone() },
+                true,
+            ),
+            (
+                "grabación corta y chica: legítima",
+                FinalizeReport {
+                    checkpoint_count: 2,
+                    merged_bytes: 8 * 1024,
+                    merged_duration_est_secs: 60,
+                    ..base.clone()
+                },
+                false,
+            ),
+        ];
+        for (nombre, report, esperado) in casos {
+            assert_eq!(report.is_anomalous(), esperado, "{}", nombre);
+        }
     }
 
     /// Golden master de los flags del concat (mismo molde que

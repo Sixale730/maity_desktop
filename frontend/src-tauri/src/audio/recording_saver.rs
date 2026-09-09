@@ -457,8 +457,31 @@ impl RecordingSaver {
         let final_audio_path = if let Some(saver_arc) = &self.incremental_saver {
             let mut saver = saver_arc.lock().await;
             match saver.finalize().await {
-                Ok(path) => {
+                Ok((path, report)) => {
                     info!("✅ Successfully finalized audio: {}", path.display());
+                    // Integridad de checkpoints (F0a del modo lote): un merge
+                    // con huecos o minúsculo era un `warn!` local invisible
+                    // (carpetas de 8 KB/h en las jornadas del piloto). Se
+                    // emite SOLO si es anómalo — un evento "todo bien" por
+                    // grabación sería la tormenta de filas del piloto Dingler.
+                    if report.is_anomalous() {
+                        crate::logging::telemetry::emit::emit_event(
+                            app,
+                            crate::logging::telemetry::context::process_session_id(),
+                            crate::logging::telemetry::catalog::AUDIO_CHECKPOINT_INTEGRITY,
+                            serde_json::json!({
+                                "checkpoint_count": report.checkpoint_count,
+                                "missing": report.missing,
+                                "encode_errors": report.encode_errors,
+                                "merged_bytes": report.merged_bytes,
+                                "merged_duration_est_secs": report.merged_duration_est_secs,
+                            }),
+                            Some("partial"),
+                            None,
+                            None,
+                        )
+                        .await;
+                    }
                     path
                 }
                 Err(e) => {

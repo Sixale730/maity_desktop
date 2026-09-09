@@ -12,7 +12,7 @@
 //! módulo responde: ¿qué proceso retiene (maity-desktop, llama-helper,
 //! WebView2) y se libera tras el stop?
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -44,6 +44,13 @@ pub const SYS_AVAIL_PRESSURE_MB: u64 = 1024;
 /// mensaje del incidente mentiría. Un pico de un solo tick (otra app abriendo)
 /// no amerita pedirle un diagnóstico al usuario (#61).
 pub const PRESSURE_SUSTAINED_SECS: u64 = 60;
+/// Margen de recuperación (MB por ENCIMA de `SYS_AVAIL_PRESSURE_MB`) para
+/// bajar de nivel de presión. Sin este margen el nivel oscilaría con la
+/// memoria bailando alrededor del umbral (el riesgo de histéresis del #22).
+pub const PRESSURE_RECOVERY_MARGIN_MB: u64 = 300;
+/// Ventana REAL (segundos, `Instant`) que la recuperación debe sostenerse para
+/// bajar de nivel. Igual que `PRESSURE_SUSTAINED_SECS`, nunca en ticks.
+pub const PRESSURE_RECOVERY_SECS: u64 = 60;
 /// Cadencia del latido nativo (`reason: "native"`) cuando el webview está mudo.
 const NATIVE_HEARTBEAT_EVERY: Duration = Duration::from_secs(15 * 60);
 /// Silencio del webview que se considera "muerto/suspendido". Por encima del
@@ -62,6 +69,58 @@ static LLAMA_PROCS_MAX: AtomicU64 = AtomicU64::new(0);
 /// sin pagar otro refresh de procesos (y con `cpu_pct` real, que necesita el
 /// delta del `System` persistente del sampler).
 static LAST_SAMPLE: Mutex<Option<(MemSample, Instant)>> = Mutex::new(None);
+
+/// Nivel de presión de memoria publicado por el loop periódico (#22 de la
+/// auditoría: "la presión se observa pero nunca se actúa"). Lo actualiza SOLO
+/// el sampler periódico (los snapshots ad-hoc usan `System` fresco y no tienen
+/// racha); staleness máximo ≈ la cadencia de la fase (60 s en idle) — aceptable
+/// para sus consumidores (warmup del sidecar, tips LLM, idle_unload, planner
+/// del lote), que toman decisiones de minutos, no de milisegundos.
+static PRESSURE_LEVEL: AtomicU8 = AtomicU8::new(0);
+
+/// Nivel de presión de memoria del sistema, con histéresis (ver
+/// `ConditionWarns::update_pressure_level`). Orden total: `Normal < Elevated
+/// < Critical`, así los consumidores pueden escribir `level >= Elevated`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PressureLevel {
+    #[default]
+    Normal = 0,
+    Elevated = 1,
+    Critical = 2,
+}
+
+impl PressureLevel {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PressureLevel::Normal => "normal",
+            PressureLevel::Elevated => "elevated",
+            PressureLevel::Critical => "critical",
+        }
+    }
+
+    fn from_u8(v: u8) -> Self {
+        match v {
+            2 => PressureLevel::Critical,
+            1 => PressureLevel::Elevated,
+            _ => PressureLevel::Normal,
+        }
+    }
+}
+
+/// Nivel de presión vigente. Barato (un load atómico): se puede consultar en
+/// cualquier camino caliente. Antes del primer tick del sampler devuelve
+/// `Normal` (fail-open a propósito: sin datos no se bloquea nada).
+pub fn pressure_level() -> PressureLevel {
+    PressureLevel::from_u8(PRESSURE_LEVEL.load(Ordering::Relaxed))
+}
+
+/// Memoria disponible del sistema según el ÚLTIMO sample del loop periódico
+/// (`None` antes del primer tick). Para chequeos de headroom (p. ej. "¿alcanza
+/// para cargar Parakeet?") — la frescura es la del sampler, no la del instante.
+pub fn last_sys_avail_mb() -> Option<u64> {
+    last_sample().map(|(s, _)| s.sys_avail_mb)
+}
 
 /// Última vez que el webview pidió `get_health_snapshot`. Es la prueba de vida
 /// más barata que hay: `healthHeartbeatService.ts` es el ÚNICO invoker de ese
@@ -208,6 +267,19 @@ pub fn start<R: Runtime>(app: AppHandle<R>) {
             if let Some(s) = sample {
                 log_sample("periodic", &s);
                 let incident = warn_state.check(&s, now);
+                // Nivel de presión (#22): DESPUÉS de check() (que mantiene la
+                // racha `pressure_since`). Log de transición con clave SIN
+                // números — las cifras cambiantes en el mensaje se comían una
+                // plaza de `app.error` por aviso (el hallazgo original).
+                let (prev_level, new_level) = warn_state.update_pressure_level(&s, now);
+                if prev_level != new_level {
+                    info!(
+                        "[MEM] pressure-level: {}->{}",
+                        prev_level.as_str(),
+                        new_level.as_str()
+                    );
+                }
+                PRESSURE_LEVEL.store(new_level as u8, Ordering::Relaxed);
                 // Solo el loop periódico alimenta el cache: los snapshots de
                 // `snapshot_now` usan System fresco y su cpu_pct=0 lo contaminaría.
                 if let Ok(mut cache) = LAST_SAMPLE.lock() {
@@ -519,7 +591,15 @@ struct ConditionWarns {
     /// (`None` = sin racha). Ventana en SEGUNDOS, no en ticks: la cadencia del
     /// sampler ahora depende de la fase y un conteo de ticks haría que
     /// "sostenido" significara 60 s grabando y 120 s en idle.
+    /// La comparten el incidente (#61) y la subida a `Elevated` (#22): UNA
+    /// sola definición de "presión sostenida".
     pressure_since: Option<Instant>,
+    /// Racha de recuperación: avail por encima de umbral+margen Y RSS lejos
+    /// del crítico. Solo bajar de nivel la consume (histéresis doble del #22).
+    recovery_since: Option<Instant>,
+    /// Nivel vigente según ESTE estado (la copia publicada vive en
+    /// `PRESSURE_LEVEL`; el loop la sincroniza tras cada tick).
+    level: PressureLevel,
 }
 
 impl ConditionWarns {
@@ -556,6 +636,65 @@ impl ConditionWarns {
             }
         }
         None
+    }
+
+    /// Máquina de estados del nivel de presión (#22). Llamar DESPUÉS de
+    /// `detect_incident` en el mismo tick (esa función mantiene la racha
+    /// `pressure_since` que la subida a `Elevated` reusa). Devuelve
+    /// `(anterior, nuevo)` para que el loop loguee la transición y publique el
+    /// atómico. Reglas:
+    /// - `→ Critical` es INMEDIATO: RSS de la app sobre el umbral crítico, o
+    ///   avail por debajo de la MITAD del umbral de presión (con la mitad del
+    ///   umbral no hay "sostenido" que valga: cargar cualquier cosa ahí tira
+    ///   la máquina a swap).
+    /// - `Normal → Elevated`: avail bajo umbral SOSTENIDO ≥
+    ///   `PRESSURE_SUSTAINED_SECS` (la misma racha del incidente).
+    /// - Bajar de nivel (desde Elevated O Critical) exige recuperación
+    ///   SOSTENIDA: avail > umbral + `PRESSURE_RECOVERY_MARGIN_MB` y RSS lejos
+    ///   del crítico durante ≥ `PRESSURE_RECOVERY_SECS`. Sin recuperación
+    ///   completa, un Critical cuya causa desapareció baja a `Elevated` (no a
+    ///   `Normal`): el sistema sigue apretado.
+    fn update_pressure_level(&mut self, s: &MemSample, now: Instant) -> (PressureLevel, PressureLevel) {
+        let prev = self.level;
+
+        let recovered_sample = s.sys_avail_mb > SYS_AVAIL_PRESSURE_MB + PRESSURE_RECOVERY_MARGIN_MB
+            && s.app_rss_mb < APP_RSS_CRITICAL_MB.saturating_sub(PRESSURE_RECOVERY_MARGIN_MB);
+        if recovered_sample {
+            self.recovery_since.get_or_insert(now);
+        } else {
+            self.recovery_since = None;
+        }
+
+        let critical_now =
+            s.app_rss_mb > APP_RSS_CRITICAL_MB || s.sys_avail_mb < SYS_AVAIL_PRESSURE_MB / 2;
+        let elevated_sustained = self
+            .pressure_since
+            .is_some_and(|t| now.duration_since(t).as_secs() >= PRESSURE_SUSTAINED_SECS);
+        let recovery_sustained = self
+            .recovery_since
+            .is_some_and(|t| now.duration_since(t).as_secs() >= PRESSURE_RECOVERY_SECS);
+
+        self.level = if critical_now {
+            PressureLevel::Critical
+        } else {
+            match prev {
+                PressureLevel::Critical | PressureLevel::Elevated => {
+                    if recovery_sustained {
+                        PressureLevel::Normal
+                    } else {
+                        PressureLevel::Elevated
+                    }
+                }
+                PressureLevel::Normal => {
+                    if elevated_sustained {
+                        PressureLevel::Elevated
+                    } else {
+                        PressureLevel::Normal
+                    }
+                }
+            }
+        };
+        (prev, self.level)
     }
 
     /// Loguea los warnings con rate-limit y devuelve el incidente (si lo hay)
@@ -726,6 +865,167 @@ mod incident_detection_tests {
             "el mensaje debe imprimir la ventana real, no un producto de constantes: {}",
             m
         );
+    }
+}
+
+#[cfg(test)]
+mod pressure_level_tests {
+    use super::*;
+
+    fn sample(app_rss_mb: u64, sys_avail_mb: u64) -> MemSample {
+        MemSample {
+            app_rss_mb,
+            llama_rss_mb: 0,
+            llama_procs: 0,
+            webview_rss_mb: 0,
+            webview_procs: 0,
+            ffmpeg_procs: 0,
+            sys_avail_mb,
+            sys_total_mb: 8000,
+            cpu_pct: 0.0,
+            proc_cpu_pct: 0.0,
+        }
+    }
+
+    /// Un tick completo como lo hace el loop: check (mantiene la racha) +
+    /// update del nivel.
+    fn tick(w: &mut ConditionWarns, s: &MemSample, now: Instant) -> PressureLevel {
+        let _ = w.detect_incident(s, now);
+        w.update_pressure_level(s, now).1
+    }
+
+    const HEALTHY: u64 = SYS_AVAIL_PRESSURE_MB + PRESSURE_RECOVERY_MARGIN_MB + 100;
+
+    #[test]
+    fn arranca_en_normal_y_un_pico_de_un_tick_no_sube() {
+        let mut w = ConditionWarns::default();
+        let t0 = Instant::now();
+        assert_eq!(tick(&mut w, &sample(500, 900), t0), PressureLevel::Normal);
+        assert_eq!(
+            tick(&mut w, &sample(500, HEALTHY), t0 + Duration::from_secs(30)),
+            PressureLevel::Normal,
+            "un pico aislado bajo umbral no debe subir el nivel"
+        );
+    }
+
+    #[test]
+    fn presion_sostenida_sube_a_elevated() {
+        let mut w = ConditionWarns::default();
+        let t0 = Instant::now();
+        tick(&mut w, &sample(500, 900), t0);
+        assert_eq!(
+            tick(
+                &mut w,
+                &sample(500, 900),
+                t0 + Duration::from_secs(PRESSURE_SUSTAINED_SECS)
+            ),
+            PressureLevel::Elevated,
+            "la MISMA ventana del incidente sube el nivel"
+        );
+    }
+
+    #[test]
+    fn critical_es_inmediato_por_rss_y_por_media_ventana_de_avail() {
+        let mut w = ConditionWarns::default();
+        let t0 = Instant::now();
+        assert_eq!(
+            tick(&mut w, &sample(APP_RSS_CRITICAL_MB + 1, HEALTHY), t0),
+            PressureLevel::Critical,
+            "RSS crítico: sin esperar racha"
+        );
+
+        let mut w2 = ConditionWarns::default();
+        assert_eq!(
+            tick(&mut w2, &sample(500, SYS_AVAIL_PRESSURE_MB / 2 - 1), t0),
+            PressureLevel::Critical,
+            "avail bajo la MITAD del umbral: sin esperar racha"
+        );
+    }
+
+    #[test]
+    fn bajar_exige_recuperacion_sostenida() {
+        let mut w = ConditionWarns::default();
+        let t0 = Instant::now();
+        tick(&mut w, &sample(500, 900), t0);
+        let t1 = t0 + Duration::from_secs(PRESSURE_SUSTAINED_SECS);
+        assert_eq!(tick(&mut w, &sample(500, 900), t1), PressureLevel::Elevated);
+
+        // Un sample sano NO baja de inmediato (histéresis).
+        let t2 = t1 + Duration::from_secs(30);
+        assert_eq!(
+            tick(&mut w, &sample(500, HEALTHY), t2),
+            PressureLevel::Elevated,
+            "la recuperación acaba de empezar"
+        );
+        // Recuperación sostenida los segundos requeridos: baja a Normal.
+        let t3 = t2 + Duration::from_secs(PRESSURE_RECOVERY_SECS);
+        assert_eq!(tick(&mut w, &sample(500, HEALTHY), t3), PressureLevel::Normal);
+    }
+
+    #[test]
+    fn oscilar_alrededor_del_umbral_no_baja_el_nivel() {
+        let mut w = ConditionWarns::default();
+        let t0 = Instant::now();
+        tick(&mut w, &sample(500, 900), t0);
+        let t1 = t0 + Duration::from_secs(PRESSURE_SUSTAINED_SECS);
+        assert_eq!(tick(&mut w, &sample(500, 900), t1), PressureLevel::Elevated);
+
+        // Por encima del umbral pero DENTRO del margen de recuperación: la
+        // racha de recuperación nunca abre y el nivel no baja.
+        let t2 = t1 + Duration::from_secs(60);
+        assert_eq!(
+            tick(&mut w, &sample(500, SYS_AVAIL_PRESSURE_MB + 100), t2),
+            PressureLevel::Elevated
+        );
+        let t3 = t2 + Duration::from_secs(600);
+        assert_eq!(
+            tick(&mut w, &sample(500, SYS_AVAIL_PRESSURE_MB + 100), t3),
+            PressureLevel::Elevated,
+            "10 min en la zona gris: sigue Elevated (histéresis doble)"
+        );
+    }
+
+    #[test]
+    fn critical_sin_recuperar_baja_solo_a_elevated() {
+        let mut w = ConditionWarns::default();
+        let t0 = Instant::now();
+        assert_eq!(
+            tick(&mut w, &sample(APP_RSS_CRITICAL_MB + 500, 900), t0),
+            PressureLevel::Critical
+        );
+        // El RSS bajó pero el sistema sigue apretado (avail bajo umbral).
+        let t1 = t0 + Duration::from_secs(30);
+        assert_eq!(
+            tick(&mut w, &sample(500, 900), t1),
+            PressureLevel::Elevated,
+            "sin recuperación completa: Critical decae a Elevated, no a Normal"
+        );
+    }
+
+    #[test]
+    fn una_recaida_reinicia_la_racha_de_recuperacion() {
+        let mut w = ConditionWarns::default();
+        let t0 = Instant::now();
+        tick(&mut w, &sample(500, 900), t0);
+        let t1 = t0 + Duration::from_secs(PRESSURE_SUSTAINED_SECS);
+        assert_eq!(tick(&mut w, &sample(500, 900), t1), PressureLevel::Elevated);
+
+        let t2 = t1 + Duration::from_secs(30);
+        tick(&mut w, &sample(500, HEALTHY), t2); // recuperación abre
+        let t3 = t2 + Duration::from_secs(30);
+        tick(&mut w, &sample(500, 900), t3); // recaída: racha se cierra
+        let t4 = t3 + Duration::from_secs(PRESSURE_RECOVERY_SECS);
+        assert_eq!(
+            tick(&mut w, &sample(500, HEALTHY), t4),
+            PressureLevel::Elevated,
+            "la recuperación vuelve a contar desde cero tras la recaída"
+        );
+    }
+
+    #[test]
+    fn el_orden_del_enum_permite_comparar_por_severidad() {
+        assert!(PressureLevel::Normal < PressureLevel::Elevated);
+        assert!(PressureLevel::Elevated < PressureLevel::Critical);
     }
 }
 

@@ -1181,6 +1181,35 @@ pub fn run() {
                         return;
                     }
 
+                    // Presión de memoria (#22): el warmup es una optimización
+                    // (evitar el cold-start del primer tip), no una necesidad —
+                    // saltarlo no rompe nada porque el coach carga on-demand al
+                    // grabar. En el arranque el sampler puede no tener tick aún
+                    // (el nivel exige racha sostenida): un sample fresco cubre
+                    // el caso "la máquina YA arrancó apretada".
+                    let strained = logging::mem_sampler::pressure_level()
+                        >= logging::mem_sampler::PressureLevel::Elevated
+                        || {
+                            let avail = match logging::mem_sampler::last_sys_avail_mb() {
+                                Some(mb) => Some(mb),
+                                None => tokio::task::spawn_blocking(
+                                    logging::mem_sampler::collect_fresh,
+                                )
+                                .await
+                                .ok()
+                                .flatten()
+                                .map(|s| s.sys_avail_mb),
+                            };
+                            avail.is_some_and(|mb| mb < logging::mem_sampler::SYS_AVAIL_PRESSURE_MB)
+                        };
+                    if strained {
+                        log::info!(
+                            "🦙 Sidecar warmup omitido — presión de memoria: el modelo se \
+                             cargará on-demand si el coach lo necesita (#22)"
+                        );
+                        return;
+                    }
+
                     let app_data_dir = match app_for_sidecar.path().app_data_dir() {
                         Ok(p) => p,
                         Err(e) => {
