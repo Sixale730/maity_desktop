@@ -7,7 +7,7 @@
 > | F0 — Prerrequisitos (#22 pressure_level, integridad de checkpoints, medición F0c) | ✅ cerrada | `095abb5` |
 > | F1 — Núcleo `batch_transcriber` + comando dev | ✅ cerrada | `5f40647` |
 > | F2 — Cola persistente + planificador híbrido | ✅ cerrada | `1768725` |
-> | F3 — Cablear disparadores (default sigue streaming) | ✅ cerrada | (este commit) |
+> | F3 — Cablear disparadores (default sigue streaming) | ✅ cerrada | `4c38d37` |
 > | F4 — Frontend | pendiente | — |
 > | F5 — Coach por heurísticos de audio | pendiente | — |
 > | F6 — Flip del default a lote | pendiente | — |
