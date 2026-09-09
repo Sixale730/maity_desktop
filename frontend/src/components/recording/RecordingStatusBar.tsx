@@ -1,6 +1,5 @@
 'use client';
 
-import { motion } from 'framer-motion';
 import { useRecordingState } from '@/contexts/RecordingStateContext';
 import { useEffect, useState } from 'react';
 
@@ -31,17 +30,11 @@ export const RecordingStatusBar: React.FC<RecordingStatusBarProps> = ({ isPaused
   };
 
   return (
-    <motion.div
-      initial={{ opacity: 0, y: -10 }}
-      animate={{ opacity: 1, y: 0 }}
-      exit={{ opacity: 0, y: -10 }}
-      transition={{ duration: 0.2 }}
-      className="flex items-center gap-2 px-3 py-2 bg-[#f5f5f6] dark:bg-gray-800 rounded-lg mb-2"
-    >
+    <div className="flex items-center gap-2 px-3 py-2 bg-[#f5f5f6] dark:bg-gray-800 rounded-lg mb-2 animate-fade-in-down">
       <div className={`w-2 h-2 rounded-full ${isPaused ? 'bg-[#ff4080]' : 'bg-[#ff0050] animate-pulse'}`} />
       <span className={`text-sm ${isPaused ? 'text-[#990030] dark:text-red-400' : 'text-[#3a3a3c] dark:text-gray-200'}`}>
         {isPaused ? 'Pausado' : 'Grabando'} • {formatDuration(displaySeconds)}
       </span>
-    </motion.div>
+    </div>
   );
 };

@@ -92,6 +92,66 @@
   animation: fade-in-up 0.5s ease-out forwards;
 }
 
+/* Animaciones de entrada que reemplazan a framer-motion en el arranque
+   (#24 de la auditoría de recursos, sep-2026). SIN `forwards` a propósito:
+   al terminar no debe quedar ningún `transform` residual, porque un
+   transform crea stacking context y rompe overlays `fixed` hermanos (la
+   píldora de grabación vive fuera del wrapper animado por eso). framer
+   hacía lo mismo al volver a `transform: none`. framer-motion sigue
+   existiendo solo en /registration (chunk dinámico). */
+@keyframes page-enter {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-page-enter {
+  animation: page-enter 0.3s ease-out;
+}
+
+@keyframes fade-in-down {
+  from {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-fade-in-down {
+  animation: fade-in-down 0.2s ease-out;
+}
+
+@keyframes scale-in {
+  from {
+    opacity: 0;
+    transform: scale(0.8);
+  }
+
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.animate-scale-in {
+  animation: scale-in 0.15s ease-out;
+}
+
+/* Entrada corta desde abajo (segmentos del transcript, tarjetas de modelo). */
+.animate-rise-in {
+  animation: fade-in-up 0.2s ease-out;
+}
+
 .delay-75 {
   animation-delay: 75ms;
 }

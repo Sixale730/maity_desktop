@@ -2,8 +2,6 @@
 
 import '../globals.css'
 import { usePathname, useRouter } from 'next/navigation'
-import { Source_Sans_3, Inter } from 'next/font/google'
-import { GeistSans } from 'geist/font/sans'
 import Sidebar from '@/components/Sidebar'
 import { SidebarProvider } from '@/components/Sidebar/SidebarProvider'
 import MainContent from '@/components/MainContent'
@@ -68,17 +66,12 @@ const queryClient = new QueryClient({
   },
 })
 
-const sourceSans3 = Source_Sans_3({
-  subsets: ['latin'],
-  weight: ['400', '500', '600', '700'],
-  variable: '--font-source-sans-3',
-})
-
-const inter = Inter({
-  subsets: ['latin'],
-  weight: ['400', '500', '600', '700'],
-  variable: '--font-inter',
-})
+// Sin `next/font` en el root layout (#24 de la auditoría de recursos, sep-2026):
+// el home y todas las rutas usan la pila del sistema (`font-sans` de Tailwind,
+// sin override en tailwind.config.ts). Source Sans 3 se declaraba aquí y no
+// la referenciaba nadie; Geist e Inter sólo las usan shell-v5 y maity-chat, así
+// que las carga app/(main)/chat/page.tsx y su CSS de @font-face viaja con esa
+// ruta, no con index.html. lint-main-bundle.js falla si vuelven aquí.
 
 // export { metadata } from './metadata'
 
@@ -805,7 +798,7 @@ export default function RootLayout({
 
   return (
     <html lang="es" className="dark">
-      <body className={`${sourceSans3.variable} ${inter.variable} ${GeistSans.variable} font-sans antialiased`}>
+      <body className="font-sans antialiased">
         <Script
           id="chunk-error-recovery"
           strategy="beforeInteractive"

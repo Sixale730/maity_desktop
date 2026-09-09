@@ -4,7 +4,6 @@ import React, { useState, useEffect, useLayoutEffect, useRef, useMemo } from 're
 import { ArrowLeft, Settings2, Mic, Database as DatabaseIcon, SparkleIcon, LayoutDashboard, CreditCard } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { invoke } from '@tauri-apps/api/core';
-import { motion } from 'framer-motion';
 import { TranscriptSettings } from '@/components/transcript/TranscriptSettings';
 import type { TranscriptModelProps } from '@/types/transcript';
 import { RecordingSettings } from '@/components/recording/RecordingSettings';
@@ -158,11 +157,12 @@ export default function SettingsPage() {
                 );
               })}
 
-              <motion.div
-                className="absolute bottom-0 z-20 h-0.5 bg-primary"
-                layoutId="underline"
+              {/* Subrayado deslizante: transición CSS sobre left/width en vez del
+                  layoutId con resorte de framer-motion (#24). React asigna el
+                  style tras hidratar (CSSOM), así que no lo bloquea la CSP. */}
+              <div
+                className="absolute bottom-0 z-20 h-0.5 bg-primary transition-[left,width] duration-300 ease-out"
                 style={{ left: underlineStyle.left, width: underlineStyle.width }}
-                transition={{ type: 'spring', stiffness: 400, damping: 40 }}
               />
             </TabsList>
 

@@ -8,10 +8,9 @@ import { useProgressChartsData } from '../hooks/useProgressChartsData';
 import { useFormResponsesRadar } from '../hooks/useFormResponsesRadar';
 import { Card } from '@/components/ui/card';
 import { RadarChartV2, type RadarSeriesPoint } from './RadarChartV2';
-import {
-  AreaChart, Area, ResponsiveContainer, YAxis,
-  XAxis, CartesianGrid, Tooltip,
-} from 'recharts';
+// recharts NO se importa aquí: entra al home en el arranque. La gráfica de
+// tendencia va por el wrapper diferido (#24 de la auditoría de recursos).
+import { LazyCommunicationTrendChart } from './LazyCommunicationTrendChart';
 import {
   Zap, Flame,
   Crown, Swords,
@@ -385,34 +384,7 @@ export function GamifiedDashboardV2() {
                 </span>
               </div>
               <div className="flex-1 min-h-[240px]">
-                <ResponsiveContainer width="100%" height="100%">
-                  <AreaChart data={communicationTrend} margin={{ top: 10, right: 10, left: -10, bottom: 0 }}>
-                    <defs>
-                      <linearGradient id="commTrendGrad" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="0%" stopColor="#ec4899" stopOpacity={0.4} />
-                        <stop offset="100%" stopColor="#ec4899" stopOpacity={0} />
-                      </linearGradient>
-                    </defs>
-                    <CartesianGrid stroke="#1a1a2e" strokeDasharray="3 3" vertical={false} />
-                    <XAxis dataKey="fecha" tick={{ fontSize: 10, fill: '#6b7280' }} axisLine={false} tickLine={false} />
-                    <YAxis domain={[0, 100]} ticks={[0, 25, 50, 75, 100]} tick={{ fontSize: 10, fill: '#6b7280' }} axisLine={false} tickLine={false} />
-                    <Tooltip
-                      contentStyle={{ background: '#141418', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, fontSize: 12 }}
-                      labelStyle={{ color: '#a0a0b0' }}
-                      itemStyle={{ color: '#fff' }}
-                      formatter={(v) => [typeof v === 'number' ? v : 0, 'Score']}
-                    />
-                    <Area
-                      type="monotone"
-                      dataKey="score"
-                      stroke="#ec4899"
-                      strokeWidth={2.5}
-                      fill="url(#commTrendGrad)"
-                      dot={{ r: 5, fill: '#0a0a12', stroke: '#ec4899', strokeWidth: 2 }}
-                      activeDot={{ r: 7, fill: '#ec4899', stroke: '#fff', strokeWidth: 2 }}
-                    />
-                  </AreaChart>
-                </ResponsiveContainer>
+                <LazyCommunicationTrendChart data={communicationTrend} />
               </div>
             </Card>
           )}

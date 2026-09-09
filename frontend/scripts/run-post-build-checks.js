@@ -16,6 +16,7 @@ const SMOKE_PS1 = path.join(REPO_ROOT, 'scripts', 'smoke-test-startup.ps1');
 const SMOKE_SH = path.join(REPO_ROOT, 'scripts', 'smoke-test-startup.sh');
 const EXE_IMPORTS_LINT = path.join(__dirname, 'lint-exe-imports.js');
 const AUX_BUNDLE_LINT = path.join(__dirname, 'lint-aux-bundle.js');
+const MAIN_BUNDLE_LINT = path.join(__dirname, 'lint-main-bundle.js');
 
 const platform = os.platform();
 
@@ -27,6 +28,18 @@ const auxLint = spawnSync(process.execPath, [AUX_BUNDLE_LINT], { stdio: 'inherit
 if (auxLint.status !== 0) {
     console.error('');
     console.error('[post-build] FAIL: aux bundle check failed (see above).');
+    console.error('  Escape hatch: pnpm run tauri:build:debug:skip-checks');
+    process.exit(1);
+}
+
+// Todas las plataformas: mide out/index.html (#24 de la auditoría). framer-motion,
+// recharts, el editor y las fuentes de next/font salieron del arranque de la main;
+// si vuelven, el exe arranca igual y el smoke no lo vería.
+console.log('[post-build] Checking main window startup bundle (#24)...');
+const mainLint = spawnSync(process.execPath, [MAIN_BUNDLE_LINT], { stdio: 'inherit', shell: false });
+if (mainLint.status !== 0) {
+    console.error('');
+    console.error('[post-build] FAIL: main bundle check failed (see above).');
     console.error('  Escape hatch: pnpm run tauri:build:debug:skip-checks');
     process.exit(1);
 }

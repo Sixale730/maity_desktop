@@ -7,7 +7,6 @@ import { useTranscriptStreaming } from "@/hooks/useTranscriptStreaming";
 import { ConfidenceIndicator } from "@/components/transcript/ConfidenceIndicator";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { RecordingStatusBar } from "@/components/recording/RecordingStatusBar";
-import { motion, AnimatePresence } from "framer-motion";
 import { TranscriptSegmentData } from "@/types";
 
 export interface VirtualizedTranscriptViewProps {
@@ -268,24 +267,20 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
 
     return (
         <div ref={scrollRef} className="flex flex-col h-full overflow-y-auto px-4 py-2">
-            {/* Recording Status Bar - Sticky at top, always visible when recording */}
-            <AnimatePresence>
-                {isRecording && (
-                    <div className="sticky top-0 z-10 bg-background pb-2">
-                        <RecordingStatusBar isPaused={isPaused} />
-                    </div>
-                )}
-            </AnimatePresence>
+            {/* Recording Status Bar - Sticky at top, always visible when recording.
+                (Antes iba dentro de un <AnimatePresence> que envolvía un <div>
+                normal: no animaba nada. Las entradas son keyframes CSS desde #24.) */}
+            {isRecording && (
+                <div className="sticky top-0 z-10 bg-background pb-2">
+                    <RecordingStatusBar isPaused={isPaused} />
+                </div>
+            )}
 
             {/* Content - add padding when recording to prevent overlap */}
             <div className={isRecording ? 'pt-2' : ''}>
             {segments.length === 0 ? (
                 // Empty state
-                <motion.div
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    className="flex-1 flex items-center justify-center text-muted-foreground"
-                >
+                <div className="flex-1 flex items-center justify-center text-muted-foreground animate-fade-in">
                     {isRecording ? (
                         <>
                             <div className="flex items-center justify-center mb-3">
@@ -304,7 +299,7 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                             <p className="text-sm text-muted-foreground mt-1">Inicia una grabación para ver la transcripción en vivo</p>
                         </div>
                     )}
-                </motion.div>
+                </div>
             ) : useVirtualization ? (
                 // Virtualized rendering for large lists
                 <>
@@ -364,15 +359,10 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
 
                     {/* Listening indicator when recording */}
                     {!isStopping && isRecording && !isPaused && !isProcessing && segments.length > 0 && (
-                        <motion.div
-                            initial={{ opacity: 0 }}
-                            animate={{ opacity: 1 }}
-                            exit={{ opacity: 0 }}
-                            className="flex items-center gap-2 mt-4 text-[#6a6a6d]"
-                        >
+                        <div className="flex items-center gap-2 mt-4 text-[#6a6a6d] animate-fade-in">
                             <div className="w-2 h-2 bg-[#485df4] rounded-full animate-pulse"></div>
                             <span className="text-sm">Escuchando...</span>
-                        </motion.div>
+                        </div>
                     )}
                 </>
             ) : (
@@ -383,12 +373,7 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                             const isStreaming = streamingSegmentId === segment.id;
 
                             return (
-                                <motion.div
-                                    key={segment.id}
-                                    initial={{ opacity: 0, y: 5 }}
-                                    animate={{ opacity: 1, y: 0 }}
-                                    transition={{ duration: 0.15 }}
-                                >
+                                <div key={segment.id} className="animate-rise-in">
                                     <TranscriptSegment
                                         id={segment.id}
                                         timestamp={segment.timestamp}
@@ -398,7 +383,7 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                                         showConfidence={showConfidence}
                                         sourceType={segment.source_type}
                                     />
-                                </motion.div>
+                                </div>
                             );
                         })}
                     </div>
@@ -421,15 +406,10 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
 
                     {/* Listening indicator when recording */}
                     {!isStopping && isRecording && !isPaused && !isProcessing && segments.length > 0 && (
-                        <motion.div
-                            initial={{ opacity: 0 }}
-                            animate={{ opacity: 1 }}
-                            exit={{ opacity: 0 }}
-                            className="flex items-center gap-2 mt-4 text-[#6a6a6d]"
-                        >
+                        <div className="flex items-center gap-2 mt-4 text-[#6a6a6d] animate-fade-in">
                             <div className="w-2 h-2 bg-[#485df4] rounded-full animate-pulse"></div>
                             <span className="text-sm">Escuchando...</span>
-                        </motion.div>
+                        </div>
                     )}
                 </>
             )}

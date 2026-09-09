@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { createSubscriptionGroup } from '@/lib/tauriSubscribe';
 import { invoke } from '@tauri-apps/api/core';
-import { motion, AnimatePresence } from 'framer-motion';
 import { toast } from 'sonner';
 import {
   ModelInfo,
@@ -487,13 +486,9 @@ export function ModelManager({
 
       {/* Helper text */}
       {selectedModel && (
-        <motion.div
-          initial={{ opacity: 0, y: -5 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="text-xs text-[#6a6a6d] dark:text-gray-400 text-center pt-2"
-        >
+        <div className="text-xs text-[#6a6a6d] dark:text-gray-400 text-center pt-2 animate-fade-in">
           Usando {getDisplayName(selectedModel)} para transcripción
-        </motion.div>
+        </div>
       )}
     </div>
   );
@@ -523,8 +518,6 @@ function ModelCard({
   isDownloading: _isDownloading,
   displayName
 }: ModelCardProps) {
-  const [isHovered, setIsHovered] = useState(false);
-
   const isAvailable = model.status === 'Available';
   const isMissing = model.status === 'Missing';
   const isError = typeof model.status === 'object' && 'Error' in model.status;
@@ -535,14 +528,9 @@ function ModelCard({
       : null;
 
   return (
-    <motion.div
-      initial={{ opacity: 0, y: 5 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.2 }}
-      onMouseEnter={() => setIsHovered(true)}
-      onMouseLeave={() => setIsHovered(false)}
+    <div
       className={`
-        relative rounded-lg border-2 transition-all cursor-pointer
+        group relative rounded-lg border-2 transition-all cursor-pointer animate-rise-in
         ${isSelected && isAvailable
           ? 'border-[#485df4] bg-[#f0f2fe] dark:bg-blue-900/30'
           : isAvailable
@@ -570,13 +558,9 @@ function ModelCard({
               <span className="text-2xl">{getModelIcon(model.accuracy)}</span>
               <h3 className="font-semibold text-[#000000] dark:text-white">{displayName}</h3>
               {isSelected && isAvailable && (
-                <motion.span
-                  initial={{ scale: 0 }}
-                  animate={{ scale: 1 }}
-                  className="bg-[#3a4ac3] text-white px-2 py-0.5 rounded-full text-xs font-medium flex items-center gap-1"
-                >
+                <span className="bg-[#3a4ac3] text-white px-2 py-0.5 rounded-full text-xs font-medium flex items-center gap-1 animate-scale-in">
                   ✓
-                </motion.span>
+                </span>
               )}
               {isQuantizedModel(model.name) && (
                 <span className={`px-2 py-0.5 rounded-full text-xs ${
@@ -619,26 +603,20 @@ function ModelCard({
                   <div className="w-2 h-2 bg-[#1bea9a] rounded-full"></div>
                   <span className="text-xs font-medium">Listo</span>
                 </div>
-                <AnimatePresence>
-                  {isHovered && (
-                    <motion.button
-                      initial={{ opacity: 0, scale: 0.8 }}
-                      animate={{ opacity: 1, scale: 1 }}
-                      exit={{ opacity: 0, scale: 0.8 }}
-                      transition={{ duration: 0.15 }}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onDelete();
-                      }}
-                      className="text-[#8a8a8d] dark:text-gray-500 hover:text-[#cc0040] dark:hover:text-red-400 transition-colors p-1"
-                      title="Eliminar modelo para liberar espacio"
-                    >
-                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                      </svg>
-                    </motion.button>
-                  )}
-                </AnimatePresence>
+                {/* Visible al pasar el mouse por la tarjeta (group-hover) o con
+                    foco de teclado; antes era estado React + AnimatePresence. */}
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onDelete();
+                  }}
+                  className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 text-[#8a8a8d] dark:text-gray-500 hover:text-[#cc0040] dark:hover:text-red-400 transition-[opacity,color] duration-150 p-1"
+                  title="Eliminar modelo para liberar espacio"
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                  </svg>
+                </button>
               </>
             )}
 
@@ -693,12 +671,7 @@ function ModelCard({
 
         {/* Full-width Download Progress Bar - PROMINENT */}
         {downloadProgress !== null && (
-          <motion.div
-            initial={{ opacity: 0, height: 0 }}
-            animate={{ opacity: 1, height: 'auto' }}
-            exit={{ opacity: 0, height: 0 }}
-            className="mt-3 pt-3 border-t border-[#e7e7e9] dark:border-gray-700"
-          >
+          <div className="mt-3 pt-3 border-t border-[#e7e7e9] dark:border-gray-700 animate-fade-in">
             <div className="flex items-center justify-between mb-2">
               <div className="flex items-center gap-2">
                 <span className="text-sm font-medium text-[#3a4ac3] dark:text-blue-400">Descargando...</span>
@@ -716,11 +689,9 @@ function ModelCard({
               </button>
             </div>
             <div className="w-full h-2 bg-[#d0d0d3] dark:bg-gray-600 rounded-full overflow-hidden">
-              <motion.div
-                className="h-full bg-gradient-to-r from-blue-500 to-blue-600 rounded-full"
-                initial={{ width: 0 }}
-                animate={{ width: `${downloadProgress}%` }}
-                transition={{ duration: 0.3, ease: 'easeOut' }}
+              <div
+                className="h-full bg-gradient-to-r from-blue-500 to-blue-600 rounded-full transition-[width] duration-300 ease-out"
+                style={{ width: `${downloadProgress}%` }}
               />
             </div>
             <p className="text-xs text-[#6a6a6d] dark:text-gray-400 mt-1">
@@ -732,9 +703,9 @@ function ModelCard({
                 'Descargando...'
               )}
             </p>
-          </motion.div>
+          </div>
         )}
       </div>
-    </motion.div>
+    </div>
   );
 }

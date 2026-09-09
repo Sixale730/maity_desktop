@@ -293,6 +293,7 @@ Detalle completo en `docs/UI_REGLAS.md` — resumen de lo que NO hay que romper:
 - **Botones "Empezar a grabar" del dashboard**: NO `router.push('/')` (el dashboard YA está en `/`); usar el puente del Sidebar (`start-recording-from-sidebar`).
 - **Píldora de grabación**: contenedor en `z-30` + `pointer-events-none` (interior `pointer-events-auto`); NO subir a `z-50`.
 - **Todo `onCloseRequested` de JS DEBE hacer `event.preventDefault()`** — sin él `@tauri-apps/api` llama `destroy()` y mata la app con jornada activa (así se embarcó en la 0.2.57 de la Store).
+- **Bundle de arranque (#24)**: `framer-motion` SOLO bajo `features/auth/**` (registro; chunk dinámico) — las entradas del resto son keyframes de `globals.css` sin `forwards`; `recharts` SOLO en `CommunicationTrendChart.tsx` vía `LazyCommunicationTrendChart` (`dynamic`); `next/font` SOLO en `app/(main)/chat/page.tsx`, nunca en el root layout. Guard post-build: `scripts/lint-main-bundle.js` (marcadores + presupuesto + `@font-face`).
 
 ## Telemetria y diagnostico remoto
 

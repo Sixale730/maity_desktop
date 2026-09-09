@@ -1,7 +1,6 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { motion } from 'framer-motion';
 import { invoke } from '@tauri-apps/api/core';
 import { RecordingControls } from '@/components/recording/RecordingControls';
 import { LiveFeedbackPanel } from '@/components/coach/LiveFeedbackPanel';
@@ -253,12 +252,10 @@ export default function Home() {
 
   return (
     <>
-    <motion.div
-      initial={{ opacity: 0, y: 20 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.3, ease: 'easeOut' }}
-      className="flex flex-col h-screen bg-background"
-    >
+    {/* Entrada con keyframe CSS (animate-page-enter, globals.css) en vez de
+        framer-motion: era el único uso de framer en el home y costaba 111 KB
+        en el arranque (#24 de la auditoría). */}
+    <div className="flex flex-col h-screen bg-background animate-page-enter">
       {/* All Modals supported*/}
       <SettingsModals
         modals={modals}
@@ -315,9 +312,10 @@ export default function Home() {
           sidebarCollapsed={sidebarCollapsed}
         />
       </div>
-    </motion.div>
+    </div>
 
-    {/* Recording controls - OUTSIDE motion.div to escape stacking context.
+    {/* Recording controls - FUERA del wrapper animado: mientras dura el
+        keyframe su transform crea un stacking context que taparía este fixed.
         Iter 6: el gate `widgetOpen !== true` se quitó. La píldora de la home
         SIEMPRE se renderiza (cuando hay mic disponible / grabando) — coexiste
         con el coach-float flotante. Antes ocultarla causaba que el usuario
