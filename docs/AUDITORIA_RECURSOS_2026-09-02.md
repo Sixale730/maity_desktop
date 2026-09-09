@@ -75,7 +75,7 @@ exactamente lo cerrado. La tabla de abajo es una foto del estado; la verdad es l
 | 30 | El helper crea un `LlamaContext` por request | Bajo | CPU/RAM | Jornada | M | ✗ | abierto |
 | 31 | El workspace ignora el `[profile.release]` y el `[patch]` de cpal | Medio | CPU/Disco | Arranque | S | = | abierto |
 | 32 | En Windows ffmpeg se descarga en runtime | Alto | Disco/Red/RAM | Jornada/Post | M | = | **cerrado** `6b906a6` |
-| 33 | DirectML y D3D12 son imports de carga del exe | Bajo | RAM/CPU | Arranque | S | = | abierto |
+| 33 | DirectML y D3D12 son imports de carga del exe | Bajo | RAM/CPU | Arranque | S | = | **cerrado** `06c6da6` |
 | 34 | Los segmentos descartados dejan su carpeta huérfana | Medio | Disco | Post | S | = | **cerrado** `f52472d` |
 | 35 | Dos pilas HTTP/TLS, crates duplicados y deps muertas | Bajo | Disco/CPU | Arranque | S | = | **cerrado** `a3a0881` |
 
@@ -690,7 +690,7 @@ Ordenados por impacto estimado en RAM, luego CPU, luego disco y red.
   mano.
 
 ### #33 · DirectML y D3D12 son imports de carga del exe aunque el motor por defecto corre en CPU
-`Bajo` · RAM/CPU · Arranque · esfuerzo S · verificado · no cambia por lote · abierto
+`Bajo` · RAM/CPU · Arranque · esfuerzo S · verificado · no cambia por lote · **CERRADO** `06c6da6`
 
 - **Impacto**: `directml.dll`, `d3d12.dll`, `dxcore.dll` y `dxgi.dll` se mapean en cada arranque (3-8 MB
   de RSS privado estimados, latencia y un toque al driver de GPU); el EP de DML enlazado estáticamente
@@ -699,6 +699,33 @@ Ordenados por impacto estimado en RAM, luego CPU, luego disco y red.
   solo para Moonshine y Canary) · `parakeet_engine/model.rs:120` (`prefer_gpu = false`).
 - **Cambio**: quitar directml en Windows (solo CPU EP) o dejarlo tras un feature de Cargo.
 - **Riesgo**: Moonshine y Canary pierden GPU; ambos son opcionales.
+- **CORRECCIÓN al remedio (09-sep)**: "quitar `directml`" **no tiene efecto ni en RAM ni en el exe**. El
+  feature es del crate `ort` y solo da cuerpo a `DirectMLExecutionProvider::register()` (sin él devuelve
+  `RegisterError::MissingFeature`); qué código entra al exe lo decide el prebuilt de pyke, y para
+  `x86_64-pc-windows-msvc` `ort-sys/dist.txt` tiene UNA sola fila sin variante (`none`, 289 MB, hash
+  `540D19…`) que ya trae el provider DML compilado (`Dml::DmlGraphFusionTransformer` en
+  `dumpbin /symbols`), con `static_link_prerequisites` enlazando `DXCORE/DXGI/D3D12/DirectML`
+  **incondicionalmente** en Windows. El exe importaba exactamente 5 funciones (`DMLCreateDevice1`,
+  `D3D12CreateDevice`, `D3D12SerializeVersionedRootSignature`, `CreateDXGIFactory2`,
+  `DXCoreCreateAdapterFactory`), todas funciones y sin sección delay-load. Lo que sí quita el costo de
+  arranque es **`/DELAYLOAD`**, que es lo que hace el propio ORT en su `onnxruntime.dll`
+  (`cmake/onnxruntime_providers_dml.cmake`). Los "15-25 MB del exe" **no se recuperan** por ninguna vía
+  de features: exigirían un ORT sin `--use_dml` (`ORT_LIB_LOCATION`) o `load-dynamic` + el
+  `onnxruntime.dll` CPU-only oficial. Además, el `DirectML.dll` "que no se empaqueta" SÍ viaja en el
+  **MSI** (17.7 MB, lo copia `copy-dylibs` de `ort` a `target/debug` y WiX lo recoge); NSIS y MSIX no
+  lo llevan, así que dev y producción resolvían DLLs distintos (pyke vs System32) en 0.2.51–0.2.57.
+- **Cierre (09-sep)**: `build.rs::configure_windows_delay_load` (`/DELAYLOAD` de los 4 DLLs + `delayimp`
+  + `/IGNORE:4199`, `rustc-link-arg` para que cubra también `cargo test`), y de paso DML **opt-in**:
+  feature de la app `onnx-directml` (= `ort/directml`), OFF por defecto; el target Windows deja de pedir
+  `directml`; `onnx_providers.rs` gatea `use`/`push` con `all(windows, onnx-directml)` y
+  `resolve_plan(directml_compiled)` devuelve CPU en Windows sin el feature (Moonshine/Canary a CPU como
+  Parakeet, con log explícito). Guard `frontend/scripts/lint-exe-imports.js` (parser PE en Node, en el
+  post-build; probado en rojo contra el exe de 0.2.58). Verificado: `dumpbin /dependents` sin los 4,
+  `/imports` con los 4 bajo "delay load imports", **0 módulos DX cargados** en login/idle
+  (`Get-Process … Modules`, 65 módulos, WS 68 MB), 16 tests, `cargo check --features onnx-directml`,
+  build debug + smoke. Exe debug 97.6 → 93 MB, pero la baja es de `cargo clean -p` (incrementales), no
+  del cambio. Referencia y checklist para darle GPU a un modelo nuevo: `docs/ONNX_EXECUTION_PROVIDERS.md`;
+  reglas en CLAUDE.md § "Motores de Transcripcion".
 
 ### #34 · Los segmentos descartados por contenido dejan su carpeta huérfana con el audio dentro
 `Medio` · Disco · Post · esfuerzo S · verificado · no cambia por lote · **CERRADO** `f52472d`
