@@ -152,6 +152,13 @@ pub struct LoudnessNormalizer {
     true_peak_limit: f32,
 }
 
+/// Modo con el que se construye el medidor EBU R128. `HISTOGRAM` es lo que acota la memoria
+/// (ver el comentario en `LoudnessNormalizer::new`); `I` es la sonoridad integrada que alimenta la
+/// ganancia y `TRUE_PEAK` habilita el medidor de picos.
+fn ebur128_mode() -> ebur128::Mode {
+    ebur128::Mode::I | ebur128::Mode::TRUE_PEAK | ebur128::Mode::HISTOGRAM
+}
+
 impl LoudnessNormalizer {
     /// Create a new EBU R128 loudness normalizer
     ///
@@ -162,7 +169,20 @@ impl LoudnessNormalizer {
         const TRUE_PEAK_LIMIT: f64 = -1.0;
         const ANALYZE_CHUNK_SIZE: usize = 512;
 
-        let ebur128 = ebur128::EbuR128::new(channels, sample_rate, ebur128::Mode::I | ebur128::Mode::TRUE_PEAK)
+        // Mode::HISTOGRAM (sep-2026, #11 de la auditoría de recursos): sin él, el crate guarda
+        // la energía de CADA bloque de 100 ms en un VecDeque<f64> sin tope (`history = usize::MAX`):
+        // ~80 B/s por segmento, y `loudness_global()` —que se llama cada 512 muestras— recorre la
+        // cola entera, así que el CPU también crecía con la duración. Con el histograma la memoria
+        // son 1000 bins fijos (8 KB) y el cálculo es O(1000) siempre.
+        //
+        // NO usar `set_max_history(...)` para acotarlo: (1) en ebur128 0.1.10 `Queue::set_max_size`
+        // rellena la cola con ceros hasta `max` cuando se llama sobre una instancia nueva, y esos
+        // ceros cuentan en el promedio del umbral relativo (gate de ~-20 LU en vez de -10 LU durante
+        // el primer minuto); (2) una ventana deslizante cambia la dinámica en la jornada: tras un
+        // silencio largo la cola queda sólo con ruido de sala, la ganancia sube ~+37 dB y ese audio
+        // amplificado es el que ve el VAD. El histograma conserva la integración sobre TODO el
+        // segmento (misma dinámica que antes, ±0.1 LU por la cuantización de los bins).
+        let ebur128 = ebur128::EbuR128::new(channels, sample_rate, ebur128_mode())
             .map_err(|e| anyhow::anyhow!("Failed to create EBU R128 normalizer: {}", e))?;
 
         let true_peak_limit = 10_f32.powf(TRUE_PEAK_LIMIT as f32 / 20.0);
@@ -182,20 +202,21 @@ impl LoudnessNormalizer {
     /// resulting in consistent normalization that sounds natural.
     ///
     /// Target: -23 LUFS (professional broadcast standard for speech/dialog)
-    /// Applies sample-by-sample with 10ms lookahead limiter to prevent clipping
-    pub fn normalize_loudness(&mut self, samples: &[f32]) -> Vec<f32> {
+    /// Applies sample-by-sample with 10ms lookahead limiter to prevent clipping.
+    ///
+    /// Escribe EN SITIO (sep-2026, #11 de la auditoría): esta función corre en el callback de
+    /// captura de cada 10 ms y antes devolvía un `Vec` nuevo por llamada.
+    pub fn normalize_loudness(&mut self, samples: &mut [f32]) {
         if samples.is_empty() {
-            return Vec::new();
+            return;
         }
 
         const TARGET_LUFS: f64 = -23.0;
         const ANALYZE_CHUNK_SIZE: usize = 512;
 
-        let mut normalized_samples = Vec::with_capacity(samples.len());
-
-        for &sample in samples {
+        for sample in samples.iter_mut() {
             // Accumulate samples for loudness analysis
-            self.loudness_buffer.push(sample);
+            self.loudness_buffer.push(*sample);
 
             // Analyze loudness every 512 samples
             if self.loudness_buffer.len() >= ANALYZE_CHUNK_SIZE {
@@ -214,13 +235,9 @@ impl LoudnessNormalizer {
             }
 
             // Apply gain and true peak limiting
-            let amplified = sample * self.gain_linear;
-            let limited = self.limiter.process(amplified, self.true_peak_limit);
-
-            normalized_samples.push(limited);
+            let amplified = *sample * self.gain_linear;
+            *sample = self.limiter.process(amplified, self.true_peak_limit);
         }
-
-        normalized_samples
     }
 }
 
@@ -957,25 +974,87 @@ mod tests {
         }
 
         #[test]
-        fn empty_input_returns_empty_output() {
+        fn empty_input_is_a_noop() {
             let mut norm = LoudnessNormalizer::new(1, 48000).unwrap();
-            assert!(norm.normalize_loudness(&[]).is_empty());
+            let mut empty: Vec<f32> = Vec::new();
+            norm.normalize_loudness(&mut empty);
+            assert!(empty.is_empty());
         }
 
         #[test]
-        fn output_length_matches_input() {
+        fn writes_in_place_and_preserves_length() {
             let mut norm = LoudnessNormalizer::new(1, 48000).unwrap();
-            let input = vec![0.1f32; 1024];
-            assert_eq!(norm.normalize_loudness(&input).len(), 1024);
+            let mut buf = vec![0.1f32; 1024];
+            let ptr_before = buf.as_ptr();
+            norm.normalize_loudness(&mut buf);
+            assert_eq!(buf.len(), 1024);
+            assert_eq!(buf.as_ptr(), ptr_before, "no debe reasignar el buffer");
+            // La ganancia inicial es 1.0 y el limitador es un retardo de 10 ms sin reducción
+            // para una señal a 0.1, así que tras el lookahead el valor sale intacto.
+            assert!((buf[1000] - 0.1).abs() < 1e-6, "muestra 1000 = {}", buf[1000]);
         }
 
         #[test]
         fn keeps_output_below_true_peak() {
             let mut norm = LoudnessNormalizer::new(1, 48000).unwrap();
-            let input: Vec<f32> = (0..4800).map(|i| ((i as f32 * 0.01).sin()) * 0.9).collect();
-            let out = norm.normalize_loudness(&input);
-            let max = out.iter().fold(0.0f32, |a, &b| a.max(b.abs()));
+            let mut buf: Vec<f32> = (0..4800).map(|i| ((i as f32 * 0.01).sin()) * 0.9).collect();
+            norm.normalize_loudness(&mut buf);
+            let max = buf.iter().fold(0.0f32, |a, &b| a.max(b.abs()));
             assert!(max <= 1.0, "output exceeded 1.0 TP: {}", max);
+        }
+
+        /// #11 de la auditoría: la memoria del medidor está acotada SOLO si el modo lleva
+        /// `HISTOGRAM` (1000 bins fijos). Sin él, el crate acumula un f64 por bloque de 100 ms
+        /// durante toda la grabación.
+        #[test]
+        fn usa_histograma_para_acotar_la_memoria() {
+            let norm = LoudnessNormalizer::new(1, 48000).unwrap();
+            let mode = norm.ebur128.mode();
+            assert!(mode.contains(ebur128::Mode::HISTOGRAM), "modo sin HISTOGRAM: {:?}", mode);
+            assert!(mode.contains(ebur128::Mode::I), "la ganancia necesita la sonoridad integrada");
+            assert_eq!(mode, ebur128_mode());
+        }
+
+        /// Señal sintética con dos niveles alternados (ejercita el gate relativo de -10 LU)
+        /// y silencio (ejercita el gate absoluto de -70 LUFS).
+        fn senal_de_prueba(secs: usize) -> Vec<f32> {
+            let rate = 48_000usize;
+            (0..secs * rate)
+                .map(|i| {
+                    let t = i as f32 / rate as f32;
+                    let amp = match (i / (2 * rate)) % 3 {
+                        0 => 0.3,
+                        1 => 0.05,
+                        _ => 0.0,
+                    };
+                    (t * 2.0 * std::f32::consts::PI * 440.0).sin() * amp
+                })
+                .collect()
+        }
+
+        /// La razón por la que se eligió `HISTOGRAM` y no `set_max_history`: conserva la
+        /// integración sobre TODO el segmento. Si el crate cambiara la cuantización o el
+        /// comportamiento del histograma, este test lo delata.
+        #[test]
+        fn el_histograma_no_cambia_la_sonoridad_integrada() {
+            let senal = senal_de_prueba(18);
+
+            let mut cola = ebur128::EbuR128::new(1, 48_000, ebur128::Mode::I).unwrap();
+            let mut histo = ebur128::EbuR128::new(1, 48_000, ebur128_mode()).unwrap();
+            for chunk in senal.chunks(512) {
+                cola.add_frames_f32(chunk).unwrap();
+                histo.add_frames_f32(chunk).unwrap();
+            }
+
+            let lufs_cola = cola.loudness_global().unwrap();
+            let lufs_histo = histo.loudness_global().unwrap();
+            assert!(lufs_cola.is_finite() && lufs_cola < 0.0, "cola: {}", lufs_cola);
+            assert!(
+                (lufs_cola - lufs_histo).abs() < 0.2,
+                "cola={:.3} LUFS, histograma={:.3} LUFS: difieren más de 0.2 LU",
+                lufs_cola,
+                lufs_histo
+            );
         }
     }
 }

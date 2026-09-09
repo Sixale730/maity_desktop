@@ -4,8 +4,7 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use anyhow::Result;
 use log::{debug, error, info, warn};
-use crate::{perf_debug, batch_audio_metric};
-use super::batch_processor::AudioMetricsBatcher;
+use crate::perf_debug;
 use rubato::{Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolationType, WindowFunction};
 
 use super::devices::AudioDevice;
@@ -589,7 +588,7 @@ impl AudioCapture {
             // STEP 3: Apply EBU R128 normalization (professional loudness standard)
             if let Ok(mut normalizer_lock) = self.normalizer.lock() {
                 if let Some(ref mut normalizer) = *normalizer_lock {
-                    mono_data = normalizer.normalize_loudness(&mono_data);
+                    normalizer.normalize_loudness(&mut mono_data);
 
                     // Log normalization occasionally for debugging
                     let chunk_id = self.chunk_counter.load(std::sync::atomic::Ordering::SeqCst);
@@ -724,8 +723,6 @@ pub struct AudioPipeline {
     // Performance optimization: reduce logging frequency
     last_summary_time: std::time::Instant,
     processed_chunks: u64,
-    // Smart batching for audio metrics
-    metrics_batcher: Option<AudioMetricsBatcher>,
     // RECORDING ONLY: Ring buffer for stereo WAV file (L=mic, R=system)
     ring_buffer: AudioMixerRingBuffer,
     // Recording sender for stereo interleaved audio
@@ -813,8 +810,6 @@ impl AudioPipeline {
             // Performance optimization: reduce logging frequency
             last_summary_time: std::time::Instant::now(),
             processed_chunks: 0,
-            // Initialize metrics batcher for smart batching
-            metrics_batcher: Some(AudioMetricsBatcher::new()),
             ring_buffer,
             recording_sender_for_mixed: None,  // Will be set by manager
             // Cross-channel echo suppression
@@ -876,20 +871,6 @@ impl AudioPipeline {
                         } else { 0.0 };
                         let peak = chunk.data.iter().map(|&x| x.abs()).fold(0.0f32, f32::max);
                         self.state.set_audio_level(chunk.device_type, rms.min(1.0), peak.min(1.0));
-                    }
-
-                    // Smart batching: collect metrics instead of logging every chunk
-                    if let Some(ref batcher) = self.metrics_batcher {
-                        let avg_level = chunk.data.iter().map(|&x| x.abs()).sum::<f32>() / chunk.data.len() as f32;
-                        let duration_ms = chunk.data.len() as f64 / chunk.sample_rate as f64 * 1000.0;
-
-                        batch_audio_metric!(
-                            Some(batcher),
-                            chunk.chunk_id,
-                            chunk.data.len(),
-                            duration_ms,
-                            avg_level
-                        );
                     }
 
                     // CRITICAL: Log summary only every 200 chunks OR every 60 seconds (99.5% reduction)

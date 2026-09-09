@@ -119,7 +119,7 @@ clean_start_backend.cmd               # Iniciar servidor
 
 | Modulo | Descripcion |
 |--------|-------------|
-| `audio/` | Pipeline de audio completo (46 archivos): captura, VAD, mezcla, grabacion, transcripcion |
+| `audio/` | Pipeline de audio completo (45 archivos): captura, VAD, mezcla, grabacion, transcripcion |
 | `whisper_engine/` | Motor Whisper.cpp con aceleracion GPU (el "procesamiento paralelo" se borró en sep-2026, #21 de la auditoría: nadie lo invocaba) |
 | `parakeet_engine/` | Motor Parakeet ONNX (~150MB, rapido on-device) |
 | `moonshine_engine/` | Motor Moonshine ONNX (ultra-rapido, dual decoder) |
@@ -158,7 +158,7 @@ RecordingSaver WhisperEngine DeepgramProvider
 - **Atribucion de hablante**: `DeviceType` (Microphone/System) se captura ANTES de enviar al motor de transcripcion, mapeando `Microphone->"user"` y `System->"interlocutor"`
 - **Ring Buffer de mezcla**: Acumula muestras hasta ventanas alineadas de 50ms; ducking RMS evita que audio del sistema ahogue al microfono
 
-### Estructura del Modulo de Audio (46 archivos)
+### Estructura del Modulo de Audio (45 archivos)
 
 ```
 audio/
@@ -209,7 +209,6 @@ audio/
 ├── simple_level_monitor.rs    # Monitor simplificado
 ├── audio_processing.rs        # Normalizacion y efectos
 ├── buffer_pool.rs             # Pool pre-asignado de buffers
-├── batch_processor.rs         # Procesamiento por lotes
 ├── post_processor.rs          # Post-procesamiento
 ├── diagnostics.rs             # Logging de diagnostico
 ├── async_logger.rs            # Logger asincrono
@@ -689,16 +688,21 @@ El analisis de conversaciones usa un sistema V4 con multiples dimensiones:
 
 ### Logging Consciente del Rendimiento
 - `perf_debug!()`/`perf_trace!()` para logging en rutas criticas — costo cero en builds de release (definidos en `lib.rs`)
-- `AudioMetricsBatcher` (batch_processor.rs) para agrupar metricas de audio
 - `AudioBufferPool` (buffer_pool.rs) para pre-asignar buffers
+- El `AudioMetricsBatcher` (`batch_processor.rs`) se **borró** en sep-2026 (#10 de la auditoría de recursos): acumulaba resúmenes que nadie leía — ver el blockquote en § Rendimiento de Audio
 
 ### Rendimiento de Audio
 - El filtrado VAD reduce la carga de Whisper en ~70% (solo procesa voz)
 - El guardado incremental con checkpoints de 30s previene perdida de datos por crashes
 - Features de Cargo para GPU: `--features cuda`, `--features vulkan`, `--features metal`
-- EBU R128 loudness normalization via `ebur128`
+- EBU R128 loudness normalization via `ebur128` (con `Mode::HISTOGRAM`, ver abajo)
 - Noise suppression via `nnnoiseless` (RNNoise)
 - El motor STT se carga sólo con sesión + registro y se descarga en logout y en reposo (tier Low) — ver el blockquote "Parakeet ya no se carga al arrancar" en § Gate de Sesión (#02 de la auditoría de recursos)
+
+> **El medidor EBU R128 usa `Mode::HISTOGRAM` y `normalize_loudness` escribe en sitio (sep-2026, #11 de la auditoría de recursos); el `AudioMetricsBatcher` se borró (#10).** Sin `HISTOGRAM`, el crate `ebur128` guarda la energía de CADA bloque de 100 ms en un `VecDeque<f64>` sin tope (`history = usize::MAX`) y `loudness_global()` —llamado cada 512 muestras— recorre la cola entera: RAM **y CPU** crecían con la duración del segmento (la auditoría sólo anotó RAM). Con el histograma son 1000 bins fijos (8 KB) y O(1000) por llamada.
+> - **No "arreglarlo" con `set_max_history(…)`, que era el remedio propuesto por la auditoría.** En `ebur128 0.1.10` `Queue::set_max_size` **rellena la cola con ceros hasta `max`** cuando se llama sobre una instancia nueva, y esos ceros cuentan en el promedio del umbral relativo (gate de ~−20 LU en vez de −10 LU durante el primer minuto). Y una ventana deslizante cambia la dinámica en la jornada: tras un silencio largo la cola queda sólo con ruido de sala (> −70 LUFS), la ganancia sube ~+37 dB y **ese audio amplificado es el que ve el VAD** (`pipeline.rs` normaliza ANTES del VAD). El histograma conserva la integración sobre TODO el segmento, la misma dinámica de siempre (±0.1 LU por la cuantización); el test `el_histograma_no_cambia_la_sonoridad_integrada` compara ambos modos y delata un cambio del crate.
+> - `AudioMetricsBatcher` mandaba un `Instant::now()` + un send por `unbounded_channel` por cada chunk de 10 ms de AMBOS dispositivos (~200/s) a una tarea que empujaba resúmenes a un `Arc<RwLock<Vec>>` que nadie leía (`get_summaries` sin llamadores; 1-2 MB por segmento de 90 min). Borrado con su macro `batch_audio_metric!`; recuperable de git.
+> - Pendiente anotado: `HighPassFilter::process` y `NoiseSuppressionProcessor::process` siguen asignando un `Vec` por callback en la misma ruta caliente.
 
 > **Checkpoints de audio: buffer contiguo y UN encode a la vez (sep-2026, #08 de la auditoría de recursos).** `incremental_saver.rs` acumulaba `Vec<AudioData>` — ~300 `Vec<f32>` sueltos por checkpoint de 30 s — y antes de encodear los concatenaba en un **segundo** `Vec` de 2,880,000 elementos que convivía con el primero durante todo el ffmpeg: pico de ~23 MB por checkpoint. Además el `spawn_blocking` no tenía limitador: con la CPU saturada, encodes de más de 30 s se solapaban sin tope (el pool blocking de tokio admite 512 hilos), cada uno con su proceso ffmpeg y su buffer.
 > - **`checkpoint_buffer` es un `Vec<f32>` contiguo preasignado** con `with_capacity(checkpoint_interval_samples)`; `add_chunk` hace `extend_from_slice` y el buffer viaja a ffmpeg con `bytemuck::cast_slice` **sin copia intermedia**. Al flushear, `mem::replace` (no `mem::take`) deja el reemplazo ya preasignado — el `take` lo dejaba en capacidad 0 y lo hacía re-crecer 300 veces cada 30 s.

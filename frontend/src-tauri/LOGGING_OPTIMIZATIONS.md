@@ -56,16 +56,13 @@ macro_rules! perf_debug {
 
 **Impact:** Eliminates I/O blocking by moving logging to background thread
 
-### 4. Smart Batching for Frequent Operations ✅
-**Files Created:** `audio/batch_processor.rs`
+### 4. Smart Batching for Frequent Operations ❌ (eliminado sep-2026)
+**Files Created:** `audio/batch_processor.rs` — **borrado** en sep-2026 (#10 de la auditoría de recursos).
 
-**Features:**
-- Batches audio metrics instead of logging individual chunks
-- Processes every 50 chunks or 5-second timeout
-- Generates summaries: total chunks, samples, duration, average levels
-- Reduces logging frequency by 98%
-
-**Impact:** Replaces frequent individual logs with periodic summaries
+Los resúmenes que generaba (cada 50 chunks / 5 s) se acumulaban en un `Vec` que **nadie leía**
+(`get_summaries` sin llamadores), a cambio de un `Instant::now()` y un send por canal por cada chunk
+de 10 ms de ambos dispositivos. El resumen periódico que sí se loguea es el `perf_debug!` de
+`pipeline.rs` cada 200 chunks / 60 s.
 
 ### 5. Recording Manager Optimization ✅
 **Files Modified:** `audio/recording_manager.rs`
