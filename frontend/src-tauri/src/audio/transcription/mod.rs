@@ -10,6 +10,7 @@ pub mod deepgram_provider;  // Deepgram cloud transcription
 pub mod deepgram_commands;  // Tauri commands for Deepgram cloud proxy tokens
 pub mod engine;
 pub mod worker;
+pub mod batch;              // Transcripción por lote (F1 de la migración, sep-2026)
 pub mod spanish_postprocess;  // Heuristic post-processor for Spanish transcripts
 pub mod onnx_lifecycle;       // Helper para reciclaje de sesion ONNX en background
 pub mod idle_unload;          // Descarga del motor STT en reposo (tier Low) + prewarm de jornada

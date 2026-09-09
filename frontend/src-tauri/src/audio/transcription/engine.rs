@@ -5,6 +5,7 @@
 use super::deepgram_provider::DeepgramRealtimeTranscriber;
 use super::provider::TranscriptionProvider;
 use log::{info, warn, error};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, RwLock};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, Runtime};
@@ -113,6 +114,44 @@ pub enum UnloadOutcome {
     NothingLoaded,
     /// Hay una grabación en curso (o arrancando / cerrando): no se toca.
     RefusedPhase(RecordingPhase),
+    /// Un job de transcripción por lote tiene el motor en uso (lease vivo).
+    RefusedBatchLease,
+}
+
+// ============================================================================
+// LEASE DEL LOTE (F1 de la migración a transcripción por lote, sep-2026)
+// ============================================================================
+//
+// Un job de lote usa el motor SIN que la fase de grabación lo refleje (puede
+// correr con fase `Idle`, p. ej. drenando pendientes tras el arranque). El
+// lease es la señal que le falta a `unload_stt`: mientras haya un guard vivo,
+// ni el logout ni el reposo de tier Low descargan el modelo a mitad de una
+// inferencia. Se consulta BAJO `STT_WARM_LOCK` (mismo contrato que la fase);
+// el guard RAII garantiza el decremento también en error/cancelación.
+
+static BATCH_STT_LEASE: AtomicU32 = AtomicU32::new(0);
+
+/// ¿Hay algún job de lote con el motor en uso?
+pub(crate) fn batch_lease_active() -> bool {
+    BATCH_STT_LEASE.load(Ordering::SeqCst) > 0
+}
+
+/// Guard RAII del lease. `acquire()` al entrar al job; el Drop lo suelta.
+pub struct BatchSttLease(());
+
+impl BatchSttLease {
+    pub fn acquire() -> Self {
+        let prev = BATCH_STT_LEASE.fetch_add(1, Ordering::SeqCst);
+        info!("🔒 Batch STT lease adquirido ({} activos)", prev + 1);
+        Self(())
+    }
+}
+
+impl Drop for BatchSttLease {
+    fn drop(&mut self) {
+        let prev = BATCH_STT_LEASE.fetch_sub(1, Ordering::SeqCst);
+        info!("🔓 Batch STT lease liberado ({} activos)", prev.saturating_sub(1));
+    }
 }
 
 /// ¿Se puede descargar el motor en esta fase? Sólo en `Idle`. `Stopping` también
@@ -364,6 +403,48 @@ pub async fn ensure_stt_warm<R: Runtime>(
     Ok(outcome)
 }
 
+/// Variante del warm para la transcripción por LOTE: fuerza Parakeet (decisión
+/// de producto de la migración — el provider configurado puede ser Deepgram,
+/// que en lote no aplica) con los mismos gates fail-closed de sesión/registro.
+///
+/// Nota conocida (aceptada en F1, dev command): si otro motor local quedó
+/// residente (p. ej. Whisper del streaming), esta carga NO lo descarga —
+/// habría dos modelos en RAM durante el job. El planner de F2 decide política.
+pub async fn ensure_stt_warm_parakeet<R: Runtime>(
+    app: &AppHandle<R>,
+    reason: &'static str,
+) -> Result<WarmOutcome, String> {
+    if !crate::state::has_session(app).await {
+        return Ok(WarmOutcome::SkippedNoSession);
+    }
+    if !crate::state::registration_completed(app).await {
+        return Ok(WarmOutcome::SkippedRegistration);
+    }
+    let config = default_transcript_config();
+
+    let outcome = {
+        let _flight = STT_WARM_LOCK.lock().await;
+        if !crate::state::has_session(app).await {
+            return Ok(WarmOutcome::SkippedNoSession);
+        }
+        load_configured_model_locked(app, &config).await?
+    };
+
+    if let WarmOutcome::Loaded { provider, model, elapsed } = &outcome {
+        emit_engine_lifecycle(
+            app,
+            "loaded",
+            reason,
+            provider,
+            model,
+            Some(elapsed.as_millis() as u64),
+            "ok",
+        )
+        .await;
+    }
+    Ok(outcome)
+}
+
 /// Descarga todo motor STT local residente. Rehúsa si hay grabación (fase
 /// distinta de `Idle`). Limpia el fast path DESPUÉS de descargar y bajo el
 /// mismo lock, para que ningún `validate` concurrente vea el flag armado con
@@ -375,6 +456,13 @@ pub async fn unload_stt<R: Runtime>(app: &AppHandle<R>, reason: &'static str) ->
         if !unload_allowed(phase) {
             info!("STT unload ({}) rehusado: fase {:?}", reason, phase);
             return UnloadOutcome::RefusedPhase(phase);
+        }
+        // Un job de lote puede estar transcribiendo con fase Idle: el lease
+        // es su única señal de "en uso". Chequeado bajo el mismo lock que la
+        // carga, así ningún job arranca entre el check y la descarga.
+        if batch_lease_active() {
+            info!("STT unload ({}) rehusado: batch lease activo", reason);
+            return UnloadOutcome::RefusedBatchLease;
         }
         let unloaded = unload_all_local_engines().await;
         clear_preloaded();
@@ -703,6 +791,23 @@ mod stt_lifecycle_tests {
         for (phase, esperado) in casos {
             assert_eq!(unload_allowed(phase), esperado, "fase {:?}", phase);
         }
+    }
+
+    /// El lease es un contador con guard RAII: se libera también si el job
+    /// muere por error (Drop), y soporta jobs anidados/concurrentes.
+    #[test]
+    fn batch_lease_raii() {
+        assert!(!batch_lease_active());
+        {
+            let _a = BatchSttLease::acquire();
+            assert!(batch_lease_active());
+            {
+                let _b = BatchSttLease::acquire();
+                assert!(batch_lease_active());
+            }
+            assert!(batch_lease_active(), "un guard vivo mantiene el lease");
+        }
+        assert!(!batch_lease_active(), "el Drop del último guard lo suelta");
     }
 
     #[test]

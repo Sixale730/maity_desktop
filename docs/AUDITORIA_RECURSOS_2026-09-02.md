@@ -418,6 +418,10 @@ Ordenados por impacto estimado en RAM, luego CPU, luego disco y red.
 - **Cambio**: ejecutarlo en `tokio::task::spawn_blocking` (`blocking_write` dentro del closure o
   `Option<ParakeetModel>` tras un `std::sync::Mutex`). Igual para Moonshine y Canary.
 - **Riesgo**: el swap del reciclado debe seguir usando el mismo lock.
+- **Avance (sep-2026, F1 del lote)**: el pipeline por lote nace con la inferencia fuera del runtime
+  (`transcription/batch/transcriber.rs::transcribe_chunk`: `spawn_blocking` + `Handle::block_on`).
+  El hot path de STREAMING (`worker.rs`) sigue pinneando un worker — el hallazgo queda abierto para
+  ese pipeline (y se encoge a medida que el lote se vuelva el default, F6).
 
 ### #17 · El monitor de dispositivos re-enumera todos los endpoints WASAPI cada 5 s mientras graba
 `Bajo` · CPU · Jornada · esfuerzo S · no cambia por lote · **CERRADO** `475e071`

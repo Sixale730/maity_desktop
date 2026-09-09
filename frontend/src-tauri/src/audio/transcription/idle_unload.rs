@@ -90,6 +90,11 @@ pub(crate) struct UnloadInputs {
     /// reposo no espera el umbral: soltar los ~600 MB del motor es la acción
     /// más barata disponible.
     pub pressure: PressureLevel,
+    /// `true` si un job de transcripción por lote tiene el motor en uso
+    /// (lease de `engine.rs`). El lote corre con fase `Idle`, así que sin
+    /// esta señal el reposo intentaría descargar a mitad de una inferencia
+    /// (`unload_stt` rehusaría igual bajo su lock — esto evita el intento).
+    pub batch_lease: bool,
 }
 
 /// ¿Toca descargar? Sólo con umbral (tier Low), modelo cargado, sesión viva
@@ -103,6 +108,7 @@ pub(crate) fn should_unload(threshold: Option<Duration>, i: &UnloadInputs) -> bo
     i.model_loaded
         && i.has_session
         && !i.in_window
+        && !i.batch_lease
         && (i.idle_for >= threshold || i.pressure >= PressureLevel::Elevated)
         && i.next_window_in.map_or(true, |d| d > PREWARM_LEAD)
 }
@@ -218,6 +224,7 @@ async fn tick_once<R: Runtime>(
         has_session,
         model_loaded,
         pressure: crate::logging::mem_sampler::pressure_level(),
+        batch_lease: super::engine::batch_lease_active(),
     };
     if should_unload(Some(threshold), &inputs) {
         match unload_stt(app, "idle").await {
@@ -229,6 +236,11 @@ async fn tick_once<R: Runtime>(
                 // La fase cambió entre el check de arriba y el lock: se reintenta
                 // en el siguiente tick, sin contar el reposo desde cero.
                 info!("[stt-idle] descarga pospuesta: fase {:?}", p)
+            }
+            UnloadOutcome::RefusedBatchLease => {
+                // Un job de lote arrancó entre el check y el lock: el próximo
+                // tick lo reintenta cuando el job suelte el lease.
+                info!("[stt-idle] descarga pospuesta: batch lease activo")
             }
         }
     }
@@ -258,6 +270,7 @@ mod tests {
             has_session: true,
             model_loaded: true,
             pressure: PressureLevel::Normal,
+            batch_lease: false,
         }
     }
 
@@ -272,7 +285,7 @@ mod tests {
     #[test]
     fn should_unload_tabla() {
         let t = Some(mins(10));
-        let casos: [(&str, Option<Duration>, UnloadInputs, bool); 13] = [
+        let casos: [(&str, Option<Duration>, UnloadInputs, bool); 15] = [
             ("caso base", t, inputs(), true),
             ("sin umbral (tier alto)", None, inputs(), false),
             ("en ventana", t, UnloadInputs { in_window: true, ..inputs() }, false),
@@ -309,6 +322,23 @@ mod tests {
                     idle_for: mins(1),
                     next_window_in: Some(mins(3)),
                     pressure: PressureLevel::Elevated,
+                    ..inputs()
+                },
+                false,
+            ),
+            // Lease del lote: el motor está en uso aunque la fase sea Idle.
+            (
+                "batch lease activo bloquea la descarga",
+                t,
+                UnloadInputs { batch_lease: true, ..inputs() },
+                false,
+            ),
+            (
+                "batch lease bloquea incluso con presión Critical",
+                t,
+                UnloadInputs {
+                    batch_lease: true,
+                    pressure: PressureLevel::Critical,
                     ..inputs()
                 },
                 false,

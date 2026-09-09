@@ -1442,6 +1442,8 @@ pub fn run() {
             // Remediación de permisos de micrófono (Windows/macOS)
             audio::device_errors::open_microphone_privacy_settings,
             audio::device_errors::check_microphone_ready,
+            // Transcripción por lote (F1): comando dev para medir WER/RTF
+            audio::transcription::batch::transcriber::batch_transcribe_folder,
             // Audio recovery commands (for transcript recovery feature)
             audio::incremental_saver::recover_audio_from_checkpoints,
             audio::incremental_saver::cleanup_checkpoints,

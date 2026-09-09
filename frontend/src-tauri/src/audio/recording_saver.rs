@@ -8,7 +8,7 @@ use tauri::{AppHandle, Runtime, Emitter};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use serde::{Serialize, Deserialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use super::recording_state::AudioChunk;
 use super::audio_processing::create_meeting_folder;
@@ -594,29 +594,43 @@ fn write_transcripts_snapshot(
         .map_err(|_| anyhow::anyhow!("Failed to lock transcript segments"))?
         .clone_vec();
 
+    let _io_guard = io_lock
+        .lock()
+        .map_err(|_| anyhow::anyhow!("Transcript IO lock poisoned"))?;
+
+    write_transcripts_atomic(folder, "transcripts.json", &segments_clone)?;
+
+    Ok(segments_clone.len())
+}
+
+/// Serialización canónica + escritura atómica (tmp + rename) del
+/// `transcripts.json`. COMPARTIDA entre el saver de streaming y el writer del
+/// modo lote (`transcription/batch/writer.rs`) para que el shape que consume
+/// `finalize_segment_native` no pueda divergir entre pipelines.
+pub(crate) fn write_transcripts_atomic(
+    folder: &Path,
+    filename: &str,
+    segments: &[TranscriptSegment],
+) -> Result<()> {
     let json = serde_json::json!({
         "version": "1.0",
-        "segments": segments_clone,
+        "segments": segments,
         "last_updated": chrono::Utc::now().to_rfc3339(),
-        "total_segments": segments_clone.len()
+        "total_segments": segments.len()
     });
     // Compact JSON: the file is machine-read and pretty-printing doubles the bytes
     let json_string = serde_json::to_string(&json)
         .map_err(|e| anyhow::anyhow!("JSON serialization failed: {}", e))?;
 
-    let transcript_path = folder.join("transcripts.json");
-    let temp_path = folder.join(".transcripts.json.tmp");
-
-    let _io_guard = io_lock
-        .lock()
-        .map_err(|_| anyhow::anyhow!("Transcript IO lock poisoned"))?;
+    let transcript_path = folder.join(filename);
+    let temp_path = folder.join(format!(".{}.tmp", filename));
 
     std::fs::write(&temp_path, &json_string)
         .map_err(|e| anyhow::anyhow!("Failed to write temp file {}: {}", temp_path.display(), e))?;
     std::fs::rename(&temp_path, &transcript_path)
         .map_err(|e| anyhow::anyhow!("Failed to rename transcript file: {}", e))?;
 
-    Ok(segments_clone.len())
+    Ok(())
 }
 
 /// Spawnea el debounced transcript writer: escribe transcripts.json cada
