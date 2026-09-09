@@ -814,9 +814,33 @@ async fn close_scheduled<R: Runtime>(
         }
     }
 
+    // 3-bis (F3, modo LOTE): el `transcripts.json` aún no existe — lo escribirá el
+    // planner. La fila quedó 'pending' en el stop; aquí solo se pide el DRENAJE de
+    // fin de jornada (procesa FIFO ignorando el gate salvo Critical) y se emite el
+    // evento de cierre con `batch: true` para que el frontend limpie su buffer
+    // (vacío en lote) sin esperar meetingId — llegará por batch-transcription-status.
+    if batch_transcription_mode(app).await {
+        crate::audio::transcription::batch::planner::request_drain();
+        if let Err(e) = app.emit(
+            events::SCHEDULED_JORNADA_CLOSED,
+            serde_json::json!({
+                "meetingId": serde_json::Value::Null,
+                "meetingName": closing_name,
+                "batch": true,
+            }),
+        ) {
+            warn!("[scheduled] no se pudo emitir scheduled-jornada-closed (lote): {}", e);
+        }
+        shared.owned.store(false, Ordering::SeqCst);
+        *shared.owned_since.write().await = None;
+        *shared.grace_deadline.write().await = None;
+        *shared.rearm_at.write().await = Some(start_of_next_day(now));
+        return SchedulerPhase::Idle;
+    }
+
     // 3. Guardado LOCAL headless + outbox cloud (mismo camino que la rotación).
     let outcome = match folder.as_deref() {
-        Some(f) => finalize_segment_native(app, f, &closing_name, owned_since, "close").await,
+        Some(f) => finalize_segment_native(app, f, &closing_name, owned_since, "close", true).await,
         None => {
             warn!("[scheduled] cierre: sin folder del segmento; no se guarda a DB");
             SegmentOutcome::Failed
@@ -914,9 +938,28 @@ async fn rotate_scheduled<R: Runtime>(
         }
     }
 
+    // 3-bis (F3, modo LOTE): sin finalize inmediato — la fila quedó 'pending' en el
+    // stop y el planner híbrido decide cuándo transcribir (con memoria/CPU libre; la
+    // grabación del nuevo segmento no bloquea porque no consume el motor). El evento
+    // de rotación va con `batch: true` y meetingId null; el buffer del frontend está
+    // vacío en lote, así que el registro fantasma lo limpia el filtro existente.
+    if batch_transcription_mode(app).await {
+        crate::audio::transcription::batch::planner::notify_enqueued();
+        if let Err(e) = app.emit(
+            events::SCHEDULED_SEGMENT_ROTATED,
+            serde_json::json!({
+                "meetingId": serde_json::Value::Null,
+                "meetingName": closing_name,
+                "discarded": false,
+                "batch": true,
+            }),
+        ) {
+            warn!("[scheduled] no se pudo emitir scheduled-segment-rotated (lote): {}", e);
+        }
+    } else {
     // 3. Guardado LOCAL headless del segmento cerrado (no depende del buffer del frontend).
     let outcome = match folder.as_deref() {
-        Some(f) => finalize_segment_native(app, f, &closing_name, owned_since, "rotation").await,
+        Some(f) => finalize_segment_native(app, f, &closing_name, owned_since, "rotation", true).await,
         None => {
             warn!("[scheduled] rotación: sin folder del segmento; no se guarda a DB");
             SegmentOutcome::Failed
@@ -946,6 +989,7 @@ async fn rotate_scheduled<R: Runtime>(
     ) {
         warn!("[scheduled] no se pudo emitir scheduled-segment-rotated: {}", e);
     }
+    } // fin rama streaming (3-4)
 
     // 5. Arrancar el nuevo segmento (nombre re-renderizado con la hora actual).
     let new_name = render_segment_name(settings, now);
@@ -975,6 +1019,16 @@ async fn rotate_scheduled<R: Runtime>(
             SchedulerPhase::Armed
         }
     }
+}
+
+/// ¿La preferencia vigente pide transcripción por LOTE? (F3 de la migración.)
+/// Se lee del store en cada cierre — barato (una vez por hora) y respeta un
+/// cambio de modo hecho a mitad de jornada para los segmentos siguientes.
+async fn batch_transcription_mode<R: Runtime>(app: &AppHandle<R>) -> bool {
+    crate::audio::recording_preferences::load_recording_preferences(app)
+        .await
+        .map(|p| p.is_batch_mode())
+        .unwrap_or(false)
 }
 
 /// Mínimo de palabras (AMBOS canales) para que un segmento de jornada se convierta en
@@ -1017,7 +1071,7 @@ fn count_segment_words(raws: &[RawTranscriptSegment]) -> usize {
 /// sin marcar a propósito para que el diálogo de recuperación sea red de seguridad, y desde
 /// ago-2026 `autoRecoverAll` lo guarda solo en el siguiente arranque. El filtro de fantasmas solo
 /// borra los de `transcriptCount === 0`, así que un segmento de 40 palabras volvía como reunión.
-enum SegmentOutcome {
+pub(crate) enum SegmentOutcome {
     Saved(String),
     Discarded,
     Failed,
@@ -1037,12 +1091,17 @@ enum SegmentOutcome {
 /// Patrón: Transactional Outbox (Chris Richardson). Fuente de verdad = `transcripts.json` en disco;
 /// tanto el guardado local como el encolado a la cola de sync se derivan de la misma lectura, así
 /// no divergen. El worker de sync (fuera de este archivo) drena `sync_queue` y publica a Supabase.
-async fn finalize_segment_native<R: Runtime>(
+/// `enforce_min_words` (F3 del lote): los segmentos de JORNADA aplican el umbral
+/// `MIN_SEGMENT_WORDS`; las grabaciones MANUALES nunca descartan por contenido
+/// (paridad con el flujo streaming, donde el guardado manual no tiene umbral).
+/// El planner de lote invoca esta función con el flag según `trigger_kind`.
+pub(crate) async fn finalize_segment_native<R: Runtime>(
     app: &AppHandle<R>,
     folder_path: &str,
     meeting_name: &str,
     segment_started_at: NaiveDateTime,
     trigger: &'static str,
+    enforce_min_words: bool,
 ) -> SegmentOutcome {
     let json_path = std::path::Path::new(folder_path).join("transcripts.json");
     let content = match tokio::fs::read_to_string(&json_path).await {
@@ -1104,7 +1163,7 @@ async fn finalize_segment_native<R: Runtime>(
     // SQLite y antes de encolar nada, para que un segmento pobre no cueste ni fila local, ni
     // job de outbox, ni unidad de cuota en la nube.
     let words_total = count_segment_words(&raws);
-    if words_total < MIN_SEGMENT_WORDS {
+    if enforce_min_words && words_total < MIN_SEGMENT_WORDS {
         info!(
             "[scheduled] segmento descartado por contenido insuficiente: {} palabras (< {})",
             words_total, MIN_SEGMENT_WORDS

@@ -117,14 +117,19 @@ pub(crate) fn should_unload(threshold: Option<Duration>, i: &UnloadInputs) -> bo
 /// de `PREWARM_LEAD`. El latch (`last_attempt_for` == `next_start`) garantiza
 /// UN intento por ventana: si el modelo no está en disco no se reintenta cada
 /// 60 s (`download_complete` ya dispara la carga cuando llegue).
+///
+/// En modo LOTE (`batch_mode`, F3) el prewarm no aplica: la grabación no
+/// consume el motor — cargarlo antes de la ventana serían 600 MB residentes
+/// sin consumidor, exactamente lo que la migración elimina.
 pub(crate) fn should_prewarm(
     next_window_in: Option<Duration>,
     next_start: Option<NaiveDateTime>,
     last_attempt_for: Option<NaiveDateTime>,
     has_session: bool,
     model_loaded: bool,
+    batch_mode: bool,
 ) -> bool {
-    if model_loaded || !has_session {
+    if model_loaded || !has_session || batch_mode {
         return false;
     }
     let Some(d) = next_window_in else {
@@ -205,7 +210,11 @@ async fn tick_once<R: Runtime>(
     let (in_window, next_start) = window_context(now, settings.as_ref());
     let next_window_in = next_start.and_then(|s| (s - now).to_std().ok());
 
-    if should_prewarm(next_window_in, next_start, *prewarm_attempted_for, has_session, model_loaded) {
+    let batch_mode = crate::audio::recording_preferences::load_recording_preferences(app)
+        .await
+        .map(|p| p.is_batch_mode())
+        .unwrap_or(false);
+    if should_prewarm(next_window_in, next_start, *prewarm_attempted_for, has_session, model_loaded, batch_mode) {
         *prewarm_attempted_for = next_start;
         match ensure_stt_warm(app, "prewarm").await {
             Ok(WarmOutcome::Loaded { elapsed, .. }) => {
@@ -353,18 +362,20 @@ mod tests {
     fn should_prewarm_tabla_y_latch() {
         let start = Some(dt(2026, 6, 29, 9, 0));
         // Dentro del lead, sin intento previo → sí.
-        assert!(should_prewarm(Some(mins(4)), start, None, true, false));
+        assert!(should_prewarm(Some(mins(4)), start, None, true, false, false));
         // Latch: ya se intentó para ESTA ventana → no.
-        assert!(!should_prewarm(Some(mins(4)), start, start, true, false));
+        assert!(!should_prewarm(Some(mins(4)), start, start, true, false, false));
         // Latch de otra ventana no bloquea.
-        assert!(should_prewarm(Some(mins(4)), start, Some(dt(2026, 6, 28, 9, 0)), true, false));
+        assert!(should_prewarm(Some(mins(4)), start, Some(dt(2026, 6, 28, 9, 0)), true, false, false));
         // Fuera del lead → no.
-        assert!(!should_prewarm(Some(mins(6)), start, None, true, false));
+        assert!(!should_prewarm(Some(mins(6)), start, None, true, false, false));
         // Sin ventana → no.
-        assert!(!should_prewarm(None, None, None, true, false));
+        assert!(!should_prewarm(None, None, None, true, false, false));
         // Ya cargado o sin sesión → no.
-        assert!(!should_prewarm(Some(mins(1)), start, None, true, true));
-        assert!(!should_prewarm(Some(mins(1)), start, None, false, false));
+        assert!(!should_prewarm(Some(mins(1)), start, None, true, true, false));
+        assert!(!should_prewarm(Some(mins(1)), start, None, false, false, false));
+        // Modo lote (F3): nunca pre-calienta — la grabación no consume el motor.
+        assert!(!should_prewarm(Some(mins(4)), start, None, true, false, true));
     }
 
     #[test]

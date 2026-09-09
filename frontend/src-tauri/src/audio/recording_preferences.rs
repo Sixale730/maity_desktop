@@ -40,6 +40,26 @@ pub struct RecordingPreferences {
     /// `system_audio_gain`).
     #[serde(default = "default_audio_retention_days")]
     pub audio_retention_days: u32,
+    /// Modo de transcripción (migración a lote, F3): `"streaming"` = en vivo
+    /// durante la grabación (pipeline histórico); `"batch"` = solo checkpoints
+    /// durante la grabación y transcripción por lote al cerrar el segmento
+    /// (planner de `transcription/batch/`). El default cambia a `"batch"` en
+    /// F6; el toggle de UI (solo admins) llega en F4. Aditivo con
+    /// `#[serde(default)]` como todo campo nuevo de este struct.
+    #[serde(default = "default_transcription_mode")]
+    pub transcription_mode: String,
+}
+
+fn default_transcription_mode() -> String {
+    "streaming".to_string()
+}
+
+impl RecordingPreferences {
+    /// Único punto de decisión "¿esta grabación va por lote?". Cualquier valor
+    /// desconocido cae a streaming (el pipeline probado).
+    pub fn is_batch_mode(&self) -> bool {
+        self.transcription_mode == "batch"
+    }
 }
 
 fn default_system_audio_gain() -> f32 {
@@ -66,6 +86,7 @@ impl Default for RecordingPreferences {
             system_audio_backend: Some("coreaudio".to_string()),
             system_audio_gain: default_system_audio_gain(),
             audio_retention_days: default_audio_retention_days(),
+            transcription_mode: default_transcription_mode(),
         }
     }
 }

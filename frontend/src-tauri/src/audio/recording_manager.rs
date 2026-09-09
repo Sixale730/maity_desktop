@@ -31,6 +31,10 @@ pub struct RecordingManager {
     device_event_receiver: Option<mpsc::UnboundedReceiver<DeviceEvent>>,
     /// Gain multiplier for system audio capture (0.5–3.0)
     pub system_audio_gain: f32,
+    /// `false` = modo LOTE (F3): el pipeline no construye VAD ni emite chunks
+    /// de transcripción; la grabación solo captura checkpoints y la
+    /// transcripción corre al cerrar (transcription/batch/). Default `true`.
+    pub transcription_enabled: bool,
 }
 
 // SAFETY: RecordingManager contains types that we've marked as Send
@@ -52,6 +56,7 @@ impl RecordingManager {
             device_monitor: Some(device_monitor),
             device_event_receiver: Some(device_event_receiver),
             system_audio_gain: 1.5,
+            transcription_enabled: true,
         }
     }
 
@@ -120,6 +125,7 @@ impl RecordingManager {
             sys_name,
             sys_kind,
             self.system_audio_gain,
+            self.transcription_enabled,
         )?;
 
         // Start audio streams - they send RAW unmixed chunks to pipeline for mixing

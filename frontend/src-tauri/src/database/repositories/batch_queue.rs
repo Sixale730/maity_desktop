@@ -182,12 +182,15 @@ impl BatchQueueRepository {
         .await
     }
 
-    /// Recuperación post-crash: `recording` → `pending` con
-    /// `trigger_kind='crash_recovery'`.
+    /// Recuperación post-crash: `recording` → `pending`. **Conserva el
+    /// `trigger_kind` original** — el origen decide la política de descarte al
+    /// finalizar (manual NUNCA descarta por umbral; sobreescribirlo con
+    /// 'crash_recovery' le aplicaría MIN_SEGMENT_WORDS a una grabación manual
+    /// recuperada). La marca de recuperación queda en `last_error`.
     pub async fn mark_crash_recovery(pool: &SqlitePool, id: i64) -> Result<bool, SqlxError> {
         let result = sqlx::query(
             "UPDATE batch_transcription_queue SET
-               status = 'pending', trigger_kind = 'crash_recovery', updated_at = datetime('now')
+               status = 'pending', last_error = 'crash_recovery', updated_at = datetime('now')
              WHERE id = ? AND status = 'recording'",
         )
         .bind(id)
@@ -349,7 +352,9 @@ mod tests {
         assert!(BatchQueueRepository::mark_crash_recovery(&pool, id).await.unwrap());
         let job = BatchQueueRepository::get_by_id(&pool, id).await.unwrap().unwrap();
         assert_eq!(job.status, "pending");
-        assert_eq!(job.trigger_kind, "crash_recovery");
+        // El ORIGEN se conserva: decide la política de descarte al finalizar.
+        assert_eq!(job.trigger_kind, "rotation");
+        assert_eq!(job.last_error.as_deref(), Some("crash_recovery"));
     }
 
     #[tokio::test]

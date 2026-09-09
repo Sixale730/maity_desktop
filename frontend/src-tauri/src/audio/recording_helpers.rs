@@ -5,7 +5,7 @@
 
 use log::{error, info, warn};
 use std::sync::Arc;
-use tauri::{AppHandle, Emitter, Runtime};
+use tauri::{AppHandle, Emitter, Manager, Runtime};
 
 use crate::events;
 
@@ -443,7 +443,17 @@ pub async fn initialize_recording<R: Runtime>(
     if !crate::state::registration_completed(app).await {
         return Err("Completa tu registro en Maity para poder grabar".to_string());
     }
-    validate_transcription_ready(app).await?;
+    // Preferencias UNA vez: gain + modo de transcripción (F3 de la migración a
+    // lote). Sin auto_save no hay checkpoints → no hay audio que transcribir
+    // por lote: esa combinación cae a streaming (el pipeline probado).
+    let prefs = super::recording_preferences::load_recording_preferences(app).await.ok();
+    let batch_mode = auto_save && prefs.as_ref().map(|p| p.is_batch_mode()).unwrap_or(false);
+
+    if batch_mode {
+        info!("📦 Grabación en modo LOTE: sin validar motor STT (transcribe el planner al cerrar el segmento)");
+    } else {
+        validate_transcription_ready(app).await?;
+    }
 
     // Preflight: embudo común de ambos start paths — cubre preferencia, default
     // del OS y dispositivos explícitos.
@@ -451,10 +461,11 @@ pub async fn initialize_recording<R: Runtime>(
 
     // Create new recording manager
     let mut manager = RecordingManager::new();
+    manager.transcription_enabled = !batch_mode;
 
     // Load system audio gain from preferences
-    if let Ok(prefs) = super::recording_preferences::load_recording_preferences(app).await {
-        manager.system_audio_gain = prefs.system_audio_gain.clamp(0.5, 3.0);
+    if let Some(p) = &prefs {
+        manager.system_audio_gain = p.system_audio_gain.clamp(0.5, 3.0);
         log::info!("🔊 System audio gain from preferences: {:.1}x", manager.system_audio_gain);
     }
 
@@ -508,6 +519,11 @@ pub async fn initialize_recording<R: Runtime>(
     // Get a clone of the recording state for the level emission task
     let recording_state = manager.get_state().clone();
 
+    // Carpeta y hora sellada del segmento, capturadas ANTES de mover el manager
+    // (las necesita la fila de la cola de lote).
+    let meeting_folder = manager.get_meeting_folder();
+    let sealed_started_at = manager.get_recording_started_at();
+
     // Store the manager globally to keep it alive
     {
         let mut global_manager = RECORDING_MANAGER.lock().map_err(|e| format!("Recording manager lock poisoned: {}", e))?;
@@ -519,6 +535,56 @@ pub async fn initialize_recording<R: Runtime>(
     info!("🔍 Comiteando fase Recording y reseteando SPEECH_DETECTED_EMITTED");
     start_gate.commit()?;
     reset_speech_detected_flag();
+
+    // Modo LOTE (F3): la fila de la cola nace AQUÍ, con la grabación ya activa
+    // — patrón outbox: si la app muere a mitad del segmento, el drainer del
+    // planner la recupera desde los checkpoints. La señal `uses_stt=false`
+    // le dice al ciclo STT que esta grabación no consume el motor (el unload
+    // por presión/reposo/lote puede proceder aunque la fase sea Recording).
+    if batch_mode {
+        crate::audio::transcription::engine::set_active_recording_uses_stt(false);
+        // El origen decide la política de descarte al finalizar: los segmentos
+        // de jornada aplican MIN_SEGMENT_WORDS, los manuales NUNCA descartan.
+        let trigger_kind = if trigger.as_deref().map_or(false, |t| t.starts_with("scheduler")) {
+            "rotation"
+        } else {
+            "manual"
+        };
+        match &meeting_folder {
+            Some(folder) => {
+                let folder_str = folder.to_string_lossy().to_string();
+                let started_at = sealed_started_at
+                    .map(|dt| dt.with_timezone(&chrono::Local).naive_local().format("%Y-%m-%d %H:%M:%S").to_string());
+                let row = if let Some(state) = app.try_state::<crate::state::AppState>() {
+                    match state.current_user_id().await {
+                        Some(user_id) => {
+                            let pool = state.db_manager.pool().clone();
+                            crate::database::repositories::batch_queue::BatchQueueRepository::upsert_recording(
+                                &pool,
+                                &folder_str,
+                                None,
+                                started_at.as_deref(),
+                                trigger_kind,
+                                &user_id,
+                            )
+                            .await
+                            .map_err(|e| e.to_string())
+                        }
+                        None => Err("sin usuario".to_string()),
+                    }
+                } else {
+                    Err("AppState no disponible".to_string())
+                };
+                match row {
+                    Ok(id) => info!("📦 Fila de lote {} creada ({}, {})", id, trigger_kind, folder_str),
+                    // Best-effort: sin fila no hay transcripción diferida, pero la
+                    // grabación (checkpoints) sigue — el audio nunca se pierde.
+                    Err(e) => warn!("📦 No se pudo crear la fila de lote: {}", e),
+                }
+            }
+            None => warn!("📦 Modo lote sin carpeta de reunión: no habrá transcripción diferida"),
+        }
+    }
 
     // Telemetría del embudo (G1): recording_started se emite AQUÍ, post-commit,
     // porque este es el chokepoint de los dos start paths — tray, scheduler y
@@ -655,15 +721,24 @@ pub async fn initialize_recording<R: Runtime>(
         }
     }
 
-    // Start optimized parallel transcription task and store handle
-    let task_handle = transcription::start_transcription_task(app.clone(), transcription_receiver);
-    {
-        let mut global_task = TRANSCRIPTION_TASK.lock().map_err(|e| format!("Transcription task lock poisoned: {}", e))?;
-        *global_task = Some(task_handle);
-    }
+    if batch_mode {
+        // Modo LOTE: sin worker ni listener — nadie emite chunks (el pipeline
+        // no construyó VAD) y los transcripts los escribirá el planner al
+        // cerrar el segmento. El receiver se dropea: el sender del pipeline
+        // queda sin destino, y como nunca envía, no hay pérdida.
+        drop(transcription_receiver);
+        info!("📦 Modo lote: sin worker de transcripción ni transcript-listener");
+    } else {
+        // Start optimized parallel transcription task and store handle
+        let task_handle = transcription::start_transcription_task(app.clone(), transcription_receiver);
+        {
+            let mut global_task = TRANSCRIPTION_TASK.lock().map_err(|e| format!("Transcription task lock poisoned: {}", e))?;
+            *global_task = Some(task_handle);
+        }
 
-    // Register transcript-update event listener for history persistence
-    register_transcript_listener(app);
+        // Register transcript-update event listener for history persistence
+        register_transcript_listener(app);
+    }
 
     // Baseline de memoria al iniciar la sesión (comparar con post-stop-120s)
     crate::logging::mem_sampler::snapshot_now("recording-start");

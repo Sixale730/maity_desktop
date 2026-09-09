@@ -113,6 +113,8 @@ export const TauriEvent = {
   SCHEDULED_SEGMENT_ROTATED: 'scheduled-segment-rotated',
   // Cierre por hora fija headless (gap #54): Rust ya guardó; solo limpiar buffer.
   SCHEDULED_JORNADA_CLOSED: 'scheduled-jornada-closed',
+  // Estado de la transcripción por lote (F3): pending/processing/ready/discarded/failed.
+  BATCH_TRANSCRIPTION_STATUS: 'batch-transcription-status',
 
   // ── Modelos: Whisper (nombres genéricos legacy) + config ─────────────────
   MODEL_LOADING_STARTED: 'model-loading-started',

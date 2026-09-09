@@ -137,6 +137,11 @@ pub const SCHEDULED_SEGMENT_ROTATED: &str = "scheduled-segment-rotated";
 /// emite XOR con `recording-stop-complete` (fallback cuando el finalize headless no
 /// persistió nada). Payload: `{ meetingId, meetingName }`.
 pub const SCHEDULED_JORNADA_CLOSED: &str = "scheduled-jornada-closed";
+/// Estado de la transcripción por LOTE de un segmento (F3 de la migración).
+/// Emisores: el stop (`pending`) y el planner (`processing`/`ready`/`discarded`/
+/// `failed`). Payload: `{ meetingId: string|null, folderPath, status }` —
+/// `meetingId` solo existe desde `ready` (el lote crea la reunión al finalizar).
+pub const BATCH_TRANSCRIPTION_STATUS: &str = "batch-transcription-status";
 
 // ── Modelos: Whisper (nombres genéricos legacy) + config ────────────────────
 pub const MODEL_LOADING_STARTED: &str = "model-loading-started";

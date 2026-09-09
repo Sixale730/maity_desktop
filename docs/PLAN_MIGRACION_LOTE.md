@@ -7,7 +7,7 @@
 > | F0 — Prerrequisitos (#22 pressure_level, integridad de checkpoints, medición F0c) | ✅ cerrada | `095abb5` |
 > | F1 — Núcleo `batch_transcriber` + comando dev | ✅ cerrada | `5f40647` |
 > | F2 — Cola persistente + planificador híbrido | ✅ cerrada | `1768725` |
-> | F3 — Cablear disparadores (default sigue streaming) | pendiente | — |
+> | F3 — Cablear disparadores (default sigue streaming) | ✅ cerrada | (este commit) |
 > | F4 — Frontend | pendiente | — |
 > | F5 — Coach por heurísticos de audio | pendiente | — |
 > | F6 — Flip del default a lote | pendiente | — |
@@ -72,15 +72,16 @@ Módulo `frontend/src-tauri/src/audio/transcription/batch/`:
 
 ---
 
-## Fase 3 — Cablear disparadores (Rust; default sigue streaming)
+## Fase 3 — Cablear disparadores (Rust; default sigue streaming) ✅
 
-- **`audio/recording_preferences.rs`**: campo `transcription_mode` con `#[serde(default = "default_transcription_mode")]` → **`"streaming"` en esta fase** (flip en F6). Aditivo; sin comando nuevo (RecordingSettings.tsx ya reemplaza el objeto entero).
-- **Arranque de grabación** (`recording_lifecycle.rs`, `pipeline.rs`): en lote NO construir `ContinuousVadProcessor`, NO spawear worker, NO exigir `validate_transcription_model_ready` (el SkipReason `TranscriptionNotReady` queda solo para streaming); saver de checkpoints intacto (30s/.mp4/semáforo — intocables); INSERT en la cola; setear `ACTIVE_RECORDING_USES_STT(false)`. `idle_unload` no pre-calienta antes de ventana en lote.
-- **Cierre del scheduler** (`service.rs::rotate` / `close_scheduled`): en lote, tras el stop → `mark_pending` + notify en vez de `finalize_segment_native` inmediato. `finalize_segment_native` se refactoriza a invocable desde `planner.rs` cuando el `transcripts.json` esté escrito — sus semánticas NO cambian (Discarded borra audio).
-- **Stop manual en lote**: migración aditiva `ALTER TABLE meetings ADD COLUMN transcription_status TEXT` (NULL=legacy). Rust crea **fila placeholder** en `meetings` al cerrar (`transcription_status='pending'`); payload de `RECORDING_STOP_COMPLETE` extendido (aditivo) con `{meetingId, transcriptionMode}`. Al completar el lote: transcripts a SQLite, `transcription_status='ready'`, reusar `enqueue_cloud_sync_jobs`. Manual NUNCA descarta por umbral de 250 (paridad con hoy).
-- **Evento gemelo nuevo** `BATCH_TRANSCRIPTION_STATUS` en `events.rs` + `lib/tauri-events.ts` (payload `{meetingId|null, folderPath, status}`) — lint pre-build lo exige.
+- **`RecordingPreferences.transcription_mode`** con `#[serde(default)]` → `"streaming"` (flip en F6); `is_batch_mode()` único punto de decisión. Lote sin `auto_save` cae a streaming (sin checkpoints no hay qué transcribir).
+- **Arranque**: en lote NO se valida el motor STT, el pipeline no construye Silero (`AudioPipeline` con VAD `Option`; STEP 2 de grabación intacto), sin worker ni transcript-listener; `uses_stt=false`; la fila de la cola nace con la grabación (trigger `manual`/`rotation` según origen — el origen decide la política de descarte). `idle_unload` sin prewarm en lote.
+- **Stop (embudo común)**: restaura `uses_stt=true`, `mark_pending` + notify + `batch-transcription-status {pending}`.
+- **Scheduler**: rotate/close en lote no llaman finalize (emiten sus eventos con `batch:true`); el cierre de jornada pide `request_drain()`. `finalize_segment_native` es `pub(crate)` con flag `enforce_min_words` — el planner lo invoca al terminar cada job (jornada con umbral, manual sin). `mark_crash_recovery` CONSERVA el trigger de origen (marca en `last_error`).
+- **Evento gemelo** `batch-transcription-status` (`pending → processing → ready(meetingId) | discarded | failed`).
+- **Decisiones tomadas al implementar** (difieren del plan original): (1) el payload de `RECORDING_STOP_COMPLETE` sigue siendo el booleano histórico — extenderlo a objeto rompería al `RecordingPostProcessingProvider` actual; el meetingId del lote viaja por `batch-transcription-status {ready}`. (2) El **placeholder de `meetings` + columna `transcription_status` se movieron a F4**: sin UI que lo explique, una reunión vacía en la lista local-first parecería rota; en F4 llegan juntos badge + placeholder. La reunión del lote se crea al completar el job (`save_transcript` vía finalize).
 
-**Verificación F3**: con preferencia forzada a `batch`: (a) manual 3 min → placeholder → lote → transcripts → sync jobs; (b) jornada simulada con rotación → 2 segmentos drenados; (c) streaming intacto; `node scripts/lint-tauri-events.js`.
+**Verificación F3 pendiente de humo manual** (con preferencia forzada a `batch`): (a) manual 3 min → lote → transcripts → sync jobs; (b) jornada simulada con rotación; (c) streaming intacto.
 
 ---
 

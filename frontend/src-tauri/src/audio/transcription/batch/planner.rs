@@ -23,7 +23,7 @@ use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
 
 use log::{info, warn};
-use tauri::{AppHandle, Manager, Runtime};
+use tauri::{AppHandle, Emitter, Manager, Runtime};
 use tokio::sync::Notify;
 
 use crate::audio::recording_phase::{self, RecordingPhase};
@@ -311,6 +311,7 @@ async fn process_queue<R: Runtime>(app: &AppHandle<R>) {
         if !BatchQueueRepository::claim(&pool, job.id).await.unwrap_or(false) {
             continue;
         }
+        emit_status(app, &job.folder_path, None, "processing");
 
         info!(
             "[batch-planner] job {} ({}, intento {}): {}",
@@ -323,13 +324,35 @@ async fn process_queue<R: Runtime>(app: &AppHandle<R>) {
         processed_any = true;
         match result {
             Ok(metrics) => {
-                let _ = BatchQueueRepository::complete(&pool, job.id, "done").await;
-                emit_batch_job(app, &job.trigger_kind, "ok", job.attempts + 1, Some(&metrics)).await;
+                // transcripts.json escrito: finalizar por el MISMO camino que el
+                // streaming headless (SQLite + outbox cloud + descarte por umbral
+                // según origen — manual NUNCA descarta).
+                use crate::scheduled_recording::service::SegmentOutcome;
+                match finalize_job(app, &job).await {
+                    SegmentOutcome::Saved(meeting_id) => {
+                        let _ = BatchQueueRepository::complete(&pool, job.id, "done").await;
+                        emit_status(app, &job.folder_path, Some(&meeting_id), "ready");
+                        emit_batch_job(app, &job.trigger_kind, "ok", job.attempts + 1, Some(&metrics), "saved").await;
+                    }
+                    SegmentOutcome::Discarded => {
+                        let _ = BatchQueueRepository::complete(&pool, job.id, "discarded").await;
+                        emit_status(app, &job.folder_path, None, "discarded");
+                        emit_batch_job(app, &job.trigger_kind, "ok", job.attempts + 1, Some(&metrics), "discarded").await;
+                    }
+                    SegmentOutcome::Failed => {
+                        let _ = BatchQueueRepository::fail(&pool, job.id, "finalize_failed", MAX_ATTEMPTS).await;
+                        let terminal = job.attempts + 1 >= MAX_ATTEMPTS;
+                        emit_status(app, &job.folder_path, None, if terminal { "failed" } else { "pending" });
+                        emit_batch_job(app, &job.trigger_kind, "error", job.attempts + 1, None, "finalize_failed").await;
+                    }
+                }
             }
             Err(e) => {
                 warn!("[batch-planner] job {} falló: {}", job.id, e);
                 let _ = BatchQueueRepository::fail(&pool, job.id, &e, MAX_ATTEMPTS).await;
-                emit_batch_job(app, &job.trigger_kind, "error", job.attempts + 1, None).await;
+                let terminal = job.attempts + 1 >= MAX_ATTEMPTS;
+                emit_status(app, &job.folder_path, None, if terminal { "failed" } else { "pending" });
+                emit_batch_job(app, &job.trigger_kind, "error", job.attempts + 1, None, "transcribe_failed").await;
             }
         }
     }
@@ -346,17 +369,82 @@ async fn process_queue<R: Runtime>(app: &AppHandle<R>) {
 // Telemetría (contrato de 3 entradas: catalog.rs + telemetry-events.ts + doc)
 // ────────────────────────────────────────────────────────────────────────────
 
+/// Finaliza un job cuyo `transcripts.json` ya está en disco, reusando el mismo
+/// finalize headless del scheduler. El origen (`trigger_kind` de la fila,
+/// sellado al ARRANCAR el segmento) decide la política: los segmentos de
+/// jornada aplican `MIN_SEGMENT_WORDS`; los manuales nunca descartan.
+async fn finalize_job<R: Runtime>(
+    app: &AppHandle<R>,
+    job: &crate::database::models::BatchQueueJob,
+) -> crate::scheduled_recording::service::SegmentOutcome {
+    let meeting_name = read_meeting_name(&job.folder_path);
+    let started_at = job
+        .segment_started_at
+        .as_deref()
+        .and_then(|s| chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S").ok())
+        .unwrap_or_else(|| chrono::Local::now().naive_local());
+    let (trigger, enforce): (&'static str, bool) = match job.trigger_kind.as_str() {
+        "manual" => ("manual", false),
+        "auto_close" => ("auto_close", true),
+        _ => ("rotation", true),
+    };
+    crate::scheduled_recording::service::finalize_segment_native(
+        app,
+        &job.folder_path,
+        &meeting_name,
+        started_at,
+        trigger,
+        enforce,
+    )
+    .await
+}
+
+/// Nombre de la reunión desde `metadata.json` (el saver lo escribe al arrancar);
+/// fallback: el nombre de la carpeta.
+fn read_meeting_name(folder_path: &str) -> String {
+    let meta = Path::new(folder_path).join("metadata.json");
+    std::fs::read_to_string(&meta)
+        .ok()
+        .and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok())
+        .and_then(|v| v.get("meeting_name").and_then(|n| n.as_str()).map(str::to_string))
+        .unwrap_or_else(|| {
+            Path::new(folder_path)
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| "Reunión".to_string())
+        })
+}
+
+/// Evento gemelo `batch-transcription-status` para la UI (F4 lo consume).
+fn emit_status<R: Runtime>(
+    app: &AppHandle<R>,
+    folder_path: &str,
+    meeting_id: Option<&str>,
+    status: &str,
+) {
+    let _ = app.emit(
+        crate::events::BATCH_TRANSCRIPTION_STATUS,
+        serde_json::json!({
+            "meetingId": meeting_id,
+            "folderPath": folder_path,
+            "status": status,
+        }),
+    );
+}
+
 async fn emit_batch_job<R: Runtime>(
     app: &AppHandle<R>,
     trigger: &str,
     status: &str,
     attempts: i64,
     metrics: Option<&super::transcriber::BatchMetrics>,
+    outcome: &str,
 ) {
     let payload = match metrics {
         Some(m) => serde_json::json!({
             "trigger": trigger,
             "attempts": attempts,
+            "outcome": outcome,
             "audio_secs": m.audio_secs,
             "voiced_secs": m.voiced_secs,
             "wall_ms": m.wall_ms,
@@ -364,7 +452,7 @@ async fn emit_batch_job<R: Runtime>(
             "words": m.words,
             "segments": m.segments,
         }),
-        None => serde_json::json!({ "trigger": trigger, "attempts": attempts }),
+        None => serde_json::json!({ "trigger": trigger, "attempts": attempts, "outcome": outcome }),
     };
     crate::logging::telemetry::emit::emit_event(
         app,

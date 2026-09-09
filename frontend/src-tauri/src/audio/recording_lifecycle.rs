@@ -696,6 +696,41 @@ pub async fn stop_recording_reporting<R: Runtime>(
 
     info!("ℹ️ Skipping database save in Rust - frontend will save after all transcripts received");
 
+    // Modo LOTE (F3): el cierre encola la transcripción diferida. La señal
+    // `uses_stt` se restaura SIEMPRE al default streaming (leerla antes dice si
+    // esta sesión era lote). El `mark_pending` es el disparador del planner:
+    // vale para el stop manual Y para los cierres del scheduler (ambos pasan
+    // por aquí); la política de descarte la decide el `trigger_kind` que la
+    // fila recibió al arrancar.
+    let was_batch = !crate::audio::transcription::engine::active_recording_uses_stt();
+    crate::audio::transcription::engine::set_active_recording_uses_stt(true);
+    if was_batch {
+        if let Some(folder) = &folder_path_str {
+            let marked = if let Some(state) = app.try_state::<crate::state::AppState>() {
+                let pool = state.db_manager.pool().clone();
+                crate::database::repositories::batch_queue::BatchQueueRepository::mark_pending(&pool, folder)
+                    .await
+                    .unwrap_or(false)
+            } else {
+                false
+            };
+            if marked {
+                crate::audio::transcription::batch::planner::notify_enqueued();
+                info!("📦 Segmento encolado para transcripción por lote: {}", folder);
+            } else {
+                warn!("📦 No se pudo encolar el segmento de lote (¿fila ausente?): {}", folder);
+            }
+            let _ = app.emit(
+                events::BATCH_TRANSCRIPTION_STATUS,
+                serde_json::json!({
+                    "meetingId": serde_json::Value::Null,
+                    "folderPath": folder,
+                    "status": if marked { "pending" } else { "failed" },
+                }),
+            );
+        }
+    }
+
     // Step 5: Complete shutdown
     let _ = app.emit(
         events::RECORDING_SHUTDOWN_PROGRESS,

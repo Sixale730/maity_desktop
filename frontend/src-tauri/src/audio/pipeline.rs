@@ -715,9 +715,12 @@ pub struct AudioPipeline {
     transcription_sender: mpsc::UnboundedSender<AudioChunk>,
     #[allow(dead_code)]  // State management reserved for future enhancements
     state: Arc<RecordingState>,
-    // DUAL-CHANNEL VAD: Separate processors for accurate speaker attribution
-    mic_vad_processor: ContinuousVadProcessor,
-    sys_vad_processor: ContinuousVadProcessor,
+    // DUAL-CHANNEL VAD: Separate processors for accurate speaker attribution.
+    // `None` = modo LOTE (F3 de la migración): la grabación solo captura
+    // checkpoints y la transcripción ocurre al cerrar el segmento — sin Silero
+    // residente (2 sesiones × 4 hilos, #12) ni chunks hacia el worker.
+    mic_vad_processor: Option<ContinuousVadProcessor>,
+    sys_vad_processor: Option<ContinuousVadProcessor>,
     sample_rate: u32,
     chunk_id_counter: u64,
     // Performance optimization: reduce logging frequency
@@ -755,6 +758,7 @@ impl AudioPipeline {
         mic_device_kind: super::device_detection::InputDeviceKind,
         system_device_name: String,
         system_device_kind: super::device_detection::InputDeviceKind,
+        transcription_enabled: bool,
     ) -> Result<Self> {
         // Log device characteristics for adaptive buffering
         info!("🎛️ AudioPipeline initializing with device characteristics:");
@@ -775,23 +779,31 @@ impl AudioPipeline {
 
         let redemption_time = if cfg!(target_os = "macos") { 600 } else { 600 };
 
-        // DUAL-CHANNEL: Create separate VAD processor for microphone
-        let mic_vad_processor = ContinuousVadProcessor::new(sample_rate, redemption_time)
-            .map_err(|e| {
-                error!("Failed to create mic VAD processor: {}", e);
-                anyhow::anyhow!("Mic VAD processor creation failed: {}", e)
-            })?;
-        info!("🎤 Mic VAD processor created (dual-channel mode)");
+        // Modo LOTE (F3): sin VAD — la grabación solo captura checkpoints y la
+        // transcripción corre al cerrar el segmento (transcription/batch/).
+        let (mic_vad_processor, sys_vad_processor) = if transcription_enabled {
+            // DUAL-CHANNEL: Create separate VAD processor for microphone
+            let mic = ContinuousVadProcessor::new(sample_rate, redemption_time)
+                .map_err(|e| {
+                    error!("Failed to create mic VAD processor: {}", e);
+                    anyhow::anyhow!("Mic VAD processor creation failed: {}", e)
+                })?;
+            info!("🎤 Mic VAD processor created (dual-channel mode)");
 
-        // DUAL-CHANNEL: Create separate VAD processor for system audio
-        let sys_vad_processor = ContinuousVadProcessor::new(sample_rate, redemption_time)
-            .map_err(|e| {
-                error!("Failed to create system VAD processor: {}", e);
-                anyhow::anyhow!("System VAD processor creation failed: {}", e)
-            })?;
-        info!("🔊 System VAD processor created (dual-channel mode)");
+            // DUAL-CHANNEL: Create separate VAD processor for system audio
+            let sys = ContinuousVadProcessor::new(sample_rate, redemption_time)
+                .map_err(|e| {
+                    error!("Failed to create system VAD processor: {}", e);
+                    anyhow::anyhow!("System VAD processor creation failed: {}", e)
+                })?;
+            info!("🔊 System VAD processor created (dual-channel mode)");
 
-        info!("✅ Dual-channel VAD pipeline initialized - mic and system audio will be transcribed independently for accurate speaker attribution");
+            info!("✅ Dual-channel VAD pipeline initialized - mic and system audio will be transcribed independently for accurate speaker attribution");
+            (Some(mic), Some(sys))
+        } else {
+            info!("📦 Pipeline en modo LOTE: sin VAD ni transcripción en vivo (solo grabación)");
+            (None, None)
+        };
 
         // Ring buffer for stereo WAV recording (L=mic, R=system)
         let ring_buffer = AudioMixerRingBuffer::new(sample_rate);
@@ -894,10 +906,14 @@ impl AudioPipeline {
                     // los timestamps de segmentos VAD via seg_wallclock_start().
                     let chunk_audio_duration = chunk.data.len() as f64 / chunk.sample_rate as f64;
 
-                    // STEP 1: Per-channel VAD for transcription (BEFORE mixing)
+                    // STEP 1: Per-channel VAD for transcription (BEFORE mixing).
+                    // En modo lote (VAD = None) este paso entero se salta: el
+                    // audio solo sigue al STEP 2 (grabación stereo).
                     match &chunk_device_type {
+                        DeviceType::Microphone if self.mic_vad_processor.is_none() => {}
+                        DeviceType::System if self.sys_vad_processor.is_none() => {}
                         DeviceType::Microphone => {
-                            match self.mic_vad_processor.process_audio(&chunk.data) {
+                            match self.mic_vad_processor.as_mut().expect("mic VAD (streaming)").process_audio(&chunk.data) {
                                 Ok(speech_segments) => {
                                     for segment in speech_segments {
                                         let duration_ms = segment.end_timestamp_ms - segment.start_timestamp_ms;
@@ -957,7 +973,7 @@ impl AudioPipeline {
                                     "Heartbeat sys VAD: 5s+ sin emit con actividad (RMS={:.4}), flush forzado",
                                     self.sys_recent_rms
                                 );
-                                if let Ok(forced_segments) = self.sys_vad_processor.flush() {
+                                if let Ok(forced_segments) = self.sys_vad_processor.as_mut().expect("sys VAD (streaming)").flush() {
                                     for segment in forced_segments {
                                         if segment.samples.len() >= 400 {
                                             let segment_rms = (segment.samples.iter().map(|&x| x * x).sum::<f32>()
@@ -989,7 +1005,7 @@ impl AudioPipeline {
                                 self.last_sys_vad_emit = std::time::Instant::now();
                             }
 
-                            match self.sys_vad_processor.process_audio(&chunk.data) {
+                            match self.sys_vad_processor.as_mut().expect("sys VAD (streaming)").process_audio(&chunk.data) {
                                 Ok(speech_segments) => {
                                     for segment in speech_segments {
                                         let duration_ms = segment.end_timestamp_ms - segment.start_timestamp_ms;
@@ -1123,6 +1139,13 @@ impl AudioPipeline {
     }
 
     fn flush_remaining_audio(&mut self) -> Result<()> {
+        // Modo lote: no hay VAD que flushear.
+        let (Some(mic_vad), Some(sys_vad)) =
+            (self.mic_vad_processor.as_mut(), self.sys_vad_processor.as_mut())
+        else {
+            return Ok(());
+        };
+
         info!("Flushing remaining audio from dual-channel pipeline (processed {} chunks)", self.processed_chunks);
 
         // Wall-clock NOW como end-anchor para segmentos flusheados (no hay input
@@ -1133,7 +1156,7 @@ impl AudioPipeline {
             .unwrap_or(self.current_timestamp);
 
         // Flush microphone VAD processor
-        match self.mic_vad_processor.flush() {
+        match mic_vad.flush() {
             Ok(final_segments) => {
                 for segment in final_segments {
                     let duration_ms = segment.end_timestamp_ms - segment.start_timestamp_ms;
@@ -1166,7 +1189,7 @@ impl AudioPipeline {
         }
 
         // Flush system audio VAD processor
-        match self.sys_vad_processor.flush() {
+        match sys_vad.flush() {
             Ok(final_segments) => {
                 for segment in final_segments {
                     let duration_ms = segment.end_timestamp_ms - segment.start_timestamp_ms;
@@ -1235,6 +1258,7 @@ impl AudioPipelineManager {
         system_device_name: String,
         system_device_kind: super::device_detection::InputDeviceKind,
         system_audio_gain: f32,
+        transcription_enabled: bool,
     ) -> Result<()> {
         // Log device information for adaptive buffering
         info!("🎙️ Starting pipeline with device info:");
@@ -1258,6 +1282,7 @@ impl AudioPipelineManager {
             mic_device_kind,
             system_device_name,
             system_device_kind,
+            transcription_enabled,
         )?;
 
         // CRITICAL FIX: Connect recording sender to receive pre-mixed audio
