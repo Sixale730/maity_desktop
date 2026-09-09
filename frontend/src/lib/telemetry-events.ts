@@ -35,6 +35,10 @@ export const TELEMETRY_EVENTS = {
   // ── Ciclo de vida del motor STT local (emisor: Rust, audio/transcription/engine.rs) ──
   STT_ENGINE_LIFECYCLE: 'stt.engine_lifecycle',
 
+  // ── Transcripción por lote (emisor: Rust, audio/transcription/batch/planner.rs) ──
+  STT_BATCH_JOB: 'stt.batch_job',
+  STT_BATCH_DEFERRED: 'stt.batch_deferred',
+
   // ── App / salud (emisor: platformLogger; app.error también Rust vía panics.rs) ──
   APP_OPEN: 'app.open',
   APP_CLOSE: 'app.close',

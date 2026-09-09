@@ -1031,6 +1031,14 @@ pub fn run() {
             // merece el ahorro. Fuera de tier Low retorna sin loop.
             audio::transcription::idle_unload::spawn(_app.handle().clone());
 
+            // Planificador híbrido de la transcripción por lote (F2): consume
+            // `batch_transcription_queue` cuando hay memoria/CPU libre
+            // (`pressure_level()`, #22) y drena el backlog al arranque. Tarea
+            // propia por el mismo racional que las anteriores; 120 s de delay
+            // para no cruzarse con la auto-recuperación. En F2 los
+            // disparadores aún no insertan filas (llegan en F3).
+            audio::transcription::batch::planner::spawn(_app.handle().clone());
+
             // Panics → outbox: hook encadenado (el de main.rs sigue mandando a
             // tracing + Sentry) que escribe a un .jsonl síncrono; los panics
             // del proceso ANTERIOR se importan aquí y la drenadora los sube.

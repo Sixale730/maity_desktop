@@ -217,6 +217,28 @@ pub struct RecordingLog {
     pub created_at: String,
 }
 
+/// Fila de `batch_transcription_queue` (F2 de la migración a lote). Identidad
+/// natural: `folder_path` (UNIQUE). Estados: recording → pending → processing
+/// → done|discarded|failed; las filas terminales se conservan (regla #26).
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct BatchQueueJob {
+    pub id: i64,
+    pub folder_path: String,
+    /// meetings.id local si ya existe (el stop manual crea placeholder en F3).
+    pub meeting_local_id: Option<String>,
+    /// `started_at` sellado del segmento (`recording_start_wall`).
+    pub segment_started_at: Option<String>,
+    /// 'manual' | 'rotation' | 'auto_close' | 'crash_recovery'.
+    pub trigger_kind: String,
+    pub status: String,
+    pub attempts: i64,
+    pub last_error: Option<String>,
+    pub user_id: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub completed_at: Option<String>,
+}
+
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
 pub struct SyncQueueJob {
     pub id: i64,

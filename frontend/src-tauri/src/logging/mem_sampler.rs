@@ -122,6 +122,14 @@ pub fn last_sys_avail_mb() -> Option<u64> {
     last_sample().map(|(s, _)| s.sys_avail_mb)
 }
 
+/// CPU del SISTEMA (0-100) según el ÚLTIMO sample del loop periódico (`None`
+/// antes del primer tick; el primer tick sale 0 por falta de delta — el gate
+/// del planner de lote lo trata como "libre", fail-open coherente con
+/// `pressure_level`).
+pub fn last_cpu_pct() -> Option<f32> {
+    last_sample().map(|(s, _)| s.cpu_pct)
+}
+
 /// Última vez que el webview pidió `get_health_snapshot`. Es la prueba de vida
 /// más barata que hay: `healthHeartbeatService.ts` es el ÚNICO invoker de ese
 /// comando en todo el frontend (verificado por grep; a propósito SIN número de

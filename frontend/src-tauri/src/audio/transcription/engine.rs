@@ -5,7 +5,7 @@
 use super::deepgram_provider::DeepgramRealtimeTranscriber;
 use super::provider::TranscriptionProvider;
 use log::{info, warn, error};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, RwLock};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, Runtime};
@@ -154,11 +154,29 @@ impl Drop for BatchSttLease {
     }
 }
 
-/// ¿Se puede descargar el motor en esta fase? Sólo en `Idle`. `Stopping` también
-/// rehúsa: el drenaje final de la cola de transcripción aún usa el modelo.
-/// Pura, para poder tabularla en tests.
-pub(crate) fn unload_allowed(phase: RecordingPhase) -> bool {
-    phase == RecordingPhase::Idle
+/// Señal del modo lote (F2): ¿la grabación ACTIVA consume el motor STT?
+/// `true` = streaming (default histórico, y el valor al que se restaura al
+/// parar). En modo lote la grabación solo captura checkpoints — no toca el
+/// motor — así que las fases `Recording`/`Paused`/`Stopping` dejan de bloquear
+/// el unload. La setea el arranque de grabación (F3); nadie la toca en F2.
+static ACTIVE_RECORDING_USES_STT: AtomicBool = AtomicBool::new(true);
+
+/// La llama el arranque de grabación (F3) según `transcription_mode`, y el
+/// stop la restaura a `true`.
+pub fn set_active_recording_uses_stt(uses_stt: bool) {
+    ACTIVE_RECORDING_USES_STT.store(uses_stt, Ordering::SeqCst);
+}
+
+pub(crate) fn active_recording_uses_stt() -> bool {
+    ACTIVE_RECORDING_USES_STT.load(Ordering::SeqCst)
+}
+
+/// ¿Se puede descargar el motor en esta fase? En streaming sólo en `Idle`
+/// (`Stopping` también rehúsa: el drenaje final de la cola aún usa el modelo).
+/// Con una grabación en modo LOTE (`recording_uses_stt == false`) la fase no
+/// bloquea: la grabación no consume el motor. Pura, tabulada en tests.
+pub(crate) fn unload_allowed(phase: RecordingPhase, recording_uses_stt: bool) -> bool {
+    phase == RecordingPhase::Idle || !recording_uses_stt
 }
 
 fn is_local_provider(provider: &str) -> bool {
@@ -453,7 +471,7 @@ pub async fn unload_stt<R: Runtime>(app: &AppHandle<R>, reason: &'static str) ->
     let unloaded = {
         let _flight = STT_WARM_LOCK.lock().await;
         let phase = recording_phase::current_phase();
-        if !unload_allowed(phase) {
+        if !unload_allowed(phase, active_recording_uses_stt()) {
             info!("STT unload ({}) rehusado: fase {:?}", reason, phase);
             return UnloadOutcome::RefusedPhase(phase);
         }
@@ -777,19 +795,33 @@ mod stt_lifecycle_tests {
         assert!(!fast_path_match("parakeet", "parakeet-tdt-0.6b-v3-int8"));
     }
 
-    /// Sólo `Idle` permite descargar: `Stopping` aún drena la cola con el modelo
-    /// y `Starting` ya tiene un `validate` en vuelo que cuenta con él.
+    /// En streaming sólo `Idle` permite descargar: `Stopping` aún drena la cola
+    /// con el modelo y `Starting` ya tiene un `validate` en vuelo que cuenta
+    /// con él. En modo lote (uses_stt=false) la fase deja de bloquear: la
+    /// grabación solo captura checkpoints.
     #[test]
-    fn unload_solo_en_idle() {
+    fn unload_por_fase_y_modo() {
         let casos = [
-            (RecordingPhase::Idle, true),
-            (RecordingPhase::Starting, false),
-            (RecordingPhase::Recording, false),
-            (RecordingPhase::Paused, false),
-            (RecordingPhase::Stopping, false),
+            // (fase, recording_uses_stt, esperado)
+            (RecordingPhase::Idle, true, true),
+            (RecordingPhase::Starting, true, false),
+            (RecordingPhase::Recording, true, false),
+            (RecordingPhase::Paused, true, false),
+            (RecordingPhase::Stopping, true, false),
+            (RecordingPhase::Idle, false, true),
+            (RecordingPhase::Starting, false, true),
+            (RecordingPhase::Recording, false, true),
+            (RecordingPhase::Paused, false, true),
+            (RecordingPhase::Stopping, false, true),
         ];
-        for (phase, esperado) in casos {
-            assert_eq!(unload_allowed(phase), esperado, "fase {:?}", phase);
+        for (phase, uses_stt, esperado) in casos {
+            assert_eq!(
+                unload_allowed(phase, uses_stt),
+                esperado,
+                "fase {:?} uses_stt={}",
+                phase,
+                uses_stt
+            );
         }
     }
 

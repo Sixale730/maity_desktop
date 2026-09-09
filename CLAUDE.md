@@ -36,6 +36,7 @@ Los post-mortems y reglas detalladas viven en `docs/`. **Antes de modificar cód
 | ffmpeg bundleado, GC del target/, política de deps Rust | `docs/BUILDING.md` |
 | Telemetría (catálogo, heartbeats, mem_sampler, bundle de incidente) | `docs/TELEMETRIA.md` |
 | Auditoría de recursos sep-2026 (hallazgos #NN) | `docs/AUDITORIA_RECURSOS_2026-09-02.md` |
+| Plan de migración a transcripción por lote (fases F0-F6 + estado) | `docs/PLAN_MIGRACION_LOTE.md` |
 
 ## Skills (Slash Commands)
 

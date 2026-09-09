@@ -1,3 +1,4 @@
+pub mod batch_queue;
 pub mod meeting;
 pub mod recording_log;
 pub mod setting;

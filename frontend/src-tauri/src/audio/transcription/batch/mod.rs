@@ -18,6 +18,7 @@
 pub mod chunker;
 pub mod decoder;
 pub mod energy_gate;
+pub mod planner;
 pub mod transcriber;
 pub mod writer;
 

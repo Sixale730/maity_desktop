@@ -36,6 +36,11 @@ pub const AUDIO_CHECKPOINT_INTEGRITY: &str = "audio.checkpoint_integrity";
 // ── Ciclo de vida del motor STT local (emisor: Rust, `audio/transcription/engine.rs`) ──
 pub const STT_ENGINE_LIFECYCLE: &str = "stt.engine_lifecycle";
 
+// ── Transcripción por lote (emisor: Rust, `audio/transcription/batch/planner.rs`;
+//    batch_job por job terminal, batch_deferred con latch por episodio) ──
+pub const STT_BATCH_JOB: &str = "stt.batch_job";
+pub const STT_BATCH_DEFERRED: &str = "stt.batch_deferred";
+
 // ── App / salud (emisor: platformLogger; `app.error` también Rust vía
 //    panics.rs, `health.heartbeat` también Rust vía mem_sampler.rs) ──
 pub const APP_OPEN: &str = "app.open";
