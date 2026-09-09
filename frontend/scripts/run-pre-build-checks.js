@@ -45,6 +45,26 @@ function resolveBash() {
 
 const BASH = resolveBash();
 
+// Antes que nada: GC del target/ de Cargo (sesiones incrementales y rlibs hasheados
+// viejos de app_lib) + chequeo de espacio libre. Sin esto el disco se llenaba solo
+// (43.7 GB en ~40 sesiones, 2026-09-09) y el build moría a mitad del link con
+// "os error 112". Sólo el exit 1 (espacio libre < 5 GB) detiene el build; cualquier
+// otro fallo del GC se avisa y se sigue, porque un GC roto no debe bloquear builds.
+console.log('[pre-build] Running target/ GC + free-space check...');
+const gcResult = spawnSync(process.execPath, [path.join(__dirname, 'gc-target-dir.js')], {
+    stdio: 'inherit',
+    shell: false,
+});
+
+if (gcResult.status === 1) {
+    console.error('');
+    console.error('[pre-build] FAIL: no hay espacio suficiente para buildear (ver arriba).');
+    console.error('  Escape hatch: MAITY_TARGET_GC_NO_FAIL=1 o pnpm run tauri:build:debug:skip-checks');
+    process.exit(1);
+} else if (gcResult.status !== 0) {
+    console.warn(`[pre-build] WARN: el GC del target/ terminó con exit ${gcResult.status}; se continúa.`);
+}
+
 // Primero de todo: el VC++ Runtime tiene que estar staged ANTES de que el
 // bundler recoja bundle.resources (ver stage-vcredist.js).
 console.log('[pre-build] Staging VC++ Runtime redistributable...');

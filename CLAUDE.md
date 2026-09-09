@@ -1118,6 +1118,8 @@ Este comando ejecuta: `pnpm build` (Next.js) -> `cargo build` (Rust, debug) -> e
 
 **Build de produccion** (solo para releases): `cd frontend && pnpm run tauri:build`
 
+> **GC del `target/` (sep-2026).** Cargo crea una carpeta `target/<perfil>/incremental/<crate>-<hash>/` por combinación de perfil (dev/test/check), features y flags, y **nunca borra las viejas**: llegaron a 43.7 GB en ~40 sesiones de `app_lib` (+5 GB de rlibs hasheados en `deps/`) y el build murió con `os error 112` con 0.8 GB libres. `frontend/scripts/gc-target-dir.js` corre como **primer** paso de `run-pre-build-checks.js` y de `tauri:dev`: borra sesiones sin uso >7 días y, si el incremental pasa de 12 GB, las más viejas — **nunca la sesión caliente de cada crate** —, y los artefactos hasheados viejos de `app_lib`/`maity_desktop` en `deps/`; con <15 GB libres avisa y con <5 GB **falla el build** (moriría igual a mitad del link: `app_lib.lib` pesa 2.4 GB). Manual: `pnpm run target:gc` / `target:gc:dry` (reporte con 🔥 = caliente). Umbrales por env `MAITY_TARGET_GC_STALE_DAYS` / `MAITY_TARGET_GC_MAX_INCREMENTAL_GB`; escapes `MAITY_TARGET_GC_SKIP=1` / `MAITY_TARGET_GC_NO_FAIL=1`. Un ciclo `cargo test` + build debug consume ~10 GB (test ≈ 1.8 GB, build ≈ 6 GB). Si aun así estorba: `cargo clean -p maity-desktop` (tira también la caliente: +2-3 min al siguiente build). **Nightshift bloquea `rm -r` y `Remove-Item -Recurse` en duro**; por eso el borrado vive en un script de Node y no en un comando.
+
 ### 3. Alerta de Cambios Peligrosos
 
 Si el usuario solicita alguna de estas acciones, **advertir y proponer enfoque incremental**:
