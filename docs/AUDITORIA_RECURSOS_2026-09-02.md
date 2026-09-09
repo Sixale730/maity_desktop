@@ -52,8 +52,8 @@ exactamente lo cerrado. La tabla de abajo es una foto del estado; la verdad es l
 | 07 | Coach-float re-renderiza a 10 Hz tras un blur de 22 px | Alto | CPU/RAM | Jornada/Idle | S | = | **cerrado** `477bfa0` |
 | 08 | El encoder de checkpoints copia 11.5 MB dos veces | Medio | RAM/CPU | Jornada/Post | S | = | **cerrado** `5584e3e` |
 | 09 | Tres canales sin límite en la ruta de grabación | Medio | RAM | Jornada | S | ↓ | abierto |
-| 10 | `AudioMetricsBatcher` acumula resúmenes que nadie lee | Bajo | RAM/CPU | Jornada | S | = | abierto |
-| 11 | El normalizador EBU R128 guarda historial ilimitado | Bajo | RAM | Jornada | S | = | abierto |
+| 10 | `AudioMetricsBatcher` acumula resúmenes que nadie lee | Bajo | RAM/CPU | Jornada | S | = | **cerrado** `4144eaa` |
+| 11 | El normalizador EBU R128 guarda historial ilimitado | Bajo | RAM | Jornada | S | = | **cerrado** `4144eaa` |
 | 12 | El VAD usa 4 hilos intra-op por sesión, dos sesiones | Alto | CPU | Jornada | M | ↓ | abierto |
 | 13 | Tormenta de `snapshot_now` con backlog múltiplo de 30 | Alto | CPU | Jornada | S | ✗ | abierto |
 | 14 | El muestreador de memoria refresca más de lo que lee | Medio | CPU | Jornada/Idle/Arranque | S | = | **cerrado** `0506582` |
@@ -307,7 +307,7 @@ Ordenados por impacto estimado en RAM, luego CPU, luego disco y red.
   silencio.
 
 ### #10 · `AudioMetricsBatcher` acumula resúmenes que nadie lee
-`Bajo` · RAM/CPU · Jornada · esfuerzo S · no cambia por lote · abierto
+`Bajo` · RAM/CPU · Jornada · esfuerzo S · no cambia por lote · **CERRADO** `4144eaa`
 
 - **Impacto**: 1-2 MB por segmento de 90 min más una tarea, un canal y un `Instant::now()` por callback
   de 10 ms.
@@ -316,15 +316,37 @@ Ordenados por impacto estimado en RAM, luego CPU, luego disco y red.
 - **Qué pasa**: 4 resúmenes por segundo se empujan a un `Arc<RwLock<Vec>>` que solo se libera al soltar
   el pipeline.
 - **Cambio**: borrar el batcher y la macro `batch_audio_metric!`. **Riesgo**: ninguno.
+- **Cierre (09-sep)**: borrado `batch_processor.rs` entero (`BatchProcessor`, `AudioMetricsBatcher` y la
+  macro) y el bloque de `pipeline.rs` que lo alimentaba; el `set_audio_level` del mismo bloque se queda
+  (sí tiene consumidor: las barras de nivel del frontend). De paso, `BatchProcessor::new` hacía
+  `tokio::spawn` dentro de un constructor síncrono y recreaba un `sleep(5 s)` por iteración del
+  `select!`. Mismo commit que #11.
 
 ### #11 · El normalizador EBU R128 guarda un historial de sonoridad ilimitado
-`Bajo` · RAM · Jornada · esfuerzo S · no cambia por lote · abierto
+`Bajo` · RAM · Jornada · esfuerzo S · no cambia por lote · **CERRADO** `4144eaa`
 
 - **Impacto**: 0.4 MB por segmento; además `normalize_loudness` asigna un Vec de salida por callback.
 - **Dónde**: `audio/audio_processing.rs:165` y `:186-224` · crate `ebur128`: `history = usize::MAX`.
 - **Qué pasa**: `set_max_history` nunca se llama, así que el estado integrado crece 80 B/s.
 - **Cambio**: `set_max_history(600_000)` tras construir; escribir en sitio en `normalize_loudness`.
 - **Riesgo**: la sonoridad integrada pasa a ventana de 10 min; para 90 min es más apropiado.
+- **CORRECCIÓN al remedio (09-sep)**: `set_max_history` NO se usó, por dos razones. (1) En `ebur128 0.1.10`
+  `Queue::set_max_size` (`history.rs:181-188`) hace `queue.resize(max, 0.0)` cuando `len < max`, o sea
+  **rellena con 6000 ceros** una instancia recién creada, y `calc_relative_threshold` los cuenta en `len`:
+  el umbral relativo queda diluido (≈ −20 LU en vez de −10 LU al minuto 1) hasta que 10 min de bloques
+  reales los expulsan. (2) La ventana deslizante de 10 min no es "más apropiada" para la jornada, es
+  peor: tras un silencio largo la cola queda sólo con ruido de sala (> −70 LUFS absoluto), la sonoridad
+  integrada cae a ~−60 y la ganancia sube ~+37 dB — y ese audio amplificado es el que ve el VAD
+  (`pipeline.rs` normaliza ANTES del VAD). Con la integración sobre todo el segmento la energía del habla
+  domina el promedio y eso no vuelve a pasar una vez que hubo voz. Además el hallazgo era también de CPU:
+  `loudness_global()` se llama cada 512 muestras y recorría la cola entera, O(n) creciente.
+- **Cierre (09-sep)**: `Mode::I | TRUE_PEAK | HISTOGRAM` → 1000 bins fijos (8 KB) y `loudness_global()`
+  O(1000) constante; misma integración sobre todo el segmento, ±0.1 LU por la cuantización de los bins.
+  `normalize_loudness(&mut [f32])` escribe en sitio. Tests: `usa_histograma_para_acotar_la_memoria` y
+  `el_histograma_no_cambia_la_sonoridad_integrada` (Queue vs Histogram sobre 18 s de señal con dos
+  niveles y silencio, < 0.2 LU). Pendiente anotado: `HighPassFilter::process` y
+  `NoiseSuppressionProcessor::process` siguen asignando un `Vec` por callback en la misma ruta. Mismo
+  commit que #10.
 
 ### #12 · El VAD usa 4 hilos intra-op por sesión, dos sesiones, para un modelo de 1.7 MB
 `Alto` · CPU · Jornada · esfuerzo M · verificado · **se encoge por lote** · abierto
