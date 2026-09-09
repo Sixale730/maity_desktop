@@ -123,7 +123,7 @@ clean_start_backend.cmd               # Iniciar servidor
 | `whisper_engine/` | Motor Whisper.cpp con aceleracion GPU (el "procesamiento paralelo" se borró en sep-2026, #21 de la auditoría: nadie lo invocaba) |
 | `parakeet_engine/` | Motor Parakeet ONNX (~150MB, rapido on-device) |
 | `moonshine_engine/` | Motor Moonshine ONNX (ultra-rapido, dual decoder) |
-| `canary_engine/` | Motor NVIDIA NeMo Canary (mejor espanol, **existe pero NO expuesto en lib.rs**) |
+| `canary_engine/` | Motor NVIDIA NeMo Canary (mejor espanol; comandos `canary_*` registrados en `lib.rs`, opción solo admin) |
 | `summary/` | Generacion de resumenes: LLM client, templates, communication evaluator |
 | `database/` | SQLite con 7 repositorios: meeting, transcript, transcript_chunk, summary, setting, recording_log, sync_queue |
 | `api/` | Cliente HTTP para backend + endpoints + finalizacion cloud |
@@ -237,8 +237,15 @@ audio/
 | **Whisper** | Local, GPU | `whisper_engine/` (3 archivos) | Metal/CUDA/Vulkan, modelos tiny→large-v3 |
 | **Parakeet** | Local, ONNX | `parakeet_engine/` (4 archivos) | ~150MB, rapido on-device, auto-download |
 | **Moonshine** | Local, ONNX | `moonshine_engine/` (4 archivos) | Ultra-rapido, dual decoder (encoder-only + with-past) |
-| **Canary** | Local, ONNX | `canary_engine/` (5 archivos) | NVIDIA NeMo, mejor espanol (2.69% WER), **NO EXPUESTO en lib.rs** |
+| **Canary** | Local, ONNX | `canary_engine/` (5 archivos) | NVIDIA NeMo, mejor espanol (2.69% WER); comandos `canary_*` registrados en `lib.rs`, opción solo para admins en `TranscriptSettings` |
 | **Deepgram** | Nube, WS | `transcription/deepgram_*.rs` | Via Cloudflare Worker proxy, Nova-3 |
+
+> **GPU en los motores ONNX: CPU por defecto, DirectX en delay-load y DirectML opt-in (sep-2026, #33 de la auditoría de recursos).** Referencia completa en `docs/ONNX_EXECUTION_PROVIDERS.md`; léela antes de "optimizar un modelo con GPU". Reglas:
+> - **El feature `directml` de `ort` NO decide qué código entra al exe.** El prebuilt estático de pyke para Windows es uno solo (fila `none` de `ort-sys/dist.txt`, 289 MB) y ya trae el provider DML compilado con sus DLLs enlazados; el feature solo da cuerpo a `register()`. Quitarlo, que era el remedio literal de la auditoría, no ahorra ni RAM ni exe.
+> - **Lo que cierra #33 es el `/DELAYLOAD` de `DirectML.dll`/`d3d12.dll`/`dxgi.dll`/`dxcore.dll` en `build.rs::configure_windows_delay_load`** (+ `delayimp.lib`, mismo mecanismo que usa ORT en su propio DLL). Los cuatro se cargan solo en la primera llamada, que únicamente ocurre si un motor registra DML. No quitarlo "porque el feature ya está apagado": son capas independientes.
+> - **`onnx-directml` es un feature de la app, apagado por defecto**, que enciende `ort/directml` y el gate `all(target_os = "windows", feature = "onnx-directml")` de `onnx_providers.rs`. Sin él `resolve_plan(directml_compiled=false)` devuelve CPU para cualquiera que pida GPU (hoy Moonshine y Canary) y lo dice en el log. Parakeet pasa `prefer_gpu: false` a propósito (A/B `docs/AB_PARAKEET_EP_2026-07-20.md`: int8 en DML 2.3× más lento, sin ganancia de WER, VRAM peleada con el coach).
+> - **Modelo nuevo con GPU** = `prefer_gpu: true` en su `build_session` + build con `--features onnx-directml` + A/B con el mismo audio (RTF p50/p90 por chunk, diff de palabras, VRAM vs coach) documentado como `docs/AB_<MODELO>_<fecha>.md`. Recuperar los ~15-25 MB del exe exigiría `load-dynamic` + `onnxruntime.dll` CPU-only oficial, no un feature.
+> - **Guard**: `frontend/scripts/lint-exe-imports.js` (parser PE en Node) corre en el post-build y falla si alguno de los cuatro DLLs vuelve a la tabla de imports de carga. macOS/CoreML no se tocó (asimetría anotada).
 
 ### Sistema de Resumen (`summary/`, 11 archivos)
 
@@ -872,11 +879,12 @@ $env:RUST_LOG="debug"; ./clean_run_windows.bat                   # Windows
 
 **Features de Cargo.toml**:
 ```
-metal, coreml      → macOS (auto)
-cuda               → Windows/Linux NVIDIA
-vulkan             → Windows/Linux AMD/Intel
-hipblas            → Linux AMD ROCm
-openblas, openmp   → Optimizacion CPU
+metal, coreml      → macOS (auto)                       [whisper-rs]
+cuda               → Windows/Linux NVIDIA               [whisper-rs]
+vulkan             → Windows/Linux AMD/Intel            [whisper-rs]
+hipblas            → Linux AMD ROCm                     [whisper-rs]
+openblas, openmp   → Optimizacion CPU                   [whisper-rs]
+onnx-directml      → Windows: DirectML para los motores ONNX (Moonshine/Canary). OFF por defecto (#33); ver docs/ONNX_EXECUTION_PROVIDERS.md
 ```
 
 ## Configuracion Multiplataforma

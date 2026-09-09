@@ -55,3 +55,13 @@ On macOS, Metal GPU acceleration is enabled by default. No additional configurat
 ### Windows
 
 To enable GPU acceleration on Windows, you will need to install the appropriate toolkit for your GPU (e.g., the CUDA Toolkit for NVIDIA GPUs) and then build the application with the corresponding feature flag enabled.
+
+## ONNX engines (Parakeet / Moonshine / Canary)
+
+Everything above is about `whisper-rs`. The ONNX Runtime engines have their own, independent
+execution-provider story: by default all three run on **CPU** on Windows (Parakeet by measured
+decision, Moonshine/Canary because the `onnx-directml` feature is off), and the DirectX DLLs that
+ONNX Runtime links are **delay-loaded** so they are not mapped at startup. To give a model GPU via
+DirectML, or before re-evaluating GPU for any ONNX engine, read
+[ONNX_EXECUTION_PROVIDERS.md](ONNX_EXECUTION_PROVIDERS.md) — it explains which layer controls
+what (prebuilt vs Cargo feature vs delay-load), the A/B protocol, and the paths not taken.

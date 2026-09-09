@@ -229,7 +229,10 @@ impl MoonshineModel {
 
         // Arena desactivada (disable_arena=true): audio de tamaño variable hace crecer
         // la BFCArena sin liberar (Microsoft issue #11627). El helper aplica
-        // memory_pattern(false) acorde y elige GPU (DirectML/CoreML) si esta disponible.
+        // memory_pattern(false) acorde. `prefer_gpu: true` es una PETICIÓN: en macOS
+        // sale CoreML; en Windows solo DirectML si el build lleva
+        // `--features onnx-directml` (apagado por defecto desde sep-2026, #33 de la
+        // auditoría) y si no, CPU. Ver docs/ONNX_EXECUTION_PROVIDERS.md.
         let session = crate::audio::transcription::onnx_providers::build_session(
             &model_dir.as_ref().join(&model_filename),
             crate::audio::transcription::onnx_providers::OnnxSessionOpts {

@@ -116,7 +116,10 @@ impl CanaryModel {
         };
 
         // Canary mantiene la arena ACTIVADA (disable_arena=false), como hasta ahora.
-        // El helper elige GPU (DirectML/CoreML) si esta disponible y cae a CPU si no.
+        // `prefer_gpu: true` es una PETICIÓN: en macOS sale CoreML; en Windows solo
+        // DirectML si el build lleva `--features onnx-directml` (apagado por defecto
+        // desde sep-2026, #33 de la auditoría) y si no, CPU. Ver
+        // docs/ONNX_EXECUTION_PROVIDERS.md.
         let session = crate::audio::transcription::onnx_providers::build_session(
             &model_dir.as_ref().join(&model_filename),
             crate::audio::transcription::onnx_providers::OnnxSessionOpts {

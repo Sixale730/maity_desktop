@@ -52,6 +52,17 @@ hipblas = ["whisper-rs/hipblas"]   # Linux: AMD ROCm HIP
 openblas = ["whisper-rs/openblas"] # Optimized BLAS (Auto-enabled on Windows/Linux)
 openmp = ["whisper-rs/openmp"]     # OpenMP parallel processing
 
+# ONNX Runtime (Parakeet / Moonshine / Canary). NO es de whisper-rs como los de arriba,
+# por eso el prefijo `onnx-`. APAGADO por defecto desde sep-2026 (#33 de la auditoría
+# de recursos): el motor por defecto, Parakeet, corre en CPU por decisión medida
+# (docs/AB_PARAKEET_EP_2026-07-20.md) y solo Moonshine/Canary piden GPU. Sin este
+# feature `DirectMLExecutionProvider::register()` no tiene cuerpo y `onnx_providers.rs`
+# ni siquiera lo pide: los tres motores corren en CPU. Activarlo NO cambia qué código
+# entra al exe (el prebuilt de pyke ya trae DML compilado; ver docs/ONNX_EXECUTION_PROVIDERS.md)
+# y el delay-load de los DLLs de DirectX vive en build.rs, independiente de esto.
+#   tauri build --features onnx-directml      (o TAURI_GPU_FEATURE="vulkan,onnx-directml")
+onnx-directml = ["ort/directml"]
+
 [build-dependencies]
 tauri-build = { version = "2.4", features = [] }
 # build.rs sólo usa `which` (detección de nvidia-smi/rocm-smi). El reqwest que vivía aquí
@@ -244,11 +255,14 @@ ort = { version = "2.0.0-rc.10", features = ["coreml"] }
 # CPU-only build (Vulkan disabled for easier compilation)
 whisper-rs = { version = "0.13.2", features = ["raw-api"] }
 futures-channel = "0.3.31"
-# ONNX Runtime con DirectML EP para Parakeet/Moonshine/Canary.
-# DirectML acelera en cualquier GPU DX12 (NVIDIA/AMD/Intel) sin que el usuario
-# instale CUDA/cuDNN. Hereda default features (download-binaries baja el binario
-# DirectML correcto) y suma el binding DirectML.
-ort = { version = "2.0.0-rc.10", features = ["directml"] }
+# ONNX Runtime para Parakeet/Moonshine/Canary. SIN el feature `directml` desde sep-2026
+# (#33 de la auditoría de recursos): el prebuilt que baja `download-binaries` para
+# x86_64-pc-windows-msvc es UNO solo (fila `none` de ort-sys/dist.txt, no existe variante
+# "directml") y ya trae el provider DML compilado; el feature solo daba cuerpo a
+# `DirectMLExecutionProvider::register()`. Hoy se enciende con el feature de la app
+# `onnx-directml` (ver [features]); el delay-load de DirectML/D3D12/DXGI/DXCORE lo hace
+# build.rs y no depende de esto. Detalle: docs/ONNX_EXECUTION_PROVIDERS.md.
+ort = { version = "2.0.0-rc.10" }
 # WASAPI for system audio capture (loopback) - captura audio de videollamadas
 windows = { version = "0.58", features = [
     "Win32_Media_Audio",

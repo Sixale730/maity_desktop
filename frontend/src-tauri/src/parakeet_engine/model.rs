@@ -116,7 +116,10 @@ impl ParakeetModel {
         // tiempo real, DirectML producía espirales de lag + drops por backpressure
         // (auditoría jul-2026, causa #2), sin ganancia de precisión medible sobre
         // audio idéntico. Además libera la VRAM que Parakeet-DirectML le peleaba al
-        // coach (gemma) en GPUs de 4GB. Moonshine/Canary conservan GPU.
+        // coach (gemma) en GPUs de 4GB. Moonshine/Canary siguen pidiendo GPU, pero
+        // desde sep-2026 (#33 de la auditoría) solo la reciben en Windows con
+        // `--features onnx-directml`; el build por defecto es CPU para los tres
+        // (docs/ONNX_EXECUTION_PROVIDERS.md).
         let prefer_gpu = false;
 
         let session = crate::audio::transcription::onnx_providers::build_session(

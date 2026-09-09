@@ -4,6 +4,11 @@
 (encoder, decoder_joint y nemo128). Moonshine y Canary conservan GPU.
 `MAITY_ONNX_FORCE_CPU=1` sigue existiendo como override global de debug.
 
+> **Actualización sep-2026 (#33 de la auditoría de recursos):** Moonshine y Canary también corren
+> en CPU en el build por defecto de Windows — DirectML pasó a ser opt-in (`--features onnx-directml`)
+> y los DLLs de DirectX van en delay-load. Qué palanca controla qué, y el checklist para volver a
+> evaluar GPU en cualquier motor, en `ONNX_EXECUTION_PROVIDERS.md`.
+
 ## Contexto
 
 Usuarios reportaban transcripción degradada (frases truncadas, palabras inventadas,

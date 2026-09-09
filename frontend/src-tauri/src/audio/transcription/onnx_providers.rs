@@ -5,10 +5,15 @@
 //
 // Por que existe: los 3 engines ONNX (Parakeet, Moonshine, Canary) construian sus
 // sesiones a mano, siempre con CPUExecutionProvider. Este helper unifica esa logica
-// y habilita GPU sin tocar modelos, descargas ni precision (WER identico):
-//   - Windows -> DirectML (cualquier GPU DX12: NVIDIA/AMD/Intel, sin deps del usuario)
-//   - macOS   -> CoreML (Apple Silicon / ANE)
+// y puede habilitar GPU sin tocar modelos, descargas ni precision (WER identico):
+//   - Windows -> DirectML (cualquier GPU DX12: NVIDIA/AMD/Intel, sin deps del usuario),
+//                SOLO si el build lleva `--features onnx-directml` (apagado por defecto
+//                desde sep-2026, #33 de la auditoria de recursos)
+//   - macOS   -> CoreML (Apple Silicon / ANE), siempre compilado
 //   - resto   -> CPU
+// Estado real por motor y checklist para darle GPU a un modelo nuevo:
+// docs/ONNX_EXECUTION_PROVIDERS.md. Parakeet, el motor por defecto, pide CPU a
+// proposito (docs/AB_PARAKEET_EP_2026-07-20.md).
 //
 // ort registra los EP en el orden dado y cae al siguiente (o a CPU) si uno falla
 // al registrar o no soporta un operador del grafo; por eso el CPU va SIEMPRE al
@@ -27,13 +32,23 @@ use ort::execution_providers::CPUExecutionProvider;
 use ort::session::builder::GraphOptimizationLevel;
 use ort::session::Session;
 
-// Gateado por target_os (no por `feature`): el feature `directml`/`coreml` es del
-// crate `ort`, no de esta app, y se habilita en las dependencias por target del
-// Cargo.toml. Por eso el struct existe exactamente en su plataforma.
-#[cfg(target_os = "windows")]
+// DirectML: gateado por target_os Y por el feature `onnx-directml` de ESTA app (que
+// enciende `ort/directml`). Ojo con lo que NO controla ese feature: el prebuilt
+// estatico de pyke ya trae el provider DML compilado y sus DLLs enlazados pase lo que
+// pase; el feature solo decide si `DirectMLExecutionProvider::register()` tiene cuerpo
+// (sin el devuelve `RegisterError::MissingFeature`). Por eso aqui, sin feature, ni se
+// pide: `resolve_plan` devuelve CPU y el log lo dice.
+// CoreML: gateado solo por target_os, `ort/coreml` va siempre en el target macOS.
+#[cfg(all(target_os = "windows", feature = "onnx-directml"))]
 use ort::execution_providers::DirectMLExecutionProvider;
 #[cfg(target_os = "macos")]
 use ort::execution_providers::CoreMLExecutionProvider;
+
+/// `true` cuando este build puede registrar DirectML de verdad (Windows +
+/// `--features onnx-directml`). Es lo que `resolve_plan` recibe como
+/// `directml_compiled`; se mantiene como constante para que el log y los tests
+/// hablen del mismo hecho.
+const DIRECTML_COMPILED: bool = cfg!(all(target_os = "windows", feature = "onnx-directml"));
 
 use crate::audio::hardware_detector::HardwareProfile;
 
@@ -95,7 +110,8 @@ pub struct OnnxSessionOpts<'a> {
 ///
 /// Reglas:
 /// - Solo se usa GPU si `prefer_gpu` y NO se forzo CPU.
-/// - Windows -> DirectML, macOS -> CoreML, resto -> CPU.
+/// - Windows -> DirectML solo si `directml_compiled` (feature `onnx-directml`);
+///   si no, CPU. macOS -> CoreML. Resto -> CPU.
 /// - Ejecucion SIEMPRE secuencial: los grafos STT son cadenas encoder->decoder
 ///   sin ramas paralelas; ORT_PARALLEL solo agregaba un inter-op pool extra por
 ///   sesion. DirectML ademas lo exige.
@@ -106,6 +122,7 @@ fn resolve_plan(
     platform: Platform,
     prefer_gpu: bool,
     forced_cpu: bool,
+    directml_compiled: bool,
     disable_arena: bool,
     cpu_cores: usize,
 ) -> SessionPlan {
@@ -113,7 +130,8 @@ fn resolve_plan(
 
     let ep = if use_gpu {
         match platform {
-            Platform::Windows => EpKind::DirectML,
+            Platform::Windows if directml_compiled => EpKind::DirectML,
+            Platform::Windows => EpKind::Cpu,
             Platform::Macos => EpKind::CoreML,
             Platform::Other => EpKind::Cpu,
         }
@@ -167,18 +185,29 @@ fn current_platform() -> Platform {
 pub fn build_session(model_path: &Path, opts: OnnxSessionOpts) -> Result<Session, ort::Error> {
     let hw = HardwareProfile::detect();
     let forced_cpu = force_cpu();
+    let platform = current_platform();
     let plan = resolve_plan(
-        current_platform(),
+        platform,
         opts.prefer_gpu,
         forced_cpu,
+        DIRECTML_COMPILED,
         opts.disable_arena,
         hw.cpu_cores as usize,
     );
 
+    if platform == Platform::Windows && opts.prefer_gpu && !forced_cpu && !DIRECTML_COMPILED {
+        // Un motor pidio GPU (hoy solo Moonshine/Canary) en un build sin el feature:
+        // se dice explicitamente para que un log de soporte no parezca un fallback.
+        log::info!(
+            "ONNX[{}] GPU solicitada pero DirectML no esta compilado (feature onnx-directml); usando CPU",
+            opts.label
+        );
+    }
+
     let mut providers = Vec::new();
 
     // --- Execution provider de GPU por plataforma (segun el plan) ---
-    #[cfg(target_os = "windows")]
+    #[cfg(all(target_os = "windows", feature = "onnx-directml"))]
     {
         if plan.ep == EpKind::DirectML {
             providers.push(DirectMLExecutionProvider::default().build());
@@ -201,11 +230,12 @@ pub fn build_session(model_path: &Path, opts: OnnxSessionOpts) -> Result<Session
     providers.push(cpu.build());
 
     log::info!(
-        "ONNX[{}] EP solicitado: {} (gpu_detectada={:?}, force_cpu={}, parallel={}, intra_threads={})",
+        "ONNX[{}] EP solicitado: {} (gpu_detectada={:?}, force_cpu={}, directml_compilado={}, parallel={}, intra_threads={})",
         opts.label,
         plan.ep.name(),
         hw.gpu_type,
         forced_cpu,
+        DIRECTML_COMPILED,
         plan.parallel,
         plan.intra_threads,
     );
@@ -230,12 +260,12 @@ pub fn build_session(model_path: &Path, opts: OnnxSessionOpts) -> Result<Session
 mod tests {
     use super::*;
 
-    // ---- resolve_plan: rutas con GPU ----
+    // ---- resolve_plan: rutas con GPU (build con `--features onnx-directml`) ----
 
     #[test]
     fn windows_con_gpu_usa_directml_secuencial() {
-        // Parakeet/Moonshine en Windows: DirectML, secuencial, memory pattern off.
-        let plan = resolve_plan(Platform::Windows, true, false, true, 8);
+        // Moonshine en Windows con el feature: DirectML, secuencial, memory pattern off.
+        let plan = resolve_plan(Platform::Windows, true, false, true, true, 8);
         assert_eq!(plan.ep, EpKind::DirectML);
         assert!(!plan.parallel, "DirectML exige ejecucion secuencial");
         assert!(plan.disable_memory_pattern);
@@ -245,7 +275,7 @@ mod tests {
     fn windows_canary_directml_desactiva_memory_pattern_aunque_arena_activa() {
         // Canary mantiene arena (disable_arena=false) pero DirectML obliga a
         // desactivar memory pattern de todas formas.
-        let plan = resolve_plan(Platform::Windows, true, false, false, 8);
+        let plan = resolve_plan(Platform::Windows, true, false, true, false, 8);
         assert_eq!(plan.ep, EpKind::DirectML);
         assert!(!plan.parallel);
         assert!(plan.disable_memory_pattern, "DirectML fuerza memory pattern off");
@@ -255,7 +285,7 @@ mod tests {
     fn macos_con_gpu_usa_coreml_secuencial() {
         // Los grafos STT son secuenciales: tambien con CoreML se apaga
         // ORT_PARALLEL (el inter-op pool extra no aporta y suma hilos).
-        let plan = resolve_plan(Platform::Macos, true, false, true, 8);
+        let plan = resolve_plan(Platform::Macos, true, false, false, true, 8);
         assert_eq!(plan.ep, EpKind::CoreML);
         assert!(!plan.parallel, "ejecucion secuencial incondicional");
         assert!(plan.disable_memory_pattern, "por disable_arena=true");
@@ -264,10 +294,53 @@ mod tests {
     #[test]
     fn macos_canary_coreml_respeta_arena_activa() {
         // Canary en mac: CoreML, arena activa -> memory pattern se mantiene (no off).
-        let plan = resolve_plan(Platform::Macos, true, false, false, 8);
+        let plan = resolve_plan(Platform::Macos, true, false, false, false, 8);
         assert_eq!(plan.ep, EpKind::CoreML);
         assert!(!plan.parallel);
         assert!(!plan.disable_memory_pattern);
+    }
+
+    #[test]
+    fn macos_no_depende_del_feature_directml() {
+        // `directml_compiled` es un hecho de Windows; en mac CoreML sale igual con
+        // el flag en cualquier valor (el target macOS lleva `ort/coreml` siempre).
+        for compiled in [true, false] {
+            let plan = resolve_plan(Platform::Macos, true, false, compiled, true, 8);
+            assert_eq!(plan.ep, EpKind::CoreML, "directml_compiled={compiled}");
+        }
+    }
+
+    // ---- resolve_plan: build por defecto (sin `onnx-directml`), #33 de la auditoria ----
+
+    #[test]
+    fn windows_sin_feature_onnx_directml_cae_a_cpu() {
+        // Moonshine/Canary piden GPU, pero el build por defecto no puede registrar
+        // DirectML: el plan es CPU, no un DirectML que ort rechazaria en runtime con
+        // `RegisterError::MissingFeature`.
+        let plan = resolve_plan(Platform::Windows, true, false, false, true, 8);
+        assert_eq!(plan.ep, EpKind::Cpu);
+        assert!(!plan.parallel, "ejecucion secuencial incondicional");
+    }
+
+    #[test]
+    fn windows_sin_feature_respeta_disable_arena_en_memory_pattern() {
+        // Sin DirectML, `disable_memory_pattern` vuelve a depender SOLO de la arena:
+        // Canary (arena activa) conserva memory pattern; Parakeet/Moonshine no.
+        let canary = resolve_plan(Platform::Windows, true, false, false, false, 8);
+        assert_eq!(canary.ep, EpKind::Cpu);
+        assert!(!canary.disable_memory_pattern, "arena activa y sin DML: memory pattern se queda");
+
+        let moonshine = resolve_plan(Platform::Windows, true, false, false, true, 8);
+        assert_eq!(moonshine.ep, EpKind::Cpu);
+        assert!(moonshine.disable_memory_pattern, "por disable_arena=true");
+    }
+
+    #[test]
+    fn directml_compilado_no_activa_gpu_sin_prefer_gpu() {
+        // El feature solo habilita; quien decide sigue siendo `prefer_gpu` del motor
+        // (Parakeet pasa false a proposito, docs/AB_PARAKEET_EP_2026-07-20.md).
+        let plan = resolve_plan(Platform::Windows, false, false, true, true, 8);
+        assert_eq!(plan.ep, EpKind::Cpu);
     }
 
     // ---- resolve_plan: rutas CPU ----
@@ -275,7 +348,7 @@ mod tests {
     #[test]
     fn force_cpu_anula_gpu_en_cualquier_plataforma() {
         for platform in [Platform::Windows, Platform::Macos, Platform::Other] {
-            let plan = resolve_plan(platform, true, true, true, 8);
+            let plan = resolve_plan(platform, true, true, true, true, 8);
             assert_eq!(plan.ep, EpKind::Cpu, "forced_cpu debe ganar en {platform:?}");
             assert!(!plan.parallel, "ejecucion secuencial incondicional");
             assert!(plan.disable_memory_pattern, "por disable_arena=true");
@@ -285,7 +358,7 @@ mod tests {
     #[test]
     fn prefer_gpu_false_usa_cpu_preprocessor() {
         // El preprocessor mel pasa prefer_gpu=false aun en Windows.
-        let plan = resolve_plan(Platform::Windows, false, false, true, 8);
+        let plan = resolve_plan(Platform::Windows, false, false, true, true, 8);
         assert_eq!(plan.ep, EpKind::Cpu);
         assert!(!plan.parallel);
         assert!(plan.disable_memory_pattern);
@@ -293,7 +366,7 @@ mod tests {
 
     #[test]
     fn linux_siempre_cpu() {
-        let plan = resolve_plan(Platform::Other, true, false, true, 8);
+        let plan = resolve_plan(Platform::Other, true, false, true, true, 8);
         assert_eq!(plan.ep, EpKind::Cpu);
         assert!(!plan.parallel);
         assert!(plan.disable_memory_pattern);
@@ -302,7 +375,7 @@ mod tests {
     #[test]
     fn cpu_respeta_disable_arena_false() {
         // Sin GPU y con arena activa: memory pattern NO se desactiva.
-        let plan = resolve_plan(Platform::Other, false, false, false, 8);
+        let plan = resolve_plan(Platform::Other, false, false, false, false, 8);
         assert_eq!(plan.ep, EpKind::Cpu);
         assert!(!plan.parallel);
         assert!(!plan.disable_memory_pattern);
@@ -314,7 +387,7 @@ mod tests {
     fn intra_threads_acotado_entre_2_y_4() {
         // (cores/2).clamp(2,4): piso 2 en maquinas chicas, techo 4 en grandes.
         for (cores, expected) in [(2usize, 2usize), (4, 2), (6, 3), (8, 4), (16, 4), (20, 4)] {
-            let plan = resolve_plan(Platform::Windows, false, false, true, cores);
+            let plan = resolve_plan(Platform::Windows, false, false, false, true, cores);
             assert_eq!(
                 plan.intra_threads, expected,
                 "cores={cores} debe dar intra_threads={expected}"
