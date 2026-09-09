@@ -66,7 +66,7 @@ exactamente lo cerrado. La tabla de abajo es una foto del estado; la verdad es l
 | 21 | `System::new_all()` para un procesador que nadie invoca | Bajo | RAM/CPU | Arranque | S | = | **cerrado** `37c6e7c` |
 | 22 | La presión de memoria se observa pero no se actúa | Alto | RAM | Jornada/Post | M | = | abierto |
 | 23 | Las ventanas auxiliares cargan el grafo del layout raíz | Bajo | RAM/CPU | Arranque/Jornada | M | = | **cerrado** `0528562` |
-| 24 | Bundle de arranque de 2.1 MB con librerías pesadas | Bajo | RAM/CPU/Disco | Arranque | M | = | abierto |
+| 24 | Bundle de arranque de 2.1 MB con librerías pesadas | Bajo | RAM/CPU/Disco | Arranque | M | = | **cerrado** `03c7040` |
 | 25 | El logging diagnóstico escribe por IPC en cada poll | Bajo | Disco/CPU | Post | S | = | **cerrado** `3793da7` |
 | 26 | `sync_queue` nunca se poda | Bajo | Disco | Post | S | = | **cerrado** `a783644` |
 | 27 | Audio AAC 192 kbps y ningún borrado: 0.7 GB/día | Medio | Disco | Jornada/Post | S | = | **cerrado** `f52472d` |
@@ -564,7 +564,7 @@ Ordenados por impacto estimado en RAM, luego CPU, luego disco y red.
   y sin uso en `app/`.
 
 ### #24 · Bundle de arranque de 2.1 MB de JS con tres familias tipográficas y librerías pesadas
-`Bajo` · RAM/CPU/Disco · Arranque · esfuerzo M · no cambia por lote · abierto
+`Bajo` · RAM/CPU/Disco · Arranque · esfuerzo M · no cambia por lote · **CERRADO** `03c7040`
 
 - **Impacto**: `index.html` carga 40 scripts sin gzip (protocolo custom); recharts 346 KB y
   framer-motion 111 KB en el home (framer para un solo fade-in); BlockNote, tiptap y prosemirror suman
@@ -573,6 +573,53 @@ Ordenados por impacto estimado en RAM, luego CPU, luego disco y red.
   `optimizePackageImports`).
 - **Cambio**: quitar framer del home y de settings; `dynamic()` para la sección de recharts; borrar
   `/meeting-details` con su árbol; una sola familia tipográfica. **Riesgo**: bajo.
+- **Cierre (09-sep)**: dos commits, `9c97c5a` (borrado) + `03c7040` (diferir/reemplazar + guard).
+  Medido sobre `out/` (línea base del mismo día, ya con #23):
+
+  | Métrica | Antes | Después |
+  |---|---:|---:|
+  | `index.html` scripts / KB total / KB ejecutados | 38 / 1,842 / 1,733 | 32 / 1,379 / **1,269** |
+  | `@font-face` en el CSS de `index.html` | 60 | **0** (31 sólo en `chat.html`) |
+  | `.woff2` en `out/_next/static/media` | 24 · 583 KB | 8 · 296 KB |
+  | `settings.html` | 35 scripts · 1,431 KB | 30 · 1,309 KB |
+  | `meeting-details.html` | 42 scripts · 2,315 KB (+1,256 KB de editor lazy) | no existe |
+  | `out/` | 13 MB | 9 MB |
+
+  (1) `/meeting-details` **borrada con su árbol** (`components/MeetingDetails`, `hooks/meeting-details`,
+  `components/AISummary`, `components/BlockNoteEditor`, `usePaginatedTranscripts`, `EmptyStateSummary`,
+  `BluetoothPlaybackWarning`, tipos V1 `api`/`blocknote`/`communication`) y `@blocknote/*` fuera de
+  `package.json` (−101 paquetes: tiptap, 20 `prosemirror-*`, yjs). Verificado con dos barridos
+  independientes que no tenía un solo enlace entrante: `useRecordingStop.ts` navega a
+  `/conversations?localId=` desde hace meses (el diagrama de CLAUDE.md estaba mal) y la página leía
+  `?id=`, así que la URL documentada jamás funcionó. Los seis comandos Rust que quedan sin call site
+  (`api_process_transcript`, `api_cancel_summary`, `api_list_templates`, `api_save_meeting_summary`,
+  `open_meeting_folder`, `api_get_meeting_transcripts`) siguen registrados por la decisión de ago-2026
+  "documentar, no borrar" (`docs/COACH_LLM_ARCHITECTURE.md`). (2) **recharts diferido**:
+  `CommunicationTrendChart.tsx` + `LazyCommunicationTrendChart` (`next/dynamic`, `ssr: false`); el chunk
+  de 342 KB ya no lo referencia ningún html. (3) **framer-motion fuera del arranque** (opción A acordada:
+  se queda SOLO bajo `features/auth/**`, cuyo chunk de `/registration` ya era dinámico — 120 KB una vez
+  por cuenta): ~25 `motion.*` de la home, el transcript en vivo, la barra "Grabando", Ajustes y los tres
+  gestores de modelos (clones) pasan a keyframes de `globals.css` **sin `forwards`** (un `transform`
+  residual crea stacking context), transiciones CSS sobre `style` de React y `group-hover` para el botón
+  de borrar modelo (sin estado `isHovered`, y ahora accesible por teclado). Borrados de paso
+  `CanaryModelManager`, `TranscriptView` y `ProgressChartsSection` (framer/recharts sin importadores).
+  (4) **Fuentes**: el root layout no declara `next/font`; `Source Sans 3` no la usaba nadie; Geist e Inter
+  se declaran en `app/(main)/chat/page.tsx` (wrapper `display: contents`) porque sólo shell-v5 y
+  maity-chat las usan. **Guard** `frontend/scripts/lint-main-bundle.js` en `run-post-build-checks.js`
+  (presupuesto 1,400 KB = medido + 10 %, marcadores de framer/recharts/ProseMirror/three/pptx en los
+  chunks de `index.html`, cero `@font-face`), probado en rojo contra el `out/` anterior. Reglas en
+  `docs/UI_REGLAS.md` § "Bundle de arranque" y CLAUDE.md. **Correcciones al hallazgo**: no existe
+  `@mantine` (BlockNote 0.36 iba por `@blocknote/shadcn`); las fuentes NO se descargaban en el home (sin
+  `<link rel=preload>`, `font-display: swap`: el navegador sólo baja una cara cuando un texto la usa), así
+  que su costo de arranque real era el CSS de 60 `@font-face` (16 KB) y el disco del instalador; y no
+  hace falta `optimizePackageImports` (lucide-react ya está en la lista por defecto de Next 14 y recharts
+  sale por `dynamic()`). **Fuera, anotado**: `tailwindcss-animate` está instalado pero NO registrado en
+  `tailwind.config.ts` (todos los `animate-in fade-in …` de shadcn y del dashboard son no-op hoy;
+  activarlo cambia el look de diálogos/selects en toda la app); `features/conversations/components/minuta/`
+  + `charts/` muertos (cero importadores, no entran al bundle); `reactStrictMode` sigue en `false` con
+  el comentario corregido. Build debug + lints + smoke OK ×2, lint limpio, 363 tests vitest. Pendiente:
+  smoke manual (dashboard con 2+ análisis → skeleton y gráfica; subrayado de tabs; hover en tarjeta de
+  modelo; transcript en vivo; `/chat` con Geist/Inter; `/registration` sigue animando pasos).
 
 ### #25 · El logging diagnóstico escribe al log de Rust por IPC en cada tick de poll
 `Bajo` · Disco/CPU · Post · esfuerzo S · no cambia por lote · **CERRADO** `3793da7`
