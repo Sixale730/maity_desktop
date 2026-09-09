@@ -184,7 +184,7 @@ impl DeepgramRealtimeTranscriber {
         {
             let mut ws_guard = self.persistent_ws.lock().await;
             if let Some(ref mut ws) = *ws_guard {
-                if let Err(e) = ws.send(Message::Text(r#"{"type": "CloseStream"}"#.to_string())).await {
+                if let Err(e) = ws.send(Message::text(r#"{"type": "CloseStream"}"#)).await {
                     warn!("Failed to send CloseStream to Deepgram: {}", e);
                 }
                 // Close the WebSocket
@@ -425,7 +425,7 @@ impl DeepgramRealtimeTranscriber {
                 }
                 let mut ws_guard = ws_for_keepalive.lock().await;
                 if let Some(ref mut ws) = *ws_guard {
-                    let msg = Message::Text(r#"{"type":"KeepAlive"}"#.to_string());
+                    let msg = Message::text(r#"{"type":"KeepAlive"}"#);
                     if ws.send(msg).await.is_err() {
                         break;
                     }
@@ -614,8 +614,10 @@ impl TranscriptionProvider for DeepgramRealtimeTranscriber {
         // Ensure persistent connection is established
         self.ensure_connected(language.as_deref()).await?;
 
-        // Convert audio to PCM16 and send over persistent WebSocket
-        let audio_bytes = Self::convert_to_pcm16(&audio);
+        // Convert audio to PCM16 and send over persistent WebSocket.
+        // `Bytes` desde el principio: tungstenite ≥0.26 lo exige en `Message::Binary`, y
+        // así el `.clone()` del reintento tras reconectar es un refcount, no una copia.
+        let audio_bytes = bytes::Bytes::from(Self::convert_to_pcm16(&audio));
 
         // Try sending; if it fails, attempt ONE reconnect before giving up
         let send_result = {

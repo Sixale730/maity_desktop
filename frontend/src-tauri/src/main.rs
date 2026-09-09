@@ -19,17 +19,19 @@ fn init_sentry() -> Option<sentry::ClientInitGuard> {
 
     tracing::info!("Initializing Sentry crash reporting...");
 
-    let guard = sentry::init((dsn, sentry::ClientOptions {
-        release: Some(std::borrow::Cow::Borrowed(env!("CARGO_PKG_VERSION"))),
-        environment: Some(std::borrow::Cow::Borrowed(if cfg!(debug_assertions) { "development" } else { "production" })),
+    // Desde sentry 0.49 `ClientOptions` es `#[non_exhaustive]`: el struct literal con
+    // `..Default::default()` ya no compila; sólo el builder.
+    let options = sentry::ClientOptions::new()
+        .release(env!("CARGO_PKG_VERSION"))
+        .environment(if cfg!(debug_assertions) { "development" } else { "production" })
         // Sample rate for error events (1.0 = 100%)
-        sample_rate: 1.0,
+        .sample_rate(1.0)
         // Attach stacktraces to all messages
-        attach_stacktrace: true,
+        .attach_stacktrace(true)
         // Send default PII (careful with privacy)
-        send_default_pii: false,
-        ..Default::default()
-    }));
+        .send_default_pii(false);
+
+    let guard = sentry::init((dsn, options));
 
     tracing::info!("Sentry initialized successfully");
     Some(guard)
@@ -82,6 +84,11 @@ fn main() {
     }
 
     tracing::info!("Starting Maity Desktop v{}...", env!("CARGO_PKG_VERSION"));
+
+    // Proveedor criptográfico de rustls (ring) ANTES de cualquier cliente HTTPS: con
+    // `rustls-no-provider`, reqwest hace panic al construir un Client si no hay uno
+    // instalado, y sentry construye su transporte dentro de `init`. Ver api/http.rs.
+    app_lib::api::http::install_crypto_provider();
 
     // Initialize Sentry crash reporting (keep guard alive for entire program)
     let _sentry_guard = init_sentry();

@@ -2,8 +2,8 @@
 // Pre-build checks. Runs BEFORE tauri:build / tauri:build:debug.
 // Currently: state-access lint (fast, ~1s) + providers-tree lint (fast, <100ms)
 // + tauri-events lint (fast, <1s) + telemetry lint + tauri-acl lint (fast, <1s)
-// + migrations LF/checksum + llama-helper provenance (cargo cacheado, ~s; la
-// primera vez compila llama.cpp) + vitest (~45s).
+// + cargo-deps lint (cargo tree, ~2-4s) + migrations LF/checksum + llama-helper
+// provenance (cargo cacheado, ~s; la primera vez compila llama.cpp) + vitest (~45s).
 //
 // Orden deliberado: los checks BARATOS van primero para fallar rápido; la suite
 // de vitest va al final porque es la más lenta (~45s) y la que menos veces falla.
@@ -20,6 +20,7 @@ const PROVIDERS_TREE_SCRIPT = path.join(__dirname, 'lint-providers-tree.js');
 const TAURI_EVENTS_SCRIPT = path.join(__dirname, 'lint-tauri-events.js');
 const TELEMETRY_SCRIPT = path.join(__dirname, 'lint-telemetry.js');
 const TAURI_ACL_SCRIPT = path.join(__dirname, 'lint-tauri-acl.js');
+const CARGO_DEPS_SCRIPT = path.join(__dirname, 'lint-cargo-deps.js');
 const VERIFY_HELPER_SCRIPT = path.join(__dirname, 'verify-helper-binary.js');
 // On Windows, bash (Git Bash/MINGW) treats backslashes as escapes, mangling
 // `C:\maity_desktop\...` into `C:maity_desktop...`. Forward slashes work on
@@ -201,6 +202,28 @@ if (aclResult.status !== 0) {
 }
 
 console.log('[pre-build] OK: tauri-acl lint passed');
+
+// Una sola pila HTTP/TLS y cero deps muertas (#35 de la auditoría de recursos).
+// Va antes de migraciones/helper: es `cargo tree` (~2-4 s) y falla con mensaje
+// concreto si vuelve a entrar un rustls/reqwest/zip/dirs duplicado o aws-lc-rs.
+console.log('[pre-build] Running cargo-deps lint...');
+const cargoDepsResult = spawnSync(process.execPath, [CARGO_DEPS_SCRIPT], {
+    stdio: 'inherit',
+    shell: false,
+});
+
+if (cargoDepsResult.status !== 0) {
+    console.error('');
+    console.error('[pre-build] FAIL: cargo-deps lint failed.');
+    console.error('  El árbol de Cargo volvió a tener dos versiones de una crate de la pila');
+    console.error('  HTTP/TLS (o de zip/dirs), o entró una crate prohibida (aws-lc-rs = segundo');
+    console.error('  proveedor criptográfico → panic al primer HTTPS; clap/esaxx/symphonia = muertas).');
+    console.error('  Ver CLAUDE.md § "Dependencias Rust: una sola pila TLS".');
+    console.error('  Escape hatch: pnpm run tauri:build:debug:skip-checks');
+    process.exit(1);
+}
+
+console.log('[pre-build] OK: cargo-deps lint passed');
 
 console.log('[pre-build] Running migrations LF/checksum check...');
 const migrationsResult = spawnSync(process.execPath, [path.join(__dirname, 'verify-migrations-lf.js')], {

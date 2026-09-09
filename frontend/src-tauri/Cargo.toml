@@ -54,7 +54,8 @@ openmp = ["whisper-rs/openmp"]     # OpenMP parallel processing
 
 [build-dependencies]
 tauri-build = { version = "2.4", features = [] }
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "multipart", "json", "stream", "rustls-tls-native-roots"] }
+# build.rs sólo usa `which` (detección de nvidia-smi/rocm-smi). El reqwest que vivía aquí
+# compilaba una pila HTTP+TLS entera para el host sin un solo uso (#35 de la auditoría).
 which = "6.0.1"
 
 
@@ -71,9 +72,6 @@ cpal = "0.15.3"
 # Wav encoding - now using manual WAV creation instead of hound
 # hound = "3.5"
 
-# Cli ! shouldn't be required if using as lib
-clap = { version = "4.3", features = ["derive"] }
-
 # Dates
 chrono = { version = "0.4.31", features = ["serde"] }
 
@@ -87,11 +85,15 @@ tracing-appender = "0.2"
 # `log::` llevan metadata.target()=="log"; el target real requiere normalizar.
 tracing-log = "0.2"
 
-# Zip for log export
-zip = "2.1"
+# Zip for log export. Misma major que tauri-plugin-updater y ffmpeg-sidecar para no
+# compilar dos `zip`; sólo `deflate` (es lo único que usa logging/commands.rs).
+zip = { version = "4", default-features = false, features = ["deflate"] }
 
-# Crash reporting
-sentry = { version = "0.34", default-features = false, features = ["backtrace", "contexts", "panic", "reqwest", "rustls"] }
+# Crash reporting. `rustls-no-provider`, NO `rustls`: en sentry ≥0.47 la feature `rustls`
+# activa `reqwest/rustls`, que en reqwest 0.13 enciende aws-lc-rs → dos proveedores
+# criptográficos en el árbol y panic al primer HTTPS. El proveedor (ring) se instala en
+# main.rs. Ver CLAUDE.md § "Dependencias Rust: una sola pila TLS".
+sentry = { version = "0.49", default-features = false, features = ["backtrace", "contexts", "panic", "reqwest", "rustls-no-provider"] }
 which = "6.0.1"
 
 # Bytes
@@ -100,8 +102,10 @@ bytemuck = "1.16.1"
 # EBU R128 loudness normalization (professional broadcast standard)
 ebur128 = "0.1"
 
-# Noise suppression - RNNoise-based neural network noise reduction
-nnnoiseless = "0.5"
+# Noise suppression - RNNoise-based neural network noise reduction.
+# Sin default features: `default = ["bin", "dasp"]` y `bin` arrastra clap 3 + hound para un
+# ejecutable que nunca se construye. El código sólo usa `DenoiseState` (audio_processing.rs).
+nnnoiseless = { version = "0.5", default-features = false }
 
 # Speech recognition and async utilities
 # NOTE: whisper-rs is declared in platform-specific sections below (macOS/Windows/Linux)
@@ -123,18 +127,30 @@ tokio = { version = "1.32.0", features = ["rt-multi-thread", "macros", "sync", "
 tokio-util = "0.7"  # Utilities for tokio including CancellationToken
 async-trait = "0.1"  # Trait abstraction for async methods
 
-# WebSocket for cloud transcription providers (Deepgram)
-tokio-tungstenite = { version = "0.21", features = ["rustls-tls-native-roots"] }
+# WebSocket for cloud transcription providers (Deepgram). ≥0.24 usa rustls 0.23; el 0.21
+# traía su propia pila (rustls 0.22 + tokio-rustls 0.25 + rustls-native-certs 0.7).
+tokio-tungstenite = { version = "0.30", features = ["rustls-tls-native-roots"] }
 futures = "0.3"  # Stream utilities for WebSocket
 
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "multipart", "json", "stream", "rustls-tls-native-roots"] }
+# reqwest 0.13 renombró las features TLS: `rustls-tls` → `rustls` (que ADEMÁS enciende
+# aws-lc-rs) y las `*-native-roots`/`*-webpki-roots` desaparecieron (siempre
+# rustls-platform-verifier = verificador del SO, el mismo que ya usaba el updater).
+# `rustls-no-provider` deja la elección del proveedor a main.rs (ring). Sin `multipart`
+# (cero usos) ni `system-proxy` (el 0.12 sin defaults sólo leía HTTPS_PROXY del entorno y
+# eso se conserva; leer el proxy del registro de Windows sería un cambio silencioso).
+reqwest = { version = "0.13", default-features = false, features = ["blocking", "json", "stream", "rustls-no-provider"] }
+# Proveedor criptográfico único del proceso: `rustls::crypto::ring::default_provider()
+# .install_default()` en main.rs. Sin esto `ClientConfig::builder()` elige ring sólo porque
+# es la única feature de proveedor en la unión del árbol (la enciende tauri-plugin-updater);
+# el día que una dep active `aws-lc-rs`, TODO HTTPS haría panic en el primer request.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 
 # crossbeam
 crossbeam = "0.8.4"
 dashmap = "6.1.0"
 
-# Directories
-dirs = "5.0.1"
+# Directories (misma major que tauri: dirs 5 duplicaba dirs-sys y windows-sys 0.48)
+dirs = "6"
 
 # Decodificacion del payload que manda el WebView al guardar artefactos del chat
 # (.md/.pdf/.pptx). Ya estaba resuelto transitivamente en Cargo.lock.
@@ -154,8 +170,6 @@ regex = "1.11.0"
 ndarray = "0.16"
 bytes = { version = "1.9.0", features = ["serde"] }
 
-esaxx-rs = "0.1.10"
-symphonia = { version = "0.5.4", features = ["aac", "isomp4", "opt-simd"] }
 rand = "0.8.5"
 sha2 = "0.10"  # verificación de integridad del manifiesto de modelos Parakeet
 rubato = "0.15.0"
@@ -185,7 +199,6 @@ objc = "0.2.7"
 tauri-plugin-log = { version = "2.6.0", features = ["colored"] }
 anyhow = "1.0"
 time = { version = "0.3", features = ["formatting"] }
-reqwest = { version = "0.12", default-features = false, features = ["multipart", "json", "rustls-tls-native-roots"] }
 core-graphics = "0.24"
 # IMPORTANTE: `default-features = false` es obligatorio. Los default features de cidre
 # son `full`, que enciende sus ~50 modulos — incluido `am` (Apple Mobile Device), que
@@ -261,7 +274,8 @@ windows = { version = "0.58", features = [
 ] }
 # Lectura/escritura del registro de Windows para detectar y limpiar la instalación
 # rival (NSIS de descarga directa) cuando Maity corre bajo MSIX/Store. Ver rival_install.rs.
-winreg = "0.52"
+# ≥0.55 usa windows-sys 0.59-0.61 (ya en el árbol); el 0.52 era el último ancla de 0.48.
+winreg = "0.56"
 # Toast nativo con el AUMID resuelto EN RUNTIME (ver notifications/toast.rs). Es la MISMA
 # crate y versión que tauri-plugin-notification usa por dentro (vía notify-rust, que pide
 # "0.7"), así que Cargo unifica a un solo tauri-winrt-notification 0.7.2: cero paquetes
@@ -295,4 +309,3 @@ tracing-subscriber = "0.3.16"
 
 [patch.crates-io]
 cpal = { git = "https://github.com/RustAudio/cpal", rev = "51c3b43" }
-esaxx-rs = { git = "https://github.com/thewh1teagle/esaxx-rs.git", branch = "feat/dynamic-msvc-link" }

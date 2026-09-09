@@ -25,15 +25,46 @@
 //!   retiene sockets entre jornadas.
 
 use once_cell::sync::Lazy;
+use std::sync::Once;
 use std::time::Duration;
 
 /// Timeout total (conexión + respuesta + body) por request del cliente
 /// compartido.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Fija `ring` como proveedor criptográfico de rustls para TODO el proceso.
+/// Idempotente: la segunda llamada no hace nada.
+///
+/// Es OBLIGATORIO, no defensivo: con `rustls-no-provider` (nuestro reqwest 0.13
+/// y sentry ≥0.47) reqwest NO cae al proveedor que resulte de las features del
+/// árbol — `Client::build()` hace panic si nadie llamó `install_default()`
+/// (verificado con reqwest 0.13.5, `async_impl/client.rs`; así falló el test
+/// `el_cliente_compartido_se_construye` al subir de 0.12). tokio-tungstenite y
+/// el updater comparten la misma pila rustls 0.23 y se benefician igual.
+///
+/// Se llama desde `main.rs` antes de `init_sentry()` (sentry construye su
+/// transporte en `init`) y desde el `Lazy` de [`HTTP`], que es la primera
+/// construcción de cliente en tests y en cualquier binario que use la lib sin
+/// pasar por `main`. Los demás sitios de `ALLOWED` (descargas de modelos,
+/// Ollama, OpenRouter) sólo corren tras `run()`, o sea después de `main`.
+///
+/// Por qué `ring` y no `aws-lc-rs`: ring ya está en el árbol (lo exige
+/// `tauri-plugin-updater`), aws-lc-rs compila C con cmake/NASM y sería un
+/// SEGUNDO proveedor. `install_default` sólo falla si ya había uno instalado,
+/// y entonces ese es el que manda.
+pub fn install_crypto_provider() {
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        if rustls::crypto::ring::default_provider().install_default().is_err() {
+            log::warn!("rustls: ya había un CryptoProvider instalado; se conserva el existente");
+        }
+    });
+}
+
 /// Cliente HTTP compartido. `reqwest::Client` es un `Arc` por dentro: usarlo
 /// desde varias tareas a la vez es lo esperado, no hace falta clonarlo.
 pub static HTTP: Lazy<reqwest::Client> = Lazy::new(|| {
+    install_crypto_provider();
     reqwest::Client::builder()
         .timeout(DEFAULT_TIMEOUT)
         .build()
