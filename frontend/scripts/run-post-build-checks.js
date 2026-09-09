@@ -15,8 +15,21 @@ const REPO_ROOT = path.resolve(__dirname, '..', '..');
 const SMOKE_PS1 = path.join(REPO_ROOT, 'scripts', 'smoke-test-startup.ps1');
 const SMOKE_SH = path.join(REPO_ROOT, 'scripts', 'smoke-test-startup.sh');
 const EXE_IMPORTS_LINT = path.join(__dirname, 'lint-exe-imports.js');
+const AUX_BUNDLE_LINT = path.join(__dirname, 'lint-aux-bundle.js');
 
 const platform = os.platform();
+
+// Todas las plataformas: mide out/<aux>.html (#23 de la auditoría). Las ventanas
+// auxiliares tienen su propio root layout (src/app/(aux)); si vuelven a cargar el
+// grafo de la main el exe arranca igual y el smoke no lo vería.
+console.log('[post-build] Checking aux window bundles (route groups, #23)...');
+const auxLint = spawnSync(process.execPath, [AUX_BUNDLE_LINT], { stdio: 'inherit', shell: false });
+if (auxLint.status !== 0) {
+    console.error('');
+    console.error('[post-build] FAIL: aux bundle check failed (see above).');
+    console.error('  Escape hatch: pnpm run tauri:build:debug:skip-checks');
+    process.exit(1);
+}
 
 // Windows: la tabla de imports del exe antes de lanzarlo. DirectML/D3D12/DXGI/DXCORE
 // deben ser delay-load (#33 de la auditoría de recursos, build.rs); si vuelven a

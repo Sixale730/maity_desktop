@@ -137,12 +137,14 @@ describe('layout.tsx provider tree invariants', () => {
     });
   }
 
-  // Premisa del lint de ACL (scripts/lint-tauri-acl.js): el root layout se
-  // atribuye SOLO a la ventana main porque las rutas aux hacen early-return
-  // ANTES de montar AppContent (donde viven onCloseRequested, app.open, etc.).
-  // Si alguien mueve ese return debajo del primer <AppContent, los call sites
-  // del root layout correrian tambien en coach-float/recording-widget/
-  // device-picker con capabilities que no los declaran.
+  // Defensa en profundidad (sep-2026, #23 de la auditoría): desde los route
+  // groups las rutas aux cuelgan de app/(aux)/layout.tsx y este layout ya no
+  // las envuelve — la garantía estructural la vigila app/(aux)/layout.test.ts.
+  // El early-return se conserva por si una página aux se colocara por error
+  // bajo (main): debe seguir evaluándose ANTES de montar AppContent (donde
+  // viven onCloseRequested, app.open, etc.), o esos call sites correrían en
+  // coach-float/recording-widget/device-picker con capabilities que no los
+  // declaran (premisa histórica de scripts/lint-tauri-acl.js).
   it('el early-return de rutas aux precede al primer <AppContent dentro de RootLayout', () => {
     // Anclado a RootLayout: AppContent tambien llama isAuxWindowPath para su
     // propio gate, y esa ocurrencia (anterior en el archivo) no es la premisa.
@@ -195,8 +197,10 @@ describe('layout.tsx provider tree invariants', () => {
   // override, ese override DEBE coincidir con el del Toaster en layout.tsx.
   // Si no lo especifica (caso preferido — herencia del Toaster), el test pasa.
   it('Toaster position en layout.tsx coincide con showUpdateNotification (si la especifica)', () => {
+    // __dirname es src/app/(main) desde los route groups (#23): dos niveles hasta src/.
     const NOTIFICATION_PATH = path.resolve(
       __dirname,
+      '..',
       '..',
       'components',
       'updates',

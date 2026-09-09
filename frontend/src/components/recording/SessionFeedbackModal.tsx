@@ -2,7 +2,6 @@
 
 import { useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { supabase } from '@/lib/supabase';
 
 type Rating = 'useful' | 'sometimes' | 'not_useful';
 
@@ -30,34 +29,17 @@ export function SessionFeedbackModal({ open, meetingId, onSubmit }: SessionFeedb
     setSubmitting(true);
 
     try {
-      // 1. Save locally to SQLite
-      const feedbackId = await invoke<string>('save_user_feedback', {
+      // Guarda en SQLite y Rust sincroniza a la nube (cloud_sync/feedback.rs:
+      // RPC insert_user_feedback, best-effort, p_message = message o rating).
+      // Desde sep-2026 (#23) Rust es el ÚNICO escritor de esa RPC: hacerla
+      // también desde aquí duplicaría el POST y el p_id UNIQUE lo rechazaría.
+      await invoke<string>('save_user_feedback', {
         meetingId: meetingId ?? undefined,
         feedbackType: 'session_rating',
         rating: selected,
         message: message.trim() || undefined,
         metadata: undefined,
       });
-
-      // 2. Sync to Supabase via RPC (fire-and-forget).
-      // The RPC (SECURITY DEFINER) resolves user_id and auth_id from auth.uid()
-      // server-side; client only sends business fields. Same canonical pattern
-      // as platformLogger.ts → insert_platform_log.
-      supabase
-        .schema('public')
-        .rpc('insert_user_feedback', {
-          p_feedback_type: 'session_rating',
-          p_message: message.trim() || selected,
-          p_id: feedbackId,
-          p_metadata: {
-            platform: 'desktop',
-            rating: selected,
-            meeting_id: meetingId,
-          },
-        })
-        .then(({ error }) => {
-          if (error) console.warn('[SessionFeedback] Supabase sync failed (non-fatal):', error);
-        });
     } catch (e) {
       console.error('[SessionFeedback] Failed to save feedback:', e);
     } finally {

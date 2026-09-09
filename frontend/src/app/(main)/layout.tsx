@@ -1,6 +1,6 @@
 'use client'
 
-import './globals.css'
+import '../globals.css'
 import { usePathname, useRouter } from 'next/navigation'
 import { Source_Sans_3, Inter } from 'next/font/google'
 import { GeistSans } from 'geist/font/sans'
@@ -787,20 +787,18 @@ export default function RootLayout({
   const pathname = usePathname()
 
   // Ventanas Tauri secundarias (coach float, recording widget, device picker):
-  // Bypass total de auth/sidebar/providers/initializers — son mini-ventanas
-  // independientes. Lista canónica en lib/auxWindows.ts.
-  // Background transparente en html+body para que el blur de la ventana Tauri
-  // (transparent: true) llegue al SO. El body global tiene `bg-background`
-  // (negro solido en dark mode) que tapaba el glass effect — override aqui.
+  // desde sep-2026 (#23 de la auditoría de recursos) viven en el route group
+  // `(aux)` con su PROPIO root layout (app/(aux)/layout.tsx), así que este
+  // layout ya no las envuelve ni en bundling ni en runtime. Este early-return
+  // queda como defensa en profundidad (una página aux colocada por error bajo
+  // `(main)` no montaría providers ni initializers); la garantía real es
+  // estructural y la vigila app/(aux)/layout.test.ts. Lista canónica en
+  // lib/auxWindows.ts. Transparencia por clases, nunca `style=""` (CSP con
+  // nonce: ver SplashScreen).
   if (isAuxWindowPath(pathname)) {
     return (
-      <html lang="es" className="dark" style={{ background: 'transparent' }}>
-        <body
-          className={`${sourceSans3.variable} ${inter.variable} ${GeistSans.variable} font-sans antialiased`}
-          style={{ background: 'transparent' }}
-        >
-          {children}
-        </body>
+      <html lang="es" className="dark bg-transparent">
+        <body className="bg-transparent overflow-hidden antialiased">{children}</body>
       </html>
     )
   }

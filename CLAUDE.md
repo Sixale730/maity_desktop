@@ -200,7 +200,7 @@ Ubicaciones: dev `frontend/models/`; produccion `~/Library/Application Support/c
 
 | Ruta | Descripcion |
 |------|-------------|
-| `/` | Interfaz principal de grabacion (el dashboard gamificado se renderiza AQUÍ, `app/page.tsx`) |
+| `/` | Interfaz principal de grabacion (el dashboard gamificado se renderiza AQUÍ, `app/(main)/page.tsx`) |
 | `/conversations` | Lista de conversaciones (local-first); detalle con `?id=` (cloud) o `?localId=` (SQLite) |
 | `/meeting-details` | Detalle de reunion con auto-summary (sin enlaces entrantes) |
 | `/gamification` | Dashboard gamificado (volcan de progreso) |
@@ -208,7 +208,9 @@ Ubicaciones: dev `frontend/models/`; produccion `~/Library/Application Support/c
 | `/settings` | Configuracion de la app |
 | `/registration` | Onboarding de registro (17 pasos) — solo `registration_form_completed=false` |
 | `/billing/plans` | Seleccion de plan; checkout Pro via handoff a navegador externo |
-| `/coach-float`, `/recording-widget`, `/device-picker` | Ventanas auxiliares (early-return en `RootLayout`) |
+| `/coach-float`, `/recording-widget`, `/device-picker` | Ventanas auxiliares — route group `app/(aux)/` con root layout propio (#23) |
+
+> **Route groups (sep-2026, #23 de la auditoría):** las páginas de la main viven en `app/(main)/` (con el `RootLayout` de providers) y las ventanas aux en `app/(aux)/` con un root layout mínimo (`(aux)/layout.tsx`: server component, solo html/body + `globals.css`). NO existe `app/layout.tsx` de nivel superior — volvería a envolver a TODAS las rutas y Next empaquetaría el grafo de la main para cada ventana aux (era el hallazgo: 1.17 MB de JS por ventana, de los que la página eran 27 KB; el early-return en runtime evitaba MONTAR, no CARGAR). Las URLs no cambian; los chunks se llaman `chunks/app/(main)/…` y `chunks/app/(aux)/…`. Guardas: `app/(aux)/layout.test.ts` (sin `app/layout.tsx`, sin layouts anidados bajo `(aux)`, biyección `AUX_WINDOW_PATHS` ↔ `(aux)/<label>/page.tsx`, y el grafo de imports aux NO alcanza `lib/supabase.ts`/`platformLogger`/`analytics`/`contexts/`/`(main)` ni sonner/TanStack/Radix/`next/font`) y `scripts/lint-aux-bundle.js` en el post-build (mide `out/<aux>.html`: sin chunks de `(main)`, sin sonner/supabase, ≤450 KB ejecutados). Rutas con paréntesis: entrecomillar en Git Bash; en PowerShell `(main)` es una subexpresión.
 
 ### Gates, sesión y onboarding — reglas vigentes (detalle en `docs/ONBOARDING_Y_GATES.md`)
 
@@ -240,7 +242,7 @@ Ubicaciones: dev `frontend/models/`; produccion `~/Library/Application Support/c
 
 `ThemeProvider` → `QueryClientProvider` (React Query, 5 min stale) → `AuthProvider` → `OnboardingProvider` → `ConfigProvider` → `RecordingPostProcessingProvider` → `TranscriptProvider` → `OllamaDownloadProvider` → `ParakeetAutoDownloadProvider` + `RecordingStateProvider`, `AnalyticsProvider`, `UpdateCheckProvider`. Componentes globales: `SplashScreen`, `AuthGate`, `ChunkErrorRecovery`, `ErrorBoundary`, `OfflineIndicator`, `CloudSyncInitializer`, `HealthHeartbeatInitializer`, `GlobalConversationNotifier`, `DbInitErrorGate`, etc.
 
-> **Ventanas auxiliares** (`/coach-float`, `/recording-widget`, `/device-picker`): `RootLayout` hace early-return ANTES de montar los componentes globales. Lista canónica en `lib/auxWindows.ts` (`isAuxWindowPath`) — no duplicarla inline. Los initializers llevan además su propio gate `isAux` (el efecto depende del booleano, NO de `pathname`).
+> **Ventanas auxiliares** (`/coach-float`, `/recording-widget`, `/device-picker`): viven en `app/(aux)/` con su propio root layout (ver § Paginas), así que el `RootLayout` de `(main)` ya no las envuelve ni en bundling ni en runtime; su early-return `isAuxWindowPath` queda como defensa en profundidad. Lista canónica en `lib/auxWindows.ts` (`isAuxWindowPath`) — no duplicarla inline. Los initializers llevan además su propio gate `isAux` (el efecto depende del booleano, NO de `pathname`). **Nada de supabase/platformLogger/sonner/contexts en una ventana aux**: telemetría de producto → `lib/auxAnalytics.ts::trackAux` (comando `log_analytics_event` → outbox nativo, `ctx.emitter='webview'` + `window` real); feedback → `save_user_feedback` (Rust guarda y sincroniza la RPC `insert_user_feedback`, único escritor desde #23; `SessionFeedbackModal` tampoco la llama ya). `open_floating_coach` y `open_device_picker` muestran la ventana al recibir `on_page_load(Finished)` (helper `first_page_load`/`wait_first_page_load` en `coach/commands.rs`, timeout 2 s), no tras un `sleep`.
 
 > **Los niveles de audio viven FUERA de React (#07)**: store `lib/audioLevelsStore.ts` (`useSyncExternalStore`; `getSnapshot` con misma referencia, `getServerSnapshot` obligatorio) + `AudioLevelBars.tsx` animando con `transform: scaleY()`. Las ventanas flotantes van con fondo opaco sin `backdropFilter` (decisión de producto). NO bajar `WATCHDOG_TICK_MS` (100 ms). Detalle: `docs/UI_REGLAS.md`.
 
@@ -297,7 +299,7 @@ Detalle completo en `docs/UI_REGLAS.md` — resumen de lo que NO hay que romper:
 
 Inventario completo, queries SQL y runbook en **`docs/TELEMETRIA.md`**: pirámide de 3 niveles — (1) `health.heartbeat` (JS + latido nativo del `mem_sampler`, #14) a `maity.platform_logs`; (2) `app.error` con rate-limit; (3) logs completos SOLO locales — los logs crudos NO van a la nube (decisión jul-2026); la única salida es el bundle de incidente CON consentimiento (`logging/incident.rs`, #61: nunca automático).
 
-**El doc es contrato ejecutable:** evento nuevo = 3 entradas — `lib/telemetry-events.ts` + `logging/telemetry/catalog.rs` + fila en el doc — verificadas por `scripts/lint-telemetry.js` en el pre-build (single writer de `insert_platform_log`, naming dot-namespaced, `core:app:default` en toda capability). `scripts/lint-tauri-acl.js` cruza los call sites que exigen permiso contra las capabilities POR VENTANA. Escapes: `// telemetry-allow:` / `// acl-allow:`. Todo evento nuevo Rust↔TS exige entrada gemela en `events.rs` + `lib/tauri-events.ts` (lint pre-build).
+**El doc es contrato ejecutable:** evento nuevo = 3 entradas — `lib/telemetry-events.ts` + `logging/telemetry/catalog.rs` + fila en el doc — verificadas por `scripts/lint-telemetry.js` en el pre-build (single writer de `insert_platform_log`, naming dot-namespaced, `core:app:default` en toda capability). `scripts/lint-tauri-acl.js` cruza los call sites que exigen permiso contra las capabilities POR VENTANA (entradas aux: `app/(aux)/<label>/page.tsx` + `app/(aux)/layout.tsx`; `app/(main)/layout.tsx` es solo-main por estructura). La analítica de las ventanas aux (`trackAux`) va por el outbox nativo y sigue fuera del catálogo, como `Analytics.track`. Escapes: `// telemetry-allow:` / `// acl-allow:`. Todo evento nuevo Rust↔TS exige entrada gemela en `events.rs` + `lib/tauri-events.ts` (lint pre-build).
 
 **Auditoría de recursos (sep-2026):** el inventario vive en `docs/AUDITORIA_RECURSOS_2026-09-02.md` (35 hallazgos anclados a `file:line`). El **estado** de cada hallazgo NO está en el md: vive en la base de datos del artifact [Huella de recursos de Maity](https://claude.ai/code/artifact/3f618734-11a8-4d9d-998c-22db7e994bd2) (colección `hallazgos`, **ausencia de documento = pendiente**), y se lee/escribe desde Claude Code con `Artifact action:read_db|write_db`. Al cerrar un hallazgo: marcarlo ahí en el mismo ciclo que el commit.
 

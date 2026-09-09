@@ -90,13 +90,33 @@ pub fn context<R: Runtime>(app: &AppHandle<R>) -> TelemetryContext {
 /// `window: null`). `occurred_at` es el event time — `created_at` de la tabla
 /// es el ingest time y pueden diferir horas en jornada offline.
 pub fn ctx_value<R: Runtime>(app: &AppHandle<R>) -> serde_json::Value {
-    let c = context(app);
+    ctx_from_parts(&context(app), "rust", None)
+}
+
+/// Envelope `ctx` para eventos que NACEN en un webview pero viajan por el
+/// outbox nativo (comando `log_analytics_event`, ventanas aux — #23 de la
+/// auditoría). Conserva la etiqueta que ponía `buildCtx` del JS
+/// (`emitter: "webview"`, `window: <label>`): `emitter` describe dónde nació el
+/// evento, no por dónde viajó, así que las queries por `ctx` no cambian.
+pub fn ctx_value_from_window<R: Runtime>(
+    app: &AppHandle<R>,
+    window_label: &str,
+) -> serde_json::Value {
+    ctx_from_parts(&context(app), "webview", Some(window_label))
+}
+
+/// Pura (sin `AppHandle`) para poder testearla.
+pub(crate) fn ctx_from_parts(
+    c: &TelemetryContext,
+    emitter: &str,
+    window: Option<&str>,
+) -> serde_json::Value {
     let mut ctx = serde_json::json!({
         "install_id": c.install_id,
         "app_version": c.app_version,
         "session_id": c.session_id,
-        "emitter": "rust",
-        "window": serde_json::Value::Null,
+        "emitter": emitter,
+        "window": window,
         "occurred_at": chrono::Utc::now().to_rfc3339(),
         "schema": CTX_SCHEMA_VERSION,
     });
@@ -106,6 +126,40 @@ pub fn ctx_value<R: Runtime>(app: &AppHandle<R>) -> serde_json::Value {
         }
     }
     ctx
+}
+
+#[cfg(test)]
+mod ctx_tests {
+    use super::*;
+
+    fn sample(regenerated: bool) -> TelemetryContext {
+        TelemetryContext {
+            install_id: "11111111-2222-4333-8444-555555555555".into(),
+            install_id_regenerated: regenerated,
+            app_version: "0.2.58".into(),
+            session_id: "proc-1-abcd".into(),
+        }
+    }
+
+    #[test]
+    fn el_ctx_de_rust_lleva_emitter_rust_y_window_null() {
+        let ctx = ctx_from_parts(&sample(false), "rust", None);
+        assert_eq!(ctx["emitter"], "rust");
+        assert_eq!(ctx["window"], serde_json::Value::Null);
+        assert_eq!(ctx["session_id"], "proc-1-abcd");
+        assert_eq!(ctx["schema"], CTX_SCHEMA_VERSION);
+        assert!(ctx.get("install_id_regenerated").is_none());
+        assert!(ctx["occurred_at"].as_str().is_some());
+    }
+
+    #[test]
+    fn el_ctx_de_una_ventana_conserva_la_etiqueta_del_webview() {
+        let ctx = ctx_from_parts(&sample(true), "webview", Some("coach-float"));
+        assert_eq!(ctx["emitter"], "webview");
+        assert_eq!(ctx["window"], "coach-float");
+        assert_eq!(ctx["install_id_regenerated"], true);
+        assert_eq!(ctx["app_version"], "0.2.58");
+    }
 }
 
 #[tauri::command]

@@ -15,7 +15,9 @@
 const fs = require('fs');
 const path = require('path');
 
-const LAYOUT_PATH = path.resolve(__dirname, '..', 'src', 'app', 'layout.tsx');
+// Root layout de la ventana principal. Desde sep-2026 (#23 de la auditoría)
+// vive en el route group `(main)`; las ventanas aux tienen el suyo en `(aux)`.
+const LAYOUT_PATH = path.resolve(__dirname, '..', 'src', 'app', '(main)', 'layout.tsx');
 const MARKER_SUBSTRING = 'CRITICAL: <UpdateCheckProvider> debe vivir FUERA';
 
 if (!fs.existsSync(LAYOUT_PATH)) {

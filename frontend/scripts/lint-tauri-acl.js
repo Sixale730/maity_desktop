@@ -11,14 +11,17 @@
 // exige `dialog:allow-confirm`/`allow-message`.
 //
 // Cómo atribuye ventana a un archivo:
-//   - `src/app/<aux>/page.tsx` + `layout.tsx` son las ENTRADAS de cada ventana
-//     auxiliar (labels == rutas, ver lib/auxWindows.ts); se recorre el grafo de
-//     imports (`@/…` y relativos) y todo archivo alcanzable se evalúa contra la
+//   - `src/app/(aux)/<aux>/page.tsx` + el root layout compartido
+//     `src/app/(aux)/layout.tsx` son las ENTRADAS de cada ventana auxiliar
+//     (labels == rutas, ver lib/auxWindows.ts); se recorre el grafo de imports
+//     (`@/…` y relativos) y todo archivo alcanzable se evalúa contra la
 //     capability de esa ventana.
 //   - TODO archivo se evalúa además contra `main`.
-//   - Excepción documentada: `src/app/layout.tsx` (root) es solo-main — sus call
-//     sites viven en `AppContent`, y RootLayout hace early-return para rutas aux
-//     ANTES de montarlo (invariante en app/layout.test.ts).
+//   - `src/app/(main)/layout.tsx` (root layout de la main) es solo-main por
+//     ESTRUCTURA desde sep-2026 (#23 de la auditoría): las rutas aux cuelgan de
+//     otro root layout, así que ni siquiera es alcanzable desde sus entradas.
+//     Se sigue excluyendo explícitamente como defensa (y (main)/layout.test.ts
+//     conserva el early-return de isAuxWindowPath por la misma razón).
 //
 // Tabla call → permiso (gate por import del archivo para evitar falsos positivos
 // como AudioContext.close() o Chart.js .destroy()):
@@ -41,7 +44,16 @@ const SRC = path.join(FRONTEND_ROOT, 'src');
 const APP_DIR = path.join(SRC, 'app');
 const TAURI_CONF = path.join(FRONTEND_ROOT, 'src-tauri', 'tauri.conf.json');
 const AUX_WINDOWS_FILE = path.join(SRC, 'lib', 'auxWindows.ts');
-const ROOT_LAYOUT = path.join(APP_DIR, 'layout.tsx');
+const MAIN_GROUP = path.join(APP_DIR, '(main)');
+const AUX_GROUP = path.join(APP_DIR, '(aux)');
+const ROOT_LAYOUT = path.join(MAIN_GROUP, 'layout.tsx');
+const AUX_ROOT_LAYOUT = path.join(AUX_GROUP, 'layout.tsx');
+for (const [label, file] of [['(main)/layout.tsx', ROOT_LAYOUT], ['(aux)/layout.tsx', AUX_ROOT_LAYOUT]]) {
+    if (!fs.existsSync(file)) {
+        console.error(`[lint-tauri-acl] FAIL: no existe src/app/${label} (route groups de #23).`);
+        process.exit(1);
+    }
+}
 const REPORT = process.argv.includes('--report');
 const ALLOW_MARK = 'acl-allow:';
 
@@ -157,8 +169,8 @@ function reachableFrom(entries) {
         seen.add(f);
         for (const dep of importsOf(f)) if (!seen.has(dep)) stack.push(dep);
     }
-    // El root layout envuelve también a las páginas aux, pero hace early-return
-    // antes de AppContent: es solo-main por invariante (layout.test.ts).
+    // El root layout de la main no envuelve a las páginas aux (route groups);
+    // se excluye igual como defensa por si algún import lo alcanzara.
     seen.delete(ROOT_LAYOUT);
     return seen;
 }
@@ -168,7 +180,12 @@ const windowsOfFile = new Map();
 const allFiles = walk(SRC, EXTS).filter((f) => !isExcluded(f));
 for (const f of allFiles) windowsOfFile.set(f, new Set(['main']));
 for (const label of auxLabels) {
-    const entries = [path.join(APP_DIR, label, 'page.tsx'), path.join(APP_DIR, label, 'layout.tsx')];
+    const page = path.join(AUX_GROUP, label, 'page.tsx');
+    if (!fs.existsSync(page)) {
+        console.error(`[lint-tauri-acl] FAIL: la ventana aux "${label}" no tiene src/app/(aux)/${label}/page.tsx.`);
+        process.exit(1);
+    }
+    const entries = [page, AUX_ROOT_LAYOUT];
     for (const f of reachableFrom(entries)) {
         if (!windowsOfFile.has(f)) continue;
         windowsOfFile.get(f).add(label);

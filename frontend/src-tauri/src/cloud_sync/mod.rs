@@ -17,6 +17,7 @@
 
 pub mod commands;
 pub mod executors;
+pub mod feedback;
 pub mod session;
 pub mod worker;
 

@@ -90,8 +90,11 @@ describe('CoachFloatPage — feedback por tip', () => {
     const calls = invokeMock.mock.calls.filter((call) => call[0] === 'save_user_feedback');
     expect(calls).toHaveLength(1);
 
-    const args = calls[0][1] as { metadata: string; rating: string };
+    const args = calls[0][1] as { metadata: string; rating: string; message: string };
     expect(args.rating).toBe('like');
+    // #23: el texto del tip viaja en `message` porque Rust lo manda como
+    // p_message de insert_user_feedback (la RPC ya no se hace desde el webview).
+    expect(args.message).toBe('tip number 3');
     const metadata = JSON.parse(args.metadata);
     expect(metadata.tip_key).toBe('300-type-3');
     expect(metadata.tip_text).toBe('tip number 3');

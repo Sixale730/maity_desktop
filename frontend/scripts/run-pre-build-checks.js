@@ -159,8 +159,8 @@ const treeResult = spawnSync(process.execPath, [PROVIDERS_TREE_SCRIPT], {
 if (treeResult.status !== 0) {
     console.error('');
     console.error('[pre-build] FAIL: providers-tree lint failed.');
-    console.error('  Restore the MARKER comment in src/app/layout.tsx, or update');
-    console.error('  PROVIDER_INVARIANTS in src/app/layout.test.ts if intentional.');
+    console.error('  Restore the MARKER comment in src/app/(main)/layout.tsx, or update');
+    console.error('  PROVIDER_INVARIANTS in src/app/(main)/layout.test.ts if intentional.');
     console.error('  Escape hatch: pnpm run tauri:build:debug:skip-checks');
     process.exit(1);
 }

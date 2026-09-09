@@ -369,10 +369,14 @@ pub async fn mark_recording_logs_synced<R: Runtime>(
 }
 
 /// Save user feedback: coach tip like/dislike or post-session rating.
-/// Returns the generated feedback id for optional cloud sync from the frontend.
+/// Guarda en SQLite (autoritativo) y lanza el sync best-effort a la nube desde
+/// Rust (`cloud_sync/feedback.rs`, RPC `insert_user_feedback` con este mismo id
+/// como `p_id`). Desde sep-2026 (#23) Rust es el ÚNICO escritor de esa RPC: el
+/// frontend ya no la llama (metía supabase-js al bundle del coach-float).
+/// Devuelve el id por compatibilidad con los callers.
 #[tauri::command]
 pub async fn save_user_feedback<R: Runtime>(
-    _app: AppHandle<R>,
+    app: AppHandle<R>,
     state: tauri::State<'_, AppState>,
     meeting_id: Option<String>,
     feedback_type: String,
@@ -401,6 +405,18 @@ pub async fn save_user_feedback<R: Runtime>(
     })?;
 
     info!("Saved user feedback: type={} id={}", feedback_type, id);
+
+    crate::cloud_sync::feedback::spawn_sync(
+        &app,
+        crate::cloud_sync::feedback::FeedbackRow {
+            id: id.clone(),
+            feedback_type,
+            rating,
+            message,
+            meeting_id,
+            metadata,
+        },
+    );
     Ok(id)
 }
 

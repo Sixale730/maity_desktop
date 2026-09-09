@@ -35,19 +35,32 @@ diagnosticar remotamente. Los logs completos siguen siendo bajo demanda
 ## Nivel 1-2: `maity.platform_logs` (Supabase)
 
 **Pipeline (dos writers, y solo dos):**
-1. **JS directo:** `platformLogger` (`frontend/src/lib/platformLogger.ts`) →
+1. **JS directo (solo ventana `main`):** `platformLogger` (`frontend/src/lib/platformLogger.ts`) →
    RPC `public.insert_platform_log` (SECURITY DEFINER; resuelve `user_id` desde
    `maity.users WHERE auth_id = auth.uid()`; traga excepciones — nunca rompe la
    app) → tabla `maity.platform_logs`. Lo usan `app.*`, `nav.*`, `health.*`,
    `device.profile`, `coach.session_summary` y el passthrough de `Analytics.track`.
-2. **Outbox nativo (store-and-forward):** `telemetry::emit` (Rust) y
-   `recordingLogService.log` (JS, vía comando) escriben al outbox SQLite
-   `recording_logs` — cero red en el camino caliente, sobrevive crash,
+2. **Outbox nativo (store-and-forward):** `telemetry::emit` (Rust),
+   `recordingLogService.log` (JS, vía comando) y, desde sep-2026 (#23 de la
+   auditoría), **la analítica de las ventanas auxiliares** (`lib/auxAnalytics.ts`
+   → comando `log_analytics_event` → `emit_webview_event`) escriben al outbox
+   SQLite `recording_logs` — cero red en el camino caliente, sobrevive crash,
    suspensión y **webview cerrado** (jornada/tray). La **única drenadora es
    `logging/telemetry/drain.rs`**: tick 30 s + `Notify`, `get_unsynced_logs(50)`
    → `get_valid_token` (sin sesión ⇒ diferir sin quemar intentos) → POST al
    mismo RPC → solo 2xx marca `synced_to_cloud`. `syncToCloud()` de JS se
    eliminó (ago-2026): dos drenadores = filas duplicadas.
+
+> **Las ventanas aux (`coach-float`, `recording-widget`, `device-picker`) NO
+> cargan `platformLogger`** (arrastra supabase-js: ~200 KB de chunk y un segundo
+> cliente GoTrue con `autoRefreshToken` por webview — #23). Su `ctx` conserva
+> `emitter: "webview"` y `window: <label real>` (lo toma Rust del webview que
+> invoca, no del payload), así que las queries por `ctx` no cambian; lo que SÍ
+> cambia es la **columna** `session_id` de esos eventos (`coach_float.*`): pasa
+> de `desktop-…` (instancia propia de `platformLogger` en ese webview) a la de
+> proceso `proc-…`. El fitness test `app/(aux)/layout.test.ts` prohíbe que el
+> grafo aux alcance `platformLogger`/`supabase`. El comando valida nombre
+> (`[A-Za-z0-9._:-]`, ≤128) y payload (objeto, ≤8 KB) y descarta con `warn!`.
 
 Columnas útiles: `user_id`, `session_id`, `platform` (`'desktop'` | web),
 `event_type`, `event_data` (jsonb, con el envelope `ctx` de abajo), `status`,
@@ -190,11 +203,21 @@ Todos legacy. Payload común: `recording_session_id`, `meeting_id`, `is_call_api
 | `cloud_sync_enqueued` / `cloud_sync_enqueue_failed` | encolado en la sync queue offline-first |
 
 **Fuera del catálogo (a propósito):** `Analytics.track(...)` (`lib/analytics.ts`,
-stub de PostHog) es analítica de producto de la UI (`coach_float.*`,
-`preferences_viewed`, `microphone_selected`, …) con passthrough a
-`platform_logs`; se documenta como esta única fila y el lint lo exime con
-`// telemetry-allow:`. Si algún día se quiere inventariar, entra por la regla de
-3 entradas.
+stub de PostHog) es analítica de producto de la UI (`preferences_viewed`,
+`microphone_selected`, …) con passthrough a `platform_logs`; se documenta como
+esta única fila y el lint lo exime con `// telemetry-allow:`. Su gemelo para las
+ventanas auxiliares es `trackAux(...)` (`lib/auxAnalytics.ts`, `coach_float.*`),
+que va por el outbox nativo (ver Pipeline) con la misma exención. Si algún día
+se quiere inventariar, entra por la regla de 3 entradas.
+
+**`insert_user_feedback` (tabla `maity.user_feedback`, no `platform_logs`):**
+desde sep-2026 (#23) el ÚNICO escritor es Rust — `save_user_feedback` guarda en
+SQLite y `cloud_sync/feedback.rs::spawn_sync` postea la RPC best-effort (un
+intento, sin outbox: paridad con el fire-and-forget que hacían coach-float y
+`SessionFeedbackModal` con supabase-js). `p_message` = `message` o, si no hay,
+`rating`; `p_metadata` = `{platform, rating, meeting_id}` ∪ metadata del
+frontend. No volver a llamar la RPC desde JS: el `p_id` UNIQUE rechazaría el
+segundo POST con ruido.
 
 ### `health.heartbeat` (jul-2026; doble emisor desde sep-2026)
 
@@ -244,9 +267,10 @@ un techo fijo**: leerla de `mem_sample_age_s`, nunca asumir 30 s.
 Diseño (emisor JS): un solo interval de 5 min; la cadencia real la decide
 `shouldEmitHeartbeat` por timestamps (sleep-safe: tras resume emite UNA vez).
 Gate de sesión Supabase por tick (sin login → cero RPCs). Solo la ventana
-principal lo corre (`isAuxWindowPath` excluye coach-float/recording-widget/
-device-picker). Sin retry offline: un heartbeat perdido no se encola (mentiría
-sobre `created_at`).
+principal lo corre: las aux viven en el route group `app/(aux)` con un root
+layout sin initializers (#23), y `isAuxWindowPath` queda como gate defensivo.
+Sin retry offline: un heartbeat perdido no se encola (mentiría sobre
+`created_at`).
 
 Diseño (emisor Rust, sep-2026 — hallazgo #14 de la auditoría de recursos): el
 JS vive dentro de `AuthGate` y WebView2 **suspende el JS con la ventana
@@ -331,9 +355,10 @@ para las otras 8. Beneficio: antes esos datos solo viajaban en
 `coach.session_summary` — una usuaria que nunca abre el coach era invisible.
 `ErrorTelemetryInitializer` se monta FUERA de ErrorBoundary/AuthGate
 (invariante en `layout.test.ts`) para capturar errores pre-auth y sobrevivir
-al fallback del boundary; solo la ventana principal lo monta (las aux hacen
-early-return en el layout — si eso cambiara, el emit broadcast de `rust-error`
-multiplicaría reportes; la barrera real es el dedup del lado Rust). Hook en
+al fallback del boundary; solo la ventana principal lo monta (las aux cuelgan
+del root layout de `app/(aux)`, sin initializers — si eso cambiara, el emit
+broadcast de `rust-error` multiplicaría reportes; la barrera real es el dedup
+del lado Rust). Hook en
 `logger.error`: descartado definitivamente (#63 cerrado como no-planeado).
 
 `event_data`: `{source, name, message, stack, component_stack, rust_ts_ms,

@@ -49,6 +49,47 @@ const COACH_PREF_KEY_VISIBLE: &str = "coach_float_visible";
 
 static HTTP_CLIENT: Lazy<Client> = Lazy::new(Client::new);
 
+// ─── Primer paint de ventanas que nacen ocultas ──────────────────────────────
+//
+// Las ventanas flotantes se construyen con `.visible(false)` y se muestran
+// después de posicionarlas; mostrarlas antes de que WebView2 pinte deja un
+// flash blanco. El coach-float esperaba "a ojo" (`sleep(180)`, iter 10). Desde
+// #23 de la auditoría (sep-2026) las dos ventanas esperan la señal
+// `PageLoadEvent::Finished` del builder (patrón de iter 11 del device-picker)
+// con un timeout de 2 s como fallback: mejor mostrarla sin señal que dejarla
+// invisible.
+
+type FirstLoadSender = Arc<Mutex<Option<tokio::sync::oneshot::Sender<()>>>>;
+const FIRST_LOAD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
+fn first_page_load() -> (FirstLoadSender, tokio::sync::oneshot::Receiver<()>) {
+    let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+    (Arc::new(Mutex::new(Some(tx))), rx)
+}
+
+/// Para el closure de `.on_page_load(...)`: dispara la señal UNA vez, en `Finished`.
+fn signal_first_load(tx: &FirstLoadSender, event: tauri::webview::PageLoadEvent) {
+    if !matches!(event, tauri::webview::PageLoadEvent::Finished) {
+        return;
+    }
+    if let Ok(mut guard) = tx.lock() {
+        if let Some(sender) = guard.take() {
+            let _ = sender.send(());
+        }
+    }
+}
+
+async fn wait_first_page_load(rx: tokio::sync::oneshot::Receiver<()>, label: &str) {
+    match tokio::time::timeout(FIRST_LOAD_TIMEOUT, rx).await {
+        Ok(Ok(())) => info!("{}: page-load Finished → mostrando", label),
+        Ok(Err(_)) => warn!("{}: oneshot cancelado, mostrando igual", label),
+        Err(_) => warn!(
+            "{}: timeout {:?} esperando page-load, mostrando igual",
+            label, FIRST_LOAD_TIMEOUT
+        ),
+    }
+}
+
 // ─── Tipos de respuesta ───────────────────────────────────────────────────────
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -273,6 +314,7 @@ pub async fn open_floating_coach<R: Runtime>(
     // del flotante usa background rgba(15,16,24,0.92) + backdrop-filter blur
     // para el efecto glass — ver §3.2 en page.tsx. Riesgo conocido §3.4:
     // Win10 con DWM desactivado puede tener artefactos; aceptado en V1.
+    let (load_tx, load_rx) = first_page_load();
     let window = tauri::WebviewWindowBuilder::new(
         &app,
         COACH_FLOAT_LABEL,
@@ -302,9 +344,10 @@ pub async fn open_floating_coach<R: Runtime>(
     // sutil pero también puede dejar artefactos; lo deshabilitamos uniforme.
     .shadow(false)
     // Iter 10: empezar OCULTA para evitar flash blanco del WebView2 antes
-    // de que el HTML pinte. Se muestra con .show() después de posicionar
-    // + delay corto para esperar el primer paint.
+    // de que el HTML pinte. Se muestra con .show() después de posicionar,
+    // cuando el builder reporta PageLoadEvent::Finished (#23).
     .visible(false)
+    .on_page_load(move |_w, payload| signal_first_load(&load_tx, payload.event()))
     .build()
     .map_err(|e| format!("Error abriendo ventana flotante: {}", e))?;
 
@@ -331,10 +374,10 @@ pub async fn open_floating_coach<R: Runtime>(
         }
     }
 
-    // Iter 10: esperar a que el WebView2 cargue el HTML antes de mostrar.
-    // 180 ms es suficiente para el primer paint con el glass; menos genera
-    // flash blanco visible.
-    tokio::time::sleep(std::time::Duration::from_millis(180)).await;
+    // Esperar el primer paint real (page-load Finished, o 2 s de fallback)
+    // en vez del sleep(180) de iter 10: con el root layout aux propio (#23)
+    // la página carga ~350 KB en lugar de 1.17 MB y la señal llega antes.
+    wait_first_page_load(load_rx, COACH_FLOAT_LABEL).await;
     let _ = window.show();
 
     emit_coach_visibility(&app, true);
@@ -531,10 +574,8 @@ pub async fn open_device_picker<R: Runtime>(
     // on_page_load del builder. Reemplaza el sleep arbitrario de iter 10 que
     // no garantizaba que el HTML estuviera pintado antes de show() — origen
     // del "flash blanco" cuando WebView2 tardaba más de 100 ms en cargar.
-    let (load_tx, load_rx) = tokio::sync::oneshot::channel::<()>();
-    let load_tx_holder: Arc<Mutex<Option<tokio::sync::oneshot::Sender<()>>>> =
-        Arc::new(Mutex::new(Some(load_tx)));
-    let load_tx_clone = load_tx_holder.clone();
+    // Helper compartido con el coach-float desde #23.
+    let (load_tx, load_rx) = first_page_load();
 
     let url = format!("device-picker?type={}", device_type);
     let window = tauri::WebviewWindowBuilder::new(
@@ -552,15 +593,7 @@ pub async fn open_device_picker<R: Runtime>(
     .transparent(true)
     // Empezar OCULTA; mostramos después de que on_page_load reporte Finished.
     .visible(false)
-    .on_page_load(move |_w, payload| {
-        if matches!(payload.event(), tauri::webview::PageLoadEvent::Finished) {
-            if let Ok(mut guard) = load_tx_clone.lock() {
-                if let Some(sender) = guard.take() {
-                    let _ = sender.send(());
-                }
-            }
-        }
-    })
+    .on_page_load(move |_w, payload| signal_first_load(&load_tx, payload.event()))
     .build()
     .map_err(|e| {
         warn!("Error abriendo device-picker: {}", e);
@@ -604,11 +637,7 @@ pub async fn open_device_picker<R: Runtime>(
     // Iter 11 — Fix 2: esperar a que la página termine de cargar (señal del
     // callback on_page_load → oneshot). Timeout de 2 s como fallback: mejor
     // mostrar la ventana aunque el evento no llegue, que dejarla invisible.
-    match tokio::time::timeout(std::time::Duration::from_secs(2), load_rx).await {
-        Ok(Ok(())) => info!("device-picker: page-load Finished → mostrando"),
-        Ok(Err(_)) => warn!("device-picker: oneshot cancelado, mostrando igual"),
-        Err(_) => warn!("device-picker: timeout 2s esperando page-load, mostrando igual"),
-    }
+    wait_first_page_load(load_rx, DEVICE_PICKER_LABEL).await;
 
     let _ = window.show();
     let _ = window.set_focus();

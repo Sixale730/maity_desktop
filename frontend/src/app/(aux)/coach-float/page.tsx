@@ -14,8 +14,10 @@ import { HealthGauge } from '@/components/coach/HealthGauge';
 import { TalkSplitBar } from '@/components/coach/TalkSplitBar';
 import { getPriorityColor, getCategoryMeta, PRIORITY_META } from '@/components/coach/tipMeta';
 import { AudioLevelBars } from '@/components/audio/AudioLevelBars';
-import { supabase } from '@/lib/supabase';
-import { Analytics } from '@/lib/analytics';
+// Telemetría de producto por vía nativa (#23): NO importar @/lib/analytics ni
+// @/lib/supabase aquí — ambos arrastran supabase-js al bundle de esta ventana
+// (fitness test: app/(aux)/layout.test.ts).
+import { trackAux } from '@/lib/auxAnalytics';
 import { TauriEvent } from '@/lib/tauri-events';
 
 type TipFeedback = 'like' | 'dislike' | null;
@@ -247,7 +249,7 @@ export default function CoachFloatPage() {
         invoke('coach_float_set_size', { drawer: true }).catch(console.error);
         // Telemetría: distinguir apertura automática de la manual permite
         // medir engagement real con el coach sin contaminar con auto-toggles.
-        Analytics.track('coach_float.drawer_auto_opened', {
+        trackAux('coach_float.drawer_auto_opened', {
           reason: 'auto_on_start',
         }).catch(() => {});
       }
@@ -261,7 +263,7 @@ export default function CoachFloatPage() {
       invoke('coach_float_set_size', { drawer: false }).catch(console.error);
       userManuallyClosedDrawerRef.current = false;
       if (wasDrawerOpen) {
-        Analytics.track('coach_float.drawer_auto_closed', {
+        trackAux('coach_float.drawer_auto_closed', {
           reason: 'auto_on_stop',
         }).catch(() => {});
       }
@@ -274,7 +276,7 @@ export default function CoachFloatPage() {
       invoke('coach_float_set_size', { drawer: false }).catch(console.error);
       userManuallyClosedDrawerRef.current = false;
       if (wasDrawerOpen) {
-        Analytics.track('coach_float.drawer_auto_closed', {
+        trackAux('coach_float.drawer_auto_closed', {
           reason: 'auto_on_stop',
         }).catch(() => {});
       }
@@ -389,7 +391,7 @@ export default function CoachFloatPage() {
     invoke('coach_float_set_size', { drawer: next }).catch(console.error);
     // Telemetría: separar acciones del user (reason: 'user') de los toggles
     // automáticos (auto_on_start / auto_on_stop) permite filtrar engagement real.
-    Analytics.track('coach_float.drawer_toggled', {
+    trackAux('coach_float.drawer_toggled', {
       open: next.toString(),
       reason: 'user',
       recording_active: recordingActive.toString(),
@@ -397,7 +399,7 @@ export default function CoachFloatPage() {
   };
 
   const close = () => {
-    Analytics.track('coach_float.window_closed', {
+    trackAux('coach_float.window_closed', {
       reason: 'user_x_button',
       recording_active: recordingActive.toString(),
       drawer_was_open: drawerOpen.toString(),
@@ -490,7 +492,7 @@ export default function CoachFloatPage() {
   // Wrapper para diferenciar (en telemetria) clicks en el CTA del idle drawer
   // vs el Play icon de la barra superior. Asi podemos medir cual convierte mas.
   const handleStartFromCta = () => {
-    Analytics.track('coach_float.idle_cta_clicked', {
+    trackAux('coach_float.idle_cta_clicked', {
       source: 'idle_drawer_cta',
     }).catch(() => {});
     handleStart();
@@ -570,14 +572,17 @@ export default function CoachFloatPage() {
     if (!tip || !tipKey || feedback !== null) return;
     setFeedbackByTip(prev => ({ ...prev, [tipKey]: rating }));
     try {
-      // 1. Persistencia local (autoritativa). El UUID retornado se reusa como
-      // p_id en la RPC para que la fila cloud comparta PK con la local — un
-      // retry idempotente colapsa via UNIQUE.
-      const feedbackId = await invoke<string>('save_user_feedback', {
+      // Persistencia local (autoritativa) + sync a la nube desde RUST
+      // (cloud_sync/feedback.rs, best-effort, misma RPC insert_user_feedback
+      // con el mismo id como p_id). Antes este webview hacía la RPC con
+      // supabase-js, lo que metía ~200 KB de chunk y un segundo cliente
+      // GoTrue en la ventana (#23). `message` lleva el texto del tip porque
+      // Rust lo manda como p_message (antes iba solo en la RPC).
+      await invoke<string>('save_user_feedback', {
         meetingId: meetingIdRef.current ?? undefined,
         feedbackType: 'coach_tip_feedback',
         rating,
-        message: undefined,
+        message: tip.tip,
         metadata: JSON.stringify({
           tip_key: tipKey,
           tip_text: tip.tip,
@@ -587,31 +592,6 @@ export default function CoachFloatPage() {
           tip_timestamp_secs: tip.timestamp_secs,
         }),
       });
-
-      // 2. Sync a Supabase via RPC (fire-and-forget, mismo patrón que
-      // SessionFeedbackModal → insert_user_feedback). La RPC es SECURITY
-      // DEFINER y resuelve user_id/auth_id desde auth.uid() server-side;
-      // el cliente solo manda datos de negocio.
-      supabase
-        .schema('public')
-        .rpc('insert_user_feedback', {
-          p_feedback_type: 'coach_tip_feedback',
-          p_message: tip.tip,
-          p_id: feedbackId,
-          p_metadata: {
-            platform: 'desktop',
-            rating,
-            meeting_id: meetingIdRef.current ?? null,
-            tip_category: tip.category,
-            tip_priority: tip.priority,
-            tip_type: tip.tip_type,
-            tip_timestamp_secs: tip.timestamp_secs,
-            tip_key: tipKey,
-          },
-        })
-        .then(({ error }) => {
-          if (error) console.warn('[CoachFloat] Supabase sync failed (non-fatal):', error);
-        });
     } catch (e) {
       console.error('[CoachFloat] feedback save failed:', e);
       // Revertir el optimistic update para que el usuario pueda reintentar

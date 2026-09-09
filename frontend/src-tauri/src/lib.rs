@@ -1538,6 +1538,8 @@ pub fn run() {
             database::commands::mark_recording_logs_synced,
             // Telemetria: contexto canonico (install_id + session de proceso + version)
             logging::telemetry::context::get_telemetry_context,
+            // Analitica de producto de las ventanas aux -> outbox nativo (#23 de la auditoria)
+            logging::telemetry::emit::log_analytics_event,
             database::commands::get_database_directory,
             database::commands::open_database_folder,
             database::commands::save_user_feedback,
