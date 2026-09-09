@@ -76,10 +76,10 @@ exactamente lo cerrado. La tabla de abajo es una foto del estado; la verdad es l
 | 31 | El workspace ignora el `[profile.release]` y el `[patch]` de cpal | Medio | CPU/Disco | Arranque | S | = | abierto |
 | 32 | En Windows ffmpeg se descarga en runtime | Alto | Disco/Red/RAM | Jornada/Post | M | = | **cerrado** `6b906a6` |
 | 33 | DirectML y D3D12 son imports de carga del exe | Bajo | RAM/CPU | Arranque | S | = | abierto |
-| 34 | Los segmentos descartados dejan su carpeta huérfana | Medio | Disco | Post | S | = | abierto |
-| 35 | Dos pilas HTTP/TLS, crates duplicados y deps muertas | Bajo | Disco/CPU | Arranque | S | = | abierto |
+| 34 | Los segmentos descartados dejan su carpeta huérfana | Medio | Disco | Post | S | = | **cerrado** `f52472d` |
+| 35 | Dos pilas HTTP/TLS, crates duplicados y deps muertas | Bajo | Disco/CPU | Arranque | S | = | **cerrado** `a3a0881` |
 
-**32 abiertos de 35**, incluidos los 2 críticos.
+**16 abiertos de 35** (al 09-sep-2026); los 2 críticos (#01, #02) ya están cerrados.
 
 ---
 
@@ -701,7 +701,7 @@ Ordenados por impacto estimado en RAM, luego CPU, luego disco y red.
 - **Riesgo**: Moonshine y Canary pierden GPU; ambos son opcionales.
 
 ### #34 · Los segmentos descartados por contenido dejan su carpeta huérfana con el audio dentro
-`Medio` · Disco · Post · esfuerzo S · verificado · no cambia por lote · abierto
+`Medio` · Disco · Post · esfuerzo S · verificado · no cambia por lote · **CERRADO** `f52472d`
 
 - **Impacto**: cada segmento por debajo de 250 palabras (en el piloto, **más de la mitad**) deja
   `audio.mp4` de hasta 130 MB, `transcripts.json` y `metadata.json` en `Music/maity-recordings` sin fila
@@ -711,9 +711,23 @@ Ordenados por impacto estimado en RAM, luego CPU, luego disco y red.
 - **Cambio**: `remove_dir_all(folder)` al devolver `Discarded`, o conservar el audio detrás de un
   ajuste; la telemetría ya lleva `words_total`.
 - **Riesgo**: decisión de producto sobre conservar audio de segmentos sin conversación.
+- **Cierre (04-sep, dentro de #27)**: `scheduled_recording/service.rs` llama
+  `audio_retention::remove_audio_artifacts(&folder)` justo después de `emit_segment_discarded` y antes
+  de devolver `SegmentOutcome::Discarded`: borra `audio.mp4` y `.checkpoints/` (lo que pesa) y parchea
+  `metadata.json` (`audio_file: ""` + `audio_deleted_at`). Es el único punto donde todavía se sabe
+  dónde está la carpeta: el descarte retorna antes de tocar SQLite, así que nunca hay `folder_path` y
+  el barrido periódico de #27 no la vería jamás. Test:
+  `remove_audio_artifacts_borra_audio_y_checkpoints_conservando_los_json`.
+- **CORRECCIÓN al remedio**: NO se usa `remove_dir_all(folder)`. Se conservan `transcripts.json` y
+  `metadata.json` (unos KB) como rastro auditable de por qué se descartó, y porque el filtro de
+  fantasmas del frontend nunca toca disco: borrar la carpeta entera le quitaría su red de seguridad.
+  Tampoco consulta `audio_retention_days`: aquí se borra aunque el usuario haya elegido "nunca
+  borrar", porque ningún otro camino puede volver a encontrar ese audio (por eso la opción de la UI
+  dice "de las reuniones **guardadas**"). La "decisión de producto" del riesgo ya está tomada y
+  documentada en CLAUDE.md § "Umbral de contenido de la jornada".
 
 ### #35 · Dos pilas HTTP/TLS, crates duplicados y dependencias muertas
-`Bajo` · Disco/CPU · Arranque · esfuerzo S · no cambia por lote · abierto
+`Bajo` · Disco/CPU · Arranque · esfuerzo S · no cambia por lote · **CERRADO** `a3a0881`
 
 - **Impacto**: reqwest 0.12 y 0.13 (plugin updater), rustls 0.22 y 0.23, dos rustls-native-certs, cuatro
   versiones de windows-sys, clap v3 y v4, zip 2 y 4: 3-6 MB de exe estimados, dos cargadores de root
@@ -723,6 +737,31 @@ Ordenados por impacto estimado en RAM, luego CPU, luego disco y red.
 - **Cambio**: reqwest a 0.13, sentry con rustls 0.23, nnnoiseless sin default-features, borrar clap,
   esaxx-rs, symphonia y los paquetes remirror/tiptap.
 - **Riesgo**: reqwest 0.13 renombró los flags de TLS.
+- **CORRECCIÓN al diagnóstico (09-sep)**: `rustls 0.22` no venía sólo de sentry 0.34 (que sí la
+  declaraba directo) sino también de **tokio-tungstenite 0.21**, con su propia pila (tokio-rustls
+  0.25, rustls-native-certs 0.7, rustls-webpki 0.102, webpki-roots 0.26); `reqwest 0.13` lo traía
+  únicamente el updater, y el `reqwest 0.12` nuestro estaba además en `[build-dependencies]` sin que
+  `build.rs` lo use. Y "reqwest a 0.13" no es un bump: 0.13 renombró `rustls-tls` → `rustls` **y esa
+  feature enciende aws-lc-rs** (un segundo proveedor criptográfico junto a ring), borró las
+  `*-native-roots`/`*-webpki-roots` (siempre `rustls-platform-verifier`, el verificador del SO, el
+  mismo que ya usaba el updater 2.10), y con `rustls-no-provider` reqwest 0.13.5 **no** cae al
+  proveedor de las features del árbol: `Client::build()` hace panic si nadie instaló uno (así falló
+  `el_cliente_compartido_se_construye` al subir). sentry 0.49 además volvió `ClientOptions`
+  `#[non_exhaustive]` (sólo builder).
+- **Cierre (09-sep)**: sentry 0.34 → 0.49 y tokio-tungstenite 0.21 → 0.30 (ambos sobre rustls 0.23 con
+  `default-features = false`), reqwest 0.12 → 0.13 con `rustls-no-provider` (sin `multipart`, cero
+  usos; sin `system-proxy`, que cambiaría el comportamiento del proxy), `rustls 0.23` directo sólo
+  para `api::http::install_crypto_provider()` (ring, `Once`, llamado desde `main` antes de
+  `init_sentry` y desde el `Lazy` del cliente compartido), zip 2 → 4 (sólo `deflate`), dirs 5 → 6,
+  winreg 0.52 → 0.56 (último ancla de windows-sys 0.48), nnnoiseless sin default-features (su `bin`
+  arrastraba clap 3 + hound); borrados clap, esaxx-rs (+ su `[patch]`), symphonia, el reqwest de
+  build-deps y los 12 paquetes `@remirror/*`/`@tiptap/*`. Resultado: **751 → 667 crates** en el
+  árbol, exe debug 100.9 → 97.6 MB, `cargo tree -d` sin reqwest/rustls/tokio-rustls/webpki/zip/dirs/
+  clap y sin windows-sys 0.48; `cargo tree -i aws-lc-rs` vacío. Guard:
+  `frontend/scripts/lint-cargo-deps.js` en el pre-build (probado en rojo por los dos caminos). Reglas
+  en CLAUDE.md § "Dependencias Rust: una sola pila TLS". Quedan fuera (no son S): `windows
+  0.54/0.57/0.58/0.61` (cpal, sysinfo, WASAPI propio, tauri) y `windows-sys 0.59-0.61`; `rand` ×4 lo
+  ancla `phf_generator` (build-deps de html5ever) y subir el nuestro no elimina versiones.
 
 ---
 
