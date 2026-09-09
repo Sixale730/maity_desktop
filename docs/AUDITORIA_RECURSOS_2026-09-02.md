@@ -65,7 +65,7 @@ exactamente lo cerrado. La tabla de abajo es una foto del estado; la verdad es l
 | 20 | `reqwest::Client` se construye por request en ~20 sitios | Bajo | CPU/Red | Post/Jornada | S | = | **cerrado** `9b6879c` |
 | 21 | `System::new_all()` para un procesador que nadie invoca | Bajo | RAM/CPU | Arranque | S | = | **cerrado** `37c6e7c` |
 | 22 | La presión de memoria se observa pero no se actúa | Alto | RAM | Jornada/Post | M | = | abierto |
-| 23 | Las ventanas auxiliares cargan el grafo del layout raíz | Bajo | RAM/CPU | Arranque/Jornada | M | = | abierto |
+| 23 | Las ventanas auxiliares cargan el grafo del layout raíz | Bajo | RAM/CPU | Arranque/Jornada | M | = | **cerrado** `0528562` |
 | 24 | Bundle de arranque de 2.1 MB con librerías pesadas | Bajo | RAM/CPU/Disco | Arranque | M | = | abierto |
 | 25 | El logging diagnóstico escribe por IPC en cada poll | Bajo | Disco/CPU | Post | S | = | **cerrado** `3793da7` |
 | 26 | `sync_queue` nunca se poda | Bajo | Disco | Post | S | = | **cerrado** `a783644` |
@@ -530,7 +530,7 @@ Ordenados por impacto estimado en RAM, luego CPU, luego disco y red.
   carga de Parakeet cada hora la necesita).
 
 ### #23 · Las ventanas auxiliares cargan el grafo completo del layout raíz
-`Bajo` · RAM/CPU · Arranque/Jornada · esfuerzo M · no cambia por lote · abierto
+`Bajo` · RAM/CPU · Arranque/Jornada · esfuerzo M · no cambia por lote · **CERRADO** `0528562`
 
 - **Impacto**: `coach-float.html` carga 1,457 KB de JS de los que la página son 34 KB (supabase-js,
   sonner, Radix, polyfills); +10-20 MB de heap y peor primer pintado por ventana; es también la razón
@@ -539,6 +539,29 @@ Ordenados por impacto estimado en RAM, luego CPU, luego disco y red.
 - **Cambio**: route groups `app/(main)/layout.tsx` y `app/(aux)/layout.tsx` con un layout auxiliar
   mínimo; mantener `isAuxWindowPath` como gate defensivo.
 - **Riesgo**: invariantes de `layout.test.ts`; las aux siguen necesitando `globals.css`.
+- **Cierre (09-sep)**: el remedio se aplicó tal cual (route groups `(main)`/`(aux)`, root layout aux
+  mínimo como server component, early-return conservado como defensa), pero **solo cubría la mitad
+  del peso**. Medido en el `out/` del 09-09 antes del cambio: coach-float 1,172 KB en 29 scripts
+  (no 1,457: #05 y compañía ya habían adelgazado la main), de los que ~310 KB eran supabase-js
+  **importado por la propia página** — `import { supabase }` para la RPC `insert_user_feedback` del
+  👍/👎 y `Analytics.track` → `platformLogger` → `supabase` — y eso los route groups no lo tocan.
+  Peor: `lib/supabase.ts` es un Proxy perezoso, así que el primer tip de cada grabación
+  (`drawer_auto_opened`) instanciaba un **segundo cliente GoTrue con `autoRefreshToken`** en el
+  webview del coach. Julio eligió cerrar las dos causas: analítica de las aux por
+  `lib/auxAnalytics.ts::trackAux` → comando `log_analytics_event` → outbox `recording_logs`
+  (`ctx.emitter='webview'` + `window` real; la columna `session_id` pasa a `proc-…`), y el sync del
+  feedback desde Rust (`cloud_sync/feedback.rs`, único escritor de la RPC; `SessionFeedbackModal`
+  también dejó de llamarla). Hallazgo lateral arreglado de paso: los tres `layout.tsx` anidados de
+  las aux (de `45a4cbd`) devolvían `<html><body>` DENTRO del body del root — **2 `<html>` por
+  documento** — y se borraron. El `sleep(180)` se sustituyó por la señal `on_page_load(Finished)`
+  que ya usaba el device-picker (helper compartido). Resultado (bytes ejecutados, sin el polyfill
+  `nomodule`): coach-float **1,172 → 336 KB**, recording-widget **1,158 → 325 KB**, device-picker
+  **1,137 → 304 KB**; el piso restante (~297 KB) es react-dom + runtime del App Router. Guards:
+  `app/(aux)/layout.test.ts` (estructura + grafo de imports con lista negra) y
+  `scripts/lint-aux-bundle.js` en el post-build (sin chunks de `(main)`, sin sonner/gotrue, ≤450 KB).
+  Pendientes anotados: el sync de feedback sigue siendo best-effort (sin outbox propio, paridad con
+  el JS); `recording-widget` arranca visible (posible flash, otro tema); `metadata.ts(x)` duplicados
+  y sin uso en `app/`.
 
 ### #24 · Bundle de arranque de 2.1 MB de JS con tres familias tipográficas y librerías pesadas
 `Bajo` · RAM/CPU/Disco · Arranque · esfuerzo M · no cambia por lote · abierto
