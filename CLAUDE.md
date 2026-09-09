@@ -18,29 +18,37 @@ Este archivo proporciona orientacion a Claude Code al trabajar con este reposito
 - **Cloud**: Supabase (schema `maity`) + Vercel API + Cloudflare Workers
 - **Auth**: Google OAuth -> Supabase Auth
 
+## Índice de docs de reglas (LEER ANTES de tocar el área)
+
+Los post-mortems y reglas detalladas viven en `docs/`. **Antes de modificar código de un área, lee su doc** — cada uno documenta bugs reales de producción y decisiones marcadas "no revertir":
+
+| Área | Doc |
+|---|---|
+| Canales Store/MSIX vs NSIS, migraciones, updater, VC++ runtime | `docs/CANALES_DISTRIBUCION.md` |
+| Audio, VAD, checkpoints, retención, dispositivos, grabación, meeting detector | `docs/REGLAS_AUDIO_GRABACION.md` |
+| Gates de sesión/registro, onboarding, scheduler de jornada, descargas de modelos | `docs/ONBOARDING_Y_GATES.md` |
+| Cliente Supabase, roles, sync queue, lista de conversaciones, análisis V4, email, pagos | `docs/NUBE_CUENTAS_SYNC.md` |
+| UI: gamificación DPI, overlays, niveles de audio, guardado de archivos, cierre de ventana | `docs/UI_REGLAS.md` |
+| Notificaciones nativas (toasts) | `docs/NOTIFICACIONES_NATIVAS.md` |
+| Ciclo de vida del motor STT (carga/descarga por sesión) | `docs/TRANSCRIPTION_PIPELINE.md` |
+| Coach, sidecar Gemma, tips LLM | `docs/COACH_LLM_ARCHITECTURE.md` |
+| ONNX execution providers / GPU en motores ONNX | `docs/ONNX_EXECUTION_PROVIDERS.md` |
+| ffmpeg bundleado, GC del target/, política de deps Rust | `docs/BUILDING.md` |
+| Telemetría (catálogo, heartbeats, mem_sampler, bundle de incidente) | `docs/TELEMETRIA.md` |
+| Auditoría de recursos sep-2026 (hallazgos #NN) | `docs/AUDITORIA_RECURSOS_2026-09-02.md` |
+
 ## Skills (Slash Commands)
 
-### `/build [patch|minor|major]`
-Build firmado de produccion con bump automatico de version semver. Lee signing keys de `frontend/.env`, actualiza la version en 4 archivos (`tauri.conf.json`, `package.json`, `Cargo.toml` y `Package.appxmanifest` — este ultimo en formato MSIX de 4 partes `X.Y.Z.0`), y ejecuta `pnpm run tauri:build` con las credenciales de firma. Definicion: `.claude/skills/build/SKILL.md`
+- **`/build [patch|minor|major]`** — Build firmado de produccion con bump de version en 4 archivos (`tauri.conf.json`, `package.json`, `Cargo.toml`, `Package.appxmanifest` en formato MSIX `X.Y.Z.0`). Definicion: `.claude/skills/build/SKILL.md`
+- **`/store-msix`** — Empaqueta y publica en la Microsoft Store (pipeline independiente del build normal; sin Certum, sin updater de Tauri). Definicion: `.claude/skills/store-msix/SKILL.md`
+- **`/store-listing`** — Ficha de la Store (Partner Center): abre los assets de `store_listing_assets/` y los textos copiables. Definicion: `.claude/skills/store-listing/SKILL.md`
+- **`/piloto-analisis [empresa|company_id] [desde] [hasta]`** — Analiza un piloto empresarial desde Supabase: entregable A (notas técnicas internas) + B (artifact HTML para el manager del cliente, conductas sin jerga ni KPIs de volumen). Definicion: `.claude/skills/piloto-analisis/SKILL.md`
 
-### `/store-msix`
-Empaqueta y publica Maity en la Microsoft Store (canal paralelo a GitHub Releases, sin SmartScreen). Pipeline **independiente** del build normal: `tauri build --no-bundle` → staging del payload → `winapp package` → Partner Center. No usa Certum ni el updater de Tauri (Microsoft re-firma el `.msix`; el updater se auto-desactiva bajo identidad de paquete). Definicion: `.claude/skills/store-msix/SKILL.md`
-
-> **VC++ Runtime app-local (ambos canales):** el binario enlaza C++ compilado con `/MD` (whisper.cpp, ONNX Runtime, `llama-helper`), asi que depende de `MSVCP140.dll`, `MSVCP140_1.dll`, `VCRUNTIME140.dll` y `VCRUNTIME140_1.dll`. En maquinas de desarrollo ese runtime siempre esta instalado, pero en un **Windows limpio la app no arranca** — fue lo que rebote la certificacion de la Store (politica 10.2.4.1, jul-2026) y afectaba igual al `.exe` de GitHub Releases. `frontend/scripts/stage-vcredist.js` copia los 4 DLLs del VS Build Tools a `frontend/src-tauri/vcredist/` (gitignored; se regenera en cada build para que la version coincida con el toolset que compilo). Los reparte `frontend/src-tauri/tauri.windows.conf.json` via `bundle.resources` en forma de **mapa** con destino `""` (raiz del resource dir = el dir del `.exe`); para MSIX se copian a mano al staging. **Todo `.dll` nuevo del que dependa un binario debe viajar dentro del paquete** — las `api-ms-win-crt-*.dll` son la excepcion (UCRT, parte de Windows 10+).
-
-> **Consecuencia de los dos canales:** **las migraciones deben ser ADITIVAS**. La Store va dias atras por certificacion, asi que un usuario puede abrir una version vieja despues de que una nueva migro su DB: agregar tablas/columnas OK; un `DROP` o `RENAME` de algo que lee la version vieja rompe. El build de verificacion NO detecta esto — compila verde.
->
-> **CORRECCION (2026-07-27) — el MSIX INSTALADO SI redirige AppData.** Este bloque afirmaba que ambos canales escriben la misma SQLite en `%APPDATA%\com.maity.ai`. Es falso para un MSIX instalado de verdad: sus datos viven en `%LOCALAPPDATA%\Packages\Sixale.Maity_q5b9hqhck1xz0\LocalCache\Roaming\com.maity.ai\` (verificado: sqlite + `onboarding-status.json` + `models\` con escrituras vivas, y `%APPDATA%\com.maity.ai` sin crearse). La verificacion previa (07-20) se hizo con `winapp run`, que registra archivos sueltos y **no** redirige — de ahi el error. Implicaciones: (a) Store y descarga directa **NO** comparten DB ni modelos, asi que migrar de un canal al otro **NO** conserva los datos y obliga a re-descargar los modelos (~1.6 GB); (b) la regla aditiva sigue en pie, pero por el version-skew dentro de un mismo canal, no por una DB compartida.
-
-> **Doble instalación (Store + descarga directa):** si un usuario tiene AMBAS, la más nueva migra la DB compartida hacia adelante y la más vieja (anterior a `set_ignore_missing(true)`, v0.2.51) truena al abrirla (`migration ... was previously applied but is missing`). Mitigación **implementada y verificada** (dirección Store→quitar NSIS): bajo MSIX, Maity detecta la instalación NSIS rival al arranque y **exige** quitarla (diálogo forzado, sin "Más tarde"). Rust: `src-tauri/src/rival_install.rs` (`get_rival_install`/`uninstall_rival`, dep `winreg`). **Gotcha clave:** el uninstaller NSIS mata `maity-desktop.exe` por NOMBRE de imagen → cierra también la MSIX (mismo exe); por eso `uninstall_rival` NO corre el uninstaller in-process sino que lanza un orquestador `.cmd` **desacoplado del job MSIX** (`cmd.exe` con `CREATE_NO_WINDOW | CREATE_BREAKAWAY_FROM_JOB` — **nunca** con `DETACHED_PROCESS`, es mutuamente excluyente y rompe el spawn) que desinstala, espera, limpia `Run\Maity` y **relanza la MSIX** por su AUMID. Frontend: `components/rival-install/RivalInstallDialog.tsx` (pull-based, solo Windows, modal forzado), montado en `layout.tsx`. `useAutostartBootstrap.ts` salta el autostart bajo MSIX. Detalle en `.claude/skills/store-msix/SKILL.md` → "Riesgo abierto: doble instalación".
-
-> **Aviso de actualización bajo MSIX (ago-2026, #71):** el updater de GitHub sigue apagado bajo identidad de paquete (instalaría el `setup.exe` NSIS como segunda copia), pero ya **no** se calla: `updateService.checkForUpdates()` tiene rama `channel: 'store'` que compara `getVersion()` contra `maity.system_config['desktop_store_latest_version']` (`lib/storeChannel.ts`, comparación en `lib/versionCompare.ts`) y abre el `UpdateDialog` en variante Store — "Abrir la Store" (`ms-windows-store://downloadsandupdates` vía `open_external_url`, que no tiene allow-list de esquema) y "Cerrar Maity para actualizar" (`exit(0)` de `plugin-process`; se niega si `get_recording_state().is_recording`). **Nunca usar el `latest.json` de GitHub como referencia del canal Store**: va detrás (v0.2.52 vs 0.2.57). La fila se bumpea con SQL directo **solo al go-live** en Partner Center (el RPC `admin_update_system_config` tiene whitelist y no la acepta) — runbook en `.claude/skills/store-msix/SKILL.md` → "Go-live". Sin sesión Supabase el check devuelve "sin novedades" **sin armar el cooldown de 24 h**, porque `UpdateCheckProvider` vive fuera del `AuthGate` y el re-check de `visibilitychange` debe correr tras el login.
-
-### `/store-listing`
-Complemento de `/store-msix` para llenar la **ficha** de la Microsoft Store (Partner Center). Abre en el **Explorador** los assets ya seleccionados (para arrastrarlos) y abre `copiar-textos.html` con los textos en español copiables con un botón por sección (Description, What's new, Product features). Todo vive en `store_listing_assets/` (raíz del repo): `logos/` (poster 9:16 `720x1080`, box art 1:1 `2160x2160`, tiles `300/150/71`), `screenshots/` (capturas reales pendientes) y `textos-es.md`. Los logos son los **originales azules `#485DF4` + logo blanco** (wordmark "maity" solo en el poster; box/tiles solo icono), respaldados de `G:\alfon\Descargas`. Posicionamiento del copy: **coach de comunicación** (Maity Chat, lectura de docs, slides, calendario/briefing, minutas). Definicion: `.claude/skills/store-listing/SKILL.md`.
-
-### `/piloto-analisis [empresa|company_id] [desde] [hasta]`
-Analiza un piloto empresarial desde Supabase y produce **dos entregables separados**: (A) notas técnicas internas en `docs/PILOTO_<EMPRESA>_<fecha>.md` + artifact interno de uso (RAM, scheduler, atribución, cuota, calidad de datos, horas por día y picos, quiénes no graban) y (B) un artifact HTML para el manager del cliente que convierte datos en **conductas**, en 5 secciones (v5, sep-2026, tras el deck de feedback "Dashboard Maity.pptx"): resumen en **porcentajes** + barra de cobertura de jornada por persona; 6 competencias con franja de niveles en % y **3 ejemplos con nombre** (cita → alternativa); tarjeta por persona con **radar** autoevaluación vs Maity (mismo estilo que `RadarChartV2` del dashboard de inicio), patrón en lenguaje llano y recomendaciones; resumen de juntas (internas/clientes/otras en %, efectividad, tramos sin agenda, "X % de las acciones sin dueño o fecha", temas en barras); acciones. Método solo en un `<details>` del footer. Reglas de origen (cofundador, ago y sep-2026): **nada de KPIs de volumen, jerga, problemas técnicos, tiles/tablas de conteo ni etiquetas del modelo ("monólogo fragmentado") en B**; managers fuera de las métricas; empatía/adaptación se promedian **de todos modos** (`media_all`, decisión 07-sep) y todo número lleva su n en tooltip. Piezas: `queries.sql` (Q0–Q9, tablas directo — los RPC de equipo devuelven `UNAUTHORIZED` desde `execute_sql`), `build-report-b.mjs` + `report-b-skeleton.html` (JSON de datos → HTML), `report-a-template.md`. Datos por piloto en `docs/piloto/<empresa>-<fecha>.data.json`. Definicion: `.claude/skills/piloto-analisis/SKILL.md`
+**Reglas de canales (detalle en `docs/CANALES_DISTRIBUCION.md`):**
+- **Las migraciones de DB deben ser ADITIVAS** (version-skew dentro de cada canal; la Store va días atrás por certificación). Un `DROP`/`RENAME` rompe versiones viejas y el build compila verde igual.
+- **Todo `.dll` nuevo del que dependa un binario debe viajar dentro del paquete** (vcredist app-local vía `stage-vcredist.js`; excepción: `api-ms-win-crt-*.dll`, UCRT).
+- Store y descarga directa **NO comparten DB ni modelos** (el MSIX instalado redirige AppData). La doble instalación se mitiga con `rival_install.rs` (diálogo forzado; orquestador `.cmd` con `CREATE_BREAKAWAY_FROM_JOB`, **nunca** `DETACHED_PROCESS`).
+- **Nunca usar el `latest.json` de GitHub como referencia del canal Store**; el aviso de actualización bajo MSIX compara contra `maity.system_config['desktop_store_latest_version']`.
 
 ## Comandos Esenciales de Desarrollo
 
@@ -71,47 +79,33 @@ pnpm run tauri:dev:cpu      # Solo CPU (sin GPU)
 ### Backend (Servidor FastAPI) — Ubicacion: `/backend`
 
 ```bash
-# macOS
-./build_whisper.sh small              # Compilar Whisper con modelo 'small'
-./clean_start_backend.sh              # Iniciar servidor FastAPI (puerto 5167)
-
-# Windows
-build_whisper.cmd small               # Compilar Whisper con modelo
-clean_start_backend.cmd               # Iniciar servidor
-
-# Docker (Multiplataforma)
-./run-docker.sh start --interactive   # macOS/Linux
-.\run-docker.ps1 start -Interactive   # Windows
+./build_whisper.sh small              # macOS: compilar Whisper con modelo 'small'
+./clean_start_backend.sh              # macOS: iniciar servidor FastAPI (puerto 5167)
+build_whisper.cmd small               # Windows
+clean_start_backend.cmd               # Windows
+./run-docker.sh start --interactive   # Docker macOS/Linux | .\run-docker.ps1 start -Interactive (Windows)
 ```
 
 **Modelos Whisper**: `tiny`, `base`, `small`, `medium`, `large-v3`, `large-v3-turbo` (variantes `.en` disponibles)
 
 ### Endpoints
-- **API Backend**: http://localhost:5167 (opcional, para persistencia y resumenes LLM)
-- **Documentacion Backend**: http://localhost:5167/docs
-- **Frontend Dev**: http://localhost:3118
+- **API Backend**: http://localhost:5167 (opcional; docs en `/docs`) — **Frontend Dev**: http://localhost:3118
 
 ## Arquitectura de Alto Nivel
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                   Frontend (App de Escritorio Tauri)                     │
-│  ┌──────────────┐  ┌──────────────┐  ┌─────────────┐  ┌────────────┐  │
-│  │  UI Next.js  │  │ Backend Rust │  │ Motores STT │  │  Meeting   │  │
-│  │  (React/TS)  │<>│ (Audio+IPC)  │<>│ Whisper/    │  │  Detector  │  │
-│  │  9 contextos │  │ 16 modulos   │  │ Parakeet/   │  │ Zoom/Teams │  │
-│  └──────────────┘  └──────────────┘  │ Moonshine   │  │ Meet       │  │
-│         |                  |         └─────────────┘  └────────────┘  │
-│  ┌──────────────┐  ┌──────────────┐  ┌─────────────┐  ┌────────────┐  │
-│  │ Sync Queue   │  │  SQLite DB   │  │ Notificac.  │  │  Logging   │  │
-│  │ (offline-1st)│  │ 7 reposit.   │  │  DND/mgr    │  │  rotativo  │  │
-│  └──────────────┘  └──────────────┘  └─────────────┘  └────────────┘  │
-└─────────┬────────────────────────────────────────────────────────────── ┘
+│  UI Next.js (React/TS, 9 contextos) <> Backend Rust (Audio+IPC,          │
+│  16 modulos) <> Motores STT (Whisper/Parakeet/Moonshine/Canary/Deepgram) │
+│  + Sync Queue (offline-first) + SQLite (7 repos) + Notificaciones        │
+│  + Meeting Detector (apagado) + Logging rotativo                         │
+└─────────┬───────────────────────────────────────────────────────────────┘
           │ HTTP/WebSocket (opcional)
           ↓
 ┌─────────────────────────────────────────────────────────────────────────┐
 │   Backend (FastAPI + SQLite)     │     Cloud (Supabase + Vercel API)    │
-│   Persistencia local + LLM      │     Auth, sync, analysis, proxy      │
+│   Persistencia local + LLM       │     Auth, sync, analysis, proxy      │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -119,20 +113,19 @@ clean_start_backend.cmd               # Iniciar servidor
 
 | Modulo | Descripcion |
 |--------|-------------|
-| `audio/` | Pipeline de audio completo (45 archivos): captura, VAD, mezcla, grabacion, transcripcion |
-| `whisper_engine/` | Motor Whisper.cpp con aceleracion GPU (el "procesamiento paralelo" se borró en sep-2026, #21 de la auditoría: nadie lo invocaba) |
+| `audio/` | Pipeline de audio completo (~45 archivos): captura, VAD, mezcla, grabacion, transcripcion |
+| `whisper_engine/` | Motor Whisper.cpp con GPU (el "procesamiento paralelo" se borró en sep-2026, #21: nadie lo invocaba) |
 | `parakeet_engine/` | Motor Parakeet ONNX (~150MB, rapido on-device) |
 | `moonshine_engine/` | Motor Moonshine ONNX (ultra-rapido, dual decoder) |
-| `canary_engine/` | Motor NVIDIA NeMo Canary (mejor espanol; comandos `canary_*` registrados en `lib.rs`, opción solo admin) |
-| `summary/` | Generacion de resumenes: LLM client, templates, communication evaluator |
-| `database/` | SQLite con 7 repositorios: meeting, transcript, transcript_chunk, summary, setting, recording_log, sync_queue |
-| `api/` | Cliente HTTP para backend + endpoints + finalizacion cloud |
-| `meeting_detector/` | Detecta Zoom/Teams/Meet activos, auto-record opcional |
-| `notifications/` | Sistema de notificaciones con DND, consent, y sistema nativo |
-| `logging/` | Logger rotativo a archivo con export y limpieza |
+| `canary_engine/` | Motor NVIDIA NeMo Canary (mejor espanol; comandos `canary_*` en `lib.rs`, opción solo admin) |
+| `summary/` | Resumenes: LLM client multi-provider, templates, communication evaluator, `summary_engine/` (sidecar) |
+| `database/` | SQLite: `manager.rs`, `setup.rs` (migraciones), `maintenance.rs`, 7 repositorios en `repositories/` |
+| `api/` | Cliente HTTP + finalizacion cloud (`finalize.rs`, `retry_analysis.rs`) |
+| `meeting_detector/` | APAGADO por kill-switch; su `ProcessMonitor` lo reusa `scheduled_recording` |
+| `notifications/` | Notificaciones con DND, consent y transporte nativo propio (`toast.rs`) |
+| `logging/` | Logger rotativo, `mem_sampler.rs`, telemetria (`telemetry/catalog.rs`), `incident.rs` |
 | `analytics/` | Event tracking (PostHog) |
-| `ollama/` | Cliente Ollama (modelos locales) |
-| `openrouter/` | Cliente OpenRouter API |
+| `ollama/`, `openrouter/` | Clientes LLM |
 | `auth_server.rs` | Servidor OAuth localhost para Supabase auth |
 | `state.rs`, `tray.rs`, `onboarding.rs`, `utils.rs` | Estado global, tray, onboarding, utilidades |
 
@@ -158,533 +151,104 @@ RecordingSaver WhisperEngine DeepgramProvider
 - **Atribucion de hablante**: `DeviceType` (Microphone/System) se captura ANTES de enviar al motor de transcripcion, mapeando `Microphone->"user"` y `System->"interlocutor"`
 - **Ring Buffer de mezcla**: Acumula muestras hasta ventanas alineadas de 50ms; ducking RMS evita que audio del sistema ahogue al microfono
 
-### Estructura del Modulo de Audio (45 archivos)
-
-```
-audio/
-├── devices/                    # Descubrimiento y configuracion de dispositivos
-│   ├── discovery.rs           # list_audio_devices, trigger_audio_permission
-│   ├── microphone.rs          # default_input_device
-│   ├── speakers.rs            # default_output_device
-│   ├── configuration.rs       # Tipos AudioDevice, parsing
-│   ├── fallback.rs            # Seleccion de dispositivo fallback
-│   └── platform/              # Implementaciones por plataforma
-│       ├── windows.rs         # Logica WASAPI
-│       ├── macos.rs           # Logica ScreenCaptureKit
-│       └── linux.rs           # Logica ALSA/PulseAudio
-├── capture/                   # Captura de streams de audio
-│   ├── microphone.rs          # Stream de captura de microfono
-│   ├── system.rs              # Stream de captura de audio del sistema
-│   ├── core_audio.rs          # Integracion ScreenCaptureKit macOS
-│   ├── wasapi_loopback.rs     # Windows WASAPI loopback
-│   └── backend_config.rs      # Configuracion de backend de audio
-├── transcription/             # Motor de transcripcion (12 archivos)
-│   ├── engine.rs              # Gestion de motores (Whisper + Parakeet + Moonshine)
-│   ├── worker.rs              # Pool de workers de transcripcion (54KB, el mas grande)
-│   ├── provider.rs            # Interfaz abstracta de proveedores
-│   ├── whisper_provider.rs    # Proveedor Whisper
-│   ├── parakeet_provider.rs   # Proveedor Parakeet
-│   ├── canary_provider.rs     # Proveedor Canary (existe, canary_engine no expuesto)
-│   ├── deepgram_provider.rs   # Proveedor Deepgram (nube, WebSocket, 33KB)
-│   └── deepgram_commands.rs   # Comandos Tauri para proxy config
-├── pipeline.rs                # Mezcla de audio, VAD y distribucion
-├── recording_manager.rs       # Coordinacion de grabacion de alto nivel
-├── recording_commands.rs      # Interfaz de comandos Tauri
-├── recording_lifecycle.rs     # Lifecycle: start, stop, pause, resume
-├── recording_state.rs         # Estado compartido de grabacion
-├── recording_saver.rs         # Escritura de archivos de audio
-├── recording_helpers.rs       # Funciones auxiliares
-├── recording_preferences.rs   # Preferencias de grabacion
-├── incremental_saver.rs       # Guardado incremental con checkpoints (30s)
-├── stream.rs                  # StreamBackend abstraction (CPAL + CoreAudio)
-├── encode.rs                  # Codificacion FFmpeg (PCM -> AAC/MP4)
-├── ffmpeg.rs                  # Wrapper FFmpeg CLI
-├── ffmpeg_mixer.rs            # Mezcla con FFmpeg + adaptive ducking (19KB)
-├── device_monitor.rs          # Monitoreo de dispositivos (connect/disconnect)
-├── device_detection.rs        # Deteccion de tipo de dispositivo
-├── hardware_detector.rs       # Deteccion de hardware (GPU, CPU)
-├── playback_monitor.rs        # Deteccion de Bluetooth (warnings)
-├── vad.rs                     # Voice Activity Detection
-├── level_monitor.rs           # Monitor de niveles de audio en tiempo real
-├── simple_level_monitor.rs    # Monitor simplificado
-├── audio_processing.rs        # Normalizacion y efectos
-├── buffer_pool.rs             # Pool pre-asignado de buffers
-├── post_processor.rs          # Post-procesamiento
-├── diagnostics.rs             # Logging de diagnostico
-├── async_logger.rs            # Logger asincrono
-├── system_audio_commands.rs   # Comandos Tauri para audio del sistema
-├── system_audio_stream.rs     # Stream de audio del sistema
-├── system_detector.rs         # Deteccion de eventos de audio del sistema
-└── permissions.rs             # Permisos de screen recording
-```
-
-**Al trabajar en funcionalidades de audio**:
+**Guía de ubicación en `audio/`** (el árbol completo se descubre con Glob/graphify):
 - Deteccion de dispositivos -> `devices/discovery.rs` o `devices/platform/{windows,macos,linux}.rs`
-- Microfono/altavoces -> `devices/microphone.rs` o `devices/speakers.rs`
-- Captura de audio -> `capture/microphone.rs` o `capture/system.rs`
-- Mezcla/procesamiento -> `pipeline.rs`
-- Flujo de grabacion -> `recording_manager.rs` + `recording_lifecycle.rs` + `recording_state.rs`
-- Guardado -> `recording_saver.rs` + `incremental_saver.rs`
-- Transcripcion local -> `transcription/engine.rs` + `transcription/worker.rs`
-- Transcripcion nube -> `transcription/deepgram_provider.rs`
-- Hot-swap de dispositivos -> `device_monitor.rs` + `recording_lifecycle.rs`
+- Captura -> `capture/microphone.rs` o `capture/system.rs` (WASAPI loopback: `capture/wasapi_loopback.rs`)
+- Mezcla/procesamiento/VAD -> `pipeline.rs` + `vad.rs` (crate Silero vendorizado en `vendor/silero-rs/`)
+- Flujo de grabacion -> `recording_manager.rs` + `recording_lifecycle.rs` + `recording_state.rs` + `recording_helpers.rs`
+- Guardado -> `recording_saver.rs` + `incremental_saver.rs` (checkpoints 30s); retención -> `audio_retention.rs`
+- Transcripcion local -> `transcription/engine.rs` + `transcription/worker.rs`; nube -> `transcription/deepgram_provider.rs`
+- Hot-swap/monitoreo de dispositivos -> `device_monitor.rs`; Bluetooth -> `bluetooth_guard.rs`
 - Codificacion -> `encode.rs` + `ffmpeg.rs` + `ffmpeg_mixer.rs`
+
+> **Reglas obligatorias del área** (detalle y porqués en `docs/REGLAS_AUDIO_GRABACION.md`): el crate Silero está **vendorizado con parches** — no actualizarlo ni mover su `.onnx` a `models/` (#01); el medidor EBU R128 usa `Mode::HISTOGRAM` — no "arreglarlo" con `set_max_history` (#11); checkpoints con buffer contiguo + semáforo de 1 encode — no cambiar el intervalo de 30 s ni la extensión `.mp4` (#08/#18); bitrate de encode **64k congelado en tests** y barrido de retención condicionado a `finalize_conversation` completado (#27); `device_monitor` usa `snapshot_device_names` — **no volver a `list_audio_devices()` en un loop** (#17); la detección Bluetooth es **nativa por property store, nunca por nombre**; el level monitor usa registro de owners con tombstones, no refcount; watchdog de silencio de mic con latch en la task de 100 ms.
 
 ### Motores de Transcripcion (4 locales + 1 nube)
 
 | Motor | Tipo | Archivos | Caracteristicas |
 |-------|------|----------|-----------------|
-| **Whisper** | Local, GPU | `whisper_engine/` (3 archivos) | Metal/CUDA/Vulkan, modelos tiny→large-v3 |
-| **Parakeet** | Local, ONNX | `parakeet_engine/` (4 archivos) | ~150MB, rapido on-device, auto-download |
-| **Moonshine** | Local, ONNX | `moonshine_engine/` (4 archivos) | Ultra-rapido, dual decoder (encoder-only + with-past) |
-| **Canary** | Local, ONNX | `canary_engine/` (5 archivos) | NVIDIA NeMo, mejor espanol (2.69% WER); comandos `canary_*` registrados en `lib.rs`, opción solo para admins en `TranscriptSettings` |
+| **Whisper** | Local, GPU | `whisper_engine/` | Metal/CUDA/Vulkan, modelos tiny→large-v3 |
+| **Parakeet** | Local, ONNX | `parakeet_engine/` | ~150MB, rapido on-device, auto-download |
+| **Moonshine** | Local, ONNX | `moonshine_engine/` | Ultra-rapido, dual decoder |
+| **Canary** | Local, ONNX | `canary_engine/` | NVIDIA NeMo, mejor espanol (2.69% WER); opción solo admins |
 | **Deepgram** | Nube, WS | `transcription/deepgram_*.rs` | Via Cloudflare Worker proxy, Nova-3 |
 
-> **GPU en los motores ONNX: CPU por defecto, DirectX en delay-load y DirectML opt-in (sep-2026, #33 de la auditoría de recursos).** Referencia completa en `docs/ONNX_EXECUTION_PROVIDERS.md`; léela antes de "optimizar un modelo con GPU". Reglas:
-> - **El feature `directml` de `ort` NO decide qué código entra al exe.** El prebuilt estático de pyke para Windows es uno solo (fila `none` de `ort-sys/dist.txt`, 289 MB) y ya trae el provider DML compilado con sus DLLs enlazados; el feature solo da cuerpo a `register()`. Quitarlo, que era el remedio literal de la auditoría, no ahorra ni RAM ni exe.
-> - **Lo que cierra #33 es el `/DELAYLOAD` de `DirectML.dll`/`d3d12.dll`/`dxgi.dll`/`dxcore.dll` en `build.rs::configure_windows_delay_load`** (+ `delayimp.lib`, mismo mecanismo que usa ORT en su propio DLL). Los cuatro se cargan solo en la primera llamada, que únicamente ocurre si un motor registra DML. No quitarlo "porque el feature ya está apagado": son capas independientes.
-> - **`onnx-directml` es un feature de la app, apagado por defecto**, que enciende `ort/directml` y el gate `all(target_os = "windows", feature = "onnx-directml")` de `onnx_providers.rs`. Sin él `resolve_plan(directml_compiled=false)` devuelve CPU para cualquiera que pida GPU (hoy Moonshine y Canary) y lo dice en el log. Parakeet pasa `prefer_gpu: false` a propósito (A/B `docs/AB_PARAKEET_EP_2026-07-20.md`: int8 en DML 2.3× más lento, sin ganancia de WER, VRAM peleada con el coach).
-> - **Modelo nuevo con GPU** = `prefer_gpu: true` en su `build_session` + build con `--features onnx-directml` + A/B con el mismo audio (RTF p50/p90 por chunk, diff de palabras, VRAM vs coach) documentado como `docs/AB_<MODELO>_<fecha>.md`. Recuperar los ~15-25 MB del exe exigiría `load-dynamic` + `onnxruntime.dll` CPU-only oficial, no un feature.
-> - **Guard**: `frontend/scripts/lint-exe-imports.js` (parser PE en Node) corre en el post-build y falla si alguno de los cuatro DLLs vuelve a la tabla de imports de carga. macOS/CoreML no se tocó (asimetría anotada).
+- **GPU en los motores ONNX: CPU por defecto, DirectML opt-in (`--features onnx-directml`), DirectX en delay-load (#33).** Leer `docs/ONNX_EXECUTION_PROVIDERS.md` ANTES de "optimizar un modelo con GPU"; no quitar el `/DELAYLOAD` de `build.rs` "porque el feature ya está apagado" — son capas independientes. Guard: `frontend/scripts/lint-exe-imports.js`.
+- **El motor STT se carga sólo con sesión + registro (`ensure_stt_warm`) y se descarga en logout y en reposo tier Low (#02).** NO devolver la precarga al `setup()` de `lib.rs`. Detalle (STT_WARM_LOCK, PRELOADED_ENGINE, reciclado, idle_unload): `docs/TRANSCRIPTION_PIPELINE.md` § Ciclo de vida del motor STT.
 
-### Sistema de Resumen (`summary/`, 11 archivos)
+### Base de Datos Local y Sync Queue (Offline-First)
 
-```
-summary/
-├── service.rs                 # Servicio principal: chunking, LLM orchestration
-├── processor.rs               # Chunking y generacion de resumen
-├── llm_client.rs              # Multi-provider (Claude, OpenAI, Groq, Ollama, OpenRouter, Custom)
-├── communication_evaluator.rs # Evaluacion de comunicacion post-reunion
-├── communication_types.rs     # Tipos para CommunicationFeedback
-├── commands.rs                # api_process_transcript, api_get_summary, etc.
-├── template_commands.rs       # api_list_templates, api_get_template_details, etc.
-├── templates/                 # Plantillas de resumen
-│   ├── loader.rs, defaults.rs, types.rs
-└── summary_engine/            # Motor AI built-in para resumenes
-    ├── model_manager.rs, sidecar.rs, client.rs, models.rs, commands.rs
-```
+`database/` tiene 7 repositorios (`meeting`, `transcript`, `transcript_chunk`, `summary`, `setting`, `recording_log`, `sync_queue`). La sync queue genera jobs por grabacion (meeting, transcripts, summary, finalize) con dependencias; comandos `sync_queue_*` registrados en `lib.rs`.
 
-### Base de Datos Local (`database/`, 9 archivos)
-
-```
-database/
-├── manager.rs                 # DatabaseManager (SQLite connection pool)
-├── setup.rs                   # Schema init y migraciones
-├── models.rs                  # Tipos Rust para entidades DB
-├── commands.rs                # Comandos Tauri (legacy import, event logging)
-├── sync_queue_commands.rs     # Comandos de sync queue offline-first
-└── repositories/              # Data access layers
-    ├── meeting.rs             # MeetingsRepository
-    ├── transcript.rs          # TranscriptRepository
-    ├── transcript_chunk.rs    # TranscriptChunkRepository
-    ├── summary.rs             # SummaryProcessesRepository
-    ├── setting.rs             # SettingsRepository
-    ├── recording_log.rs       # RecordingLogRepository
-    └── sync_queue.rs          # SyncQueueRepository (offline-first cloud)
-```
-
-### Sistema de Sync Queue (Offline-First)
-
-Cola de trabajos para sincronizacion con la nube que funciona offline. Cada grabacion genera jobs (meeting, transcripts, summary) con dependencias. Comandos Tauri: `sync_queue_enqueue`, `sync_queue_claim_job`, `sync_queue_complete_job`, `sync_queue_fail_job`, `sync_queue_get_all_statuses`, etc.
-
-> **La cola se PODA vaciando `payload`, jamás borrando filas completadas (sep-2026, #26 de la auditoría de recursos).** Cada job completado conservaba su `payload` para siempre (`save_conversation` lleva el `transcript_text`, `save_transcript_segments` todos los segmentos: 36 % de la DB de desarrollo, 50-100 MB/año en jornada). Hoy `database/maintenance.rs` (tarea propia, molde `audio_retention.rs`: 120 s de retraso y luego cada 24 h) llama a `SyncQueueRepository::trim_completed_payloads(pool, 7)`, que hace `UPDATE … SET payload='{}'` sobre los `completed` con `completed_at` ≥ 7 días. **La auditoría proponía llamar a `cleanup_old_completed(7)`, que era un `DELETE`, y eso habría roto tres cosas**: (1) el barrido de audio de #27 exige un `finalize_conversation` completado de ≥ `audio_retention_days` (default 30) → sin la fila, cero candidatas para siempre; (2) `api_get_meetings_overview` deriva `sync_state` del `MAX(status)` y el badge "Cuota agotada" del `result_data` del finalize completado; (3) un `finalize` diferido por cuota (`defer_job`, semanas en el piloto Dingler) necesita el `result_data` de su padre — con la FK `ON DELETE SET NULL`, borrar al padre lo vuelve "listo" sin `conversation_id` → `validation:` permanente y esa conversación no se finaliza nunca. Por eso `cleanup_old_completed` se BORRÓ (era código muerto y una trampa). Un job completado nunca se re-ejecuta, así que los 7 días son ventana forense, no funcional; el `result_data` (chico) se conserva. Ni en el `block_on` de `reset_stale_jobs` del arranque (hilo principal) ni en el tick del worker (se gatea por sesión y esto no necesita usuario). SQLite reutiliza las páginas liberadas: el archivo deja de crecer, no se encoge; los backups con `VACUUM INTO` sí. Tests: `trim_*` en `sync_queue.rs` (incluido el que un `DELETE` reprobaría) y `la_poda_de_payloads_no_borra_lo_que_lee_la_lista` en `meetings_overview.rs`.
+> **La cola se PODA vaciando `payload` (`trim_completed_payloads`), JAMÁS borrando filas completadas (#26).** Un `DELETE` rompe el barrido de audio (#27), el `sync_state` de la lista y los finalize diferidos por cuota — por eso `cleanup_old_completed` se BORRÓ. Detalle: `docs/NUBE_CUENTAS_SYNC.md`.
 
 ### Comunicacion Rust <-> Frontend
 
-Comandos via `invoke()` (Frontend->Rust), Eventos via `emit()`/`listen()` (Rust->Frontend). Todos los comandos registrados en `lib.rs`.
-
-**Grupos de comandos Tauri principales**:
-- **Grabacion**: `start_recording`, `stop_recording`, `pause_recording`, `resume_recording`, `is_recording_paused`, `get_recording_state`, `get_meeting_folder_path`
-- **Dispositivos**: `list_audio_devices`, `switch_audio_device`, `poll_audio_device_events`, `get_active_audio_output` — la auto-reconexión reusa `switch_audio_device`: el frontend lo invoca al recibir `DeviceReconnected` del polling (los comandos `attempt_device_reconnect`/`get_reconnection_status` y el flag `is_reconnecting` fueron eliminados en ago-2026, eran código muerto)
-- **Transcripcion**: `cancel_pending_transcription`, `recover_audio_from_checkpoints`, `cleanup_checkpoints`, `has_audio_checkpoints`
-- **Whisper paralelo**: ELIMINADO en sep-2026 (#21 de la auditoría de recursos). Los 11 comandos (`initialize_parallel_processor`, `get_system_resources`, …) no tenían un solo call site en el frontend y su estado se registraba con `manage()` antes del `setup()` pagando un `System::new_all()` en cada arranque. Recuperable de git.
-- **Deepgram proxy**: `fetch_deepgram_proxy_config`, `set/get/clear_deepgram_proxy_config`, `has_valid_deepgram_proxy_config`
-- **Sync queue**: `sync_queue_enqueue`, `sync_queue_claim_job`, `sync_queue_complete_job`, `sync_queue_fail_job`, `sync_queue_get_all_statuses`, `sync_queue_cancel_meeting`, etc.
-- **Meeting detector**: `start/stop_meeting_detector`, `is_meeting_detector_running`, `get_active_meetings`, `check_for_meetings_now`, `respond_to_meeting_detection`, `set_meeting_auto_record`, etc.
-- **Notificaciones**: `send_native_notification` (transporte único, ver abajo), `native_notification_target` (diagnóstico), `get/set_notification_settings`, `show_notification`, DND status
-- **Logging**: `get_log_info`, `export_logs`, `open_log_directory`, `clear_old_logs`
-- **OAuth**: `start_oauth_server`, `get_pending_auth_code`, `get_pending_auth_tokens`
-- **Sistema audio**: `start_system_audio_capture_command`, `list_system_audio_devices_command`, `check_system_audio_permissions_command`, `start/stop_system_audio_monitoring`
+Comandos via `invoke()` (Frontend->Rust), Eventos via `emit()`/`listen()` (Rust->Frontend). Todos los comandos registrados en `lib.rs`. Grupos principales: grabacion (`start/stop/pause/resume_recording`, `get_recording_state`), dispositivos (`list_audio_devices`, `switch_audio_device` — la auto-reconexión lo reusa desde el evento `DeviceReconnected`), transcripcion/checkpoints, Deepgram proxy, sync queue, meeting detector, notificaciones, logging, OAuth, sistema audio. Los comandos del "Whisper paralelo" se ELIMINARON en sep-2026 (#21, código muerto; recuperable de git).
 
 **Patron de estado**: Comandos Tauri actualizan estado Rust -> Emiten eventos -> Listeners del frontend actualizan estado React -> El contexto se propaga a los componentes.
 
-### Notificaciones nativas: transporte propio, NO el plugin de Tauri (ago-2026)
+> **Notificaciones nativas: transporte propio, NUNCA `@tauri-apps/plugin-notification` ni `app.notification().builder()`** (funcionan en NSIS y fallan MUDOS bajo MSIX/Store). Toda notificación nueva pasa por `sendNativeNotification` (TS) / `show_native_toast` (Rust, `notifications/toast.rs`). No invertir el orden de ramas de `resolve_target`. Detalle: `docs/NOTIFICACIONES_NATIVAS.md`.
 
-> **`@tauri-apps/plugin-notification` es inutilizable bajo identidad de paquete (MSIX/Store).** Su `NotificationBuilder::show()` fija el `app_id` del toast a `config.identifier` (`com.maity.ai`) siempre que el exe no viva en `target\{debug,release}`. Eso baja a `CreateToastNotifierWithId(app_id)`: bajo MSIX el AUMID real es `Sixale.Maity_q5b9hqhck1xz0!Maity` y Windows **rechaza un AUMID ajeno**. El error se tragaba DOS veces — en Rust por el `let _ = notification.show()` dentro de un `spawn`, y en JS porque `sendNotification()` es **síncrona** y no devuelve la promesa del invoke. Síntoma: log en verde (`sendNotification RETURNED ok`), cero toast, y **ni siquiera** el fallback a toast in-app. Afectaba a TODAS las notificaciones de la Store ("Análisis listo", "Grabación lista/iniciada", recordatorio de pausa).
+### Gestion de Modelos
 
-Hoy hay un **transporte único**: `src-tauri/src/notifications/toast.rs` → `show_native_toast()`, que llama a `tauri-winrt-notification` directo (la misma crate que el plugin usa por dentro) con el `app_id` resuelto **en runtime** por `resolve_target()`, y devuelve un `Result` real.
-
-- **Frontend**: `lib/nativeNotification.ts` → `invoke('send_native_notification')`. Al ser comando propio **no pasa por el ACL de plugins**, así que también funciona desde las ventanas auxiliares (cuyas capabilities no traen `notification:default`). El `catch` ahora sí se dispara → fallback a toast in-app.
-- **Rust**: `notifications/system.rs` enruta al mismo helper (arregla las notificaciones del lifecycle de grabación).
-- **Orden de ramas de `resolve_target` (no invertir)**: (1) `is_running_under_package_identity()` → `utils::current_aumid()`; (2) dev/`target\{debug,release}` → `Toast::POWERSHELL_APP_ID`; (3) resto → `config.identifier` (NSIS). El check de identidad va **primero** porque `current_aumid()` devuelve un FALLBACK hardcodeado si la API falla, y ese literal en un proceso sin empaquetar reproduce el bug en espejo.
-- **Los toasts SUENAN a propósito (ago-2026)**: `.sound(Some(Sound::Default))` emite cadena vacía (sin elemento `<audio>`) → Windows usa su sonido de notificación por defecto, en **ambos** canales. Es una decisión de producto, no un descuido. El valor previo era `.sound(None)`, que emite `<audio silent="true"/>` y replicaba el mudo histórico de notify-rust (que nunca setea `sound_name`). Para silenciar solo un tipo de notificación habría que pasarle el `NotificationType` a `show_native_toast` — hoy el sonido es uniforme. macOS sigue sin sonido explícito (usa el plugin).
-- **`actionTypeId` está muerto en desktop y siempre lo estuvo**: el plugin solo registra `notify`/`request_permission`/`is_permission_granted` fuera de mobile — `registerActionTypes`/`onAction` rechazaban en silencio, así que el botón "Abrir Maity" nunca se renderizó. Se conserva en la firma para no tocar call sites. Click-para-abrir garantizado bajo MSIX exigiría un COM activator (`windows.toastNotificationActivation` + CLSID + `INotificationActivationCallback`) → tocar `Package.appxmanifest` + nueva submission.
-- **Diagnóstico**: el `setup()` de `lib.rs` loguea `[toast] target resuelto: packaged=… mode=… app_id=…`, y Ajustes → Notificaciones tiene un botón **"Probar"** (`native_notification_target` + notificación de prueba). Es el único vector utilizable en un build release de la Store, que no trae devtools.
-
-**Regla**: toda notificación nativa nueva pasa por `sendNativeNotification` / `show_native_toast`. Nunca `@tauri-apps/plugin-notification` ni `app.notification().builder()` directo — funcionan en NSIS y fallan mudos en la Store.
-
-### Gestion de Modelos Whisper
-
-**Ubicaciones de Almacenamiento**:
-- **Desarrollo**: `frontend/models/`
-- **Produccion (macOS)**: `~/Library/Application Support/com.maity.ai/models/`
-- **Produccion (Windows)**: `%APPDATA%\com.maity.ai\models\`
-
-Los modelos se cargan una vez y se cachean. Cambiar modelos requiere reinicio de la app o descarga/recarga manual. Auto-deteccion de GPU (Metal/CUDA/Vulkan) con fallback a CPU.
+Ubicaciones: dev `frontend/models/`; produccion `~/Library/Application Support/com.maity.ai/models/` (macOS) / `%APPDATA%\com.maity.ai\models\` (Windows; bajo MSIX el AppData va redirigido — ver `docs/CANALES_DISTRIBUCION.md`). Los modelos se cachean al cargar; auto-deteccion de GPU con fallback a CPU.
 
 ## Arquitectura Frontend
 
 ### Paginas (Routes)
 
-| Ruta | Archivo | Descripcion |
-|------|---------|-------------|
-| `/` | `app/page.tsx` | Interfaz principal de grabacion |
-| `/conversations` | `app/conversations/page.tsx` | Lista de conversaciones (local-first) |
-| `/meeting-details` | `app/meeting-details/page.tsx` | Detalle de reunion con auto-summary |
-| `/gamification` | `app/gamification/page.tsx` | Dashboard gamificado (volcan de progreso) |
-| `/notes` | `app/notes/page.tsx` | Notas extraidas de conversaciones |
-| `/tasks` | `app/tasks/page.tsx` | Tareas extraidas de conversaciones |
-| `/settings` | `app/settings/page.tsx` | Configuracion de la app |
-| `/registration` | `app/registration/page.tsx` | Onboarding de registro (avatar 3D + cuestionario 17 pasos) — solo usuarios con `registration_form_completed=false` |
-| `/billing/plans` | `app/billing/plans/page.tsx` | Seleccion de plan (Free/Pro/Enterprise) — checkout Pro abre navegador externo via handoff |
+| Ruta | Descripcion |
+|------|-------------|
+| `/` | Interfaz principal de grabacion (el dashboard gamificado se renderiza AQUÍ, `app/page.tsx`) |
+| `/conversations` | Lista de conversaciones (local-first); detalle con `?id=` (cloud) o `?localId=` (SQLite) |
+| `/meeting-details` | Detalle de reunion con auto-summary (sin enlaces entrantes) |
+| `/gamification` | Dashboard gamificado (volcan de progreso) |
+| `/notes`, `/tasks` | Notas y tareas extraidas de conversaciones |
+| `/settings` | Configuracion de la app |
+| `/registration` | Onboarding de registro (17 pasos) — solo `registration_form_completed=false` |
+| `/billing/plans` | Seleccion de plan; checkout Pro via handoff a navegador externo |
+| `/coach-float`, `/recording-widget`, `/device-picker` | Ventanas auxiliares (early-return en `RootLayout`) |
 
-### Gate de Sesión (login compacto estilo Steam + coach-float + grabación) — ago-2026
+### Gates, sesión y onboarding — reglas vigentes (detalle en `docs/ONBOARDING_Y_GATES.md`)
 
-Sin sesión la app NO graba por ninguna vía y NO muestra el coach-float; la ventana principal se compacta a un login de 480×640 (estilo Steam). Piezas (no revertir por separado — se diseñaron juntas):
+- **Sin sesión la app NO graba por ninguna vía**: la verdad vive en Rust (`state.rs::has_session`); el gate está en los entrypoints nativos (tray/scheduler), NO en los comandos invocables del frontend (crearía carrera con `set_current_user`). El login compacto 480×640 lo maneja `set_main_window_auth_layout`; el logout llama `logout_cleanup` ANTES de limpiar estado (guarda la grabación activa).
+- **Gate de registro fail-closed en Rust (#66)**: `registration_completed(app)` con `None` → `false`, en el mismo embudo (`initialize_recording`, scheduler, tray). El frontend usa `!== true`, nunca `=== false`. No "simplificar" quitando el gate del embudo "porque el layout ya lo tiene": ese fue el bug (21 jornadas grabadas sin registro).
+- **Back-off del arranque de jornada**: clasificación por HRESULT (`classify_device_error`, nunca substring), política por causa, alto del día para `NoInputDevice`. `check_microphone_ready` va SOLO por acción del usuario — nunca en `usePermissionCheck` ni en un intervalo.
+- **El estado del onboarding es MONÓTONO y leerlo NO escribe**: `reconcile_status` solo avanza; retroceder es acción explícita del usuario. Acepta cualquier modelo del registry.
+- **Descargas de modelos**: arranque en UN solo lugar (`WelcomeStep` / `BackgroundDownloadStarter`), promesas de kickoff reusadas — no relanzar una descarga viva (dos writers sobre el mismo `.onnx` corrompen en silencio). `ModelDownloadGate` bloquea SOLO por Parakeet, va DESPUÉS del registro, es PASIVO y sin botón de omitir. En tier Low NO se descarga Gemma; los consumidores miran `summaryModelReady`, NO `summaryModelDownloaded`.
+- El iframe de YouTube del registro exige `frame-src`/`child-src` con `https://www.youtube.com` en la CSP (en `pnpm dev` no se nota; en el empaquetado sí).
 
-- **Verdad de la sesión en Rust**: `state.rs::has_session(app)` lee `AppState.current_user_id` (lo llena `set_current_user` cuando `maityUser` carga en `AuthContext`; lo limpia `clear_current_user` al logout). Usa `try_state` por el orden de `manage` en first-launch.
-- **Gate de grabación SOLO en entrypoints nativos**: `recording_lifecycle.rs::start_recording_with_meeting_name` (chokepoint de tray + scheduler) devuelve `Err` sin sesión; el tick del scheduler (`scheduled_recording/service.rs`, brazo `(false, Some(_))`) skipea con `SkipReason::NoSession` — al loguearse, el siguiente tick (≤30 s) arranca la jornada. Los paths de cierre/rotación NO llevan gate (un segmento owned debe poder cerrarse aunque muera la sesión). Los comandos `start_recording*` invocables por el frontend NO se gatean: viven detrás del AuthGate y gatearlos crea carrera con el IPC de `set_current_user` post-login.
-- **Coach-float por sesión**: el auto-open ya NO vive en el `setup()` de lib.rs (el viejo spawn de 800 ms lo abría encima del LoginScreen). Vive en la transición None→Some de `set_current_user` → `coach::commands::open_coach_on_login` (respeta pref `coach_float_visible` y el override `STARTED_AT_BOOT`). `clear_current_user` cierra el coach. `open_floating_coach` tiene el check central (Ok silencioso sin sesión). El tray sin sesión enfoca el login en vez de grabar/togglear.
-- **Login compacto**: comando `set_main_window_auth_layout(authenticated)` en lib.rs, idempotente vía `LOGIN_COMPACT_ACTIVE` (AtomicBool). El AuthGate lo invoca ANTES de emitir `app-ready` (ventana aún oculta → el primer `show()` sale ya con el tamaño correcto, sin flash) y en cada transición login/logout. Solo restaura 1100×700 si él mismo compactó: arrancar ya logueado es no-op y respeta el tamaño del usuario. Único flash posible: el fallback de 3 s de lib.rs si Next tarda >3 s en emitir `app-ready` (aceptado).
-- **Logout**: `AuthContext.signOut` invoca `logout_cleanup` (reutiliza `graceful_shutdown_before_exit`, timeout 30 s) ANTES de limpiar estado local — detiene y GUARDA la grabación activa (jornada → persistencia nativa; manual → stop estándar) mientras `current_user_id` sigue vivo. Best-effort: nunca bloquea el logout.
-- **Meeting detector**: sin cambios — solo emite eventos a la main; sin sesión no hay listeners montados (AuthGate).
+### Coach y sidecar Gemma — reglas vigentes (detalle en `docs/COACH_LLM_ARCHITECTURE.md` § Apéndice)
 
-> **Back-off del arranque de jornada (ago-2026, piloto Dingler).** El tick de 30 s reintentaba indefinidamente y etiquetaba **todo** `Err` como `SkipReason::TranscriptionNotReady` ("se reintentará automáticamente") — una razón equivocada que además se auto-justificaba. Una usuaria sin micrófono generó **965 `recording_start_failed` en 8 h**, el 27 % de `platform_logs` de todo el piloto. Hoy `evaluate_tick` clasifica con `audio::device_errors::classify_device_error` (HRESULT primero, **nunca substring**: Windows traduce sus mensajes) y aplica política por causa, con el estado en `SchedulerShared.start_backoff`:
-> - `NoInputDevice` (sin hardware): **alto del día tras 2 fallos**; mientras esté parado, sondeo **barato** (`default_input_device().is_some()`, sólo enumeración, **jamás abre un stream**) cada 5 min que levanta el alto solo al conectar un micrófono.
-> - `MicAccessDenied` (`0x80070005`): escalada **1/2/5/15 min** y alto del día al 5º intento — el permiso SÍ se puede conceder sin tocar hardware, por eso reintenta antes de rendirse.
-> - Resto: escalada corta con tope de 5 min y **nunca** alto (el motor de transcripción puede terminar de descargarse en cualquier momento).
-> - `"already in progress"` es carrera benigna y **no** cuenta como fallo. `CheckNow` ("Evaluar ahora") y guardar ajustes **levantan el alto** — son el escape hatch explícito. `rotate_scheduled` alimenta el mismo back-off: soltar ownership al fallar reinyectaba el tick en el arm de arranque y era la **segunda** vía de la tormenta.
-> - **No reusar `rearm_at`** para esto: produce `SkipReason::RearmingNextHour` y lo limpia el arm de reposo; mezclarlos confunde los mensajes.
-> - Un solo aviso nativo por episodio (latch `notified`), por `show_native_toast` **directo** y no por `NotificationManager` (éste filtra por consentimiento/DND y esto es un fallo, no una cortesía). La jornada arranca headless: el toast in-app no basta.
-> - `next_backoff` es **pura** para poder testear la política con una tabla (`backoff_tests`), sin tokio ni `AppHandle`.
-> - Defensa en profundidad: `emit_start_failed` (`recording_lifecycle.rs`, el **único** emisor del evento) lleva un limiter calcado de `BridgeLimiter` — clave `código:trigger`, dedup sobre lo **ENVIADO**, y campos `code`/`suppressed` en el payload.
-> - **Preflight**: `check_microphone_ready` (comando; `probe_microphone_access` en `devices/discovery.rs`) abre y suelta un stream corto y devuelve el error clasificado. Va en **ajustes/onboarding/diagnóstico y sólo por acción del usuario** — nunca en `initialize_recording` ni en un intervalo. En particular **no** se metió en `usePermissionCheck`, que hace poll cada 5 s: ahí cambiaría una tormenta de telemetría por una de audio. Contar dispositivos NO sirve para el permiso denegado (en Windows la enumeración no está bloqueada por la privacidad: lista el micrófono y falla después en `IAudioClient::Initialize`).
+- **El único consumidor vivo del `llama-helper` son los tips en vivo del coach.** Maity Chat y el análisis V4 son NUBE; `coach_chat`/`coach_evaluate_meeting` son código muerto. **No asumir que algo "usa Gemma" sin buscar su call site en TS.**
+- **En tier Low el LLM del coach está APAGADO**: `coach::should_use_llm_tips()` es el punto de decisión único (lo consultan el warmup y `live_feedback::start`; si divergieran, quedaría un modelo residente sin consumidor).
+- **El sidecar no muere por idle durante una grabación (#03)**: lease RAII (`SidecarManager::keepalive()`); el breaker del coach es un tipo con política pura. No tocar los timeouts de 300 s.
+- **Provenance del sidecar**: `verify-helper-binary.js` en el pre-build falla si el SHA-256 del binario bundleado no coincide; regenerar con `--fix`. Un stub de 0 bytes en `binaries/` hace fallar el spawn.
 
-> **Gate de registro (ago-2026, #66) — Rust es la autoridad, fail-closed.** El gate de `registration_form_completed` vivía SOLO en el render de la main (`layout.tsx`, `=== false`) y en producción un usuario con la UI parada en `/registration` grabó **21 jornadas** con 0.2.57: el scheduler, el tray y los floats (`/coach-float`, `/recording-widget` → `WIDGET_REQUEST_START_RECORDING` → `RecordingWidgetListener`, montado FUERA de la cadena de gates) nunca pasaban por ahí. Piezas, diseñadas juntas:
-> - **Verdad en Rust**: `AppState.registration_completed: Option<bool>` (`None` = desconocido). `state::registration_completed(app)` es **fail-closed** (`None` → `false`). Gate en el mismo embudo que la sesión: `recording_helpers::initialize_recording` (cubre ambos start paths), `scheduled_recording` (`SkipReason::RegistrationIncomplete`, el tick siguiente arranca al completar) y `tray.rs`.
-> - **Sincronización**: `useRegistrationGate` llama a `my_status` y espeja el valor con `set_registration_status(userId, completed)` (`registration_status.rs`). Lleva `userId` explícito para no depender del orden respecto a `set_current_user` (salen del mismo commit de React). Es la **única** fuente de `Some(false)`.
-> - **Caché monótona local** (`registration-status.json`, solo ids con `true`): `set_current_user` siembra `Some(true)` si el usuario ya se vio completado en esa máquina → un usuario registrado que arranca **sin red** no queda bloqueado. Si la RPC falla, el hook cae a `get_registration_status`; solo un `true` cacheado pasa. Un `false` confirmado por la RPC retira el id (admin reseteó el flag).
-> - **Frontend fail-closed**: `layout.tsx` usa `registrationFormCompleted !== true` (test AST en `layout.test.ts`); `false` → `/registration`, `null` con error → `RegistrationUnverified` ("No pudimos verificar…" + Reintentar; NO redirige al formulario: a un registrado sin red le pediría llenarlo otra vez). `RecordingWidgetListener` añade un guard UX con toast (misma query key, sin fetch extra); la autoridad sigue siendo Rust.
-> - No "simplificar" volviendo a `=== false` ni quitando el gate del embudo "porque el layout ya lo tiene": ese fue exactamente el bug.
+### Cuentas, nube y análisis — reglas vigentes (detalle en `docs/NUBE_CUENTAS_SYNC.md`)
 
-> **Parakeet ya no se carga al arrancar ni vive para siempre (sep-2026, #02 de la auditoría de recursos).** El `setup()` de `lib.rs` precargaba el modelo STT sin mirar sesión ni registro: 600 MB residentes (652 MB de encoder int8, tres sesiones ORT) en la pantalla de login y en la bandeja sin consumidor posible, y nada lo descargaba jamás (telemetría: 46 MB antes de grabar → 650 MB p50 en reposo para siempre; 11 de 20 usuarios del piloto en 5-7 GB). Piezas, diseñadas juntas:
-> - **La carga vive en `transcription::ensure_stt_warm(app, reason)`** (`audio/transcription/engine.rs`), gateada por `has_session && registration_completed` (fail-closed, el mismo gate que el embudo de grabación). La disparan la transición None→Some de `set_current_user` (`"login"`), `set_registration_status(true)` para el usuario vivo (`"registration"` — el login pudo llegar con el registro aún desconocido; el frontend lo reinvoca en cada refetch, y por eso es idempotente), el fin de `parakeet_download_model` (`"download_complete"`, cuenta nueva cuyo modelo aún no estaba en disco) y el prewarm de jornada. **No devolver la precarga al `setup()`: era exactamente el hallazgo.**
-> - **La descarga vive en `transcription::unload_stt(app, reason)`**: `clear_current_user` la llama en logout en TODO tier (sin sesión no hay consumidor); descarga todo motor local que reporte `is_model_loaded()` sin mirar el provider configurado (cubre al que cambió de provider en Ajustes con el viejo residente). **Rehúsa si la fase de grabación no es `Idle`**, incluido `Stopping`: el drenaje final de la cola aún usa el modelo. Si rehúsa no se reintenta ahí.
-> - **`STT_WARM_LOCK` (`tokio::Mutex`) serializa TRES cosas: la precarga, la carga on-demand de `validate_transcription_model_ready` y el unload, y es siempre el lock más externo.** Sostener el write lock del motor durante el check de fase **NO basta**: `validate` devuelve `Ok` tras un `is_model_loaded()` y suelta todo, y entre ese `Ok` y la primera inferencia pasan cientos de ms en los que un unload que ya pasó su check de fase vacía el modelo y el worker **salta la grabación entera** (chunk sin modelo = chunk descartado). Con el flag `PRELOADED_ENGINE`, la carga y el check de fase bajo el mismo mutex, y `StartGate` (fase `Starting`) adquirido ANTES de que `validate` pida el lock, todos los órdenes terminan bien. `ensure_stt_warm` re-chequea `has_session` DESPUÉS de esperar el lock: un login+logout rápidos no deben recargar lo que el logout acaba de soltar.
-> - **El fast path `PRELOADED_ENGINE` no comprueba RAM**: se lee y se limpia bajo el lock, y `clear_preloaded()` va **después** de `unload_model()`. Un unload con el flag armado hace que la siguiente grabación salte la carga y muera en `get_or_init_transcription_engine` con "no model loaded".
-> - **La recarga tras un unload no necesita código nuevo**: tray, scheduler y botón pasan por `initialize_recording` → `validate_transcription_model_ready`, que carga on-demand (3-10 s en fase `Starting`, sin timeout del lado del frontend). Es el riesgo que la auditoría acepta. `recording_lifecycle.rs` sigue dejando el modelo cargado al parar: la política de descarga no vive ahí.
-> - **Reposo (`transcription/idle_unload.rs`), sólo tier Low**: tarea propia (molde `audio_retention.rs`; el tick del scheduler no sirve porque sólo corre con la jornada habilitada y el usuario manual también merece el ahorro) que descarga tras **10 min continuos en fase `Idle`**, fuera de la ventana de jornada y sin una ventana a menos de 5 min; y **pre-calienta** 5 min antes de la siguiente ventana con un latch de un intento por ventana (si el modelo no está en disco, no se reintenta cada 60 s: `download_complete` ya dispara la carga). El reposo se mide con `Instant`, nunca en ticks (regla del #14). Los settings de jornada se leen del servicio en memoria (`get_settings()`, clone bajo `read()` corto), no de disco. `idle_unload_after(tier)` es la única línea que hay que tocar para cambiar la política; override dev `MAITY_STT_IDLE_UNLOAD_SECS` para el smoke. Fuera de tier Low la tarea retorna sin loop: ahí el modelo sólo se suelta en logout.
-> - **Reciclado drop-then-load, sólo tier Low** (`parakeet_engine.rs::recycle_strategy`): el reciclado periódico (cada 2700 inferencias) cargaba la sesión nueva en una variable local ANTES de soltar la vieja — pico de +700 MB justo cuando Parakeet y FFmpeg más memoria necesitan. En Low se suelta primero bajo el write lock y se carga en `spawn_blocking` con 3 intentos (el worker espera en el lock, la cola mpsc de 256 chunks absorbe; el sleep entre intentos va CON el lock, o el worker saltaría chunks). En Medium/High/Ultra se conserva el swap tras cargar: el pico es inocuo y así un fallo deja la sesión vieja intacta. **Modo de fallo**: si se agotan los intentos, `current_model` queda `None` y `current_model_name` queda `Some` — esa asimetría (un `unload_model` deliberado limpia ambos) es la señal que `worker.rs` usa para alimentar su breaker (`trip_engine_breaker`) y pedir `force_recycle`, sujeto al `min_gap` de 5 min; el evento `stt.engine_lifecycle {reason: recycle_failed, status: error}` se emite una vez por sesión desde el worker. Hasta 5 min sin transcripción es el precio; no se limpia el `min_gap` para reintentar al instante porque reabre la tormenta que existe para evitar.
-> - **`load_model` de Parakeet tenía un self-deadlock**: `if let Some(cur) = self.current_model_name.read().await.as_ref() { … self.unload_model().await }` — el guard del scrutinee vive todo el bloque y `unload_model` pide el write del mismo lock. Alcanzable sólo al cambiar de modelo A→B desde Ajustes. Snapshot en statement propio, mismo contrato que `SchedulerShared`.
-> - Telemetría: `stt.engine_lifecycle` (`docs/TELEMETRIA.md`), sólo en cargas/descargas reales; `[METRIC] mem-sample` con etiquetas `stt-warm` / `stt-unload` en el log local.
-> - Pendiente conocido: `parakeet_validate_model_ready_with_config` devuelve `Ok` con cualquier modelo cargado aunque la config pida otro, y ningún handler de Ajustes llama a `mark_preloaded` pese al comentario de `engine.rs`.
+- **Cliente Supabase con default `public`**; las tablas de `maity` van SIEMPRE con `.schema('maity')` explícito; los RPC entran por wrappers `public.*`. Guardias: regla ESLint `no-restricted-syntax` (`.rpc()` pelón) + `lib/supabase.test.ts`. `src/shared/maity-shared/**` está exento. Realtime hardcodea `schema: 'maity'` — correcto, no tocar.
+- **Roles (`admin|manager|user`) SIEMPRE desde la DB (RPC `public.get_user_role`), fail-closed**: `null` = desconocido, jamás "es user"; NO reintroducir heurísticos por dominio de email (`ADMIN_DOMAINS` se eliminó y hay test). El Sidebar NO filtra por rol.
+- **Verificación de email**: NO cambiar `emailRedirectTo` a localhost/deep-link; el flujo PKCE `?code=` solo es canjeable en el webview que lo inició.
+- **CTA "Ver planes" → ruta interna `/billing/plans`, NO `PRICING_URL`** (la landing expulsa a usuarios con sesión).
+- **Retry de análisis en `quota_skipped`**: comando `retry_analysis_cloud`, NUNCA `reanalyzeConversation` (re-despacharía la minuta y no pasa por `decideRetryPlan`). El 403 de cuota se detecta por el campo `error` con el helper `parse_quota_403`.
+- **Lista de conversaciones PROYECTADA (#05)**: `LIST_COLUMNS` explícito, nunca `select('*')` (hay test); `getCommScore`/`derivePhase` ramifican por `_projection` ANTES de mirar los JSONB (sin eso una fila legacy dispara re-análisis y **quema cuota**); gamificación tiene su propia queryKey (`['omi-conversations-analysis', userId]`).
+- **Análisis V4 rúbrica 6.x (#72-#74)**: "tiene análisis" = `isFullAnalysis(v4)`, nunca truthiness (el marcador skipped es truthy); puntajes agregados vía `utils/scoring.ts::getCommScore`; un componente `null`/`no_aplica` NUNCA se pinta como 0.
 
-### Gate de Registro (`useRegistrationGate` + `AppContent` en `layout.tsx`)
+### Context Providers (en `layout.tsx`)
 
-Orden de ramas en `AppContent` para cuentas nuevas:
-1. Onboarding tecnico (**Welcome** + Permissions macOS) — la pantalla de bienvenida (`WelcomeStep`, "Bienvenido a Maity", con logo) es la ÚNICA con arranque de modelos. Su botón **"Comenzar y descargar"** arranca Parakeet **+** Gemma en background vía `startBackgroundDownloads(true)` y **avanza al instante** (Windows → registro; macOS → permisos, la descarga sigue en background). NO bloquea. Muestra el total dinámico (~1.6 GB Windows / ~3 GB macOS). (La antigua pantalla "Tu IA personal"/`ModelDownloadStep` fue eliminada.)
-2. Splash mientras `modelGateActive` resuelve (`null` → comprobando)
-3. Splash (`registrationLoading`)
-4. Rama de registro: `/registration` (17 pasos) con `OnboardingDownloadWidget` en la esquina reportando progreso de las descargas en background
-5. **`ModelDownloadGate`** — gate bloqueante que espera a Parakeet si falta en disco
-6. Scheduled setup gate
-7. Main app — el `OnboardingDownloadWidget` sigue mostrando el progreso de Gemma; el usuario ya puede navegar.
+`ThemeProvider` → `QueryClientProvider` (React Query, 5 min stale) → `AuthProvider` → `OnboardingProvider` → `ConfigProvider` → `RecordingPostProcessingProvider` → `TranscriptProvider` → `OllamaDownloadProvider` → `ParakeetAutoDownloadProvider` + `RecordingStateProvider`, `AnalyticsProvider`, `UpdateCheckProvider`. Componentes globales: `SplashScreen`, `AuthGate`, `ChunkErrorRecovery`, `ErrorBoundary`, `OfflineIndicator`, `CloudSyncInitializer`, `HealthHeartbeatInitializer`, `GlobalConversationNotifier`, `DbInitErrorGate`, etc.
 
-**SÍ hay pantalla de espera bloqueante, pero SOLO para Parakeet** (`components/ModelDownloadGate/`, restaurado en jul-2026 tras el rebote 10.3.1 de la Store). Razón: sin el modelo de transcripción, `useRecordingStart.ts` aborta la grabación con un toast y **no hay fallback a otro motor** — un usuario (o un reviewer de certificación) que llega al dashboard sin modelo no puede probar la funcionalidad principal.
+> **Ventanas auxiliares** (`/coach-float`, `/recording-widget`, `/device-picker`): `RootLayout` hace early-return ANTES de montar los componentes globales. Lista canónica en `lib/auxWindows.ts` (`isAuxWindowPath`) — no duplicarla inline. Los initializers llevan además su propio gate `isAux` (el efecto depende del booleano, NO de `pathname`).
 
-Reglas del gate, todas deliberadas — **no "simplificar" sin leer esto**:
-- **Solo Parakeet bloquea.** Gemma (resumen) sigue en background y nunca bloquea.
-- **Va DESPUÉS del registro**, para que los 17 pasos solapen con la descarga. Ponerlo antes hace que una cuenta nueva mire una barra muerta de 600 MB sin nada que hacer.
-- **Sin botón de omitir.** Decisión explícita del producto.
-- **Es PASIVO**: no arranca ni cancela descargas, solo observa. Quien arranca sigue siendo `WelcomeStep`/`BackgroundDownloadStarter`. Si el gate arrancara descargas, competiría con la que ya existe.
-- **Orden de fases obligatorio**: `isModelReady` → `isDownloading` → `error` → `conectando`. `isModelReady` va primero porque Rust emite COMPLETE *antes* de que el comando retorne `Ok`; con `isDownloading` primero el gate no se levantaría nunca tras un reintento exitoso.
-- **Sin watchdog de stall propio**: Rust ya corta a los 30 s sin bytes. Un temporizador de frontend más corto ofrecería "Reintentar" con la tarea aún viva. El único timer es el de la fase "Conectando…" (60 s), por encima del `connect_timeout` de 30 s.
+> **Los niveles de audio viven FUERA de React (#07)**: store `lib/audioLevelsStore.ts` (`useSyncExternalStore`; `getSnapshot` con misma referencia, `getServerSnapshot` obligatorio) + `AudioLevelBars.tsx` animando con `transform: scaleY()`. Las ventanas flotantes van con fondo opaco sin `backdropFilter` (decisión de producto). NO bajar `WATCHDOG_TICK_MS` (100 ms). Detalle: `docs/UI_REGLAS.md`.
 
-`ModelDownloadStep` ("Tu IA personal") sigue eliminado — el consentimiento vive en el botón "Comenzar y descargar" de `WelcomeStep`, y el gate solo espera.
+Hooks (23) en `hooks/`, servicios en `services/`, utilidades en `lib/`, features en `features/` (conversations, gamification, notes, tasks, maity-chat, auth) — se descubren con Glob; los nombres son descriptivos (`useRecordingStart`, `conversations.service.ts`, `analysisPollingService.ts`, `lib/roles.ts`, …).
 
-Para cuentas existentes (`get_onboarding_status.completed===true`): saltan el onboarding técnico. Si les falta el modelo, `BackgroundDownloadStarter` arranca la descarga en background (sin pantalla) y entran directo al dashboard con el widget.
-- `BackgroundDownloadStarter` (`components/Onboarding/BackgroundDownloadStarter.tsx`, renderiza null, montado dentro de `OnboardingProvider`): si `completed && !(parakeetDownloaded && summaryModelDownloaded)` y no es ruta especial (`/coach-float`, `/recording-widget`, `/device-picker`) → `startBackgroundDownloads(true)` (idempotente por los guards internos). Es quien ARRANCA la descarga para cuentas existentes sin modelo; el `ModelDownloadGate` (restaurado jul-2026) es pasivo y solo la observa.
-- Si `my_status()` devuelve `registration_form_completed===false` → redirige a `/registration`
-- `/registration` y `/billing/plans` excluyen el Sidebar; sus pages proveen su propio scroll (`h-screen overflow-y-auto` + wrapper `min-h-full`) porque `globals.css` fija `body { overflow: hidden }`
-- Al completar el form, la web invalida `['user','status']` → el gate se levanta solo
-- **`OnboardingAccountBadge`** (`components/Onboarding/OnboardingAccountBadge.tsx`, `fixed top-4 right-4 z-[60]`): como el Sidebar no se monta durante el onboarding, replica el indicador de cuenta + cerrar sesión (`useAuth().signOut`). Es un **icono redondo (avatar)**; al hacer clic despliega un menú (nombre/email/botón "Cerrar sesión"); cierra al hacer clic fuera. Se monta en las ramas de onboarding: técnico (`OnboardingFlow`), registro (`/registration`), scheduled setup, y en la rama main cuando `isRegistrationRoute` (`/billing/plans`). `z-[60]` sobre overlays; top-right para no chocar con `OnboardingDownloadWidget` (bottom-right).
+### Guardado de archivos generados (.md / .pdf / .pptx)
 
-### Descargas de Modelos (`WelcomeStep` + `BackgroundDownloadStarter` + `OnboardingContext` + `OnboardingDownloadWidget`)
-
-> **Concurrencia de descargas (arreglado jul-2026 — no revertir).** El arranque estaba duplicado: `WelcomeStep` dispara la descarga y completa el onboarding en el MISMO tick, lo que voltea `completed` y hace re-correr el efecto de `BackgroundDownloadStarter`, que llamaba otra vez. Como `startParakeet` tiene varios `await` antes del invoke, sus guards leían un estado que la primera llamada aún no había escrito → **toda cuenta nueva en Windows bajaba Parakeet dos veces**. Ahora `OnboardingContext` guarda la promesa del arranque (`parakeetKickoffRef`/`gemmaKickoffRef`) y la reusa. En Rust, el guard de `active_downloads` era TOCTOU (check con read lock, insert con write lock por separado) y 4 salidas `Err` no limpiaban la bandera, dejando el modelo en `Downloading{0}` para siempre. Hoy: check+insert atómico con `HashSet::insert`, y un único `remove` en el wrapper de `download_model_detailed`, que cubre todos los caminos de salida. `parakeet_retry_download` ya **no** fuerza el clear — si hay una descarga viva, no relanza (dos writers sobre el mismo `.onnx` no dan error en Windows: corrompen el archivo en silencio y pasan la validación, que es solo por tamaño).
-
-- **Arranque en un solo lugar, no-bloqueante:**
-  - **Cuentas nuevas**: `WelcomeStep` ("Bienvenido a Maity", paso 1 del onboarding técnico, con logo). Su botón "Comenzar y descargar" → `startBackgroundDownloads(true)` + (Windows) `completeOnboarding()` / (macOS) `goNext()` a permisos. Avanza al instante. Muestra el total con tamaño **dinámico por plataforma**: Parakeet ~600 MB + Gemma (`gemma3:1b` ~1 GB en Windows/RAM<16GB, `gemma3:4b` ~2.4 GB en macOS>16GB) → total ~1.6 GB / ~3 GB.
-  - **Cuentas existentes sin modelo**: `BackgroundDownloadStarter` arranca la descarga en background al montar (sin pantalla).
-- `OnboardingContext.startBackgroundDownloads(includeGemma)` — arranca Parakeet y opcionalmente Gemma con guards completos (idempotente):
-  - Parakeet: `parakeet_init` → `parakeet_has_available_models` (skip si true) → `parakeet_get_available_models` para detectar `Downloading` (skip) y `Corrupted` (borrar con `parakeet_delete_corrupted_model` primero) → `parakeet_download_model` con `parakeet-tdt-0.6b-v3-int8`
-  - Gemma (tras 3s delay para priorizar ancho de banda): `builtin_ai_is_model_ready` (skip si ready) → `builtin_ai_get_model_info` (skip si `status.type === 'downloading'`) → `builtin_ai_download_model` (`selectedSummaryModel`, recomendado por `builtin_ai_get_recommended_model`)
-  - Setea `isBackgroundDownloading=true` → el widget aparece.
-- **UNA sola UI de progreso de descarga**: `OnboardingDownloadWidget` (`bottom-4 right-4 z-50`), montado en la rama de registro Y en el main app. Por defecto es una **bolita redonda** con anillo de progreso (% combinado); al hacer clic se **expande al modal** completo (filas Parakeet/Gemma) y se minimiza con la X. Solo se muestra cuando hay actividad. **`DownloadProgressToastProvider` fue eliminado** del layout (antes duplicaba: toasts arriba + widget abajo).
-
-> **En tier Low NO se descarga Gemma (ago-2026).** Con el LLM del coach apagado en gama baja (ver § "Qué usa REALMENTE el sidecar local"), ese modelo no tiene consumidor: bajar ~1 GB sería gastar red y disco del equipo que menos lo puede pagar. El total del `WelcomeStep` pasa de ~1.6 GB a **~600 MB** (sólo Parakeet). El tier se resuelve en el frontend con `lib/deviceTier.ts` → comando `get_device_profile` (ya existía, lo usaba sólo `healthHeartbeatService`), cacheado con single-flight.
->
-> **Regla derivada, y es la que rompe si se ignora: los consumidores miran `summaryModelReady`, NO `summaryModelDownloaded`.** El segundo describe el **disco**, y en tier Low se queda en `false` **para siempre**. Usarlo como condición de "falta algo" hacía que `BackgroundDownloadStarter` llamara a `startBackgroundDownloads` en **cada arranque de la app**; y como esa función pone `isBackgroundDownloading = true` nada más entrar, el widget de descargas aparecía sin nada que descargar. `OnboardingContext` expone ambos: `summaryModelRequired` (¿hace falta?) y `summaryModelReady` (`!required || downloaded`).
->
-> **Efecto secundario aceptado:** `reconcile_status` (Rust) auto-repara un onboarding atorado sólo si `summary == "downloaded" && parakeet == "downloaded"`. Sin Gemma esa red de seguridad no se arma en equipos Low. No afecta el flujo normal — la completitud la fija `complete_onboarding()`, que no toca `model_status` — y la función sigue siendo **monótona**, así que no puede reproducir el bucle de onboarding de jul-2026.
->
-> `ensure_low_tier_tips_model` (`coach/setup.rs`) fue **eliminada** en el mismo cambio: bajaba el 1B en background y, con ironía, sólo corría en tier Low. La descarga manual desde Ajustes → Pipeline sigue disponible.
-
-> **El estado del onboarding es MONÓTONO y leerlo NO escribe (arreglado jul-2026 — no revertir).** `onboarding.rs::reconcile_status` solo puede **avanzar** el estado: nunca pone `completed=false` ni baja `current_step`. Retroceder el onboarding es una acción explícita del usuario (`reset_onboarding_status`), jamás un efecto de mirar el disco. Además `load_onboarding_status` es **lectura pura** (CQS) y la reconciliación corre **una sola vez** desde el `setup` de `lib.rs` (`reconcile_onboarding_status_at_startup`).
->
-> **Por qué**: hasta jul-2026 el reconciliador aplicaba la regla §4.1 de `fb1846b` — "si hay gemma 1b en disco pero no 4b → `completed=false`, volver al paso 3". Pero `builtin_ai_get_recommended_model` es `if is_macos && ram > 16 { 4b } else { 1b }`, o sea **todo Windows baja el 1b por diseño** → la regla declaraba "instalación rota" justo lo que el recomendador produce. Y como `useRecordingStop` hace hard navigate (`window.location.href`), cada fin de reunión remontaba el árbol React y volvía a disparar esa escritura: **el usuario terminaba en "Bienvenido a Maity" después de cada reunión, en bucle** (se rearmaba solo porque `complete_onboarding` reescribía `summary="cloud"` y borraba el centinela). Rompía toda instalación limpia de Windows, incluida la del reviewer de la Store. La salvaguarda original ya era redundante: el coach resuelve su propio modelo con `resolve_effective_tips_model` y degrada a `Unavailable` si falta.
->
-> Reglas derivadas: (a) el onboarding acepta **cualquier** modelo del registry (`summary_engine::models::any_model_on_disk`), no un modelo concreto; (b) los umbrales de tamaño viven en `ModelDef::size_bounds_mb` — no inventar umbrales nuevos por consumidor; (c) `complete_onboarding` **no toca** `model_status`: ese campo refleja el disco, no la transición; (d) `load_onboarding_status` tiene tres llamadores (`get_onboarding_status`, `OnboardingContext`, `tray::check_can_record`) — cualquier efecto secundario que se le agregue se multiplica por cada remonte del frontend. Cubierto por `#[cfg(test)] mod reconcile_tests` en `onboarding.rs`.
-
-### Video de instrucciones (CSP)
-
-- El paso de instrucciones del registro (`features/auth/components/registration/RegistrationInstructions.tsx`) embebe un **iframe de YouTube**. Requiere `frame-src`/`child-src` con `https://www.youtube.com` en la CSP de `frontend/src-tauri/tauri.conf.json`; sin eso WebView2 lo bloquea en el build empaquetado (en `pnpm dev` no se nota).
-
-### Qué usa REALMENTE el sidecar local (Gemma) — ago-2026
-
-> **Verificado contra el código, no contra la intención.** El único consumidor vivo
-> del `llama-helper` en el producto embarcado son los **tips en vivo del coach**
-> durante la grabación (más el warmup de arranque que existe sólo para
-> alimentarlos). Todo lo demás que "parecía" depender de Gemma es nube o código
-> muerto, y confundirlo ya costó una investigación entera:
->
-> | Camino | Realidad |
-> |---|---|
-> | **Maity Chat** | **Nube.** `https://www.maity.cloud/api/maity-chat` por SSE (`features/maity-chat/services/maityChatService.ts`); **DeepSeek corre del lado servidor**, el desktop nunca nombra el modelo. Cero `invoke(` en toda la feature. |
-> | `coach_chat` (Rust) | **Código muerto**: registrado en `lib.rs`, cero call sites en TS. Su helper `call_coach_builtin` muere con él. |
-> | `coach_evaluate_meeting` | **Código muerto**: cero call sites en TS. |
-> | Minuta / análisis V4 | **Nube**: `api/finalize.rs` → `POST www.maity.cloud/api/conversations`. |
-> | Resumen local (`api_process_transcript` → `LLMProvider::BuiltInAI`) | **Inalcanzable en la práctica**: vive tras `/meeting-details`, ruta **sin un solo enlace entrante**; y el provider por defecto de una instalación limpia es `'ollama'`, no `'builtin-ai'`. |
->
-> No se borró nada de eso (decisión de ago-2026: documentar, no borrar — el diff
-> no aporta al usuario). Pero **no asumir que algo "usa Gemma" sin buscar su call
-> site en TS**.
-
-> **En tier Low el LLM del coach está APAGADO (ago-2026, piloto Dingler).**
-> `coach::should_use_llm_tips()` (en `coach/mod.rs`) es el punto de decisión
-> **único**: lo consultan el warmup de `lib.rs` y `live_feedback::start`. Si
-> divergieran, el modelo quedaría residente en RAM sin nadie que lo consuma — el
-> peor de los dos mundos. Motivo: en dos semanas y 7 equipos de 5–7 GB el LLM
-> produjo **1 tip** contra 19 heurísticos, a cambio de 75 reinicios de sidecar,
-> 28 timeouts, 26 aperturas de breaker y `p95 = 94 s`; el helper pica en 1.2 GB
-> justo cuando Parakeet y FFmpeg más memoria necesitan (215 avisos de presión de
-> memoria, mínimos de **74 MB** libres).
->
-> - **No se re-enciende al terminar la grabación**: por la tabla de arriba, no hay
->   otro consumidor al que servir.
-> - Los tips **heurísticos** (`evaluate_health_tips`, tick de 3 s) y el gauge de
->   participación siguen intactos. El coach no se apaga, sólo su mitad cara.
-> - `ensure_low_tier_tips_model` fue **eliminada**: bajaba ~1 GB en background y
->   sólo corría en tier Low, es decir en los equipos que menos podían pagarlo. La
->   descarga manual desde Ajustes → Pipeline sigue disponible.
-> - El umbral de tier se corrigió a la vez: las ramas **Cuda y Metal no tenían
->   piso de RAM**, así que una laptop de 6 GB con driver NVIDIA salía `High` y
->   recibía el modelo grande. Ahora `<8 GB` → Low, `<12` → Medium (la rama Vulkan
->   ya tenía su piso desde jul-2026).
-
-> **El sidecar no muere por idle durante una grabación con tips-LLM (sep-2026, #03 de la auditoría de recursos).** El idle-kill de `sidecar.rs` (300 s sin Generate) y el cooldown del breaker del coach (300 s) eran el mismo número: tres tips fallidos abrían el breaker, con el circuito abierto `call_ollama_and_emit` retornaba antes de tocar el pool (nadie llamaba a `ensure_running`, lo único que refresca `last_activity` aparte de un Generate exitoso), el idle loop mataba el helper a los 300-360 s y el probe half-open caía en un spawn frío (relectura de 1-2.4 GB de GGUF, 50-90 s de CPU); y como el contador de fallos no se reiniciaba al abrir, el primer fallo del probe reabría otros 300 s. Lo mismo pasaba en cualquier tramo callado de 5 min de un segmento. Era el mecanismo de 55 reinicios en 62 sesiones Low de 0.2.57 (hoy Low ya no usa el LLM; esto aplica a Medium+). Reglas, todas deliberadas:
-> - **Lease de sesión, no gate por fase.** `SidecarManager::keepalive()` devuelve un guard RAII (`SidecarKeepAlive`, contador `keepalive_holds`) y el idle loop trata `holds > 0` igual que un request en vuelo: refresca `last_activity` y sigue (`idle_verdict`, pura, con tabla). `live_feedback::start` lo toma con `llm_helper::acquire_sidecar_keepalive` → `SidecarPool::get_or_create` (crea el manager SIN spawnear; el proceso sigue naciendo lazy en el primer tick) **sólo cuando `LLM_TIPS_ENABLED` resolvió `true`**, con la clave del pool = `map_to_builtin_id(modelo)` (la misma que usa `CoachLlmService`), y `stop()` lo suelta. `summary/` no importa `recording_phase` ni estado del coach: la política es del manager, es por modelo (el del resumen no queda vivo de rebote) y se prueba con I/O falsa y tiempo pausado. Todo consumidor de larga duración nuevo toma un lease; no refresca `update_activity` a mano.
-> - **Refrescar mientras se sostiene es a propósito**: al soltar el lease quedan ≥300 s de pista, que cubren el hueco stop→start de la rotación por hora (`start()` llama a `stop()` primero). Sin el refresco, la rotación mataría el helper en el siguiente tick.
-> - El lease vive en el manager (`Arc` del pool), así que **sobrevive respawns**: strikes por timeout y cooldown del presupuesto siguen matando el proceso, y deben — el lease sólo gobierna el idle loop. `shutdown_all` al salir y `shutdown_sidecar_gracefully` tampoco lo consultan.
-> - **El timer de idle del propio `llama-helper` es inerte mientras el manager está sano**: el health loop hace `ping` cada 30 s y `Ping` refresca su reloj (`main.rs`). Si cae a unhealthy deja de recibir pings y se despide solo a los 300 s: es el camino de respawn de siempre.
-> - **`last_activity` es `tokio::time::Instant` (`ActivityInstant`), no `std`**: en producción es idéntico; en tests con `start_paused` sigue el reloj pausado. Con `std::time::Instant` el test del idle loop nunca vería pasar los 300 s.
-> - **El breaker es un tipo (`coach/breaker.rs`) con un solo `static COACH_BREAKER`** y política pura (`record_failure(now_ms)` → `Counting(n) | Opened`); **al abrir se reinicia el contador**, así el half-open exige 3 fallos nuevos. `LlmError::Cancelled` **no cuenta**: es `stop()`/rotación a media generación, no salud del sidecar (inflaba `breaker_opens` justo al cerrar). Ojo: los timeouts del sidecar llegan como `LlmError::Internal` (`From<anyhow::Error>`); la clasificación sigue siendo gruesa.
-> - **No se tocaron `DEFAULT_IDLE_TIMEOUT_SECS`, `COOLDOWN` del breaker ni `RESTART_COOLDOWN`.** Con el lease la coincidencia deja de importar dentro de la grabación, y fuera de ella 300 s es el valor correcto para soltar 1-2.4 GB rápido (#04). Un Generate que expira ahora sí refresca actividad: si pagó 120 s de carga fría, el modelo está caliente y matarlo 3 min después tira justo ese trabajo.
-> - `SidecarPool::get_or_create` inserta el manager ANTES del primer spawn (antes un primer spawn fallido tiraba el manager y con él el presupuesto de reinicios) y ya no se sostiene el write lock del pool durante los 50-90 s del spawn.
-> - Verificación en producción: `coach.session_summary.sidecar_idle_kills` (delta de `SIDECAR_IDLE_KILLS_TOTAL`, 4.º elemento de `supervision_counters()`) **debe ser 0 en Medium+**; >0 es regresión. Viaja por el spread de `useCoachMetricsTelemetry` (cero entradas de catálogo nuevas).
-> - Pendiente anotado (no es #03): `CoachLlmService::generate_internal` hace `manager.shutdown()` al cancelar (`llm_service.rs`, brazo `token.cancelled()`); un tip en vuelo en el `stop()` de la rotación sigue costando un arranque frío al segmento siguiente — con ids confirmados el kill ya no haría falta, pero tiene su propia arista (escritura parcial en el pipe si la cancelación cae a media `write_all`). Y guardar la config de modelos en Ajustes durante una grabación drena el pool entero (`shutdown_sidecar_gracefully` hace `take()`), dejando el lease sobre un manager huérfano hasta el siguiente `start()`.
-
-### Resumen built-in (Gemma) — requisitos
-
-- El resumen con IA local usa el sidecar `llama-helper.exe` (`externalBin: ["binaries/llama-helper"]` en `tauri.conf.json`; fuente en `C:\maity_desktop\llama-helper\`, `cargo build --release -p llama-helper`). Debe existir el binario REAL en `frontend/src-tauri/binaries/llama-helper-x86_64-pc-windows-msvc.exe` (y en `msix_staging/llama-helper.exe` para el MSIX) — un stub de 0 bytes hace fallar el `spawn`. Además el modelo Gemma debe estar descargado (`gemma3:1b`/`gemma3:4b` según plataforma).
-- **Provenance del sidecar (ago-2026):** `binaries/` está **gitignored** y nada lo construía en el build local — así se embarcaron 3 meses de helper stale (0.2.51-0.2.53, sin protocolo de ids → kill en cada timeout). Hoy el pre-build corre `frontend/scripts/verify-helper-binary.js`: compila `cargo build -p llama-helper --release` (cacheado; la primera vez compila llama.cpp, minutos) y **falla si el SHA-256 del bundleado no coincide**. Regenerar con `node scripts/verify-helper-binary.js --fix` (copia a `binaries/` y a `msix_staging/` si existe). Se salta en CI (los workflows compilan el sidecar con features de plataforma). El smoke post-build además le habla al helper bundleado (`{"type":"version","id":1}` → `{"type":"version","version":"0.1.1","protocol":2,"id":1}`); un helper viejo responde `error` sin id. **Al spawn**, `sidecar.rs` negocia capacidades con un ping correlacionado (`probe_capabilities`, 5 s, sin tocar el modelo) y loguea la versión del helper: `ids_confirmed` ya no se infiere del primer Generate; la ventana fría de 120 s la gobierna `model_warm` (primer Generate respondido), independiente de los ids.
-
-### Verificación de email (signup desktop) — flujo cross-app
-
-El signup con email/password (`signUpWithEmail`, `AuthContext.tsx`) manda `emailRedirectTo: 'https://www.maity.cloud/auth/confirm'`. El correo (armado por el Send Email Hook del repo web) trae un link a esa página con `?token_hash=...&type=signup` — **sin pasar por `/auth/v1/verify` de GoTrue** (issues web Sixale730/maity#135/#136). La página intenta abrir `maity://auth/confirm?token_hash=...&type=signup`:
-
-- **Con app instalada**: el deep link llega a `handleDeepLinkCallback` (`AuthContext.tsx`), que hace `supabase.auth.verifyOtp({ token_hash, type: 'signup' })` → confirma la cuenta Y deja la sesión en el desktop. Cold start cubierto con `getCurrent()` del plugin deep-link al montar (single-instance solo reenvía a instancias ya vivas). El canal Store requiere el protocolo declarado en `frontend/Package.appxmanifest` (`<uap:Protocol Name="maity"/>` — bajo MSIX el `register()` en runtime queda virtualizado y no crea la asociación). El mismo handler procesa el **fallback del OAuth social** `maity://auth/callback` (cuando `start_oauth_server` no pudo hacer `bind` — p. ej. sandbox de App Store, que exige `com.apple.security.network.server` en `entitlements-appstore.plist`, #76): acepta `?code=` (PKCE, canjeado con `exchangeCodeForSession` — aquí SÍ es canjeable porque el `code_verifier` vive en este webview) y `?error=`, además del fragment `#access_token` legacy. Parsers puros con tests en `lib/authCallbackUrl.ts`. En macOS `register("maity")` no se llama (devuelve "unsupported platform"; el esquema va por `CFBundleURLTypes`) — #78.
-- **Sin app (celular/otra PC)**: la página hace el `verifyOtp` en el navegador (fallback tras ~2.5 s sin blur) y muestra "cuenta verificada"; el desktop entra solo por el poll de `useAwaitEmailConfirmation.ts` (device-flow, issue #58).
-
-Reglas: NO cambiar `emailRedirectTo` a localhost/deep-link (el correo se abre "casi siempre en el celular"); el token es de un solo uso — si `verifyOtp` falla pero ya hay sesión (el poll o la web ganaron la carrera), se ignora en silencio. El flujo PKCE `?code=` NUNCA es canjeable fuera del webview que inició el signup (el `code_verifier` vive ahí) — no intentar `exchangeCodeForSession` en otra superficie.
-
-### Handoff de Pagos
-
-- El desktop no tiene Stripe directamente; al elegir Pro, `useCreateCheckoutSession` construye la URL `https://www.maity.cloud/auth/handoff#access_token=...&next=/billing/plans?checkout=pro`
-- `openExternalUrl` (via `lib/planLinks.ts`) abre el navegador externo del SO via `invoke('open_external_url')`
-- Prerequisito: la web debe desplegar `/auth/handoff` (issue Sixale730/maity#133)
-- Enterprise/anual → `/agenda` interceptado en router-compat (sin patch adicional)
-- **CTA "Ver planes" dentro de la app → ruta interna `/billing/plans`, NO `PRICING_URL`.** `https://www.maity.cloud/pricing` es la landing de anónimos: a un usuario con sesión activa en el navegador lo redirige fuera. Como `layout.tsx` excluye el Sidebar en `/billing/plans`, esa página lleva un botón "Volver" (`router.back()`) que solo se pinta si `window.history.length > 1` — sin él, entrar desde dentro de la app deja al usuario atrapado; con la condición, no aparece un botón muerto en el gate de registro (que entra ahí en frío).
-
-### Recuperar el análisis de una conversación en `quota_skipped` — ago-2026
-
-Desde el issue web #138, `quota_skipped` **dejó de ser un estado sin salida**: tras un upgrade el dueño puede recuperar el V4 desde el detalle de la conversación (botón "Analizar ahora" junto a "Ver planes").
-
-Camino: `ConversationDetail.tsx` → `retryAnalysisCloud` (`conversations.service.ts`) → comando `retry_analysis_cloud` (`src-tauri/src/api/retry_analysis.rs`) → `POST /api/conversations { action: 'retry_analysis', conversation_id }`.
-
-- **NO colgar este botón de `reanalyzeMutation` / `reanalyzeConversation`.** Ese camino llama a `action: 'finalize'`, que re-despacha **también la minuta** (pisando una que el usuario pudo regenerar a mano) y no pasa por `decideRetryPlan`, la política del servidor que decide qué despachar y **cobra la unidad** al recuperar desde `quota_skipped`. Por eso son dos mutaciones separadas.
-- **El botón se pinta siempre y el 403 se maneja** — no se consulta la cuota antes. Contrato del endpoint: **202** `{status:'processing'}` (despachado, cobra 1 unidad, solo `communication`), **403** `QUOTA_EXCEEDED` si el plan sigue agotado, **200** `{skipped:"not retryable from status=..."}` si la fila ya está `completed`/`skipped`.
-- **`quota_skipped` sigue siendo terminal en `derivePhase`** y `AnalysisStatusBanner` lo sigue silenciando — es el estado de reposo correcto. Lo que reanuda el polling es el `onMutate` que escribe `analysis_status:'processing'` optimistamente en la caché: `refetchInterval` de `useConversationLive` es una **función**, TanStack la re-evalúa tras cada escritura y un row no-terminal devuelve el piso de 3 s. Si el retry termina en 403, el refetch devuelve la fila a `quota_skipped` y el polling se apaga solo.
-- **El 403 de cuota se detecta por el campo `error`, no `code`.** `ApiError.send()` de la web responde `{ error: 'QUOTA_EXCEEDED', message, details }`; hasta ago-2026 `finalize.rs` leía `code` (inexistente) y clasificaba TODO 403 de cuota como problema de ownership → el usuario veía "No tienes permiso para analizar esta conversación". El parseo vive ahora en un único helper `api::finalize::parse_quota_403` (con tests), compartido por `finalize.rs` y `retry_analysis.rs`; debe seguir devolviendo el payload con prefijo `quota:` porque es el contrato que leen `parseQuotaError` (`lib/quotaErrors.ts`) y `quota_period` (`cloud_sync/worker.rs`).
-
-### Guardado de archivos generados (.md / .pdf / .pptx) — ago-2026
-
-**Nunca usar `<a download>` en el desktop.** Dentro de WebView2 el destino lo decide el WebView: guarda en su propia carpeta de descargas sin preguntar, sin UI visible dentro de Tauri, y la app **nunca aprende la ruta** — por eso no podía confirmar el guardado ni ofrecer "abrir carpeta". Ese era exactamente el síntoma de los botones de descarga de Maity Chat ("parece que no hace nada, pero el archivo sí está en Descargas"). La ruta que "se recordaba" era del perfil de WebView2, no de la app.
-
-El guardado lo hace Rust: `src-tauri/src/file_export.rs` → comando `save_artifact_file(defaultFileName, contentsBase64, filterName, extensions, forceAsk?)`, que devuelve `Some(ruta)` o **`None` si el usuario canceló** (no-op silencioso: el frontend no debe mostrar error). Frontend: helper único **`lib/saveArtifact.ts`** (blob → base64 con `FileReader`, toast con la ruta + acción "Abrir carpeta" que reusa `reveal_in_folder`). Vive en `lib/` y no dentro de una feature porque lo usan varias; sus strings están en el namespace **`export.*`** de `LanguageContext` (`export.save_success`, `export.save_reveal`, `export.filter_*`) — no bajo `chat.*`.
-
-**Consumidores (todo botón de guardado nuevo debe pasar por aquí):** los tres de `features/maity-chat/components/ChatTurn.tsx` (.md / .pdf / .pptx) y el "Descargar PDF" de `features/conversations/components/minuta-v2/MinutaToolbar.tsx` (pestaña Minuta del detalle de conversación; migrado en ago-2026 — era el último `<a download>` vivo, con el síntoma clásico de "no avisa y no deja elegir carpeta"). El toast de éxito lo emite el helper, NO el caller: el caller solo hace `catch` → toast de error.
-
-Reglas que no hay que romper:
-- **El comando DEBE ser `async`.** `blocking_save_file()` despacha el diálogo al main thread y espera en un `sync_channel(0)`; desde un comando síncrono (que corre EN el main thread) **deadlockea la app**.
-- **El diálogo se maneja desde Rust con `DialogExt`**, no desde JS. Así no hace falta instalar `@tauri-apps/plugin-dialog` ni agregar permisos `dialog:*` a las capabilities: los comandos propios no pasan por el ACL de Tauri. Mismo patrón que `database::commands::select_legacy_database_path`.
-- **`@tauri-apps/plugin-fs` está instalado y sus permissions están en `tauri.conf.json`, pero el plugin NO se inicializa en `lib.rs`** → cualquier `writeFile` desde JS truena en runtime con "plugin fs not found". Las permissions obsoletas lo hacen parecer soportado; no lo está. Escribir con `std::fs` desde Rust.
-- Extraer la ruta con `FilePath::into_path()`, **no** `.to_string()` (para la variante `Url` eso devuelve un `file://...`).
-- Preferencia `ask_where_to_save` (default `true`) en `export_preferences.json` vía tauri-plugin-store, comandos `get/set_export_preferences`, toggle en Settings → General (`PreferenceSettings.tsx`, visible para todos los roles). En `false` escribe directo a Descargas desambiguando colisiones tipo Explorer (`doc (2).md`). **La verdad vive en Rust**, no en el frontend: la rama "no preguntar" resuelve la carpeta y las colisiones del lado nativo.
-
-**PDF**: `features/maity-chat/utils/chat-document-pdf.tsx` para el documento del chat y `features/conversations/utils/minuta-pdf.tsx` para la minuta, ambos con `@react-pdf/renderer` en lazy-import (el bundle es pesado; se carga al primer click). Solo fuentes built-in del PDF (Helvetica/Courier) — sin `Font.register`, sin fetch de red, sin tocar la CSP. El markdown se parsea con `utils/markdownBlocks.ts` (hand-rolled y testeado): `remark-parse`/`unified` son deps transitivas privadas de `react-markdown` que pnpm no hoistea, y `==resaltado==` es extensión propia de Maity que remark no parsea igual.
-
-**PPTX**: `PptxService.generateDeckBlob()` (en `shared/maity-shared.ts`) devuelve bytes. `generateDeck()` se conserva como la salida del navegador del web para minimizar drift — **no usarla en desktop**.
-
-### Context Providers (9, en `layout.tsx`)
-
-Stack de providers (de exterior a interior):
-1. `ThemeProvider` — Tema claro/oscuro
-2. `QueryClientProvider` — React Query (5 min stale time)
-3. `AuthProvider` — Google OAuth + Supabase
-4. `OnboardingProvider` — Flujo de onboarding
-5. `ConfigProvider` — Config de app (dispositivos, provider, idioma)
-6. `RecordingPostProcessingProvider` — Procesamiento post-grabacion
-7. `TranscriptProvider` — Estado de transcripciones
-8. `OllamaDownloadProvider` — Descarga de modelos Ollama
-9. `ParakeetAutoDownloadProvider` — Auto-descarga Parakeet
-+ `RecordingStateProvider`, `AnalyticsProvider`, `UpdateCheckProvider`
-
-**Componentes globales en layout**: `SplashScreen`, `AuthGate`, `ChunkErrorRecovery`, `ErrorBoundary`, `ErrorTelemetryInitializer`, `MeetingDetectionDialog`, `OfflineIndicator`, `CloudSyncInitializer`, `HealthHeartbeatInitializer`, `GlobalConversationNotifier`, `DbInitErrorGate`
-
-> **Ventanas auxiliares** (`/coach-float`, `/recording-widget`, `/device-picker`): `RootLayout` hace early-return ANTES de montar todos esos componentes. La lista canónica de rutas vive en `lib/auxWindows.ts` (`isAuxWindowPath`) — no duplicarla inline. `CloudSyncInitializer`, `GlobalConversationNotifier` y `HealthHeartbeatInitializer` llevan además su propio gate `isAux` como defensa en profundidad (patrón: el efecto depende del booleano `isAux`, NO de `pathname`, para no reiniciarse en cada navegación).
-
-> **Los niveles de audio viven FUERA de React, y las ventanas flotantes no llevan blur (sep-2026, #07 de la auditoría de recursos).** `coach-float` y `recording-widget` guardaban `{micRms, sysRms}` en un `useState` de **la página completa**, alimentado por dos eventos de Tauri a 10 Hz cada uno (`recording-audio-levels` y `audio-levels`, hasta 20/s combinados, y `setLevels` creaba objeto nuevo siempre → re-render incluso en silencio absoluto). Cada tick reconciliaba ~70 nodos y 15 iconos SVG, y como las barras cuelgan de un `backdrop-filter: blur(22px)`, cada mutación de altura recomponía el blur **por CPU** en los equipos sin GPU dedicada (11 de 20 usuarios): ~36,000 renders/hora.
-> - **`lib/audioLevelsStore.ts`** es un store de módulo (singleton fuera de React, `subscribe`/`getSnapshot` de `useSyncExternalStore`) que adjunta los listeners al **primer** suscriptor y los suelta con el **último** (ref-count por `Set`). Filtra por epsilon (Δ < 1e-3 en ambos canales no notifica) y coalesce con rAF + tope de 4 Hz.
-> - **`getSnapshot()` DEBE devolver la misma referencia** mientras el valor no cambie: `useSyncExternalStore` compara con `Object.is` en cada render, así que devolver un objeto nuevo es el bucle infinito clásico de esa API. Y **el tercer argumento `getServerSnapshot` es obligatorio**: `next build` con `output:'export'` prerenderiza estas páginas `'use client'` igual y sin él tira "Missing getServerSnapshot".
-> - **`components/audio/AudioLevelBars.tsx`** es el único consumidor: componente hoja con `React.memo` que consume el store **directo**, así que un tick de audio ya no toca la página. Anima con **`transform: scaleY()`** y `transform-origin: bottom` sobre una barra de altura fija, no con `height` — `transform` es compositor-only; animar `height` con transiciones de 150 ms solapadas contra ticks de 100 ms hacía que el compositor no descansara nunca.
-> - **Import directo de `listen`, con excepción registrada.** El repo obliga a pasar por `createSubscriptionGroup` (issue #65, evita un doble-unlisten que revienta como `unhandledrejection`), pero ese helper asume un ciclo de vida 1:1 con un `useEffect`; aquí el ref-count sube y baja entre muchos componentes hoja de dos ventanas distintas. El store reimplementa la misma defensa localmente y está en la lista blanca de **`.eslintrc.json` Y de la fitness function `lib/tauriSubscribe.test.ts`** — las dos, o el test falla.
-> - **Fondo opaco `#0F1018` sin `backdropFilter`** en la barra y el drawer de coach-float y en recording-widget. Decisión de producto, no un descuido. El `clipPath` se conserva: las esquinas redondeadas siguen bien sobre fondo opaco en una ventana Tauri `transparent: true`.
-> - **`resetAudioLevels()`** existe porque las barras ya no se desmontan entre grabaciones (nunca se llega a 0 suscriptores), así que el reset automático del store no dispara al detener: sin ella el widget se quedaría mostrando el último nivel de la sesión anterior.
-> - **NO bajar `WATCHDOG_TICK_MS` (100 ms) en `recording_helpers.rs` para "arreglar" esto**: no es solo el intervalo de emisión, es el tick del watchdog de silencio de micrófono del mismo loop y `ticks_per_sec` deriva de él sus umbrales. El throttle va del lado del cliente. Tampoco sirve `emit_to` en vez de broadcast (verificado en tauri 2.11.2: no ahorra wakeups).
-> - Pendiente anotado: el `setInterval` de 2 s con doble `invoke` (`is_recording`/`is_recording_paused`) y el ticker de 1 s siguen en ambas páginas.
-
-### Hooks (23 en `hooks/`)
-
-| Hook | Proposito |
-|------|-----------|
-| `useRecordingStart` | Iniciar grabacion (logica compartida extraida) |
-| `useRecordingStop` | Detener grabacion + sync cloud (fire-and-forget) |
-| `useRecordingLevels` | Niveles de audio en tiempo real |
-| `useRecordingStateSync` | Sincronizar estado de grabacion con Rust |
-| `usePreviewLevels` | Preview de niveles antes de grabar |
-| `useTranscriptStreaming` | Streaming de transcripciones en tiempo real |
-| `useTranscriptionProgress` | Progreso de transcripcion con tiempo estimado |
-| `useTranscriptionLag` | Profundidad de cola y lag de transcripcion |
-| `useTranscriptRecovery` | Recuperacion de errores de transcripcion |
-| `usePaginatedTranscripts` | Lazy-load de segmentos de transcripcion |
-| `useCloudSyncStatuses` | Estado de sync cloud por conversacion |
-| `useParakeetAutoDownload` | Auto-descarga de modelos Parakeet |
-| `useUserRole` | Rol de usuario (`admin`/`manager`/`user`) desde la DB, fail-closed |
-| `useNetworkStatus` | Deteccion online/offline |
-| `useUpdateCheck` | Verificar actualizaciones de la app |
-| `usePermissionCheck` | Verificar permisos de dispositivos |
-| `usePlatform` | Detectar OS (macOS/Windows/Linux) |
-| `useWindowCloseGuard` | Prevenir cierre accidental durante grabacion |
-| `useAudioPlayer` | Play/pause/seek con Web Audio API |
-| `useAutoScroll` | Auto-scroll con deteccion de scroll manual |
-| `useNavigation` | Helpers de navegacion |
-| `useProcessingProgress` | Progreso de procesamiento |
-| `useModalState` | Estado de modales |
-
-### Servicios Frontend
-
-| Servicio | Descripcion |
-|----------|-------------|
-| `conversations.service.ts` | CRUD conversaciones OMI, merge local+Supabase, 40+ tipos exportados |
-| `analysisPollingService.ts` | Singleton global de polling de analisis (sobrevive navegacion) |
-| `cloudSyncWorker.ts` | Worker de sync cloud en background |
-| `recordingLogService.ts` | Gestion de logs de grabacion |
-| `configService.ts` | Servicio de configuracion |
-| `transcriptService.ts` | Servicio de transcripciones |
-| `updateService.ts` | Servicio de actualizaciones |
-
-### Utilidades (`lib/`)
-
-| Archivo | Proposito |
-|---------|-----------|
-| `deepgram.ts` | `getDeepgramProxyConfig()` — obtener proxy config de Vercel API |
-| `roles.ts` | `getUserRoleFromRPC()`, `isAdmin()`, `isManager()`, tipo `UserRole` |
-| `supabase.ts` | Cliente Supabase proxy |
-| `analytics.ts` | Analytics tracking |
-| `canary.ts` | Estado y config de modelos Canary |
-| `logger.ts` | Utilidad de logging |
-| `invokeWithRetry.ts` | Wrapper de retry para invocaciones Tauri |
-| `retry.ts` | Logica generica de retry con exponential backoff |
-| `engines/` | Configs de motores STT: `whisper.ts`, `parakeet.ts`, `moonshine.ts`, `builtin-ai.ts`, `ollama-helpers.ts` |
-
-### Features
-
-**Conversaciones** (`features/conversations/`):
-- `ConversationsList.tsx` — Lista local-first (SQLite primero, merge Supabase en background)
-- `ConversationDetail.tsx` — Soporta `?id=` (cloud) y `?localId=` (local), polling de analisis
-- `analysis/dashboard-v1/` — el dashboard de análisis real (hero, `TuRadarCard`/`RadarCalidad` con Chart.js, KPI, insights, hallazgos, recomendaciones, `adapter.ts` cloud V4 → shape V1). `analysis/index.ts` solo exporta `TranscriptSection`; los 10 componentes legacy de `analysis/` y los charts huérfanos (`charts/` solo conserva `GaugeChart`, usado por `minuta/MinutaGauge`) se borraron en ago-2026 (#74).
-- `AnalysisSkippedCard.tsx` — tarjeta del análisis omitido (ramifica por `reason`); `InputQualityNotice.tsx` — aviso "se analizaron X de Y min" (`calidad_insumo`); `AnalysisStatusBanner.tsx` — polling/stalled/failed
-- `minuta/` — 7 componentes de minuta de reunion (acciones, decisiones, seguimiento, efectividad)
-- `useAnalysisPolling.ts` — Hook de polling con fases: idle -> polling -> retrying -> completed
-
-> **Rúbrica 6.x del V4 en el desktop (ago-2026, #72-#74).** La web cambió el contrato del JSONB `communication_feedback_v4` el 21-ago-2026 (Sixale730/maity #142/#147). Reglas espejo, todas deliberadas:
-> 1. **"Tiene análisis" = `isFullAnalysis(v4)`, nunca truthiness.** El marcador skipped (`{status:'skipped', reason, user_words, min_required, speakers, metrics}`) es un objeto truthy: con `v4 &&` una grabación omitida lucía el badge "Análisis" en la lista y dejaba `isAnalyzing` pegado en `app/conversations/page.tsx`. Skipped es terminal (`derivePhase`). Los fallos de proveedor NO usan el marcador: escriben `null` + `analysis_status='failed'`.
-> 2. **La tarjeta skipped ramifica por `reason` y no inventa cifras** (`AnalysisSkippedCard`): `insufficient_user_words` ("no dijiste `min_required` palabras", sin default — el `?? 15` viejo estaba obsoleto, el umbral es 100) vs `no_evaluable_speech` (#147: "grabaste 60 min pero en ningún tramo de 5 min hubo conversación continua" — el bloque de jornada; en el piloto fue ~1 de cada 4 grabaciones). Reason desconocido → texto genérico. Ninguno consume cuota; la minuta sí se genera.
-> 3. **Todo agregado de puntajes pasa por `utils/scoring.ts::getCommScore`**, que devuelve `null` para skipped Y para `calidad_insumo.nivel === 'baja'` (`isLowConfidenceV4`: ruido transcrito o atribución de hablantes adivinada). Mismo predicado que `maity.team_conversation_scores` y `getNormalizedScores` de la web; NULL-safe para filas anteriores a #147. El detalle sí muestra el puntaje `baja`, con aviso ámbar (`InputQualityNotice`, leído del raw con `readCalidadInsumo` — el adapter no conserva `calidad_insumo`).
-> 4. **Un componente `null` o listado en `dimensiones_no_aplica` NUNCA se pinta como 0.** `dashboard-v1/adapter.ts` lo traduce a `calidad_global.no_aplica` (fuentes, en orden: `dimensiones_no_aplica` → `recording_mode==='presentation'` para filas pre ago-2026 → `componentes[k] === null`), `RadarCalidad` omite el eje y `TuRadarCard` explica la nota. `componentes` sigue numérico (0) para no romper KPI/Hallazgos. Tests: `adapter.test.ts`, `scoring.test.ts`, `AnalysisSkippedCard.test.tsx`, `InputQualityNotice.test.tsx`.
-> 5. `getOmiStats`/`OmiStats` se borraron: leían `resumen.puntuacion_global` y dimensiones (`emociones`, `formalidad`, `muletillas`) que 6.x no escribe. `DashboardV1Preview.tsx` (ruta admin `/dev/dashboard-v1`) sigue con niveles viejos a propósito: es fixture, no contrato.
-
-> **La lista de conversaciones va PROYECTADA, no `select('*')` (sep-2026, #05 de la auditoría de recursos).** `getOmiConversations` traía `transcript_text` + `communication_feedback` + `communication_feedback_v4` + `meeting_minutes_data` de TODAS las conversaciones, sin `limit`: 3 MB por fetch en p95, 6-9 MB de heap retenidos toda la sesión y ~180 MB/día de red. Medido en producción: fila promedio **8.5 KB**, máx 99 KB, hasta **578 filas** en un usuario, y esos cuatro campos son ~10.3 de los 15 MB de la tabla. Piezas, todas deliberadas:
-> 1. **`LIST_COLUMNS` es una lista explícita de columnas + escalares del JSONB** con la sintaxis de PostgREST (`alias:columna->>clave`). Los pesados NO viajan: en su lugar van `v4_status`, `v4_calidad_global`, `v4_resumen_puntuacion`, `v4_insumo_nivel`, `v1_overall_score` y `minuta_titulo` (juntos ~1.2 KB en una fila analizada). `action_items` **sí se queda entero** — 141 B de media, sale más caro un fetch aparte. `idempotency_key` y `started_at` son **obligatorios**: sin ellos `mergeConversations` no casa la fila local con la de la nube y se duplican conversaciones. Hay un test (`conversations.service.test.ts`) que falla si alguien vuelve a `select('*')`.
-> 2. **La fila proyectada se marca con `_projection: 'list'`** y trae los derivados `_listAnalysis` / `_listHasMinuta` / `_listCommScore`, campos aditivos al estilo de `_syncState` (el spread de `mergeConversations` los propaga solo). **`getCommScore` y `derivePhase` ramifican por `_projection` ANTES de mirar los JSONB.** El de `derivePhase` no es cosmético: sin él una fila legacy proyectada devuelve `'stalled'`, y eso dispara `reanalyzeConversation` → **quema cuota del usuario**.
-> 3. **`isFullAnalysis` se aproxima con tres señales** (`calidad_global` presente, `resumen.puntuacion_global` presente, o `analysis_status === 'completed'`) porque el predicado real es "existe la clave", y pedir la clave traería justo el peso que se quiere evitar. Medido contra producción: **0 filas de 1,893** quedan fuera. La sonda de minuta `meeting_minutes_data->meta->>titulo` detecta 709 de 712, y las 3 que no son `{"error": "..."}` sin minuta — o sea es **más correcta** que el `!!meeting_minutes_data` anterior, que les pintaba un badge que prometía algo inexistente.
-> 4. **Tope de 200 filas + "Cargar más"** (`LIST_DEFAULT_LIMIT`), sin cursor: un cursor por `updated_at` sobre una lista ordenada por `created_at` no es estable, y refetchear 200 filas ligeras en una acción explícita del usuario es más barato que `useInfiniteQuery`. El `limit` entra en la queryKey → **`['omi-conversations', userId, { limit }]`, de TRES elementos**. `/notes` y `/tasks` deben usar esa misma key con `{ limit: LIST_DEFAULT_LIMIT }` o crean una caché paralela con el mismo contenido; y todo lector que use `getQueryState` necesita la key exacta (a diferencia de `invalidateQueries`, que matchea por prefijo).
-> 5. **El Sidebar ya NO consulta conversaciones.** Estaba montado en toda la app, así que su observer nunca quedaba inactivo: `gcTime` no corría jamás y cada invalidación se volvía un fetch real estuviera el usuario donde estuviera — todo para alimentar un filtro de búsqueda **inerte** desde que se quitó el input. No reintroducir un `useQuery` ahí: si vuelve la búsqueda, que lea la caché existente.
-> 6. **`GlobalConversationNotifier` parchea la fila, no invalida la lista.** El backend escribe un heartbeat en `updated_at` cada 30 s mientras `analysis_status='processing'`; antes cada uno disparaba un `select('*')` completo. Hoy compara contra la caché **antes** de escribir (si se compara dentro del updater de `setQueriesData` y se devuelve `prev`, TanStack despacha igual el evento `updated` y el observer del QueryCache vuelve a iterar las N filas). Solo una fila ausente de la caché justifica un `invalidateQueries`, y va throttleado a 1 cada 30 s. El **detalle** sí se sigue invalidando siempre.
-> 7. **El `refetchInterval` de 15 s ahora cuelga de `derivePhase`, no de `analysis_status == null`.** El 43 % de las filas de producción (813 de 1,893) tiene ese campo en `null`, así que el predicado viejo dejaba el poll encendido **permanentemente** en cualquier cuenta real, no "a veces".
-> 8. **Gamificación tiene su propia key** (`['omi-conversations-analysis', userId]` + `getOmiConversationsForAnalysis`, `staleTime` 10 min). Es el único consumidor que necesita los JSONB de análisis **completos** y de las filas **más viejas** (`useProgressChartsData` lee `communication_feedback.radiografia.*` y filtra por `overall_score != null`), así que ni tolera la proyección ni un tope por recencia. Si se le devuelve a la key compartida, se le vacían el radar y las gráficas **en silencio**.
->
-> Pendiente anotado: `sync-status-changed` sigue invalidando `['omi-conversations']` por prefijo en **cada** transición de job del worker de sync (~12 por grabación), y Realtime sigue empujando la fila COMPLETA por el WebSocket en cada heartbeat — esto último no se arregla desde el cliente (haría falta una column list en la `PUBLICATION`).
-
-**Gamificacion** (`features/gamification/`):
-- `GamifiedDashboard.tsx` — Dashboard principal
-- `MountainMap.tsx` — SVG de volcan con nodos de progreso
-- `MetricsPanel.tsx` — XP, racha, competencias
-- `InfoPanel.tsx` — Ranking y muletillas
-
-**Notas** (`features/notes/`) y **Tareas** (`features/tasks/`):
-- Extraccion automatica desde analisis de conversaciones
-
-### Sistema de Analisis V4 (Tipos Clave)
-
-El analisis de conversaciones usa un sistema V4 con multiples dimensiones:
-- `CommunicationFeedbackV4` — Estructura completa de analisis
-- `AnalysisSkipped` — Marcador para analisis omitidos (palabras insuficientes)
-- `MeetingMinutesData` — Minuta completa con 8 subsecciones
-- Dimensiones: Objetivo, Emociones, Muletillas, Adaptacion
-- Perfiles por hablante: palabras, claridad, persuasion, formalidad, emociones
-- Type guards: `isAnalysisSkipped()`, `isFullAnalysis()`
+**Nunca `<a download>` en el desktop** (WebView2 guarda sin preguntar y la app nunca aprende la ruta). Todo guardado pasa por el comando `save_artifact_file` (Rust, `file_export.rs`; DEBE ser **async** — síncrono deadlockea) vía el helper único `lib/saveArtifact.ts`. El diálogo se maneja desde Rust con `DialogExt`; `@tauri-apps/plugin-fs` NO está inicializado aunque sus permissions existan. Detalle y consumidores: `docs/UI_REGLAS.md`.
 
 ## Patrones Criticos de Desarrollo
 
@@ -695,54 +259,14 @@ El analisis de conversaciones usa un sistema V4 con multiples dimensiones:
 
 ### Logging Consciente del Rendimiento
 - `perf_debug!()`/`perf_trace!()` para logging en rutas criticas — costo cero en builds de release (definidos en `lib.rs`)
-- `AudioBufferPool` (buffer_pool.rs) para pre-asignar buffers
-- El `AudioMetricsBatcher` (`batch_processor.rs`) se **borró** en sep-2026 (#10 de la auditoría de recursos): acumulaba resúmenes que nadie leía — ver el blockquote en § Rendimiento de Audio
+- `AudioBufferPool` (buffer_pool.rs) para pre-asignar buffers (el `AudioMetricsBatcher` se borró en sep-2026, #10)
 
 ### Rendimiento de Audio
-- El filtrado VAD reduce la carga de Whisper en ~70% (solo procesa voz)
-- El guardado incremental con checkpoints de 30s previene perdida de datos por crashes
+- El filtrado VAD reduce la carga de Whisper en ~70% (solo procesa voz); guardado incremental con checkpoints de 30s
+- EBU R128 loudness via `ebur128` (**`Mode::HISTOGRAM` obligatorio**, #11) y noise suppression via `nnnoiseless` — reglas en `docs/REGLAS_AUDIO_GRABACION.md`
 - Features de Cargo para GPU: `--features cuda`, `--features vulkan`, `--features metal`
-- EBU R128 loudness normalization via `ebur128` (con `Mode::HISTOGRAM`, ver abajo)
-- Noise suppression via `nnnoiseless` (RNNoise)
-- El motor STT se carga sólo con sesión + registro y se descarga en logout y en reposo (tier Low) — ver el blockquote "Parakeet ya no se carga al arrancar" en § Gate de Sesión (#02 de la auditoría de recursos)
 
-> **El medidor EBU R128 usa `Mode::HISTOGRAM` y `normalize_loudness` escribe en sitio (sep-2026, #11 de la auditoría de recursos); el `AudioMetricsBatcher` se borró (#10).** Sin `HISTOGRAM`, el crate `ebur128` guarda la energía de CADA bloque de 100 ms en un `VecDeque<f64>` sin tope (`history = usize::MAX`) y `loudness_global()` —llamado cada 512 muestras— recorre la cola entera: RAM **y CPU** crecían con la duración del segmento (la auditoría sólo anotó RAM). Con el histograma son 1000 bins fijos (8 KB) y O(1000) por llamada.
-> - **No "arreglarlo" con `set_max_history(…)`, que era el remedio propuesto por la auditoría.** En `ebur128 0.1.10` `Queue::set_max_size` **rellena la cola con ceros hasta `max`** cuando se llama sobre una instancia nueva, y esos ceros cuentan en el promedio del umbral relativo (gate de ~−20 LU en vez de −10 LU durante el primer minuto). Y una ventana deslizante cambia la dinámica en la jornada: tras un silencio largo la cola queda sólo con ruido de sala (> −70 LUFS), la ganancia sube ~+37 dB y **ese audio amplificado es el que ve el VAD** (`pipeline.rs` normaliza ANTES del VAD). El histograma conserva la integración sobre TODO el segmento, la misma dinámica de siempre (±0.1 LU por la cuantización); el test `el_histograma_no_cambia_la_sonoridad_integrada` compara ambos modos y delata un cambio del crate.
-> - `AudioMetricsBatcher` mandaba un `Instant::now()` + un send por `unbounded_channel` por cada chunk de 10 ms de AMBOS dispositivos (~200/s) a una tarea que empujaba resúmenes a un `Arc<RwLock<Vec>>` que nadie leía (`get_summaries` sin llamadores; 1-2 MB por segmento de 90 min). Borrado con su macro `batch_audio_metric!`; recuperable de git.
-> - Pendiente anotado: `HighPassFilter::process` y `NoiseSuppressionProcessor::process` siguen asignando un `Vec` por callback en la misma ruta caliente.
-
-> **Checkpoints de audio: buffer contiguo y UN encode a la vez (sep-2026, #08 de la auditoría de recursos).** `incremental_saver.rs` acumulaba `Vec<AudioData>` — ~300 `Vec<f32>` sueltos por checkpoint de 30 s — y antes de encodear los concatenaba en un **segundo** `Vec` de 2,880,000 elementos que convivía con el primero durante todo el ffmpeg: pico de ~23 MB por checkpoint. Además el `spawn_blocking` no tenía limitador: con la CPU saturada, encodes de más de 30 s se solapaban sin tope (el pool blocking de tokio admite 512 hilos), cada uno con su proceso ffmpeg y su buffer.
-> - **`checkpoint_buffer` es un `Vec<f32>` contiguo preasignado** con `with_capacity(checkpoint_interval_samples)`; `add_chunk` hace `extend_from_slice` y el buffer viaja a ffmpeg con `bytemuck::cast_slice` **sin copia intermedia**. Al flushear, `mem::replace` (no `mem::take`) deja el reemplazo ya preasignado — el `take` lo dejaba en capacidad 0 y lo hacía re-crecer 300 veces cada 30 s.
-> - **`encode_slots: Semaphore` de 1 permiso, POR SAVER** (no un `OnceLock` global: solo hay un saver vivo y así los tests no comparten estado). `add_chunk` es **sync**, así que el camino normal usa `try_acquire_owned()`: si no hay permiso **no se lleva el buffer** — sigue acumulando y reintenta al siguiente chunk. El checkpoint sale más largo de 30 s pero **no se pierde audio**. `finalize()` es `async` y ahí sí se hace `acquire_owned().await` (flush forzado), o el último tramo podría quedar diferido para siempre. El permiso vive dentro del `PendingGuard`, que ya era panic-safe.
-> - **El aviso de flush diferido lleva latch** (`deferred_since`). `add_chunk` corre ~10 veces por segundo y, una vez que el buffer pasa el umbral, **cada** llamada reintenta: sin latch un encode lento escupe 10 warns/segundo al log rotativo — el mismo patrón de tormenta que costó 965 eventos en 8 h en el piloto Dingler. Se avisa una vez al entrar en el estado y otra al salir, con cuánto duró.
-> - **`encode.rs` drena stderr en un hilo aparte, EN PARALELO con el `write_all` de stdin.** Con ambos pipes sin leer hasta `wait_with_output()`, si ffmpeg llenaba los 64 KB del pipe de stderr antes de consumir los 11.5 MB de stdin era un **deadlock**. Los flags nuevos (`-hide_banner -loglevel error -nostats`) lo hacen improbable, no imposible. También lleva `-threads 1`: un AAC de 30 s no necesita más y así no compite con Parakeet en gama baja.
-> - **No cambiar el intervalo de 30 s ni la extensión `.mp4`.** El primero está cableado en `recover_audio_from_checkpoints` (`estimated_duration = chunks * 30.0`); la segunda es el filtro con el que esa función y `has_audio_checkpoints` encuentran los archivos — cambiar el contenedor rompe la recuperación post-crash **en silencio**.
-> - **`test_checkpoint_creation` sigue `#[ignore]`, y la razón cambió (sep-2026, #32).** Bundlear ffmpeg en Windows **no** lo des-bloquea: `cargo test` produce un binario en `target/debug/deps/`, y el `externalBin` que Tauri copia vive en `target/debug/` — la rama "junto al exe" no lo ve. En una máquina sin ffmpeg en PATH el test seguiría cayendo en `handle_ffmpeg_installation()` (descarga real) y tokio bloquea el `Drop` del runtime del test hasta que termine el `spawn_blocking`: se colgaría en vez de fallar rápido. Correrlo a mano con `cargo test -p maity-desktop -- --ignored` en una máquina con ffmpeg en PATH. Los tests que sí corren prueban el cambio sin tocar ffmpeg: uno sostiene el permiso del semáforo a mano y verifica que no se pierde audio, otro usa la costura `take_buffer_for_checkpoint()`, y `audio::ffmpeg::tests` cubre `bundled_candidate` y `remove_unused_ffmpeg_tools` sobre un tempdir.
-> - **El concat final ya no bloquea (sep-2026, #18).** `merge_checkpoints` y `recover_audio_from_checkpoints` pasan por `run_ffmpeg_concat` (`tokio::process::Command`, **con `stdin(Stdio::null())` + `-nostdin`**: el `output()` de tokio, a diferencia del de std, NO anula stdin, y ffmpeg lo lee en modo interactivo si lo hereda; `kill_on_drop` porque tokio no tiene reaper de huérfanos en Windows). Los flags viven en `concat_args`, pura y con golden test, como `encode_args`. `finalize()` ya no sondea un contador con `sleep(50 ms)`: **espera el permiso de `encode_slots`** (sostenerlo ⇔ ningún encode en vuelo, porque cada encode lo retiene hasta que su closure termina y `finalize` tiene `&mut self`) con **una sola fecha límite de 300 s que cubre también el flush del último tramo** — antes ese flush esperaba sin timeout y un ffmpeg colgado congelaba `finalize()` antes de llegar al timeout. `pending_encodes`/`PendingGuard` se fueron; el permiso entra al closure de `spawn_blocking` como local y se suelta también al desenrollar un panic.
-> - Pendiente anotado: `-movflags +faststart` reescribe cada intermedio.
-
-> **Bitrate 64k y retención de audio (sep-2026, #27).** El encode de checkpoints estaba en `-b:a 192k` con el comentario "Increased from 64k for better audio quality (especially for speech)". Ese comentario **no tiene commit detrás**: `git log -S "192k"` y `git log -S "64k"` sobre `encode.rs` devuelven un único resultado, el squash inicial `dbc1bc7`, o sea que la subida viene heredada del upstream (screenpipe/meetily). Y no hay consumidor de esa calidad: **la transcripción consume el `f32` crudo del pipeline** (nunca el mp4) y el análisis es sólo texto. A la vez, ninguna ruta de código borraba jamás una carpeta de reunión, así que el audio se acumulaba sin techo. Reglas derivadas:
-> - **`encode_args` es PURA y tiene tests.** El bitrate, el orden de flags y `-profile:a aac_low` están congelados en `encode.rs::tests`. `-ar`/`-ac` van **antes** de `-i` (describen el input crudo `f32le`); la salida no lleva `-ar`/`-ac` y hereda 48 kHz estéreo, que es lo que conserva la atribución de hablante por canal L/R. Bajar también el sample rate cambiaría dos variables a la vez: **no**. Mezclar bitrates en `merge_checkpoints` no rompe nada: el `concat -c copy` exige AudioSpecificConfig compatible (AAC-LC / 48 kHz / 2 canales) y el bitrate no forma parte de él. **Si alguna vez se transcribe la jornada por lote** desde los checkpoints (auditoría §"Alternativa: transcribir la jornada por lote"), la premisa de arriba se invierte: el 64k pasa a ser la ENTRADA del ASR, no un subproducto — **medir WER antes de adoptarlo**, que es la condición que la propia auditoría le puso a esta bajada.
-> - **El barrido es una tarea PROPIA (`audio/audio_retention.rs`), arrancada junto a `drain::spawn` en `lib.rs`.** No colgarlo del tick del `mem_sampler` (mueve un `System` dentro/fuera de `spawn_blocking`; un `remove_file` ahí contamina el timing de la muestra) **ni** del `cloud_sync::worker` (se auto-gatea por `current_user_id` + sesión Supabase: colgado ahí, el barrido moriría con la sesión aunque las reuniones que toca lleven semanas sincronizadas). Delay de arranque de 120 s para no cruzarse con `autoRecoverAll`, que al arrancar fusiona checkpoints con FFmpeg en serie.
-> - **Condición de borrado = fila de `sync_queue` con `job_type='finalize_conversation' AND status='completed'` y `completed_at` de al menos N días.** Eso significa sincronizada **y** analizada (la cadena `depends_on` garantiza que los segmentos ya subieron). Esas filas no se purgan nunca: la poda de la cola (#26) vacía el `payload` pero conserva fila, `status` y `completed_at`; la vieja `cleanup_old_completed` (un `DELETE`) se borró justo para que nadie la llame. La verdad de la ruta en disco es `meetings.folder_path`, **no** `preferences.save_folder`: `initialize_meeting_folder` usa `get_default_recordings_folder()` e ignora la preferencia del usuario.
-> - **A quién NO alcanza el barrido, y no es un detalle:** exigir `finalize_conversation` completado deja fuera a todo el que nunca cierra ese job — cuota agotada (`QuotaDefer` deja el job en `retrying`, 29 conversaciones en el piloto Dingler), sin sesión (`AuthDefer`) u offline permanente. Esos usuarios conservan el 100 % de su audio indefinidamente. Es deliberado —borrar audio no sincronizado sería tirar el único respaldo— pero significa que **#27 no está cerrado para ellos**: no marcarlo como resuelto creyendo que cubre a todos. Cambiar la condición es decisión de producto, no de refactor.
-> - **Pendiente conocido: borrar una conversación deja su audio inalcanzable.** `delete_meeting_with_transaction` (vía `api_delete_meeting`, que invoca el Sidebar) borra la fila de `meetings` sin tocar `std::fs`; como el barrido parte de `FROM meetings m`, esa carpeta deja de ser visible para siempre — la misma patología que sí se cerró para la rama `Discarded`. El arreglo sería leer `folder_path` ANTES del delete y llamar `audio_retention::remove_audio_artifacts`.
-> - **Mínimo 1 día efectivo, por el TIPO y no por un clamp** (`effective_retention_days`, pura y con test): `audio_retention_days = 0` significa "nunca borrar" y ni siquiera lanza la consulta; cualquier otro `u32` ya es ≥ 1 y pasa tal cual. **No** reintroducir un `.max(1)` ahí — sería código muerto que aparenta una salvaguarda inexistente; si alguna vez hace falta acotar, va en la deserialización de la preferencia.
-> - **Qué se conserva SIEMPRE**: `transcripts.json` y `metadata.json`. Se borran `audio.mp4` y el `.checkpoints/` residual (`recover_audio_from_checkpoints` sólo borra `concat_list.txt`, así que tras una recuperación post-crash la carpeta pesa ~2×). `metadata.json` se parchea best-effort como `serde_json::Value` (`audio_file: ""` + `audio_deleted_at`) para que el manifiesto no siga apuntando a un archivo inexistente. La carpeta **no** se borra: `reveal_in_folder` valida existencia antes de abrir el Explorador.
-> - **La promesa del toast "Abrir carpeta" NO cambia** (ver § Recuperación de grabaciones interrumpidas). Las reuniones con 0 transcripts no llegan a tener fila en `meetings`, así que no tienen `folder_path` y el barrido **no las alcanza nunca**: su `audio.mp4` sigue ahí indefinidamente, tal como se le promete al usuario.
-> - **Idempotencia por columna, no por `stat`**: `meetings.audio_deleted_at` (migración aditiva `20260904000000`). Se marca también cuando el archivo ya no existía, o la fila volvería a salir candidata cada 6 h para siempre. Tope de 200 reuniones por pasada.
-> - Telemetría: **`audio.retention_swept`** con `status` `ok`/`partial`, emitido **sólo si hubo trabajo**.
-
-> **El VAD de Silero ya no retiene el silencio (sep-2026, #01 de la auditoría de recursos).** El crate `silero` acumula **cada** muestra en `session_audio` y sólo drenaba al emitir `SpeechEnd`: en silencio nunca, 230 MB/h por canal, dos canales, ~700 MB por segmento de 90 min con el canal del sistema callado. Reglas, todas deliberadas:
-> - **El crate está VENDORIZADO** en `frontend/src-tauri/vendor/silero-rs/` (upstream `emotechlab/silero-rs` @ `1283485`, main de jul-2026) **con parches locales listados en la cabecera de su `lib.rs`**. No es capricho: en upstream `take_until()` mueve `speech_start_ms` pero `SpeechEnd` lee el `start_ms` del enum `VadState::Speech`, así que podar durante habla y dejar que la elocución termine sola hacía **panic** en el hilo del pipeline (`get_speech` sobre audio ya borrado). Además `take_until` clampa la frontera a `processed_duration()`: borrar audio que el modelo no ha visto dejaba `deleted > processed` y el siguiente `process()` hacía underflow. Sin la feature `audio_resampler` (Maity siempre alimenta 16 kHz). Tests sintéticos en el crate (`cargo test -p silero`); los del upstream con `.wav` son punteros git-LFS y se quitaron.
-> - **El modelo vive en `vendor/silero-rs/silero_vad.onnx`, en la raíz del crate y no en `models/`**, porque el `.gitignore` tiene `**/models/*.onnx`. Moverlo ahí lo saca del repo en silencio y el `include_bytes!` deja de compilar en CI.
-> - **`trim_start_silence()` va en CADA chunk** (`vad.rs::process_chunk`, tras las transiciones), sin gate por `current_silence_duration()`: con probabilidad sostenida entre `negative` (0.25) y `positive` (0.50) —ruido de fondo, música en el canal sistema— `silent_samples` se queda en 0 y el buffer no se podaría nunca. Es seguro en la ventana pre-redemption **sólo** porque el crate ≥ `1283485` lee el `start_ms` del estado; con el rev viejo (`26a6460`) borraba parte del pre-speech pad y `SpeechEnd` panic-eaba. En habla, tras el primer recorte es un `drain(..0)`.
-> - **`take_until(frontera)` en cada force-cut de 2 s** suelta del crate lo que ya viajó en ese segmento; sin esto la elocución entera (4 MB/min/canal) se queda hasta el `SpeechEnd` natural y al cerrar se clona dos veces. Con el crate parcheado el `SpeechEnd` posterior entrega **sólo la cola** (`start_timestamp_ms == last_force_cut_end_ms`), así que el trim de `on_speech_end` queda como defensa. Si la frontera cae fuera de `session_time()` se avisa con `warn!` y no se poda: es un reloj desincronizado, no un caso normal.
-> - **`speech_start_sample = processed_samples`, NUNCA `+ timestamp_ms * 16`.** El `timestamp_ms` de `SpeechStart` ya es absoluto (es el `start_ms` con pre-pad del crate); sumarlo duplicaba el reloj del wrapper para el **primer** force-cut, y en `on_speech_end` `last_cut − start` salía ≈ el doble del tiempo transcurrido → `trim_samples ≥ raw.len()` → `natural-drop`: **toda frase de 2–4 s que empezara después de los primeros ~3 s de grabación perdía lo dicho después del segundo 2**. Con ≥2 cuts el segundo reasignaba `processed_samples` y el reloj se corregía solo; por eso duró meses. Es también el reloj que `take_until` necesita. Test rojo→verde: `test_cola_tras_un_solo_force_cut_no_se_descarta`.
-> - Diagnóstico: `perf_debug!("VAD crate buffer span=…")` cada ~60 s por canal (sólo debug). En silencio ~200 ms; en habla ≤ ~2 s + pads. `redemption_time` real es **600 ms** (`pipeline.rs`), no los 2000 del comentario viejo.
-> - `Cargo.lock` está gitignored: el cambio de git dep a path dep no deja diff que commitear; CI lo resuelve solo.
-
-### Flujo Local-First de Grabacion
+## Flujo Local-First de Grabacion
 
 ```
 Usuario detiene grabacion
@@ -756,114 +280,37 @@ Fire-and-forget: sync cloud via sync_queue (background)
 ConversationDetail: muestra datos locales, poll cloud analysis
 ```
 
-### Recuperación de grabaciones interrumpidas — automática y sin fantasmas (ago-2026)
+Reglas asociadas (detalle en `docs/REGLAS_AUDIO_GRABACION.md`):
+- **Recuperación de grabaciones interrumpidas**: automática (`autoRecoverAll`) con filtro de fantasmas (`transcriptCount === 0` se borra de IndexedDB sin tocar disco); el diálogo `TranscriptRecovery` es solo red de seguridad.
+- **`finalize_segment_native` devuelve `SegmentOutcome::{Saved,Discarded,Failed}`, NO `Option`** (#4 del piloto) — un descarte señalizado como `None` revivía el segmento por dos caminos. Umbral: `MIN_SEGMENT_WORDS` = 250, contando AMBOS canales, sin corte por densidad.
+- **`started_at` se SELLA (`recording_start_wall`), nunca se deriva como `ahora − duración`** (#5 del piloto: con suspend, `Instant::elapsed()` sigue corriendo). `should_rotate` con wall-clock es correcto; `MAX_SEGMENT_MINUTES` = 90 **rota, no cierra** en overtime; las grabaciones manuales no rotan.
 
-Cada grabación crea al **arrancar** un registro en IndexedDB (`TranscriptContext`, `recording-started`, `transcriptCount:0, savedToSQLite:false`) que sirve de WAL para transcripts; al guardar se marca `savedToSQLite=true`. `useTranscriptRecovery` + `app/page.tsx` lo consumen en el arranque:
+## UI: reglas de patrones visuales
 
-- **Filtro de fantasmas**: un registro sin marcar con `transcriptCount === 0` (aborto temprano, segmento de jornada en silencio — `finalize_segment_native` devuelve `None` y el frontend no lo marca —, STT que nunca cargó) **se borra de IndexedDB** y no se ofrece. Decisión de producto: sin transcripts NO se recupera como reunión, **aunque haya checkpoints de audio**. El filtro **nunca** toca disco (`cleanup_checkpoints`/carpeta).
-- **Auto-recuperación**: las candidatas con transcripts se guardan solas (`autoRecoverAll`, en serie: cada una lanza FFmpeg + escribe SQLite) y sale **un** toast ("Reunión recuperada" con "Ver" / "Se recuperaron N…"). Sin auto-navegación. El diálogo `TranscriptRecovery` queda solo como **red de seguridad** para las que fallan; `page.tsx` lo gatea con `autoRecoveryDone` porque `checkForRecoverableTranscripts` llena `recoverableMeetings` ANTES de que la auto-recuperación las vacíe.
-- El arranque se gatea con `useAuth().maityUser?.id` (no `[]`): `api_save_transcript` exige `current_user_id` en Rust y ese IPC lo dispara `AuthContext` al cargar `maityUser`. Si aun así llega `no user logged in`, `isTransientNoUserError` lo trata como transitorio: se saca de la lista sin marcar → reintento en el próximo arranque, sin diálogo.
-- **`useRecordingStop` con 0 transcripts**: ya NO deja el registro sin marcar "para el diálogo" (era un callejón sin salida: `recoverMeeting` rechaza reuniones sin transcripts). Si hay checkpoints, fusiona best-effort con `recover_audio_from_checkpoints` (deja `audio.mp4` en la carpeta), marca guardada, y avisa con toast "Reunión sin transcripción" + acción **"Abrir carpeta"** (`reveal_in_folder`). Los eventos de telemetría `save_deferred_audio_only`/`save_skipped_no_transcripts` se conservan tal cual (catálogo).
-- Pendiente conocido: la carrera de `markMeetingAsSaved` en rotación de jornada (`TranscriptContext` resuelve el id por `sessionStorage`, que el nuevo segmento pisa) puede dejar un segmento con transcripts sin marcar → se auto-recupera como reunión local (posible duplicado del que Rust ya guardó).
-
-Tests: `hooks/useTranscriptRecovery.test.ts`, `hooks/useRecordingStop.feedback.test.tsx` (bloque "0 transcripts con audio en disco").
-
-### Umbral de contenido de la jornada: `SegmentOutcome`, no `Option` (ago-2026, #4 del piloto)
-
-La jornada headless guardaba una hora de silencio como conversación: de 144 conversaciones del piloto Dingler, **80 no eran analizables** y todas viajaban a la nube gastando cuota. Hoy `finalize_segment_native` descarta el segmento por debajo de **`MIN_SEGMENT_WORDS` = 250 palabras, contando AMBOS canales**.
-
-- **Ambos canales, no solo el usuario**: si se contaran solo las del usuario, una junta donde la persona escuchó y el interlocutor habló mucho se tiraría entera.
-- **Nada de densidad (palabras/minuto)**, aunque parezca más fina: se descartó **con datos**. Las conversaciones que sí se analizaron bajan hasta **3.6 palabras/min** y las inservibles llegan a **18.3** — los rangos se solapan, así que cualquier corte por densidad pierde conversaciones buenas. El conteo bruto sí separa las poblaciones.
-- **`finalize_segment_native` devuelve `SegmentOutcome::{Saved,Discarded,Failed}`, NO `Option<String>`. No "simplificarlo" de vuelta.** `None` significa *"falló, sálvalo por otro lado"*, así que un descarte deliberado señalizado como `None` revivía por partida **doble**: (1) `close_scheduled` emite `RECORDING_STOP_COMPLETE` y el webview lo guarda por el camino legacy; (2) el frontend deja el registro de IndexedDB **sin marcar a propósito** para que el diálogo de recuperación sea red de seguridad, y `autoRecoverAll` lo guarda solo en el siguiente arranque — el filtro de fantasmas solo borra los de `transcriptCount === 0`, y un segmento descartado tiene transcripts, solo que pocos. Por eso los eventos llevan `discarded: true` y `RecordingPostProcessingProvider` marca cuando `meetingId || discarded`.
-- **0 transcripts sigue siendo `Failed`, no `Discarded`**, a propósito: el archivo puede estar vacío porque falló la escritura a disco mientras el buffer de React sí tiene contenido, y el fallback legacy es la red de seguridad de ese caso.
-- **La carpeta del segmento descartado ya no queda huérfana con su audio (sep-2026, #27).** El descarte retorna antes de tocar SQLite, así que esa carpeta nunca tiene fila en `meetings` y el barrido de retención —que trabaja sobre `folder_path`— jamás la vería. Por eso, justo después de `emit_segment_discarded`, se llama `audio_retention::remove_audio_artifacts(folder_path)` best-effort: **se borran `audio.mp4` y `.checkpoints/`, se conservan `transcripts.json` y `metadata.json`** como rastro auditable de por qué se descartó. Es seguro porque `folder_path` es la carpeta del segmento YA cerrado (capturada antes del `stop_recording`) y ninguno de los dos callers vuelve a leer `folder` después: sólo consumen el `SegmentOutcome`. **Esta limpieza NO consulta `audio_retention_days`**: borra aunque el usuario haya elegido "nunca borrar", porque respetar la preferencia aquí conservaría para siempre un audio que ningún otro camino puede volver a encontrar. Por eso la opción de la UI dice "Nunca borrar el audio **de las reuniones guardadas**" — si se cambia una, cambiar la otra.
-- Telemetría: evento propio **`recording.segment_discarded`** — **no** reusar `save_skipped_no_transcripts`, cuyo nombre afirma "no transcripts" cuando aquí sí los hay (misma razón falsa que costó el hallazgo #1). Es el primer evento que emite `scheduled_recording`, que no emitía telemetría ninguna.
-
-### Timestamps de grabación: `started_at` se SELLA, nunca se deriva (ago-2026, #5 del piloto)
-
-`RecordingState` tiene **dos relojes y no son intercambiables**: `recording_start` (`Instant`, monotónico) mide *cuánto lleva grabando*; `recording_start_wall` (`DateTime<Utc>`, sellado en `start_recording`) dice *en qué momento del día empezó*. La jornada usa `owned_since` para lo mismo.
-
-**Nunca reconstruir `started_at` como `ahora − duración`.** Era lo que hacían los dos caminos (`enqueue_cloud_sync_jobs` y `useRecordingStop`), y miente en cuanto la máquina se suspende: en Windows `Instant::elapsed()` **sigue corriendo con la máquina dormida**, así que una jornada cerró con `duration_seconds` de 24,316 (6 h 45) para 67 min de audio real y su `started_at` acabó a las **02:19 de la madrugada siguiente**. `duration_seconds` se queda como la duración de **audio** y ya no gobierna ninguna fecha; que `finished_at − started_at` sea mayor es correcto y esperado — esa diferencia es el tiempo dormido o en silencio. La clave `last_recording_started_at` de `sessionStorage` **debe limpiarse** con la de duración: si sobrevive, la siguiente grabación cuyo stop no emita sello hereda la hora de arranque de la anterior.
-
-> **La rotación NO tiene un problema de reloj — lo contrario.** El análisis del piloto pedía "reloj monotónico para la rotación"; es el diagnóstico invertido. `should_rotate` usa wall-clock y **ya** es robusta a sleep/suspend porque deriva la frontera de `owned_since`, que se actualiza en cada rotación (test `should_rotate_salto_por_suspend_dispara_una_vez`). El reloj monotónico era la *causa* del bug de fechas, no la cura. Lo que sí se añadió es **`MAX_SEGMENT_MINUTES` = 90**: `should_rotate` exigía `in_window`, así que en overtime el cierre quedaba en manos de `auto_close` y quien lo tenga desactivado no tenía a nadie que cerrara (segmento de 150 min en producción). En overtime se **rota, no se cierra** — el usuario sigue en una junta pasadas las 18:00. Las grabaciones **manuales** siguen sin rotar (decisión explícita).
-
-### Patron Visual: Dashboard de Gamificacion (DPI Scaling Windows)
-
-El componente `GamifiedDashboardV2.tsx` y el Card de "Mision Actual" tienen reglas estrictas — violarlas ha causado 4 regresiones documentadas (commits `5400b67`, `2b90533`, `7ed9829` + iter 2 mayo 2026).
-
-**Reglas (NO eliminar al refactorizar):**
-
-1. **CERO breakpoints `md:`/`lg:` dentro del Card de la mision ni en el header del dashboard.** El DPI scaling de Windows (125%, 150%) hace que el viewport reportado al webview de Tauri caiga entre breakpoints de Tailwind, asi clases `md:flex-row` no se aplican y el layout colapsa a la version mobile (todo apilado vertical). Usar siempre flexbox de ancho fijo (`flex-1`, `w-1/2`, `w-[460px]`).
-
-2. **Imagen como `<img>` con `object-cover object-center opacity-60 group-hover:opacity-70 transition-all`** — el `opacity-60` es CRITICO: atenua la imagen para que el cartel der con `bg-[#0F0F0F]` no contraste de manera abrupta. Sin el `opacity-60` la transicion se ve cortada (verificado mayo 2026, regresion del commit `829dd83` que quito el opacity al rediseñar al patron hibrido). El commit `2b90533` original ya tenia el `opacity-60` y funcionaba bien. Para `object-position`: `object-center` (50% 50%) ancla las cumbres de la imagen actual (`mission-mountain.jpg`, horizontal 1.5:1, cumbres en tercio medio). NO usar `object-[center_30%]` — empuja la vista hacia el cielo (probado mayo 2026). NO usar `bg-cover bg-bottom` (causo zoom/recorte feo en commit `5400b67`). Si la imagen cambia a una con composicion distinta, re-evaluar position y revisar si `opacity-60` sigue siendo necesario.
-
-3. **Estructura HÍBRIDA: imagen full-width del Card + cartel der con `bg-[#0F0F0F]` propio.** Despues de iterar 4 veces (mayo 2026), el patron que funciona en desktop NO es ni full-width-puro (cartel se ve translucido sobre la imagen — iter 3) ni side-by-side-encerrado-puro (linea marcada vertical donde termina `w-1/2 overflow-hidden` — iter 4). Es un hibrido:
-    ```tsx
-    <Card className="relative overflow-hidden bg-[#0F0F0F]">
-      {/* Imagen full-width del Card, NO encerrada */}
-      <img className="absolute inset-0 w-full h-full object-cover object-center" />
-      <div className="absolute inset-0 bg-gradient-to-r from-black/40 via-transparent to-[#0F0F0F]" />
-
-      <div className="relative flex min-h-[320px]">
-        <div className="w-1/2 flex flex-col justify-end p-5">{/* texto Mision sobre la imagen, sin bg propio */}</div>
-        <div className="w-1/2 bg-[#0F0F0F] p-5 ...">{/* cartel CON bg propio para tapar imagen detras */}</div>
-      </div>
-    </Card>
-    ```
-    **Por que funciona:** la imagen abarca todo el card sin borde fisico (no hay wrapper `overflow-hidden` cortandola). El cartel der tiene su propio `bg-[#0F0F0F]` que tapa la imagen visualmente desde el 50% del card. Como el gradient termina en `to-[#0F0F0F]` Y el cartel ES `bg-[#0F0F0F]`, ambos son el mismo color y la transicion es invisible.
-
-4. **Gradient simetrico cinematografico** — `bg-gradient-to-r from-black/40 via-transparent to-[#0F0F0F]`. Inspirado del web (`to-card`). La SIMETRÍA visual `oscuro → claro → oscuro` da efecto cinematografico ademas de ayudar a ocultar la transicion. NO usar gradient asimetrico tipo `from-transparent ... to-[#0F0F0F]` sin `from-black/40` (causa "linea marcada" iter 2). NO usar stops arbitrarios `from-30% to-65%` (iter 2 fix-attempt) — la simetria tradicional `from-X via-transparent to-Y` es suficiente cuando el cartel der tiene bg propio. Si `bg-[#0F0F0F]` del Card padre cambia, este `to-[...]` Y el `bg-[...]` del cartel der deben coincidir exactamente.
-
-5. **Layout outer del grid principal:** `<div className="flex gap-6 mb-6">` con `flex-1 min-w-0` (izquierda: misión + comunicación) y `w-[460px] shrink-0` (derecha: radar + ranking). El `min-w-0` evita que `flex-1` se desborde por contenido grande dentro.
-
-**Imagen:** `frontend/public/images/mission-mountain.jpg` — bundleada localmente (eliminamos dependencia de Unsplash en `5400b67`).
-
-**Si necesitas cambiar el split 50/50 dentro del Card,** modificar AMBOS lados con anchos consistentes (ej. `w-[55%]` + `w-[45%]`) sin breakpoints. Probar con DPI 125% y 150% en Windows antes de mergear.
-
-**Botones "Empezar a grabar" / "Grabar otra" (estados vacíos del dashboard):** NO usar `router.push('/')` — el dashboard se renderiza EN la home (`app/page.tsx`), así que navegar a `/` es un no-op y el botón "no hace nada". Deben reutilizar el puente de grabación del Sidebar (`handleStartRecording` en `GamifiedDashboardV2.tsx`): si `pathname === '/'` → `window.dispatchEvent(new CustomEvent('start-recording-from-sidebar'))` (escuchado en `useRecordingStart.ts`); si no → `sessionStorage.setItem('autoStartRecording','true')` + `router.push('/')` (consumido al montar la home). Es el MISMO mecanismo que el botón "Iniciar Grabación" del Sidebar (`SidebarProvider.tsx` → `handleRecordingToggle`).
-
-### Overlay flotante de grabación (píldora inferior) — stacking vs. Sidebar
-
-La píldora de grabación y el banner "no se detectó micrófono" (`app/page.tsx`) viven en un contenedor `fixed bottom-0 left-0 right-0` de ancho completo con gradiente decorativo `bg-gradient-to-t from-[#0a0a1a] ...`. Reglas para que NO tape el Sidebar:
-- El contenedor externo va en **`z-30`** (por debajo del Sidebar `z-40`, que es opaco `bg-background`) → el Sidebar se pinta encima en su región y sus botones inferiores ("Configuración", "Acerca de", versión) quedan visibles y clicables. NO subirlo a `z-50` (regresión: la sombra tapa el menú lateral).
-- El contenedor externo lleva **`pointer-events-none`** (el gradiente es decorativo) y el wrapper interior interactivo lleva **`pointer-events-auto`** → solo la píldora/banner reciben clics, el gradiente nunca bloquea al Sidebar ni al contenido del dashboard.
-- La píldora interior se desplaza con `marginLeft` (`4rem`/`16rem` según `sidebarCollapsed`) para quedar en el área de contenido; sus dropdowns (`InlineDeviceSelector`, `z-[60]`) abren hacia arriba sin solaparse con el Sidebar.
-
-### Header del Sidebar
-
-- **Logo (`components/shared/Logo.tsx`):** rama no-colapsada muestra `/logo-collapsed.png` (28×28) + wordmark "Maity" con `text-foreground` (respeta la paleta del tema). NO usar la vieja píldora con `bg-[#f0f2fe]`/`dark:bg-blue-900/30` (fondo azul que no combina). Sigue siendo `DialogTrigger` → abre "Acerca de".
-- **Búsqueda eliminada:** el input "Buscar contenido de reunión" fue removido de `Sidebar/index.tsx`. La infraestructura de búsqueda subyacente (`searchQuery`, `filteredSidebarItems`, `filteredConversations`, `searchResults`) permanece pero queda **inerte** (`searchQuery` siempre `''` → filtros devuelven la lista base). Si se reintroduce la búsqueda, volver a cablear un input a `setSearchQuery` + `searchTranscripts` (comando Tauri `api_search_transcripts`).
+Detalle completo en `docs/UI_REGLAS.md` — resumen de lo que NO hay que romper:
+- **Dashboard de gamificación (`GamifiedDashboardV2.tsx`)**: CERO breakpoints `md:`/`lg:` en el Card de misión (el DPI scaling de Windows los rompe); estructura híbrida imagen full-width + cartel con `bg-[#0F0F0F]` propio; el `opacity-60` de la imagen es crítico. 4 regresiones documentadas.
+- **Botones "Empezar a grabar" del dashboard**: NO `router.push('/')` (el dashboard YA está en `/`); usar el puente del Sidebar (`start-recording-from-sidebar`).
+- **Píldora de grabación**: contenedor en `z-30` + `pointer-events-none` (interior `pointer-events-auto`); NO subir a `z-50`.
+- **Todo `onCloseRequested` de JS DEBE hacer `event.preventDefault()`** — sin él `@tauri-apps/api` llama `destroy()` y mata la app con jornada activa (así se embarcó en la 0.2.57 de la Store).
 
 ## Telemetria y diagnostico remoto
 
-Inventario completo en **`docs/TELEMETRIA.md`**: pirámide de 3 niveles — (1) `health.heartbeat` (RAM por proceso vía `get_health_snapshot`, cada 5 min activo / 15 min idle) y eventos a Supabase `maity.platform_logs` vía `platformLogger`; (2) `app.error` con rate-limit (handlers globales + ErrorBoundary, `lib/errorTelemetry.ts`); (3) logs completos SOLO locales (`[METRIC] mem-sample` cada 30 s grabando / 60 s en idle + export ZIP manual). Los logs crudos NO van a la nube (volumen/privacidad — decisión jul-2026). El doc incluye las queries SQL de análisis y el runbook de fugas de RAM.
+Inventario completo, queries SQL y runbook en **`docs/TELEMETRIA.md`**: pirámide de 3 niveles — (1) `health.heartbeat` (JS + latido nativo del `mem_sampler`, #14) a `maity.platform_logs`; (2) `app.error` con rate-limit; (3) logs completos SOLO locales — los logs crudos NO van a la nube (decisión jul-2026); la única salida es el bundle de incidente CON consentimiento (`logging/incident.rs`, #61: nunca automático).
 
-> **El `mem_sampler` medía caro y era ciego en tray (sep-2026, #14 de la auditoría de recursos).** Tres correcciones acopladas: (a) **kind ligero** — `refresh_processes(All, true)` equivale a `.with_memory().with_cpu().with_disk_usage().with_exe(…)` y de ahí solo se leía `memory`; ahora se pide `refresh_processes_specifics(All, true, ProcessRefreshKind::new().with_memory())`, que deja de pagar `GetProcessIoCounters` y `GetProcessTimes`+`GetSystemTimes` sobre ~300 procesos EN CADA TICK (más `GetModuleFileNameExW`, que con el kind viejo era `with_exe(OnlyIfNotSet)`: 1× por proceso nuevo, no por tick). `name()` y `parent()` salen del snapshot de `NtQuerySystemInformation` y **no** dependen del kind, así que `has_ancestor` sigue funcionando. **En sysinfo 0.32.1 `ProcessRefreshKind::nothing()` NO existe** (es 0.33+): el constructor vacío es `new()`. Y `refresh_memory()`/`refresh_cpu_usage()` se mantienen — `global_cpu_usage()` viene de la query PDH, no del refresh de procesos. (b) **Cadencia por fase**: 30 s con `current_phase() != Idle`, 60 s en Idle, con `tokio::time::sleep(next_interval(phase))` porque tokio 1.49 no tiene `Interval::set_period`. **Regla derivada:** ninguna semántica puede volver a contarse en TICKS — la presión sostenida pasó de `PRESSURE_SUSTAINED_SAMPLES` a `PRESSURE_SUSTAINED_SECS = 60` medida con `Instant`, porque "2 ticks" valdría 60 s grabando y 120 s en idle y el texto del incidente mentiría en silencio. `cpu_pct` (sistema) **no se reinterpreta**: el CPU propio entró como campo NUEVO `proc_cpu_pct`, normalizado ×nb_cpus (100 % = un core), para no romper las series históricas de `maity.platform_logs`. (c) **Latido nativo**: `health.heartbeat` lo emitía SOLO el JS, montado dentro de `AuthGate`, y WebView2 suspende el JS con la ventana oculta — cero señal justo en la jornada headless. Ahora el loop del sampler emite el MISMO `event_type` (cero entradas de catálogo nuevas) con `reason:"native"` cada 15 min, gateado por `state::has_session` y desduplicado contra el JS: `get_health_snapshot` tiene UN solo invoker en todo el frontend, así que su llamada marca "webview vivo" (`mem_sampler::record_js_snapshot`) y el nativo solo habla tras >20 min de silencio. **En SQL, la COLUMNA `session_id` difiere entre emisores** (`desktop-…` del JS vs `proc-…` del nativo), así que agrupar por ella PARTE en dos la serie de un mismo proceso — nunca la mezcla. Para unirla hay que agrupar por `event_data->'ctx'->>'session_id'`, que SÍ es idéntico en ambos (el JS lo toma de Rust); `event_data->'ctx'->>'emitter'` (`webview` vs `rust`) es la ETIQUETA con la que se filtra (`emitter='rust' and reason='native'` = jornada sin webview), no un desambiguador. Mismo cuidado con `err_budget.rust`, que publican los dos latidos: `max()` por la columna `session_id` cuenta el presupuesto del proceso dos veces. Al añadir un campo a `MemSample` se rompen 4 sitios a la vez — helper `sample()` de los tests del sampler, el test `health_snapshot_serializa_con_keys_esperadas` de `logging/commands.rs` (el de `mem: None` no construye el struct), el espejo TS de `services/healthHeartbeatService.ts` y el bloque jsonc de `docs/TELEMETRIA.md`: van en el MISMO commit.
+**El doc es contrato ejecutable:** evento nuevo = 3 entradas — `lib/telemetry-events.ts` + `logging/telemetry/catalog.rs` + fila en el doc — verificadas por `scripts/lint-telemetry.js` en el pre-build (single writer de `insert_platform_log`, naming dot-namespaced, `core:app:default` en toda capability). `scripts/lint-tauri-acl.js` cruza los call sites que exigen permiso contra las capabilities POR VENTANA. Escapes: `// telemetry-allow:` / `// acl-allow:`. Todo evento nuevo Rust↔TS exige entrada gemela en `events.rs` + `lib/tauri-events.ts` (lint pre-build).
 
-**Bundle de incidente con consentimiento (ago-2026, #61):** la ÚNICA vía por la que un log sale de la máquina es `upload_incident_bundle` (`logging/incident.rs`), y SOLO tras el "Enviar" del usuario en `IncidentReportDialog` (umbral de RAM sostenido, panic del arranque anterior, o botón manual en Ajustes). Nunca automático, sin reintentos, ~200 KB de tail + cabecera + system_info a Storage `incident-bundles/{auth_uid}/`. Detalle, triggers y cooldowns en `docs/TELEMETRIA.md` → Nivel 3. El bucket lo crea la web (`docs/incident-bundles-bucket.sql`); mientras no exista, el envío falla con mensaje corto.
-
-**Auditoría de recursos (sep-2026):** el inventario de consumo de RAM/CPU/disco/red vive en **`docs/AUDITORIA_RECURSOS_2026-09-02.md`** — 35 hallazgos anclados a `file:line`, los números de telemetría que los respaldan, los 3 puntos ciegos de la medición y el análisis de qué pasaría si la jornada transcribiera **por lote** en vez de en tiempo real (6 hallazgos desaparecen, 7 se encogen, 22 no cambian). Es la referencia de los blockquotes que citan "#NN de la auditoría de recursos". El **estado** de cada hallazgo NO está en el md: vive en la base de datos del artifact [Huella de recursos de Maity](https://claude.ai/code/artifact/3f618734-11a8-4d9d-998c-22db7e994bd2) (colección `hallazgos`, **ausencia de documento = pendiente**), y se lee/escribe desde Claude Code con `Artifact action:read_db|write_db`. Al cerrar un hallazgo: marcarlo ahí en el mismo ciclo que el commit.
-
-**El doc es contrato ejecutable (ago-2026):** evento nuevo = 3 entradas — `lib/telemetry-events.ts` + `logging/telemetry/catalog.rs` + fila en el doc — verificadas por `scripts/lint-telemetry.js` en el pre-build (single writer de `insert_platform_log`, catálogo espejo con marcador `legacy`, naming dot-namespaced, sin `'unknown'` en versiones, `core:app:default` en toda capability). `scripts/lint-tauri-acl.js` cruza además los call sites que exigen permiso (`onCloseRequested` ⇒ `allow-destroy`, `confirm`/`alert`, `getVersion`) contra las capabilities POR VENTANA (reachability de imports desde `app/<aux>/page.tsx`). Escapes: `// telemetry-allow:` / `// acl-allow:`.
+**Auditoría de recursos (sep-2026):** el inventario vive en `docs/AUDITORIA_RECURSOS_2026-09-02.md` (35 hallazgos anclados a `file:line`). El **estado** de cada hallazgo NO está en el md: vive en la base de datos del artifact [Huella de recursos de Maity](https://claude.ai/code/artifact/3f618734-11a8-4d9d-998c-22db7e994bd2) (colección `hallazgos`, **ausencia de documento = pendiente**), y se lee/escribe desde Claude Code con `Artifact action:read_db|write_db`. Al cerrar un hallazgo: marcarlo ahí en el mismo ciclo que el commit.
 
 ## Depuracion
 
 ```bash
-# Habilitar logging verbose de audio
 RUST_LOG=app_lib::audio=debug ./clean_run.sh                    # macOS
 $env:RUST_LOG="debug"; ./clean_run_windows.bat                   # Windows
-
-# DevTools
-# macOS: Cmd+Shift+I  |  Windows: Ctrl+Shift+I
-
-# Exportar logs
-# Desde la app: Settings -> Logging -> Export
-# Desde Rust: invoke('export_logs')
+# DevTools: Cmd+Shift+I (macOS) | Ctrl+Shift+I (Windows)
+# Exportar logs: Settings -> Logging -> Export, o invoke('export_logs')
 ```
 
-**ChunkLoadError Recovery** (modo desarrollo): Script inline en `layout.tsx` (strategy `beforeInteractive`) detecta `ChunkLoadError` y recarga automaticamente (max 3 intentos). Si persiste, reiniciar `pnpm run tauri:dev`. Componente backup: `ChunkErrorRecovery.tsx`.
-
-**Metricas del Pipeline**: Tamanos de buffer, tasa VAD, chunks descartados, backpressure del canal de transcripcion — visibles en la consola de desarrollador durante grabacion.
+**ChunkLoadError Recovery** (dev): script inline en `layout.tsx` (`beforeInteractive`) detecta `ChunkLoadError` y recarga (max 3 intentos); si persiste, reiniciar `pnpm run tauri:dev`. Backup: `ChunkErrorRecovery.tsx`. Métricas del pipeline (buffers, tasa VAD, backpressure) visibles en la consola durante grabación.
 
 ## Plataformas y GPU
 
@@ -873,9 +320,9 @@ $env:RUST_LOG="debug"; ./clean_run_windows.bat                   # Windows
 | Windows | WASAPI loopback | CUDA (NVIDIA) o Vulkan (AMD/Intel) | VS Build Tools 2022, LLVM (`winget install LLVM.LLVM`) |
 | Linux | ALSA/PulseAudio | CUDA o Vulkan | cmake, llvm, libomp |
 
-**FFmpeg ya no es dependencia de nadie**: macOS y Windows lo bundlean como sidecar; sólo Linux lo resuelve por PATH.
+**FFmpeg ya no es dependencia de nadie**: macOS y Windows lo bundlean como sidecar; sólo Linux lo resuelve por PATH. Recetas, licencias LGPL, regla exe-folder-first, resolver reintentable y qué entrypoints stagean: `docs/BUILDING.md` § ffmpeg. En Windows, todo `tauri dev/build` stagea ffmpeg antes (`stage-ffmpeg-windows.js`); los escapes `:skip-checks` no lo hacen a propósito.
 
-**LLVM en Windows**: Requerido por `whisper-rs-sys` (bindgen necesita `libclang.dll`). Configurar `LIBCLANG_PATH=C:\Program Files\LLVM\bin`.
+**LLVM en Windows**: requerido por `whisper-rs-sys` (bindgen necesita `libclang.dll`). Configurar `LIBCLANG_PATH=C:\Program Files\LLVM\bin`.
 
 **Features de Cargo.toml**:
 ```
@@ -884,34 +331,26 @@ cuda               → Windows/Linux NVIDIA               [whisper-rs]
 vulkan             → Windows/Linux AMD/Intel            [whisper-rs]
 hipblas            → Linux AMD ROCm                     [whisper-rs]
 openblas, openmp   → Optimizacion CPU                   [whisper-rs]
-onnx-directml      → Windows: DirectML para los motores ONNX (Moonshine/Canary). OFF por defecto (#33); ver docs/ONNX_EXECUTION_PROVIDERS.md
+onnx-directml      → Windows: DirectML para los motores ONNX. OFF por defecto (#33); ver docs/ONNX_EXECUTION_PROVIDERS.md
 ```
+
+**Dependencias Rust**: una sola pila TLS (rustls 0.23 + ring vía `rustls-no-provider` + `install_crypto_provider()` en `main.rs` ANTES de `init_sentry()`), cero deps duplicadas/muertas; `cargo tree -i aws-lc-rs` debe estar vacío. Política completa y lint (`lint-cargo-deps.js`): `docs/BUILDING.md` § #35.
 
 ## Configuracion Multiplataforma
 
-Tauri 2.x soporta configs por plataforma que se **mergean** con el base via JSON Merge Patch (RFC 7396):
+Tauri 2.x mergea configs por plataforma con el base via JSON Merge Patch (RFC 7396):
 
 ```
 frontend/src-tauri/
 ├── tauri.conf.json              # Config BASE compartida (todas las plataformas)
-├── tauri.macos.conf.json        # Overrides para macOS (merge automatico): externalBin = llama-helper + ffmpeg
-├── tauri.windows.conf.json      # Overrides para Windows: externalBin = llama-helper + ffmpeg; resources = templates + vcredist
-├── tauri.appstore.conf.json     # Overrides del canal Mac App Store (se aplica ENCIMA del de macOS via --config)
-├── entitlements.plist           # Entitlements para desarrollo/distribucion directa
-├── entitlements-appstore.plist  # Entitlements para App Store (sandbox)
-├── entitlements-appstore-inherit.plist  # Solo app-sandbox + inherit: para los sidecars (llama-helper, ffmpeg)
+├── tauri.macos.conf.json        # Overrides macOS: externalBin = llama-helper + ffmpeg
+├── tauri.windows.conf.json      # Overrides Windows: externalBin = llama-helper + ffmpeg; resources = templates + vcredist
+├── tauri.appstore.conf.json     # Canal Mac App Store (se aplica ENCIMA del de macOS via --config)
+├── entitlements*.plist          # Entitlements: directa / App Store (sandbox) / inherit para sidecars
 └── Info.plist                   # Permisos macOS (NUNCA eliminar las *UsageDescription) + ITSAppUsesNonExemptEncryption=false
 ```
 
-> **ffmpeg viaja DENTRO del bundle en macOS y en Windows (ago-2026 #77; sep-2026 #32).** `audio/ffmpeg.rs` lo descargaba en runtime — en macOS a `~/.local/bin` escribiendo además en `.zshrc`; en Windows el zip de `gyan.dev` (106 MB, **GPLv3**) al **primer checkpoint de 30 s de una grabación**, dentro del `spawn_blocking` que retiene el único permiso del semáforo de `IncrementalAudioSaver` (el `checkpoint_buffer` crece sin tope mientras tanto y `finalize()` tiene un timeout de 300 s). Bajo el sandbox de la Mac App Store eso no se puede escribir y ejecutar un binario descargado viola la guideline 2.5.2; bajo MSIX el directorio del paquete es de sólo lectura. Hoy:
-> - **macOS:** `frontend/scripts/build-ffmpeg-macos.sh` **compila desde la fuente oficial pineada por SHA-256** un ffmpeg mínimo y **LGPL-2.1+** (`--disable-gpl --disable-nonfree`, sólo lo que usan `encode.rs` e `incremental_saver.rs`; ~5-10 MB por slice, sin nasm) → `binaries/ffmpeg-{aarch64,x86_64,universal}-apple-darwin`.
-> - **Windows:** `frontend/scripts/stage-ffmpeg-windows.js` **descarga un prebuilt LGPL de BtbN/FFmpeg-Builds con tag de autobuild FIJO y SHA-256 del zip pineados**, extrae SÓLO `bin/ffmpeg.exe` con el `tar.exe` (bsdtar) de System32 y lo deja en `binaries/ffmpeg-x86_64-pc-windows-msvc.exe` (+ `ffmpeg-LICENSE.txt`, + copia de ambos a `msix_staging/` — en los DOS caminos del script, también el idempotente: ese directorio está gitignored y se recrea entre ciclos, así que copiar sólo tras una extracción fresca dejaría MSIX sin ffmpeg y sin que nada lo atrapara). No se compila desde fuente porque exigiría MSYS2 + make + gcc moderno, que ni esta máquina ni los runners de CI tienen. Idempotente por stamp (`binaries/ffmpeg-windows.stamp`) y por SHA del exe presente. **El binario de Windows es LGPL v3** (los builds `lgpl` de BtbN pasan `--enable-version3`), no v2.1 como el de macOS.
-> - **Verificación de licencia — ojo con el flag:** los builds de BtbN **no** pasan `--disable-gpl` a configure, así que ese flag NUNCA aparece en `ffmpeg -version`. El discriminante real entre `lgpl` y `gpl` es **la ausencia de `--enable-gpl`** (`variants/defaults-gpl.sh` = `--enable-gpl --enable-version3 --disable-debug`; `defaults-lgpl.sh` = `--enable-version3 --disable-debug`). Eso es lo que verifican el stage script y `scripts/smoke-test-startup.ps1`. En macOS sí se exige `--disable-gpl` porque el script lo pasa explícitamente.
-> - **Regla exe-folder-first:** `find_ffmpeg_path` mira **primero** junto al ejecutable en macOS **y en Windows**, antes que PATH. Efecto lateral en Windows: un `ffmpeg.exe` residual en `target/debug` o `target/release` (p. ej. el de gyan.dev de una descarga vieja) le gana al PATH — por eso el stage script borra cualquiera cuyo SHA no sea el pineado y el smoke compara SHA contra `binaries/`.
-> - **El resolver es REINTENTABLE.** `FFMPEG_PATH` es un `OnceLock<PathBuf>` que **sólo cachea el éxito** (+ un `Mutex<()>` que serializa los intentos). Con el `Lazy<Option<PathBuf>>` anterior, un `None` transitorio se memorizaba para todo el proceso y a partir de ahí `finalize()` abortaba: **reunión entera perdida**. Es también lo que hace que siga funcionando el rescate en caliente de `winapp run` (copiar `ffmpeg.exe` con la app corriendo). Hay un warm-up **detached** (`spawn_blocking`) en el `setup` de `lib.rs`, después de la init de DB: nunca en línea dentro del spawn secuencial de config.
-> - **No borrar `handle_ffmpeg_installation`**: Linux la sigue usando (`build-linux.yml` no compila ffmpeg) y es el fallback de dev sin bundle. Sí se limpian ahora `ffprobe`/`ffplay` tras el `unpack` (cero call sites en `src-tauri/src`), pero **sólo los que dejó ese `unpack`**: se toma una foto del directorio ANTES y lo preexistente no se toca, porque el destino NO es privado de la app fuera de Windows (`~/.local/bin` en macOS, la carpeta del ejecutable —`/usr/bin` en un `.deb`— en Linux) y el guard de `handle_ffmpeg_installation` sólo mira si hay `ffmpeg`, así que un usuario con su propio `ffprobe` ahí es un caso alcanzable.
-> - **Todo entrypoint que llame a `tauri dev`/`tauri build` en Windows tiene que stagear ffmpeg antes**: `binaries/` está gitignored y `externalBin` es un requisito **duro** del `build.rs` de Tauri (`ResourcePathNotFound` aborta el `cargo build`, no sólo el bundler). Por eso el script se encadena en `tauri:dev`, `tauri:build:store`, los `tauri:{dev,build}:{cpu,cuda,vulkan,…}` por GPU y el pre-build de `tauri:build*`; y `clean_run_windows.bat`/`clean_build_windows.bat` invocan los scripts de pnpm, no `tauri` pelado. En CI lo stagean `build.yml`, `build-windows.yml` y `build-devtest.yml`. Los escapes `tauri:build*:skip-checks` siguen sin stage a propósito.
-> - Otras reglas que siguen vigentes: (a) **nunca `bundle.resources`** para ejecutables en macOS (`package-appstore.sh` sólo firma con `inherit` los de `Contents/MacOS`); (b) `tauri.<plataforma>.conf.json` **reemplaza** el array `externalBin`, no lo concatena — hay que repetir `binaries/llama-helper` en los dos overrides; (c) aviso de licencia en Ajustes → Acerca de y en `docs/THIRD-PARTY-NOTICES.md`, en sync con la receta.
+Ojo: `tauri.<plataforma>.conf.json` **reemplaza** el array `externalBin`, no lo concatena — repetir `binaries/llama-helper` en ambos overrides. **Nunca `bundle.resources`** para ejecutables en macOS.
 
 ### Reglas CRITICAS
 
@@ -924,157 +363,30 @@ frontend/src-tauri/
 
 ### CI/CD (GitHub Actions)
 
-Workflows en `.github/workflows/`:
-- `build-windows.yml` — Build Windows con DigiCert HSM signing
-- `build-macos.yml` — Build macOS con Apple notarization
-- `build-linux.yml` — Build Linux (deb + AppImage)
-- `build-devtest.yml` — Builds de prueba para desarrollo
-- `build-test.yml` — Builds de prueba simples
-- `pr-main-check.yml` — Checks para PRs a main
-- `release.yml` — Build final para releases
+`.github/workflows/`: `build-windows.yml` (DigiCert HSM signing), `build-macos.yml` (Apple notarization), `build-linux.yml` (deb + AppImage), `build-devtest.yml`, `build-test.yml`, `pr-main-check.yml`, `release.yml`.
 
-## Cliente Supabase: el default es `public`, y todo call site dice su schema (ago-2026)
+## Nube: Supabase, Deepgram y Meeting Detector
 
-`frontend/src/lib/supabase.ts` crea el cliente con **`db: { schema: 'public' }`**. Antes era `'maity'` (desde `230b807`, feb-2026) y eso puso **5 RPC del desktop en 403** cuando el hardening de la DB (issue web #143) cerró el schema `maity` a los roles de cliente: `authenticated` solo puede ejecutar `maity.submit_chat_bug_report`. Issue #70.
-
-**Lo grave no fue el 403, fue que ninguno se vio.** `insert_platform_log` tenía un `catch {}` vacío que ni siquiera inspeccionaba `.error`; `calculate_user_streak`/`get_my_xp_summary` caían a **cero** (indistinguible de cuenta nueva); `insert_user_feedback` solo hacía `console.warn`; y `get_user_role` devolvía `null` → el heurístico por dominio de email, o sea **un `manager` fuera de `@asertio.mx`/`@maity.cloud` se degradaba a `user` en silencio**. Meses en producción sin una sola señal.
-
-Reglas, todas deliberadas:
-
-- **`public` es el perímetro mediado.** Los clientes entran por wrappers `public.*` (SECURITY DEFINER); ahí vive la autorización. `calculate_user_streak` es el caso testigo: **nunca** se va a conceder `maity.calculate_user_streak` a `authenticated`, porque el gate está en el wrapper `public` (migración `20260814000000` de la web) — la interna la llaman el dashboard de equipo, el leaderboard y `award_xp_for_session` sobre ids de OTROS usuarios vía `LATERAL`, y un gate adentro rompería al manager.
-- **Las TABLAS de `maity` no se tocaron** — siguen accesibles vía RLS y se piden con **`.schema('maity')` explícito**. Nunca por el default. Los 16 `.from()` que dependían de él (conversaciones, `users` de `AuthContext`, `form_responses`, diagnostics) ya están explícitos.
-- **Dos guardias, porque los dos modos de falla no son simétricos.** Un `.rpc()` mal ruteado da **403 silencioso**; un `.from()` mal ruteado da `PGRST205`, que es ruidoso. La regla `no-restricted-syntax` de `frontend/.eslintrc.json` cubre `.rpc()` pelón (error, con el fix en el mensaje); el test `frontend/src/lib/supabase.test.ts` cubre **además** `.from()`, parseando todo `src/` con el TS Compiler API (mismo patrón que `app/layout.test.ts`) y verificando que el default del cliente siga siendo `public`. Ambos se verificaron rompiéndolos a propósito.
-- **`src/shared/maity-shared/**` está exento del lint**: es el árbol copiado zero-drift de `Sixale730/maity` y sus `.rpc()` pelones son correctos ahora que el default es `public`. Su `api/client/supabase.ts` era un Proxy que forzaba `.schema('public')`; quedó en no-op y se adelgazó a un **re-export**. El archivo se conserva (es el seam de import del árbol copiado), la lógica no.
-- **El mock de tests `src/test/mocks/supabase.ts` es schema-aware.** Su `.schema()` era `vi.fn(function () { return this })` — un passthrough que tiraba el schema pedido, así que **ningún test podía detectar una regresión de ruteo**. Hoy `.schema(x)` devuelve una superficie nueva y registra cada llamada (`schemaCalls`, `schemaOf(name)`). No volver a "simplificarlo".
-- **Realtime es independiente**: `GlobalConversationNotifier.tsx` hardcodea `schema: 'maity'` en el filtro `postgres_changes`. Realtime no lee `db.schema` — está bien así, no tocarlo.
-
-## Deepgram via Cloudflare Worker Proxy
-
-La transcripcion en la nube usa Deepgram a traves de un Cloudflare Worker proxy. **La API key de Deepgram nunca llega al cliente**.
-
-> **Sin edge functions de Supabase en este repo (ago-2026, #67).** Existían `deepgram-token` y `deepseek-evaluate` en `supabase/functions/`; eran código muerto (cero call sites en desktop/web/móvil, cero tráfico en el gateway) y las versiones desplegadas —subidas por dashboard, divergentes del repo— devolvían la `DEEPGRAM_API_KEY` cruda a cualquier JWT válido. Se borraron del repo y del proyecto `nhlrtflkxoojvhbyocet` (vía Management API con el PAT del `.mcp.json`; el MCP no tiene delete ni secrets), junto con los secrets `DEEPGRAM_API_KEY`/`DEEPSEEK_API_KEY`; la rotación de keys (Deepgram en Worker + móvil, DeepSeek) es housekeeping operativo (runbook en el issue). **No recrear `supabase/` ni re-desplegarlas**: el token de Deepgram lo emite Vercel `/api/deepgram-token` (JWT de 5 min) y el Worker `maity-deepgram-proxy` es el único que conoce la key; el análisis va por Vercel `conversations-finalize` (`api/finalize.rs`). Una función Supabase nueva vive en el repo web, con gate server-side (`maity.fn_check_quota`/rol, nunca `users.status`). La regla `no-restricted-syntax` de `frontend/.eslintrc.json` bloquea `supabase.functions.invoke(` en `frontend/src`.
-
-**Config por defecto**: Nova-3, idioma `es-419` (espanol latinoamericano). Persiste en tabla `transcript_settings` de SQLite.
-
-**Modelos disponibles**: `nova-3` (recomendado), `nova-2`, `nova-2-phonecall`, `nova-2-meeting`
-**Idiomas**: `es-419` (LATAM), `es` (Espana), `en`, `multi` (auto-deteccion)
-
-| Archivo | Descripcion |
-|---------|-------------|
-| `frontend/src/lib/deepgram.ts` | Cliente TS para obtener proxy config de Vercel API |
-| `frontend/src/hooks/useRecordingStart.ts` | Obtiene proxy config antes de iniciar grabacion |
-| `frontend/src-tauri/src/audio/transcription/deepgram_commands.rs` | Comandos Tauri para proxy config en cache |
-| `frontend/src-tauri/src/audio/transcription/deepgram_provider.rs` | Proveedor que conecta via proxy WebSocket |
-| `frontend/src-tauri/src/audio/transcription/engine.rs` | Inicializacion del motor de transcripcion |
-
-**Gotchas de seguridad**:
-- JWT tiene TTL de 5 minutos, se valida solo al conectar el WebSocket
-- Conexiones activas sobreviven mas alla del TTL (validacion solo al inicio)
-- Ambas conexiones WS (mic + system) usan el mismo JWT simultaneamente
-- Reconexion despues de expirar el JWT (>5 min) fallara gracefully
-- Usuario debe estar autenticado con Supabase (login con Google)
-
-## Meeting Detector (Auto-Record) — DESHABILITADO por kill-switch (ago-2026)
-
-> **Estado actual: APAGADO.** Aun con el rediseño anti-falsos-positivos de jul-2026 seguía disparando diálogos que no correspondían a reuniones reales, así que se apagó por completo con `meeting_detector::DETECTOR_KILL_SWITCH = true` (`src-tauri/src/meeting_detector/mod.rs`). El único choke point es `MeetingDetector::start()` (por ahí pasan el auto-start del `setup()` de `lib.rs` y el comando `start_meeting_detector`): con el flag activo retorna `Ok(())` sin arrancar el loop, y `is_meeting_detector_running` devuelve `false`. Es **independiente de `settings.enabled`** (el JSON en disco de usuarios existentes trae `enabled: true` y pisaría un cambio de default; `test_default_settings` sigue afirmando `true`). `<MeetingDetectionDialog />` ya **no se monta** en `app/layout.tsx` (el componente sigue en `components/meeting-detection/`); el listener de `start-recording-from-detector` en `useRecordingStart.ts` queda inerte. **NO borrar el módulo**: `scheduled_recording/service.rs` reutiliza su `ProcessMonitor`. Para reactivar: flag a `false` + volver a montar el diálogo. La pestaña "Reuniones" de `components/settings/SettingTabs.tsx` es código muerto (nadie importa `SettingTabs`; el settings real es `app/settings/page.tsx`).
-
-Detecta Zoom, Teams y Google Meet en ejecucion. Puede auto-iniciar grabacion.
-
-| Archivo | Descripcion |
-|---------|-------------|
-| `meeting_detector/detector.rs` | Logica principal de deteccion |
-| `meeting_detector/process_monitor.rs` | Monitor de procesos activos |
-| `meeting_detector/settings.rs` | Configuracion del detector |
-| `meeting_detector/commands.rs` | Comandos Tauri |
-| `components/meeting-detection/` | UI de dialogo y settings |
-
-### Criterio de deteccion (rediseño anti-falsos-positivos, jul-2026)
-
-El detector historicamente arrojaba un diálogo falso al dia sin abrir nada. Causa:
-detectaba **procesos abiertos**, no reuniones, con reglas laxas. Reglas actuales:
-
-1. **Match EXACTO del nombre de ejecutable** (`match_main_app` en `process_monitor.rs`),
-   nunca `contains()`. Antes `"zoom"` suelto disparaba con `ZoomIt`, `"teams"` con
-   `TeamsUpdate`, `"skype"` con `SkypeBackgroundHost`. **NO reintroducir subcadenas
-   genericas** en `get_process_patterns()`.
-2. **Dedup por app + flanco de subida**: se notifica UNA vez cuando la app pasa de
-   ausente a presente, no una vez por PID. Antes cada worker que Teams/Zoom reciclaba
-   en background nacia con un PID nuevo → deteccion nueva → falso diario.
-   `ProcessMonitor` mantiene `apps_present` (tick anterior) + `last_notified` (cooldown).
-3. **Cooldown por app**: `settings.notify_cooldown_minutes` (default 30). No re-notifica
-   la misma app hasta que expira, aunque vuelva a haber flanco de subida.
-4. **Gate de grabacion**: el loop del detector (`detector.rs`) hace `continue` si
-   `audio::recording_phase::current_phase() != Idle`, ANTES de detectar (si detectara y
-   descartara, la app quedaria marcada "presente" y no volveria a avisar tras grabar). El
-   frontend (`MeetingDetectionDialog.tsx`) complementa suprimiendo tambien los estados
-   UI-only que Rust no conoce (PROCESSING_TRANSCRIPTS/SAVING) con lista EXPLICITA, no `!== IDLE`.
-5. **"Ignorar/Auto-grabar siempre" funcional**: `UserResponseAction::{IgnoreAlways,
-   AutoRecordAlways}` llevan `app: MeetingApp`; `respond_to_meeting_detection` recibe
-   `app: Option<MeetingApp>` del frontend y `handle_user_response` persiste via
-   `set_app_action` + `save_settings`. `get_app_action` consulta `app_choices` primero.
-
-> **Compatibilidad de settings**: `meeting_detector_settings.json` se lee de disco de
-> versiones anteriores. Todo campo NUEVO en `MeetingDetectorSettings` DEBE llevar
-> `#[serde(default = "...")]` — sin el, el parse falla y `initialize()` (que usa
-> `.unwrap_or_default()`) resetea SILENCIOSAMENTE todas las preferencias del usuario.
-
-> **Fuera de alcance (PR futuro)**: señal real de reunion via micro-en-uso
-> (`CapabilityAccessManager` en Windows) y deteccion de Google Meet (hoy los
-> `browser_patterns` son codigo muerto; requiere leer titulos de ventana del navegador).
-
-## Sistema de Roles: `admin` / `manager` / `user`, siempre desde la DB (ago-2026)
-
-El rol lo decide **la base de datos**, nunca el dominio del correo. `lib/roles.ts` → `getUserRoleFromRPC()` llama a `public.get_user_role` (wrapper SECURITY DEFINER; la version `maity.*` no esta concedida a `authenticated` — ver la seccion del cliente Supabase). El enum en la DB es exactamente `admin|manager|user` y el trigger `maity_users_ensure_role` le pone `'user'` a toda alta nueva, asi que **un NULL de esa RPC ya es una anomalia real**, no el caso normal.
-
-**`useUserRole` es fail-closed (issue #68).** Hasta ago-2026 hacia `rpcRole ?? getUserRoleFromEmail(email)`, o sea que **cualquier** fallo de la RPC repartia UI de admin a `@asertio.mx`/`@maity.cloud` y degradaba en silencio a todos los demas. No era teorico: #70 dejo esa misma RPC en 403 desde el 13-ago 05:00 UTC, asi que el fallback fue el **camino principal** de todo el desktop, no la excepcion.
-
-Reglas, todas deliberadas:
-
-- **`ADMIN_DOMAINS` y `getUserRoleFromEmail` se eliminaron por completo**, no se "invirtieron a `user`". Contrastado contra produccion, el heuristico estaba mal para **8 de 249 usuarios**: 2 admins y 4 managers de dominio externo (los degradaba a `user`) y 2 cuentas internas que NO son admin (les regalaba `admin`). Hay un test que falla si alguien vuelve a exportarlos.
-- **`role` es `UserRole | null`**: `null` = **desconocido**, jamas "es user". `roleKnown` los distingue. `isAdmin` es `false` mientras carga **y** si la RPC falla. El intercambio es a proposito: un fallo ahora **esconde** UI de admin en vez de regalarla.
-- **`ConfigContext` NO actua con el rol desconocido.** Su migracion a Parakeet **persiste** (`invoke('api_save_transcript_config')`), asi que forzar sin saber el rol le pisaria la configuracion a un admin de forma permanente. La rama de estado estable esta gateada con `roleKnown && !isAdmin`; la migracion one-time no depende del rol y corre igual.
-- **El reset de pestaña en `settings/page.tsx` va gateado con `!roleLoading`** — si no, un admin que entre por deep-link a una pestaña de admin sale expulsado a General antes de que resuelva la RPC.
-- **Los fallos se loguean con `fileLogger`, no con `platformLogger`**: este ultimo es *el mismo* una RPC de Supabase, asi que si `get_user_role` falla por sesion/RLS/403, `insert_platform_log` falla por lo mismo y la señal se pierde justo cuando importa.
-- **Dedupe de la RPC in-flight** en `useUserRole` (llaveado por email): hay tres consumidores y cada uno monta su propio efecto. Colapsa llamadas concurrentes, **no** cachea el resultado — un fallo transitorio no debe quedar pegado toda la sesion.
-
-**Alcance: visibilidad de UI, no acceso a datos.** Del lado servidor manda RLS. Consumidores reales: `settings/page.tsx` (pestañas Transcripcion/Resumen/Pipeline + badge Admin + boton de preview), `components/transcript/TranscriptSettings.tsx` (opcion Canary) y `contexts/ConfigContext.tsx`. La ruta `app/dev/dashboard-v1/page.tsx` **no tiene guard propio**: el gate vive solo en el boton que enlaza.
-
-> **El Sidebar NO filtra nada por rol.** `components/Sidebar/index.tsx` no importa `useUserRole` ni `roles.ts`; pinta Inicio/Conversaciones/Notas/Tareas/Chat para todos, y Gamificacion ni siquiera aparece ahi (vive embebida en `app/page.tsx`). Este documento afirmaba lo contrario hasta ago-2026.
-
-- Archivos: `lib/roles.ts`, `hooks/useUserRole.ts`, `settings/page.tsx`, `components/transcript/TranscriptSettings.tsx`, `ConfigContext.tsx`
-- Pendiente: espejar el arreglo en el repo movil (mismo bug con la misma lista de dominios).
-
-> **Codigo muerto eliminado en el mismo cambio:** `AuthContext` insertaba en `maity.users` desde el cliente. Esa tabla **no tiene ninguna policy de INSERT** (verificado: 3 de SELECT y 1 de UPDATE), asi que siempre fallaba con `42501` — el alta funciona por el trigger `on_auth_user_created`, no por ese insert. Con el se fue `TRUSTED_DOMAINS`, una **tercera** copia de la lista de dominios que decidia `ACTIVE` vs `PENDING_APPROVAL`, y la rama de refetch tras `23505`, que solo existia para una carrera de ese insert imposible. La rama `PGRST116` pasa a reintento acotado (3 intentos, 300/600/1200 ms): si la fila no esta, solo puede ser timing del trigger.
+- **Cliente Supabase**: ver § Cuentas, nube y análisis (arriba) y `docs/NUBE_CUENTAS_SYNC.md`.
+- **Deepgram** via Cloudflare Worker proxy — **la API key nunca llega al cliente**; token JWT de 5 min de Vercel `/api/deepgram-token`; el Worker `maity-deepgram-proxy` es el único que conoce la key. Default: Nova-3, `es-419` (persiste en `transcript_settings` de SQLite). **No recrear `supabase/functions/`** (#67; ESLint bloquea `supabase.functions.invoke(`). Gotchas de JWT y tabla de archivos: `docs/NUBE_CUENTAS_SYNC.md`.
+- **Meeting Detector: APAGADO por `DETECTOR_KILL_SWITCH = true`** (`meeting_detector/mod.rs`; independiente de `settings.enabled`). **NO borrar el módulo** — `scheduled_recording` reusa su `ProcessMonitor`. Todo campo nuevo en `MeetingDetectorSettings` lleva `#[serde(default)]` o el parse resetea las preferencias en silencio. Criterios anti-falsos-positivos y cómo reactivar: `docs/REGLAS_AUDIO_GRABACION.md` § Meeting Detector.
 
 ## Restricciones Importantes
 
-1. **Frecuencia de muestreo**: El pipeline espera 48kHz consistente. El remuestreo ocurre al momento de la captura.
+1. **Frecuencia de muestreo**: el pipeline espera 48kHz consistente; el remuestreo ocurre al capturar.
 2. **Audio por plataforma**: macOS requiere ScreenCaptureKit (13+) + permiso de screen recording. Windows WASAPI modo exclusivo puede conflictuar con otras apps.
-3. **Grabacion stereo**: Se guarda como audio stereo entrelazado (L=mic, R=sistema). El `IncrementalAudioSaver` maneja checkpoints cada 30s con `channels=2`.
-4. **Rutas de archivos**: Usar APIs de rutas de Tauri (`downloadDir`, etc.) para compatibilidad multiplataforma. Nunca hardcodear rutas.
-5. **Permisos de audio**: macOS requiere tanto microfono COMO grabacion de pantalla para audio del sistema.
+3. **Grabacion stereo**: entrelazada (L=mic, R=sistema); `IncrementalAudioSaver` con checkpoints de 30s y `channels=2`.
+4. **Rutas de archivos**: usar APIs de rutas de Tauri (`downloadDir`, etc.); nunca hardcodear rutas.
+5. **Permisos macOS**: microfono Y grabacion de pantalla para audio del sistema.
 
 ## Convenciones del Repositorio
 
-- **Manejo de Errores**: Rust usa `anyhow::Result`, frontend usa try-catch con mensajes amigables
-- **Nomenclatura audio**: Siempre "microphone" y "system" (no "input"/"output")
-- **Identificador de dispositivo de audio**: el formato canónico es el nombre CRUDO tal como lo enumera el OS (`get_audio_devices`), SIN sufijo `(input)/(output)`. Es el formato que aceptan `switch_audio_device`, `start_audio_level_monitoring` y `start_recording_with_devices_and_meeting`. NO volver a concatenar sufijos en la UI (helper: `lib/deviceName.ts` → `stripDeviceTypeSuffix`, aplicado al hidratar `ConfigContext`). En Rust, `AudioDevice::from_name_with_default_type(name, tipo)` acepta el legacy con sufijo por compat; el tipo lo aporta el contexto del caller (path mic → Input, path system → Output). Antes convivían dos formatos y el crudo caía en fallback silencioso al default.
-- **Claves de `invoke()` en camelCase**: los comandos Tauri sin `rename_all` esperan camelCase (`micDeviceName`, no `mic_device_name`). Con snake_case las claves no matchean y los `Option<String>` llegan como `None` SIN error — así se rompió `start_recording_with_devices_and_meeting` durante meses (dispositivo elegido, título de reunión y Modo Ponente nunca llegaban al backend; jul-2026). El preflight `resolve_actual_endpoint` (`recording_helpers.rs`) además verifica qué endpoint abrirá WASAPI de verdad y adopta su nombre real (el fallback de `get_windows_device` devuelve `Ok` con OTRO dispositivo sin avisar).
-- **Persistencia de la selección de dispositivos**: `ConfigContext.updateSelectedDevices` es el setter canónico — actualiza el estado Y persiste en `recording_preferences.json` (read-merge-write serializado; `set_recording_preferences` reemplaza el objeto ENTERO, no mergea). Lo usan la píldora (`page.tsx`), `SettingsModal` y `RecordingWidgetListener`. El setter crudo `setSelectedDevices` queda solo para la hidratación y para `RecordingSettings` (que ya persiste por su cuenta — usar el canónico ahí duplicaría la escritura). NO volver a cablear escritores nuevos al setter crudo: es como la selección se perdía al reiniciar (ago-2026).
-- **Preferencias nuevas de grabación → campo de `RecordingPreferences` + control DENTRO de `RecordingSettings.tsx`**. `audio_retention_days: u32` (`#[serde(default = "default_audio_retention_days")]` = 30, `0` = nunca borrar) es el molde: `#[serde(default)]` lo hace aditivo sobre los `recording_preferences.json` ya escritos (igual que `system_audio_gain`), y así **no hace falta ningún comando Tauri nuevo** — `RecordingSettings.tsx` ya cablea `get_recording_preferences`/`set_recording_preferences`. El control vive en ESE componente y no en uno hermano porque `set_recording_preferences` **reemplaza el objeto entero**: dos componentes con su propio get/set producen una carrera en la que el que guarde segundo pisa el campo del otro. `ConfigContext.updateSelectedDevices` sigue siendo seguro sin cambios: su read-merge-write hace spread de un `Record<string, unknown>` y arrastra los campos que no conoce.
-- **Matcher de nombres (`device_name_matcher.rs`)**: `normalize` elimina el índice Bluetooth de Windows `"(N- ...)"` (sube en cada re-emparejamiento) además del sufijo re-plug `"(N)"`. El `device_monitor` matchea con `is_same_device` (NO igualdad exacta) y emite `DeviceReconnected` con el nombre RE-ENUMERADO, adoptándolo como nuevo nombre vigilado.
-- **Sondeo del monitor de dispositivos (`device_monitor.rs`, sep-2026, #17 de la auditoría de recursos)**: el tick usa `snapshot_device_names` (Windows: `platform::snapshot_active_endpoints` → `EnumAudioEndpoints` + `PKEY_Device_FriendlyName` + `IMMEndpoint::GetDataFlow`, en `spawn_blocking`; otras plataformas: `list_audio_devices`). **No volver a `list_audio_devices()` en un loop**: en cpal 0.15 `input_devices()`/`output_devices()` filtran con `supported_*_configs()`, que en WASAPI **activa un `IAudioClient` por endpoint** + `GetMixFormat` + varios `IsFormatSupported` — el monitor pagaba dos enumeraciones completas con activación de TODOS los endpoints cada 5 s durante toda la jornada, y activaba 720 veces/hora el endpoint de captura de un headset BT, justo lo que `bluetooth_guard.rs` existe para evitar (`ComScope`/`read_string_property` viven ahora en `devices/platform/wasapi_com.rs`, compartidos por ambos). El nombre sale de la misma propiedad que lee `cpal::Device::name()`, así que `switch_audio_device` sigue casando con `==`. **La cadencia 2 s / 5 s NO se alarga**: los umbrales de desconexión se cuentan en ciclos (2 normal / 3 BT) y definen la latencia del toast y de la auto-reconexión; el ahorro vino de abaratar el tick (~1-2 ms), no de sondear menos. La lógica del tick es pura (`evaluate_tick`, `next_interval`) y con tests. **El primer tick ya no emite `DeviceListChanged`**: nacía comparando contra una lista vacía (`0 → N`) y el frontend lo pintaba como el toast "Cambio en dispositivos de audio" a los ~2-4 s de cada grabación manual y de cada `switch_audio_device`. `start_monitoring` crea un `Notify` nuevo por arranque: un `stop_monitoring()` sobre un monitor nunca arrancado dejaba un permiso almacenado que mataba el siguiente loop en su primer `notified()`.
-- **Watchdog de silencio de mic** (`recording_helpers.rs`, dentro de la task de niveles de 100 ms): detecta grabación muda que WASAPI no reporta como error (mute por hardware, cambio de perfil BT A2DP↔HFP). Dos modos: "stalled" (el contador `RecordingState::mic_chunk_seq` no avanza 10 s → el RMS atómico está stale y se ignora) y "silent" (chunks con RMS < 1e-5 sostenido 15 s — el noise floor de un mic vivo nunca baja de ~1e-4, las pausas de conversación no disparan). Emite `mic-silence-warning` (latch: 1 por episodio, rearma al volver audio audible; toast en `useMicrophoneFallbackToast`). En pausa se resetea sin alertar. Todo evento nuevo Rust↔TS exige entrada gemela en `events.rs` + `lib/tauri-events.ts` (lint pre-build).
-- **Guardia de perfil Bluetooth** (`audio/bluetooth_guard.rs`, ago-2026): Bluetooth clásico no permite A2DP (estéreo) y HFP (mono 16 kHz, con mic) a la vez — abrir el endpoint de CAPTURA de unos audífonos conmuta TODO el dispositivo a manos libres y degrada la música del usuario. Pasaba en dos momentos: grabando (la jornada graba del mic del headset horas) y **en reposo** (el preview de niveles lo abría sólo para animar las barritas). Hoy: (a) al arrancar grabación, `apply_bluetooth_output_mic_override` sustituye el mic BT por uno no-BT y emite `bluetooth-mic-avoided` (toast); (b) el preview no abre micrófonos BT (`should_avoid_opening_mic`), y la UI atenúa las barras con tooltip. Reglas: la detección es **NATIVA** (`PKEY_Device_EnumeratorName` → `BTHENUM`/`BTHHFENUM`/`BTHLEENUM`), **nunca por nombre** — `device_detection.rs` no matchea dispositivos renombrados (falso negativo) y `device_monitor.rs` matchea "auriculares", genérico en Windows en español (falso positivo). Leer el property store **NO** activa el `IAudioClient`: no sustituir por `Activate()`/`default_input_config()` sobre el endpoint BT o se dispara justo lo que se evita. Sólo se sustituye con A2DP vivo (mix rate ≥32 kHz): si ya está en 16 kHz otra app lo conmutó y el mic de diadema capta mejor. El sustituto excluye loopbacks y cables virtuales (grabar "Mezcla estéreo" = horas sin voz). No persiste nada: la preferencia del usuario queda intacta y `switch_audio_device` no lleva override (es el escape hatch). El preview del SISTEMA (loopback) nunca se apaga: es captura del lado render y no toca el micrófono.
-- **Registro de owners del level monitor** (`simple_level_monitor.rs`): `start/stop_audio_level_monitoring` llevan `ownerId` y `wantMic`. Reemplazó a un refcount que se corrompía porque start y stop son comandos Tauri **concurrentes**: el cleanup de React disparaba `stop` sin esperar al `start` en vuelo, el stop veía 0 y hacía no-op, y el start dejaba el **micrófono abierto para siempre sin consumidor que lo cerrara**. Ahora un `stop` sin `start` previo deja un *tombstone* que el `start` consume sin abrir nada. `usePreviewLevels` genera el `ownerId` **por corrida del efecto** (no por instancia: al cambiar de device conviven dos corridas) y encadena el stop a la promesa del start. El hide-to-tray usa `force_stop_all()`, no `stop_monitoring(owner)` — no es un consumidor pareado y le robaría el slot a otro.
-- **La X de la ventana principal ESCONDE a la bandeja, y todo `onCloseRequested` de JS DEBE hacer `event.preventDefault()` (sep-2026).** El hide lo hace el handler de `CloseRequested` en `lib.rs`; salir del todo es solo "Salir" del tray. `@tauri-apps/api` llama `destroy()` por su cuenta cuando un handler JS no previene, y como la capability concede `core:window:allow-destroy` (`8bdd3bf`, ago-2026; lo exige `scripts/lint-tauri-acl.js`), ese `destroy()` funciona: el listener de telemetría `app.close` de `layout.tsx` destruía la ventana 40 ms después del hide y la app salía entera, **jornada activa incluida**. Así se embarcó en la 0.2.57 de la Store (18 `app.close` de 8 usuarios en 14 días, cada uno una muerte de la app). Antes del 08-17 el ACL rechazaba el `destroy()` en silencio, por eso nadie lo vio. `useWindowCloseGuard` no tiene call sites (código muerto) pero quedó corregido igual y con guard de re-entrada. `app.close` significa "el usuario cerró la ventana", no que el proceso terminó.
-- **Dependencias Rust: una sola pila TLS (rustls 0.23 + ring) y cero deps muertas (sep-2026, #35 de la auditoría de recursos).** Hasta entonces el exe compilaba rustls 0.22 **y** 0.23 (sentry 0.34 traía `rustls 0.22.4` directo y tokio-tungstenite 0.21 su propia pila), dos reqwest (0.12 nuestro + 0.13 del updater), dos zip, dos dirs, clap 3 y 4, y `esaxx-rs`/`symphonia`/`clap` sin un solo call site; 751 → 667 crates. Reglas, todas deliberadas:
-  - **reqwest 0.13 renombró las features TLS y la nueva `rustls` enciende aws-lc-rs.** `rustls-tls` → `rustls` (= rustls + **aws-lc-rs**), y las `*-native-roots`/`*-webpki-roots` desaparecieron (siempre `rustls-platform-verifier`, el verificador del SO, el mismo que ya usaba `tauri-plugin-updater`). Nuestro reqwest y sentry (≥0.47 también sobre reqwest 0.13) van con **`rustls-no-provider`**, y el proveedor lo fija `main.rs::install_crypto_provider()` (`rustls::crypto::ring::default_provider().install_default()`) ANTES de `init_sentry()`, que construye su transporte en `init`. Sin esa llamada `ClientConfig::builder()` elige ring sólo porque es la única feature de proveedor en la unión del árbol; con aws-lc-rs presente y ninguno instalado, **todo cliente HTTPS hace panic en su primer request**. Nunca `reqwest/rustls` ni `sentry/rustls`; `cargo tree -i aws-lc-rs` debe estar vacío. No se activó `system-proxy` (default de 0.13): el 0.12 sin defaults sólo leía `HTTPS_PROXY` del entorno y eso se conserva; leer el proxy del registro de Windows sería un cambio silencioso.
-  - sentry 0.49: `ClientOptions` es `#[non_exhaustive]` — sólo builder (`ClientOptions::new().release(..)…`), el struct literal no compila. tungstenite 0.30: `Message::Text(Utf8Bytes)`/`Binary(Bytes)` → `Message::text(..)` y `Bytes::from(vec)` en `deepgram_provider.rs`.
-  - `nnnoiseless` con `default-features = false`: su `default = ["bin", "dasp"]` y `bin` arrastra clap 3 + hound para un binario que nunca se construye (el código sólo usa `DenoiseState`). `zip` y `dirs` en la misma major que tauri/updater/ffmpeg-sidecar; `winreg ≥0.55` para no anclar windows-sys 0.48. `[build-dependencies]` sólo `which`: `build.rs` no hace HTTP.
-  - **`frontend/scripts/lint-cargo-deps.js`** (pre-build, `cargo tree`, ~2-4 s) falla si reaparece una segunda versión de reqwest/rustls/tokio-rustls/hyper-rustls/rustls-native-certs/rustls-webpki/webpki-roots/zip/dirs/dirs-sys o si entran aws-lc-rs/clap/esaxx-rs/symphonia. Sólo local (CI llama `tauri build` directo). Pendiente fuera de #35: `windows 0.54/0.57/0.58/0.61` (cpal/sysinfo/nuestro WASAPI/tauri) y `windows-sys 0.59/0.60/0.61` siguen duplicados; `rand` ×4 lo ancla `phf_generator` (build-deps de html5ever), subir el nuestro no elimina versiones.
+- **Manejo de errores**: Rust usa `anyhow::Result`; frontend try-catch con mensajes amigables.
+- **Nomenclatura audio**: siempre "microphone" y "system" (no "input"/"output").
+- **Claves de `invoke()` en camelCase**: los comandos Tauri sin `rename_all` esperan camelCase (`micDeviceName`, no `mic_device_name`). Con snake_case las claves no matchean y los `Option<String>` llegan como `None` SIN error — así se rompió `start_recording_with_devices_and_meeting` durante meses. El preflight `resolve_actual_endpoint` (`recording_helpers.rs`) verifica qué endpoint abrirá WASAPI de verdad y adopta su nombre real.
+- **Identificador de dispositivo**: nombre CRUDO del OS sin sufijo `(input)/(output)` (helper `lib/deviceName.ts`); la selección se persiste SOLO vía `ConfigContext.updateSelectedDevices` (NO cablear escritores nuevos al setter crudo); preferencias nuevas de grabación = campo de `RecordingPreferences` con `#[serde(default)]` + control DENTRO de `RecordingSettings.tsx` (`set_recording_preferences` reemplaza el objeto ENTERO). Matcher de nombres, monitor de dispositivos (#17), Bluetooth guard y level monitor: `docs/REGLAS_AUDIO_GRABACION.md`.
 - **Ramas de Git**: se trabaja **directo en `main`**. NO crear ramas (`fix/*`, `enhance/*`, `feat/*`) por iniciativa propia — solo si el usuario lo pide explicitamente. El **push lo decide el usuario**: commit local, nada de `git push` sin que lo pida.
-- **Commits**: Prefijos estandar (`feat:`, `fix:`, `docs:`, `refactor:`, `style:`, `test:`, `chore:`) con descripcion en espanol
+- **Commits**: prefijos estandar (`feat:`, `fix:`, `docs:`, `refactor:`, `style:`, `test:`, `chore:`) con descripcion en espanol.
 
 ---
 
@@ -1107,7 +419,7 @@ Este comando ejecuta: `pnpm build` (Next.js) -> `cargo build` (Rust, debug) -> e
 
 **Criterio de exito**: Exit code 0. Si termina con exit code != 0, el build NO paso — corregir antes de entregar.
 
-**Nota sobre firma local**: El script `tauri-auto.js` maneja la ausencia de `TAURI_SIGNING_PRIVATE_KEY` en desarrollo local. Si la compilacion es exitosa pero falta la clave de firma, el script reporta un warning y sale con code 0 (comportamiento esperado).
+**Nota sobre firma local**: El script `tauri-auto.js` maneja la ausencia de `TAURI_SIGNING_PRIVATE_KEY` en desarrollo local (warning + exit 0, comportamiento esperado).
 
 **PROHIBIDO**:
 - Usar `cargo build` como build final (solo compila Rust, no integra frontend)
@@ -1118,7 +430,7 @@ Este comando ejecuta: `pnpm build` (Next.js) -> `cargo build` (Rust, debug) -> e
 
 **Build de produccion** (solo para releases): `cd frontend && pnpm run tauri:build`
 
-> **GC del `target/` (sep-2026).** Cargo crea una carpeta `target/<perfil>/incremental/<crate>-<hash>/` por combinación de perfil (dev/test/check), features y flags, y **nunca borra las viejas**: llegaron a 43.7 GB en ~40 sesiones de `app_lib` (+5 GB de rlibs hasheados en `deps/`) y el build murió con `os error 112` con 0.8 GB libres. `frontend/scripts/gc-target-dir.js` corre como **primer** paso de `run-pre-build-checks.js` y de `tauri:dev`: borra sesiones sin uso >7 días y, si el incremental pasa de 12 GB, las más viejas — **nunca la sesión caliente de cada crate** —, y los artefactos hasheados viejos de `app_lib`/`maity_desktop` en `deps/`; con <15 GB libres avisa y con <5 GB **falla el build** (moriría igual a mitad del link: `app_lib.lib` pesa 2.4 GB). Manual: `pnpm run target:gc` / `target:gc:dry` (reporte con 🔥 = caliente). Umbrales por env `MAITY_TARGET_GC_STALE_DAYS` / `MAITY_TARGET_GC_MAX_INCREMENTAL_GB`; escapes `MAITY_TARGET_GC_SKIP=1` / `MAITY_TARGET_GC_NO_FAIL=1`. Un ciclo `cargo test` + build debug consume ~10 GB (test ≈ 1.8 GB, build ≈ 6 GB). Si aun así estorba: `cargo clean -p maity-desktop` (tira también la caliente: +2-3 min al siguiente build). **Nightshift bloquea `rm -r` y `Remove-Item -Recurse` en duro**; por eso el borrado vive en un script de Node y no en un comando.
+> **GC del `target/`**: `gc-target-dir.js` corre como primer paso del pre-build y de `tauri:dev` (el incremental de Cargo llegó a 43.7 GB y mató un build con disco lleno). Manual: `pnpm run target:gc` / `target:gc:dry`. **Nightshift bloquea `rm -r`/`Remove-Item -Recurse` en duro** — por eso el borrado vive en un script de Node. Umbrales, escapes y detalle: `docs/BUILDING.md` § GC del target/.
 
 ### 3. Alerta de Cambios Peligrosos
 

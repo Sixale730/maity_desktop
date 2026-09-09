@@ -356,6 +356,18 @@ pathname, dedup_key, seq, session_uptime_s}` + columna `error` = message.
   `GetProcessTimes`+`GetSystemTimes` sobre ~300 procesos **en cada tick** (más
   `GetModuleFileNameExW`, que con el kind viejo era `with_exe(OnlyIfNotSet)`:
   1× por proceso NUEVO, no por tick).
+  **Gotchas de implementación (#14, sep-2026):** en sysinfo 0.32.1
+  `ProcessRefreshKind::nothing()` NO existe (es 0.33+): el constructor vacío es
+  `new()`. `refresh_memory()`/`refresh_cpu_usage()` se mantienen —
+  `global_cpu_usage()` viene de la query PDH, no del refresh de procesos. La
+  cadencia por fase se implementa con `tokio::time::sleep(next_interval(phase))`
+  porque tokio 1.49 no tiene `Interval::set_period`. **Regla derivada:** ninguna
+  semántica puede volver a contarse en TICKS — la presión sostenida pasó de
+  `PRESSURE_SUSTAINED_SAMPLES` a `PRESSURE_SUSTAINED_SECS = 60` medida con
+  `Instant`, porque "2 ticks" valdría 60 s grabando y 120 s en idle y el texto
+  del incidente mentiría en silencio. `cpu_pct` (sistema) **no se reinterpreta**:
+  el CPU propio entró como campo NUEVO `proc_cpu_pct` (×nb_cpus, 100 % = un
+  core) para no romper las series históricas.
   Warnings con umbral y rate-limit 10 min (`sidecar-pool-multiple`,
   `app-rss-critical`, `system-memory-pressure`...).
 - **Export**: Settings → Logging → Export (`export_logs`) genera ZIP con logs +
