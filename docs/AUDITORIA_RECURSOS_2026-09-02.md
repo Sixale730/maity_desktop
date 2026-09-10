@@ -70,7 +70,7 @@ exactamente lo cerrado. La tabla de abajo es una foto del estado; la verdad es l
 | 25 | El logging diagnóstico escribe por IPC en cada poll | Bajo | Disco/CPU | Post | S | = | **cerrado** `3793da7` |
 | 26 | `sync_queue` nunca se poda | Bajo | Disco | Post | S | = | **cerrado** `a783644` |
 | 27 | Audio AAC 192 kbps y ningún borrado: 0.7 GB/día | Medio | Disco | Jornada/Post | S | = | **cerrado** `f52472d` |
-| 28 | Pool de SQLite sin ajustar | Bajo | RAM/Disco | Post | S | = | abierto |
+| 28 | Pool de SQLite sin ajustar | Bajo | RAM/Disco | Post | S | = | **cerrado** `0f2366e` |
 | 29 | Gemma 1B se descarga sin consumidor | Bajo | Disco/Red | Arranque | S | ✗ | abierto |
 | 30 | El helper crea un `LlamaContext` por request | Bajo | CPU/RAM | Jornada | M | ✗ | abierto |
 | 31 | El workspace ignora el `[profile.release]` y el `[patch]` de cpal | Medio | CPU/Disco | Arranque | S | = | **cerrado** `6f46f9f` |
@@ -702,13 +702,31 @@ Ordenados por impacto estimado en RAM, luego CPU, luego disco y red.
   **medir WER antes de bajar el bitrate** (la transcripción saldría del AAC decodificado).
 
 ### #28 · Pool de SQLite sin ajustar: 10 conexiones y `synchronous FULL`
-`Bajo` · RAM/Disco · Post · esfuerzo S · no cambia por lote · abierto
+`Bajo` · RAM/Disco · Post · esfuerzo S · no cambia por lote · **CERRADO** `0f2366e`
 
 - **Impacto**: hasta 10 × 2 MB de page cache si el pool se abre en abanico (worker, drain y comandos UI
   abren 3-4 a la vez); un fsync por commit en el cierre de segmento.
 - **Dónde**: `database/manager.rs:39` (`SqlitePool::connect` con defaults de sqlx).
 - **Cambio**: `SqlitePoolOptions::new().max_connections(4)` y `synchronous(Normal)` — WAL ya está
   activo y NORMAL es igual de durable en WAL. **Riesgo**: ninguno con WAL.
+- **Corrección al remedio (2026-09-10, verificado en el source de `sqlx-sqlite-0.8.6` y en la DB local)**:
+  (1) el ahorro de RAM es un TECHO transitorio, no memoria residente: sqlx abre las conexiones bajo demanda
+  y reapera las inactivas a los 10 min; 4 acota el pico a ≤ 4 × 2 MB. (2) "WAL ya está activo" era un
+  efecto lateral: sqlx 0.8 NO fija `journal_mode` en las conexiones (`options/mod.rs:177`); lo ponía
+  `Sqlite::create_database` (flag `CREATE_DB_WAL=true`) al crear el archivo, y una DB copiada del backend
+  legacy (`meeting_minutes.db` → `.sqlite`, `manager.rs:32`) quedaba en rollback para siempre — ahí NORMAL
+  sí puede corromper. (3) NORMAL NO es "igual de durable": en WAL no corrompe y no pierde nada ante
+  crash/kill de la app, pero tras corte de luz/BSOD pueden perderse los commits posteriores al último
+  checkpoint (automático cada ~4 MB de WAL; `cleanup()` hace TRUNCATE al cerrar). Decisión de producto:
+  NORMAL (lo que recomienda la doc de SQLite para apps de escritorio en WAL).
+- **Cierre**: `manager.rs::connect_options` (`from_str` + `journal_mode(Wal)` + `synchronous(Normal)`:
+  no-op si la DB ya está en WAL, convierte la legacy en la 1.ª conexión de `new()` antes de compartir el
+  pool, así el lock exclusivo del cambio de modo nunca compite) + `pool_options` (`POOL_MAX_CONNECTIONS`
+  = 4) + `connect_with`; `create_database` intacto. Verificado que ningún sitio pide una 2.ª conexión
+  sosteniendo la 1.ª (7 transacciones cortas, cero `fetch()` streaming) y que el worker de sync no retiene
+  conexión durante el HTTP → 4 no puede producir deadlock. Tests `pool_tests` ×2 (migraciones reales;
+  conversión de una DB en rollback a WAL) y `file_manager` con pragmas de producción. 655 Rust, 363 vitest,
+  build debug + smoke OK; la DB real sigue en WAL (header bytes 18-19 = 2/2) tras el smoke.
 
 ### #29 · Gemma 1B se descarga sin consumidor; un 4B instalado desde Ajustes nunca se puede cargar
 `Bajo` · Disco/Red · Arranque · esfuerzo S · **desaparece por lote** · abierto
