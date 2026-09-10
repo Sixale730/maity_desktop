@@ -19,6 +19,7 @@ pub mod ffmpeg_mixer;  // NEW: FFmpeg-style adaptive audio mixer
 // New simplified audio system
 pub mod recording_phase; // Máquina de fases única (fuente de verdad global de la grabación)
 pub mod recording_state;
+pub mod voice_activity;  // F5: rastreador de voz por canal (coach por audio en modo LOTE, sin Silero)
 pub mod pipeline;
 pub mod stream;
 pub mod recording_manager;
@@ -82,7 +83,7 @@ pub use recording_commands::{
     is_recording, get_transcription_status, RecordingArgs, TranscriptionStatus, TranscriptUpdate
 };
 pub use recording_preferences::{
-    RecordingPreferences, get_default_recordings_folder
+    RecordingPreferences, TranscriptionMode, get_default_recordings_folder
 };
 pub use recording_saver::RecordingSaver;
 pub use level_monitor::{AudioLevelMonitor, AudioLevelData, AudioLevelUpdate};

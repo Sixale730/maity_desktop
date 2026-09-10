@@ -48,6 +48,54 @@ pub fn is_recording_active() -> bool {
     recording_phase::current_phase().is_session_active()
 }
 
+/// Lee algo del `RecordingState` de la sesión ACTIVA (el manager global) y
+/// suelta el guard de inmediato — nunca se cruza con un await. `None` si no
+/// hay manager (sin sesión, o `stop_recording` ya hizo `take()`) o si el
+/// mutex está envenenado (se loguea; jamás `unwrap`).
+fn with_active_session_state<T>(f: impl FnOnce(&super::recording_state::RecordingState) -> T) -> Option<T> {
+    match RECORDING_MANAGER.lock() {
+        Ok(guard) => guard.as_ref().map(|m| f(m.get_state())),
+        Err(e) => {
+            warn!("Recording manager lock poisoned al leer el estado de la sesión: {}", e);
+            None
+        }
+    }
+}
+
+/// Modo de transcripción SELLADO de la sesión activa (lo fijó
+/// `initialize_recording` con `auto_save && prefs.is_batch_mode()`).
+///
+/// Es la única verdad sobre cómo está grabando el segmento en curso: la
+/// preferencia viva puede decir `batch` con `auto_save=false` (→ el segmento
+/// va en streaming) o cambiar a mitad de jornada (aplica a la SIGUIENTE
+/// grabación). Quien decida "no finalizar porque es lote" (scheduler:
+/// rotación/cierre) tiene que leer ESTO antes de parar la grabación, igual
+/// que `was_batch` en el stop; si no, un segmento streaming se queda sin
+/// `finalize_segment_native` ni fila en la cola y se pierde.
+pub(crate) fn active_session_transcription_mode() -> Option<super::recording_preferences::TranscriptionMode> {
+    with_active_session_state(|state| state.transcription_mode())
+}
+
+/// Arranca el coach en vivo con la fuente que corresponde a la sesión recién
+/// iniciada (F5): `CoachSource::from_recording` lee el modo SELLADO en el
+/// `RecordingState` del manager global (lo fijó `initialize_recording`). El
+/// guard del mutex se suelta ANTES del await. Non-blocking: un fallo del
+/// coach no afecta a la grabación.
+///
+/// Fail-CLOSED respecto al LLM: si la fuente no se puede determinar (sin
+/// manager o lock envenenado) NO se arranca el coach. Caer a `Transcript`
+/// "por defecto" tomaría lease del sidecar y registraría el listener de
+/// transcript en una sesión que quizá es de lote — justo lo que F5 prohíbe.
+async fn start_live_coach<R: Runtime>(app: &AppHandle<R>) {
+    let Some(source) = with_active_session_state(crate::coach::CoachSource::from_recording) else {
+        warn!("Coach en vivo NO arrancado: no se pudo determinar la fuente de la sesión (sin manager o lock envenenado)");
+        return;
+    };
+    if let Err(e) = crate::coach::live_feedback::start(app.clone(), source).await {
+        warn!("Coach live feedback not started: {}", e);
+    }
+}
+
 // ============================================================================
 // START RECORDING
 // ============================================================================
@@ -274,9 +322,7 @@ async fn start_with_meeting_name_impl<R: Runtime>(
     crate::tray::update_tray_menu(&app);
 
     // Start live feedback engine (non-blocking — ignores errors if Ollama unavailable)
-    if let Err(e) = crate::coach::live_feedback::start(app.clone()).await {
-        warn!("Coach live feedback not started: {}", e);
-    }
+    start_live_coach(&app).await;
 
     info!("✅ Recording started successfully with async-first approach");
 
@@ -387,9 +433,7 @@ async fn start_with_devices_and_meeting_impl<R: Runtime>(
     crate::tray::update_tray_menu(&app);
 
     // Start live feedback engine (non-blocking — ignores errors if Ollama unavailable)
-    if let Err(e) = crate::coach::live_feedback::start(app.clone()).await {
-        warn!("Coach live feedback not started: {}", e);
-    }
+    start_live_coach(&app).await;
 
     info!("✅ Recording started with custom devices using async-first approach");
 
@@ -726,6 +770,9 @@ pub async fn stop_recording_reporting<R: Runtime>(
                     "meetingId": serde_json::Value::Null,
                     "folderPath": folder,
                     "status": if marked { "pending" } else { "failed" },
+                    // F4: el origen lo conoce la fila (sellado al arrancar);
+                    // el stop no la relee — el planner sí lo manda.
+                    "trigger": serde_json::Value::Null,
                 }),
             );
         }
@@ -752,7 +799,10 @@ pub async fn stop_recording_reporting<R: Runtime>(
             "folder_path": folder_path_str,
             "meeting_name": meeting_name_str,
             "duration_seconds": captured_duration_seconds,
-            "started_at": captured_started_at
+            "started_at": captured_started_at,
+            // Campo ADITIVO (F4): `useRecordingStop` ramifica por él — en lote
+            // NO guarda ni mezcla checkpoints (el planner es el dueño).
+            "transcription_mode": if was_batch { "batch" } else { "streaming" }
         }),
     )
     .map_err(|e| e.to_string())?;
@@ -973,5 +1023,21 @@ mod start_failed_limiter_tests {
             Some(49),
             "el volumen descartado debe viajar en el payload, no desaparecer"
         );
+    }
+}
+
+#[cfg(test)]
+mod session_state_tests {
+    //! Guarda de R-A/R-F: sin manager global el modo sellado es `None` (nunca un
+    //! default "streaming" que el scheduler o el coach pudieran tomar por verdad).
+    use super::*;
+
+    #[test]
+    fn sin_manager_el_modo_sellado_es_none() {
+        // Ningún test del crate construye un `RecordingManager` (exige dispositivos
+        // reales), así que el global está vacío aquí.
+        assert!(RECORDING_MANAGER.lock().map(|g| g.is_none()).unwrap_or(false));
+        assert_eq!(active_session_transcription_mode(), None);
+        assert!(with_active_session_state(|_| ()).is_none());
     }
 }

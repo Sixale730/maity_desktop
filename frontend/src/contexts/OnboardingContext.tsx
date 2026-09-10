@@ -7,8 +7,24 @@ import type { PermissionStatus, OnboardingPermissions } from '@/types/onboarding
 import { logger } from '@/lib/logger';
 import { TauriEvent } from '@/lib/tauri-events';
 import { needsSummaryModel } from '@/lib/deviceTier';
+import { isBatchTranscriptionMode } from '@/lib/transcriptionMode';
 
 const PARAKEET_MODEL = 'parakeet-tdt-0.6b-v3-int8';
+
+/**
+ * ¿Hace falta el modelo de resumen local (Gemma) en ESTE equipo con ESTA
+ * configuración? Punto de decisión ÚNICO (F5): tier (`deviceTier`) Y modo de
+ * transcripción. En modo lote el coach es por heurísticos de audio y nada más
+ * consume el sidecar, así que bajar ~1 GB sería gastar red y disco sin
+ * consumidor. Saltarse SOLO el kickoff no basta: `summaryModelReady` quedaría
+ * en `false` y el widget/`BackgroundDownloadStarter` reclamarían la descarga en
+ * cada arranque — por eso `summaryModelRequired` se calcula con esta misma
+ * función. Ambas lecturas están cacheadas y fallan cerrado hacia "sí hace falta".
+ */
+async function summaryModelNeeded(): Promise<boolean> {
+  if (!(await needsSummaryModel())) return false;
+  return !(await isBatchTranscriptionMode());
+}
 
 interface OnboardingStatus {
   version: string;
@@ -81,6 +97,11 @@ interface OnboardingContextType {
   completeOnboarding: () => Promise<void>;
   startBackgroundDownloads: (includeGemma: boolean) => Promise<void>;
   retryParakeetDownload: () => Promise<void>;
+  /**
+   * Recalcula `summaryModelRequired` (tier + modo de transcripción). Llamar
+   * tras cambiar el modo en Ajustes, DESPUÉS de `resetTranscriptionModeCache()`.
+   */
+  refreshSummaryModelRequired: () => Promise<void>;
 }
 
 const OnboardingContext = createContext<OnboardingContextType | undefined>(undefined);
@@ -144,16 +165,23 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
   const parakeetKickoffRef = useRef<Promise<void> | null>(null);
   const gemmaKickoffRef = useRef<Promise<void> | null>(null);
 
-  // Tier del equipo: decide si el modelo de resumen hace falta siquiera. Se
-  // resuelve una vez (el tier está cacheado en Rust por proceso).
+  // Tier del equipo + modo de transcripción: deciden si el modelo de resumen
+  // hace falta siquiera. Se resuelve una vez al montar (el tier está cacheado
+  // en Rust por proceso; el modo, en `lib/transcriptionMode`) y de nuevo a
+  // demanda con `refreshSummaryModelRequired` cuando cambia el modo en Ajustes.
   useEffect(() => {
     let cancelled = false;
-    void needsSummaryModel().then((required) => {
+    void summaryModelNeeded().then((required) => {
       if (!cancelled) setSummaryModelRequired(required);
     });
     return () => {
       cancelled = true;
     };
+  }, []);
+
+  const refreshSummaryModelRequired = useCallback(async () => {
+    const required = await summaryModelNeeded();
+    setSummaryModelRequired(required);
   }, []);
 
   // Load status on mount and initialize database
@@ -571,13 +599,14 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
     if (includeGemma) {
       setTimeout(() => {
         void (async () => {
-          // El tier se consulta AQUÍ y no se confía al estado de React: este
-          // arranque puede dispararse antes de que el efecto de montaje resuelva
-          // `summaryModelRequired`, y equivocarse en ese instante significa bajar
-          // 1 GB en el equipo que menos lo puede pagar. La llamada está cacheada.
-          if (!(await needsSummaryModel())) {
+          // El tier y el modo se consultan AQUÍ y no se confían al estado de
+          // React: este arranque puede dispararse antes de que el efecto de
+          // montaje resuelva `summaryModelRequired`, y equivocarse en ese
+          // instante significa bajar 1 GB en el equipo que menos lo puede pagar
+          // (o en un modo que nunca lo usará). Ambas llamadas están cacheadas.
+          if (!(await summaryModelNeeded())) {
             logger.debug(
-              '[OnboardingContext] tier Low: se omite la descarga de Gemma (el coach usa heurísticos)'
+              '[OnboardingContext] se omite la descarga de Gemma: tier Low o modo lote (el coach usa heurísticos)'
             );
             return;
           }
@@ -677,6 +706,7 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
         completeOnboarding,
         startBackgroundDownloads,
         retryParakeetDownload,
+        refreshSummaryModelRequired,
       }}
     >
       {children}

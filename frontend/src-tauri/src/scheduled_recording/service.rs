@@ -19,6 +19,7 @@ use tauri::{AppHandle, Emitter, Manager, Runtime};
 use tokio::sync::{mpsc, RwLock};
 use tokio::time::{interval, Duration as TokioDuration};
 
+use crate::audio::recording_preferences::TranscriptionMode;
 use crate::events;
 
 use super::schedule;
@@ -792,6 +793,9 @@ async fn close_scheduled<R: Runtime>(
         .ok()
         .flatten();
     let closing_name = render_segment_name(settings, owned_since);
+    // 1-bis. Modo SELLADO del segmento que cerramos, leído ANTES del stop (el `take()`
+    //    del manager lo borra). Nunca la preferencia viva: ver `closing_segment_is_batch`.
+    let closing_batch = closing_segment_is_batch(app).await;
 
     // 2. Detener el segmento. `Ok(false)` = otro actor (usuario) ganó el StopGate en la
     //    carrera: su path hace el post-procesado completo (guardado + navegación), así que
@@ -819,7 +823,7 @@ async fn close_scheduled<R: Runtime>(
     // fin de jornada (procesa FIFO ignorando el gate salvo Critical) y se emite el
     // evento de cierre con `batch: true` para que el frontend limpie su buffer
     // (vacío en lote) sin esperar meetingId — llegará por batch-transcription-status.
-    if batch_transcription_mode(app).await {
+    if closing_batch {
         crate::audio::transcription::batch::planner::request_drain();
         if let Err(e) = app.emit(
             events::SCHEDULED_JORNADA_CLOSED,
@@ -915,6 +919,9 @@ async fn rotate_scheduled<R: Runtime>(
         .flatten();
     // Re-render determinista del nombre con el que arrancó el segmento que cerramos.
     let closing_name = render_segment_name(settings, owned_since);
+    // 1-bis. Modo SELLADO del segmento que cerramos, leído ANTES del stop (el `take()`
+    //    del manager lo borra). Nunca la preferencia viva: ver `closing_segment_is_batch`.
+    let closing_batch = closing_segment_is_batch(app).await;
 
     // 2. Detener el segmento actual (finaliza audio.mp4 + transcripts.json en el folder).
     match stop_current_recording(app).await {
@@ -943,7 +950,7 @@ async fn rotate_scheduled<R: Runtime>(
     // grabación del nuevo segmento no bloquea porque no consume el motor). El evento
     // de rotación va con `batch: true` y meetingId null; el buffer del frontend está
     // vacío en lote, así que el registro fantasma lo limpia el filtro existente.
-    if batch_transcription_mode(app).await {
+    if closing_batch {
         crate::audio::transcription::batch::planner::notify_enqueued();
         if let Err(e) = app.emit(
             events::SCHEDULED_SEGMENT_ROTATED,
@@ -1021,14 +1028,38 @@ async fn rotate_scheduled<R: Runtime>(
     }
 }
 
-/// ¿La preferencia vigente pide transcripción por LOTE? (F3 de la migración.)
-/// Se lee del store en cada cierre — barato (una vez por hora) y respeta un
-/// cambio de modo hecho a mitad de jornada para los segmentos siguientes.
-async fn batch_transcription_mode<R: Runtime>(app: &AppHandle<R>) -> bool {
-    crate::audio::recording_preferences::load_recording_preferences(app)
-        .await
-        .map(|p| p.is_batch_mode())
-        .unwrap_or(false)
+/// Política pura: ¿el segmento que se va a cerrar grabó en LOTE?
+///
+/// El modo SELLADO de la sesión (`RecordingState::transcription_mode`, fijado en
+/// `initialize_recording` como `auto_save && prefs.is_batch_mode()`) gana SIEMPRE
+/// sobre la preferencia: la preferencia viva puede decir `batch` con `auto_save=false`
+/// (el segmento grabó en streaming) o haber cambiado a mitad de jornada (aplica a la
+/// siguiente grabación, no a la que está abierta). Decidir "no finalizar porque es lote"
+/// con la preferencia dejaba un segmento streaming sin `finalize_segment_native`, con
+/// `batch:true` en el evento y sin fila en la cola (el stop tuvo `was_batch=false`) —
+/// el segmento se perdía. `prefs_effective` (`RecordingPreferences::effective_mode`, que
+/// ya incluye `auto_save`) es SOLO el fallback cuando no hay sesión de la que leer.
+fn segment_is_batch(sealed: Option<TranscriptionMode>, prefs_effective: TranscriptionMode) -> bool {
+    sealed.unwrap_or(prefs_effective) == TranscriptionMode::Batch
+}
+
+/// ¿El segmento en curso grabó en LOTE? Lee el modo sellado de la sesión activa
+/// (misma verdad que `was_batch` en el stop). DEBE llamarse ANTES de
+/// `stop_current_recording` (que hace `take()` del manager). Sin manager (no debería
+/// pasar cuando el scheduler es dueño de la grabación) cae a la preferencia EFECTIVA.
+async fn closing_segment_is_batch<R: Runtime>(app: &AppHandle<R>) -> bool {
+    let sealed = crate::audio::recording_lifecycle::active_session_transcription_mode();
+    let prefs_effective = match sealed {
+        Some(_) => TranscriptionMode::Streaming, // no se consulta: el sellado manda
+        None => {
+            warn!("[scheduled] sin sesión activa al decidir el modo del segmento; fallback a la preferencia efectiva");
+            crate::audio::recording_preferences::load_recording_preferences(app)
+                .await
+                .map(|p| p.effective_mode())
+                .unwrap_or(TranscriptionMode::Streaming)
+        }
+    };
+    segment_is_batch(sealed, prefs_effective)
 }
 
 /// Mínimo de palabras (AMBOS canales) para que un segmento de jornada se convierta en
@@ -1744,6 +1775,43 @@ fn notify_start_halted<R: Runtime>(app: &AppHandle<R>, kind: StartFailureKind) {
 
     if let Err(e) = crate::notifications::toast::show_native_toast(app, title, body) {
         warn!("[scheduled] no se pudo mostrar el aviso de micrófono: {}", e);
+    }
+}
+
+#[cfg(test)]
+mod segment_mode_tests {
+    //! `segment_is_batch` es pura a propósito: la pérdida de segmentos por decidir
+    //! "lote" con la preferencia viva (refutación de F4/F5) fue un error de POLÍTICA,
+    //! y una política se fija con una tabla, sin `AppHandle` ni manager global.
+    use super::*;
+
+    #[test]
+    fn el_modo_sellado_gana_sobre_la_preferencia() {
+        // transcription_mode='batch' con auto_save=false, o cambio de modo a mitad de
+        // jornada: la sesión abierta grabó en streaming → hay que finalizar.
+        assert!(!segment_is_batch(Some(TranscriptionMode::Streaming), TranscriptionMode::Batch));
+        // Y al revés: la preferencia volvió a streaming pero el segmento abierto es de lote.
+        assert!(segment_is_batch(Some(TranscriptionMode::Batch), TranscriptionMode::Streaming));
+        assert!(segment_is_batch(Some(TranscriptionMode::Batch), TranscriptionMode::Batch));
+        assert!(!segment_is_batch(Some(TranscriptionMode::Streaming), TranscriptionMode::Streaming));
+    }
+
+    #[test]
+    fn sin_sesion_cae_a_la_preferencia_efectiva() {
+        assert!(segment_is_batch(None, TranscriptionMode::Batch));
+        assert!(!segment_is_batch(None, TranscriptionMode::Streaming));
+    }
+
+    #[test]
+    fn la_preferencia_efectiva_incluye_auto_save() {
+        // El fallback usa `effective_mode()`, nunca `is_batch_mode()` a secas.
+        let mut prefs = crate::audio::recording_preferences::RecordingPreferences::default();
+        prefs.transcription_mode = "batch".to_string();
+        prefs.auto_save = false;
+        assert!(prefs.is_batch_mode(), "la preferencia cruda dice lote…");
+        assert!(!segment_is_batch(None, prefs.effective_mode()), "…pero sin auto_save el segmento grabó en streaming");
+        prefs.auto_save = true;
+        assert!(segment_is_batch(None, prefs.effective_mode()));
     }
 }
 

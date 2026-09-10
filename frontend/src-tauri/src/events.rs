@@ -139,8 +139,11 @@ pub const SCHEDULED_SEGMENT_ROTATED: &str = "scheduled-segment-rotated";
 pub const SCHEDULED_JORNADA_CLOSED: &str = "scheduled-jornada-closed";
 /// Estado de la transcripción por LOTE de un segmento (F3 de la migración).
 /// Emisores: el stop (`pending`) y el planner (`processing`/`ready`/`discarded`/
-/// `failed`). Payload: `{ meetingId: string|null, folderPath, status }` —
-/// `meetingId` solo existe desde `ready` (el lote crea la reunión al finalizar).
+/// `failed`). Payload: `{ meetingId: string|null, folderPath, status, trigger }` —
+/// `meetingId` solo existe desde `ready` (el lote crea la reunión al finalizar);
+/// `trigger` (F4, aditivo, solo para textos de la UI) es el `trigger_kind` de la
+/// fila — `"manual"|"rotation"|"auto_close"|"crash_recovery"` — cuando lo emite el
+/// planner, y `null` en el `pending` del stop (la fila aún no se releyó).
 pub const BATCH_TRANSCRIPTION_STATUS: &str = "batch-transcription-status";
 
 // ── Modelos: Whisper (nombres genéricos legacy) + config ────────────────────

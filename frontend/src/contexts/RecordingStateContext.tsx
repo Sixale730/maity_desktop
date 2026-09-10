@@ -80,6 +80,9 @@ export function RecordingStateProvider({ children }: { children: React.ReactNode
         backendPhase: backendState.phase,
         recordingDuration: backendState.recording_duration,
         activeDuration: backendState.active_duration,
+        // F4: modo sellado por Rust para ESTA sesión. Cubre el arranque y la
+        // recarga a mitad de grabación sin evento nuevo (el poll ya existe).
+        transcriptionMode: backendState.transcription_mode,
       }));
 
       logger.debug('[RecordingStateContext] Synced with backend:', backendState);
@@ -131,6 +134,10 @@ export function RecordingStateProvider({ children }: { children: React.ReactNode
             isActive: true,
             status: RecordingStatus.RECORDING,  // NEW: Set status to RECORDING
           }));
+          // Sync inmediato ANTES del primer tick del poll: `transcriptionMode`
+          // debe estar disponible desde el primer render de la vista en vivo
+          // (TranscriptPanel decide qué pintar por él), no 500 ms después.
+          void syncWithBackend();
           startPolling();
         }));
 
@@ -157,6 +164,8 @@ export function RecordingStateProvider({ children }: { children: React.ReactNode
               isActive: false,
               recordingDuration: null,
               activeDuration: null,
+              // El modo es por sesión: no debe sobrevivir al stop.
+              transcriptionMode: undefined,
             };
           });
           stopPolling();

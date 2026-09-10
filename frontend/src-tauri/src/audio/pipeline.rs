@@ -11,6 +11,7 @@ use super::devices::AudioDevice;
 use super::recording_state::{AudioChunk, AudioError, RecordingState, DeviceType};
 use super::audio_processing::{audio_to_mono, LoudnessNormalizer, NoiseSuppressionProcessor, HighPassFilter};
 use super::vad::{ContinuousVadProcessor};
+use super::voice_activity::VoiceActivityTracker;
 
 // --- Cross-channel echo suppression constants ---
 /// Maximum time overlap to consider echo (seconds)
@@ -713,7 +714,6 @@ impl AudioCapture {
 pub struct AudioPipeline {
     receiver: mpsc::UnboundedReceiver<AudioChunk>,
     transcription_sender: mpsc::UnboundedSender<AudioChunk>,
-    #[allow(dead_code)]  // State management reserved for future enhancements
     state: Arc<RecordingState>,
     // DUAL-CHANNEL VAD: Separate processors for accurate speaker attribution.
     // `None` = modo LOTE (F3 de la migración): la grabación solo captura
@@ -721,6 +721,10 @@ pub struct AudioPipeline {
     // residente (2 sesiones × 4 hilos, #12) ni chunks hacia el worker.
     mic_vad_processor: Option<ContinuousVadProcessor>,
     sys_vad_processor: Option<ContinuousVadProcessor>,
+    /// Rastreador de voz por canal (F5): `Some` SOLO en modo LOTE — es la
+    /// fuente de las métricas del coach cuando no hay `transcript-update`.
+    /// Compuerta de energía sin modelo; publica en `state.voice_activity()`.
+    voice_tracker: Option<VoiceActivityTracker>,
     sample_rate: u32,
     chunk_id_counter: u64,
     // Performance optimization: reduce logging frequency
@@ -781,6 +785,15 @@ impl AudioPipeline {
 
         // Modo LOTE (F3): sin VAD — la grabación solo captura checkpoints y la
         // transcripción corre al cerrar el segmento (transcription/batch/).
+        // En su lugar (F5) el rastreador de voz por canal alimenta al coach.
+        // Gain inicial 1.5 (el default del pipeline); `set_system_audio_gain`
+        // lo sincroniza con el de las preferencias antes de arrancar.
+        let voice_tracker = if transcription_enabled {
+            None
+        } else {
+            info!("📦 Pipeline en modo LOTE: rastreador de voz por canal activo (coach por audio)");
+            Some(VoiceActivityTracker::new(sample_rate, 1.5, state.voice_activity().clone()))
+        };
         let (mic_vad_processor, sys_vad_processor) = if transcription_enabled {
             // DUAL-CHANNEL: Create separate VAD processor for microphone
             let mic = ContinuousVadProcessor::new(sample_rate, redemption_time)
@@ -817,6 +830,7 @@ impl AudioPipeline {
             state,
             mic_vad_processor,
             sys_vad_processor,
+            voice_tracker,
             sample_rate,
             chunk_id_counter: 0,
             // Performance optimization: reduce logging frequency
@@ -883,6 +897,17 @@ impl AudioPipeline {
                         } else { 0.0 };
                         let peak = chunk.data.iter().map(|&x| x.abs()).fold(0.0f32, f32::max);
                         self.state.set_audio_level(chunk.device_type, rms.min(1.0), peak.min(1.0));
+                    }
+
+                    // F5 (solo modo LOTE): rastreador de voz por canal para el
+                    // coach. Va AQUÍ, antes del STEP 1 y antes de que
+                    // `chunk.data` se mueva al ring buffer en el STEP 2 — lee
+                    // por referencia, no copia. En pausa no cuenta (el reloj de
+                    // sesión del coach es de audio grabado, no de pared).
+                    if let Some(tracker) = self.voice_tracker.as_mut() {
+                        if !self.state.is_paused() {
+                            tracker.push(&chunk.device_type, &chunk.data);
+                        }
                     }
 
                     // CRITICAL: Log summary only every 200 chunks OR every 60 seconds (99.5% reduction)
@@ -1227,6 +1252,11 @@ impl AudioPipeline {
     /// Set the system audio gain multiplier (called before pipeline starts processing)
     pub fn set_system_audio_gain(&mut self, gain: f32) {
         self.system_audio_gain = gain.clamp(0.5, 3.0);
+        // F5: el rastreador de voz escala el RMS del canal sistema con la
+        // MISMA ganancia que la R del stereo grabado (umbrales validados en F1).
+        if let Some(tracker) = self.voice_tracker.as_mut() {
+            tracker.set_system_gain(self.system_audio_gain);
+        }
         info!("🔊 System audio gain set to {:.1}x", self.system_audio_gain);
     }
 }

@@ -462,6 +462,9 @@ pub async fn initialize_recording<R: Runtime>(
     // Create new recording manager
     let mut manager = RecordingManager::new();
     manager.transcription_enabled = !batch_mode;
+    // F5: sellar el modo en el estado de la sesión — el coach deriva de aquí
+    // su fuente (transcript vs heurísticos de audio) en `start_live_coach`.
+    manager.get_state().set_transcription_mode(super::recording_preferences::TranscriptionMode::from_flag(batch_mode));
 
     // Load system audio gain from preferences
     if let Some(p) = &prefs {

@@ -1,3 +1,4 @@
+pub mod batch_queue_commands;
 pub mod commands;
 pub mod maintenance;
 pub mod manager;

@@ -681,6 +681,11 @@ pub fn run() {
         .manage(cloud_sync::CloudSyncState::new())
         .setup(|_app| {
             log::info!("Application setup starting");
+            log::info!(
+                "Default de transcripción: {} ({})",
+                if audio::recording_preferences::pilot_batch_build() { "batch" } else { "streaming" },
+                if audio::recording_preferences::pilot_batch_build() { "build piloto MAITY_PILOT_BATCH=1" } else { "build normal" }
+            );
 
             // CRITICAL: Initialize database FIRST, before any spawn that might
             // access AppState. Tauri commands can be invoked before setup completes,
@@ -1178,14 +1183,32 @@ pub fn run() {
                 // GGUF en VRAM/RAM). Con preload, el modelo ya está caliente.
                 let app_for_sidecar = app_handle_for_config.clone();
                 tauri::async_runtime::spawn(async move {
-                    // Tier Low: el coach no usará el LLM al grabar, así que
-                    // calentarlo dejaría ~1 GB residente sin consumidor. Mismo
-                    // punto de decisión que `live_feedback::start` a propósito.
-                    if !crate::coach::should_use_llm_tips() {
-                        log::info!(
-                            "🦙 Sidecar warmup omitido — tier Low: los tips usan heurísticos y \
-                             el modelo no se carga (ver coach::should_use_llm_tips)"
-                        );
+                    // Tier Low o modo LOTE (coach por audio, F5): el coach no
+                    // usará el LLM al grabar, así que calentarlo dejaría ~1 GB
+                    // residente sin consumidor. Mismo punto de decisión que
+                    // `live_feedback::start` a propósito; el modo sale de las
+                    // preferencias (la verdad sellada por sesión no existe
+                    // todavía en el arranque). `Err` al leerlas → Transcript
+                    // (el default histórico).
+                    let coach_mode = match audio::recording_preferences::load_recording_preferences(
+                        &app_for_sidecar,
+                    )
+                    .await
+                    {
+                        Ok(prefs) => crate::coach::CoachMode::from(prefs.effective_mode()),
+                        Err(_) => crate::coach::CoachMode::Transcript,
+                    };
+                    if !crate::coach::should_use_llm_tips(coach_mode) {
+                        match coach_mode {
+                            crate::coach::CoachMode::Audio => log::info!(
+                                "🦙 Sidecar warmup omitido — modo audio: la grabación va por lote y el \
+                                 coach usa heurísticos de audio, sin LLM (ver coach::should_use_llm_tips)"
+                            ),
+                            crate::coach::CoachMode::Transcript => log::info!(
+                                "🦙 Sidecar warmup omitido — tier Low: los tips usan heurísticos y \
+                                 el modelo no se carga (ver coach::should_use_llm_tips)"
+                            ),
+                        }
                         return;
                     }
 
@@ -1599,6 +1622,9 @@ pub fn run() {
             database::sync_queue_commands::sync_queue_cancel_meeting,
             database::sync_queue_commands::sync_queue_get_finalize_result,
             database::sync_queue_commands::sync_queue_retry_meeting,
+            // Cola de transcripción por lote (F4): bloque "Transcripciones pendientes"
+            database::batch_queue_commands::batch_queue_list_active,
+            database::batch_queue_commands::batch_queue_retry,
             // Cloud sync: sesión Supabase viva en Rust (consumidor headless)
             cloud_sync::commands::cloud_sync_set_session,
             cloud_sync::commands::cloud_sync_clear_session,

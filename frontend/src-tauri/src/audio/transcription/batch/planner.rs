@@ -311,7 +311,7 @@ async fn process_queue<R: Runtime>(app: &AppHandle<R>) {
         if !BatchQueueRepository::claim(&pool, job.id).await.unwrap_or(false) {
             continue;
         }
-        emit_status(app, &job.folder_path, None, "processing");
+        emit_status(app, &job.folder_path, None, "processing", Some(&job.trigger_kind));
 
         info!(
             "[batch-planner] job {} ({}, intento {}): {}",
@@ -331,18 +331,18 @@ async fn process_queue<R: Runtime>(app: &AppHandle<R>) {
                 match finalize_job(app, &job).await {
                     SegmentOutcome::Saved(meeting_id) => {
                         let _ = BatchQueueRepository::complete(&pool, job.id, "done").await;
-                        emit_status(app, &job.folder_path, Some(&meeting_id), "ready");
+                        emit_status(app, &job.folder_path, Some(&meeting_id), "ready", Some(&job.trigger_kind));
                         emit_batch_job(app, &job.trigger_kind, "ok", job.attempts + 1, Some(&metrics), "saved").await;
                     }
                     SegmentOutcome::Discarded => {
                         let _ = BatchQueueRepository::complete(&pool, job.id, "discarded").await;
-                        emit_status(app, &job.folder_path, None, "discarded");
+                        emit_status(app, &job.folder_path, None, "discarded", Some(&job.trigger_kind));
                         emit_batch_job(app, &job.trigger_kind, "ok", job.attempts + 1, Some(&metrics), "discarded").await;
                     }
                     SegmentOutcome::Failed => {
                         let _ = BatchQueueRepository::fail(&pool, job.id, "finalize_failed", MAX_ATTEMPTS).await;
                         let terminal = job.attempts + 1 >= MAX_ATTEMPTS;
-                        emit_status(app, &job.folder_path, None, if terminal { "failed" } else { "pending" });
+                        emit_status(app, &job.folder_path, None, if terminal { "failed" } else { "pending" }, Some(&job.trigger_kind));
                         emit_batch_job(app, &job.trigger_kind, "error", job.attempts + 1, None, "finalize_failed").await;
                     }
                 }
@@ -351,7 +351,7 @@ async fn process_queue<R: Runtime>(app: &AppHandle<R>) {
                 warn!("[batch-planner] job {} falló: {}", job.id, e);
                 let _ = BatchQueueRepository::fail(&pool, job.id, &e, MAX_ATTEMPTS).await;
                 let terminal = job.attempts + 1 >= MAX_ATTEMPTS;
-                emit_status(app, &job.folder_path, None, if terminal { "failed" } else { "pending" });
+                emit_status(app, &job.folder_path, None, if terminal { "failed" } else { "pending" }, Some(&job.trigger_kind));
                 emit_batch_job(app, &job.trigger_kind, "error", job.attempts + 1, None, "transcribe_failed").await;
             }
         }
@@ -400,8 +400,9 @@ async fn finalize_job<R: Runtime>(
 }
 
 /// Nombre de la reunión desde `metadata.json` (el saver lo escribe al arrancar);
-/// fallback: el nombre de la carpeta.
-fn read_meeting_name(folder_path: &str) -> String {
+/// fallback: el nombre de la carpeta. `pub(crate)`: lo reusa
+/// `database::batch_queue_commands` para proyectar las filas de la cola en la UI.
+pub(crate) fn read_meeting_name(folder_path: &str) -> String {
     let meta = Path::new(folder_path).join("metadata.json");
     std::fs::read_to_string(&meta)
         .ok()
@@ -416,11 +417,15 @@ fn read_meeting_name(folder_path: &str) -> String {
 }
 
 /// Evento gemelo `batch-transcription-status` para la UI (F4 lo consume).
+/// `trigger` (aditivo, F4) es el `trigger_kind` de la fila — solo para los
+/// textos del provider ("Transcripción lista" manual vs jornada silenciosa);
+/// el stop lo emite `null` porque no relee la fila.
 fn emit_status<R: Runtime>(
     app: &AppHandle<R>,
     folder_path: &str,
     meeting_id: Option<&str>,
     status: &str,
+    trigger: Option<&str>,
 ) {
     let _ = app.emit(
         crate::events::BATCH_TRANSCRIPTION_STATUS,
@@ -428,6 +433,7 @@ fn emit_status<R: Runtime>(
             "meetingId": meeting_id,
             "folderPath": folder_path,
             "status": status,
+            "trigger": trigger,
         }),
     );
 }

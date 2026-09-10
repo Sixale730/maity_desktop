@@ -25,6 +25,7 @@ import {
 } from '../services/conversations.service';
 import { useConversationsListAutoRefresh } from '../hooks/useConversationsListAutoRefresh';
 import { derivePhase } from '../utils/derivePhase';
+import { PendingTranscriptionsBlock } from './PendingTranscriptionsBlock';
 
 interface ConversationsListProps {
   onSelect: (conversation: OmiConversation) => void;
@@ -301,6 +302,10 @@ export function ConversationsList({ onSelect, selectedId }: ConversationsListPro
           <RefreshCw className={`h-5 w-5 text-muted-foreground ${isFetching ? 'animate-spin' : ''}`} />
         </button>
       </div>
+
+      {/* Transcripciones por lote todavía en cola (F4): la reunión no existe en
+          `meetings` hasta que el planner termina. `null` si no hay ninguna. */}
+      <PendingTranscriptionsBlock />
 
       {/* Loading state */}
       {isLoading && (

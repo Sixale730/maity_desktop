@@ -1,4 +1,5 @@
 import { VirtualizedTranscriptView } from '@/components/transcript/VirtualizedTranscriptView';
+import { RecordingStatusBar } from '@/components/recording/RecordingStatusBar';
 import { PermissionWarning } from '@/components/recording/PermissionWarning';
 import { Button } from '@/components/ui/button';
 import { ButtonGroup } from '@/components/ui/button-group';
@@ -33,9 +34,14 @@ export function TranscriptPanel({
   // Contexts
   const { transcripts, transcriptContainerRef, copyTranscript } = useTranscripts();
   const { transcriptModelConfig } = useConfig();
-  const { isRecording, isPaused } = useRecordingState();
+  const { isRecording, isPaused, transcriptionMode } = useRecordingState();
   const { checkPermissions, isChecking, hasSystemAudio, hasMicrophone } = usePermissionCheck();
   const isLinux = useIsLinux();
+
+  // Lote (F4): mientras se graba NO hay transcripción en vivo. Sin este estado
+  // el panel diría "Escuchando... Habla para ver la transcripción" durante toda
+  // la sesión — el usuario creería que el micrófono no funciona.
+  const isBatchLive = isRecording && transcriptionMode === 'batch';
 
   // Convert transcripts to segments for virtualized view
   const segments = useMemo(() =>
@@ -106,15 +112,34 @@ export function TranscriptPanel({
       <div className="pb-20">
         <div className="flex justify-center">
           <div className="w-2/3 max-w-[750px]">
-            <VirtualizedTranscriptView
-              segments={segments}
-              isRecording={isRecording}
-              isPaused={isPaused}
-              isProcessing={isProcessingStop}
-              isStopping={isStopping}
-              enableStreaming={isRecording}
-              showConfidence={true}
-            />
+            {isBatchLive ? (
+              <div className="flex flex-col h-full px-4 py-2" data-testid="batch-live-empty-state">
+                <div className="sticky top-0 z-10 bg-background pb-2">
+                  <RecordingStatusBar isPaused={isPaused} />
+                </div>
+                <div className="flex-1 flex flex-col items-center justify-center text-muted-foreground animate-fade-in py-12">
+                  <div className={`w-3 h-3 rounded-full mb-3 ${isPaused ? 'bg-[#ff4080]' : 'bg-[#485df4] animate-pulse'}`} />
+                  <p className="text-sm text-muted-foreground">
+                    {isPaused ? 'Grabación pausada' : 'Transcribiendo al finalizar la grabación'}
+                  </p>
+                  <p className="text-xs mt-1 text-muted-foreground/70">
+                    {isPaused
+                      ? 'Haz clic en reanudar para continuar; el texto se genera al terminar'
+                      : 'El audio se está guardando; el texto llegará a Conversaciones al terminar'}
+                  </p>
+                </div>
+              </div>
+            ) : (
+              <VirtualizedTranscriptView
+                segments={segments}
+                isRecording={isRecording}
+                isPaused={isPaused}
+                isProcessing={isProcessingStop}
+                isStopping={isStopping}
+                enableStreaming={isRecording}
+                showConfidence={true}
+              />
+            )}
           </div>
         </div>
       </div>

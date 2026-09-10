@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tokio::sync::mpsc;
@@ -7,6 +7,8 @@ use chrono::{DateTime, Utc};
 
 use super::devices::AudioDevice;
 use super::buffer_pool::AudioBufferPool;
+use super::recording_preferences::TranscriptionMode;
+use super::voice_activity::VoiceActivityStats;
 
 /// Device type for audio chunks
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -151,32 +153,44 @@ pub struct RecordingState {
     sys_peak_level: AtomicU32,
     // Monotonic count of real mic chunks (silence watchdog stall detection)
     mic_chunk_seq: AtomicU64,
+
+    /// Modo de transcripción SELLADO por sesión (F5): lo fija
+    /// `initialize_recording` justo después de decidir `batch_mode`, y es la
+    /// verdad de la que el coach deriva su fuente (`CoachSource::from_recording`).
+    /// `0` = streaming, `1` = batch (ver `transcription_mode()`).
+    transcription_mode: AtomicU8,
+    /// Estadísticas del rastreador de voz por canal (modo LOTE): las escribe
+    /// `AudioPipeline` y las lee el coach por audio. Siempre existe (barato:
+    /// seis atómicos); solo se alimenta cuando el pipeline construye el tracker.
+    voice_activity: Arc<VoiceActivityStats>,
 }
 
 impl RecordingState {
     pub fn new() -> Arc<Self> {
-        Arc::new(Self {
-            is_recording: AtomicBool::new(false),
-            is_paused: AtomicBool::new(false),
-            microphone_device: Mutex::new(None),
-            system_device: Mutex::new(None),
-            audio_sender: Mutex::new(None),
-            buffer_pool: AudioBufferPool::new(16, 48000), // Pool of 16 buffers with 48kHz samples capacity
-            error_count: AtomicU32::new(0),
-            recoverable_error_count: AtomicU32::new(0),
-            last_error: Mutex::new(None),
-            error_callback: Mutex::new(None),
-            stats: Mutex::new(RecordingStats::default()),
-            recording_start: Mutex::new(None),
-            recording_start_wall: Mutex::new(None),
-            pause_start: Mutex::new(None),
-            total_pause_duration: Mutex::new(std::time::Duration::ZERO),
-            mic_rms_level: AtomicU32::new(0),
-            sys_rms_level: AtomicU32::new(0),
-            mic_peak_level: AtomicU32::new(0),
-            sys_peak_level: AtomicU32::new(0),
-            mic_chunk_seq: AtomicU64::new(0),
-        })
+        Arc::new(Self::default())
+    }
+
+    /// Ver el doc del campo. Idempotente; se llama una vez por sesión.
+    pub fn set_transcription_mode(&self, mode: TranscriptionMode) {
+        let raw = match mode {
+            TranscriptionMode::Streaming => 0,
+            TranscriptionMode::Batch => 1,
+        };
+        self.transcription_mode.store(raw, Ordering::SeqCst);
+    }
+
+    /// Modo de transcripción de la sesión. Cualquier valor que no sea `1`
+    /// (incluido el default sin sellar) es streaming — el pipeline probado.
+    pub fn transcription_mode(&self) -> TranscriptionMode {
+        if self.transcription_mode.load(Ordering::SeqCst) == 1 {
+            TranscriptionMode::Batch
+        } else {
+            TranscriptionMode::Streaming
+        }
+    }
+
+    pub fn voice_activity(&self) -> &Arc<VoiceActivityStats> {
+        &self.voice_activity
     }
 
     // Recording control
@@ -555,6 +569,8 @@ impl Default for RecordingState {
             mic_peak_level: AtomicU32::new(0),
             sys_peak_level: AtomicU32::new(0),
             mic_chunk_seq: AtomicU64::new(0),
+            transcription_mode: AtomicU8::new(0),
+            voice_activity: VoiceActivityStats::new(),
         }
     }
 }
@@ -720,6 +736,18 @@ mod tests {
             state.set_audio_level(DeviceType::Mixed, 999.0, 999.0);
             let (mic_rms, _, _, _) = state.get_audio_levels();
             assert!((mic_rms - 0.5).abs() < 1e-6);
+        }
+
+        #[test]
+        fn transcription_mode_default_streaming_y_sellado_por_sesion() {
+            let state = RecordingState::new();
+            assert_eq!(state.transcription_mode(), TranscriptionMode::Streaming, "sin sellar = streaming");
+            state.set_transcription_mode(TranscriptionMode::Batch);
+            assert_eq!(state.transcription_mode(), TranscriptionMode::Batch);
+            state.set_transcription_mode(TranscriptionMode::Streaming);
+            assert_eq!(state.transcription_mode(), TranscriptionMode::Streaming);
+            // Las stats de voz existen siempre y arrancan a cero.
+            assert!(!state.voice_activity().snapshot().any_voiced());
         }
 
         #[test]

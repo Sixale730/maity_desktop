@@ -161,6 +161,39 @@ export const TauriEvent = {
 /** Nombre de evento Tauri válido (uno de los valores de TauriEvent). */
 export type TauriEventName = (typeof TauriEvent)[keyof typeof TauriEvent]
 
+/**
+ * Estado de un segmento en la cola de transcripción por lote (F3/F4).
+ *
+ * `pending → processing → ready | discarded | failed`. OJO: `processing → pending`
+ * también ocurre — es un reintento del planner, no un retroceso de la UI.
+ */
+export type BatchTranscriptionStatus =
+  | 'pending'
+  | 'processing'
+  | 'ready'
+  | 'discarded'
+  | 'failed'
+
+/** Quién originó el segmento (espejo de `trigger_kind` en `batch_transcription_queue`). */
+export type BatchTranscriptionTrigger =
+  | 'manual'
+  | 'rotation'
+  | 'auto_close'
+  | 'crash_recovery'
+
+/**
+ * Payload de `TauriEvent.BATCH_TRANSCRIPTION_STATUS`.
+ *
+ * `meetingId` sólo existe en `ready` (la reunión se crea al terminar el job);
+ * `trigger` es aditivo y sirve SÓLO para textos/decisiones de UI.
+ */
+export interface BatchTranscriptionStatusPayload {
+  meetingId: string | null
+  folderPath: string
+  status: BatchTranscriptionStatus
+  trigger?: BatchTranscriptionTrigger | null
+}
+
 /** Acción de remediación sugerida por Rust para un error de dispositivo. */
 export type AudioDeviceRemediation =
   | 'open_microphone_privacy_settings'

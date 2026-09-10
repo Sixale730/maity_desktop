@@ -7,7 +7,7 @@
 
 import { invoke } from '@tauri-apps/api/core';
 import { listen, UnlistenFn } from '@tauri-apps/api/event';
-import type { BackendRecordingPhase } from '@/types/recording';
+import type { BackendRecordingPhase, TranscriptionMode } from '@/types/recording';
 import { TauriEvent } from '@/lib/tauri-events';
 
 export interface RecordingState {
@@ -18,12 +18,25 @@ export interface RecordingState {
   phase?: BackendRecordingPhase;
   recording_duration: number | null;
   active_duration: number | null;
+  /**
+   * Modo de transcripción de la sesión activa (campo aditivo, F4). Sólo viaja
+   * mientras hay un `RecordingManager`; `undefined` en reposo o con un Rust viejo.
+   */
+  transcription_mode?: TranscriptionMode;
 }
 
 export interface RecordingStoppedPayload {
   message: string;
   folder_path?: string;
   meeting_name?: string;
+  duration_seconds?: number | null;
+  started_at?: string | null;
+  /**
+   * Modo con el que corrió la sesión que acaba de parar (campo aditivo, F4).
+   * `'batch'` ⇒ el frontend NO tiene transcripts que guardar: el segmento lo
+   * transcribe el planner y la reunión llega por `batch-transcription-status`.
+   */
+  transcription_mode?: TranscriptionMode;
 }
 
 /**

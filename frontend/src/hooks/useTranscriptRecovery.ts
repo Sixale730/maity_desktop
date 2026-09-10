@@ -110,8 +110,17 @@ export function useTranscriptRecovery(): UseTranscriptRecoveryReturn {
       // como reunión, incluso si hay checkpoints de audio. Se borra SOLO el
       // registro IndexedDB; los archivos en disco (carpeta, .checkpoints/) no se
       // tocan jamás desde aquí.
-      const ghosts = unsavedMeetings.filter(m => m.transcriptCount === 0);
-      const recentMeetings = unsavedMeetings.filter(m => m.transcriptCount > 0);
+      //
+      // Lote (F4): un registro con `transcriptionMode === 'batch'` es fantasma
+      // SIEMPRE, tenga o no transcripts. El dueño de esa recuperación es la cola
+      // de Rust (`batch_transcription_queue`, trigger `crash_recovery`): si se
+      // ofreciera aquí, iría a `has_audio_checkpoints` → diálogo → `recoverMeeting`
+      // fallando con "No transcripts found" — y con transcripts (imposible hoy,
+      // pero barato de cubrir) se guardaría por duplicado con el planner.
+      const isGhost = (m: MeetingMetadata) =>
+        m.transcriptCount === 0 || m.transcriptionMode === 'batch';
+      const ghosts = unsavedMeetings.filter(isGhost);
+      const recentMeetings = unsavedMeetings.filter(m => !isGhost(m));
       if (ghosts.length > 0) {
         logger.debug(`[recovery] descartando ${ghosts.length} registro(s) sin transcripts`);
         await Promise.all(

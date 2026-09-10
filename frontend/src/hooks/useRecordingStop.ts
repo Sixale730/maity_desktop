@@ -71,6 +71,67 @@ function showSavingOverlay(): void {
   }
 }
 
+/**
+ * Claves de sessionStorage que describen la sesión de grabación que acaba de
+ * parar. Se limpian JUNTAS en la rama de lote (F4): ahí no hay guardado que las
+ * consuma, y dejarlas vivas haría que el siguiente stop en streaming heredara
+ * carpeta/nombre/hora de una sesión ajena.
+ */
+const STOP_SESSION_KEYS = [
+  'last_recording_folder_path',
+  'last_recording_meeting_name',
+  'last_recording_duration_seconds',
+  'last_recording_started_at',
+  'early_meeting_id',
+  'active_recording_mode',
+  'indexeddb_current_meeting_id',
+  'last_recording_transcription_mode',
+] as const;
+
+/**
+ * Lo que el stop necesita del `recording-stopped` de ESTA sesión (F4). La rama
+ * lote/streaming se decide por este VALOR resuelto, nunca por sessionStorage:
+ * la key `last_recording_transcription_mode` queda como espejo informativo.
+ */
+interface RecordingStoppedData {
+  folderPath: string | null;
+  transcriptionMode: 'batch' | 'streaming';
+}
+
+interface Deferred<T> {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+}
+
+function createDeferred<T>(): Deferred<T> {
+  let resolve: (value: T) => void = () => {};
+  const promise = new Promise<T>((r) => {
+    resolve = r;
+  });
+  return { promise, resolve };
+}
+
+/**
+ * Tope de espera por el `recording-stopped` de la sesión en curso. Si vence, el
+ * stop se trata como streaming (el camino histórico, que guarda) y deja un warn.
+ * 3 s cubre de sobra el hueco entre el `invoke('stop_recording')` resuelto y la
+ * entrega del evento por el otro canal IPC.
+ */
+export const RECORDING_STOPPED_WAIT_MS = 3000;
+
+/** `promise` o `null` si pasan `ms` antes; el timer se limpia en ambos casos. */
+async function raceWithTimeout<T>(promise: Promise<T>, ms: number): Promise<T | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<null>((resolve) => {
+    timer = setTimeout(() => resolve(null), ms);
+  });
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 interface UseRecordingStopReturn {
   handleRecordingStop: (callApi: boolean) => Promise<void>;
   isStopping: boolean;
@@ -122,47 +183,91 @@ export function useRecordingStop(
   // Guard to prevent duplicate/concurrent stop calls (e.g., from UI and tray simultaneously)
   const stopInProgressRef = useRef(false);
 
-  // Promise to track recording-stopped event data (fixes race condition with recording-stop-complete)
-  const recordingStoppedDataRef = useRef<Promise<void> | null>(null);
+  // `recording-stopped` de la sesión EN CURSO (F4): UN deferred por sesión.
+  // RECORDING_STARTED lo crea (descartando el de la sesión anterior), el
+  // listener de RECORDING_STOPPED lo resuelve y `handleRecordingStop` lo
+  // consume. Antes era una Promise que sólo se asignaba en el stop y nadie
+  // reseteaba al arrancar: desde el segundo stop el await resolvía contra el
+  // evento de la sesión ANTERIOR y la rama lote/streaming leía un modo rancio
+  // de sessionStorage (lote con key ausente → rama B mezclaba checkpoints sobre
+  // la carpeta del planner; key `batch` rancia + stop streaming → se saltaba el
+  // guardado y encima marcaba IndexedDB como guardado).
+  const recordingStoppedDataRef = useRef<Deferred<RecordingStoppedData> | null>(null);
 
-  // Set up recording-stopped listener for meeting navigation
+  // Instancia montada a MITAD de una grabación (arrancó desde la bandeja o el
+  // scheduler estando el usuario en otra ruta): nunca vio RECORDING_STARTED,
+  // pero el stop de esta sesión sí debe esperar su `recording-stopped`. El
+  // estado global (`isRecording`, sincronizado con Rust al montar) lo delata.
+  const isRecordingNow = recordingState.isRecording;
+  useEffect(() => {
+    if (isRecordingNow && !recordingStoppedDataRef.current) {
+      recordingStoppedDataRef.current = createDeferred();
+    }
+  }, [isRecordingNow]);
+
+  // Set up recording-started / recording-stopped listeners for meeting navigation
   useEffect(() => {
     const subs = createSubscriptionGroup();
 
     const setupRecordingStoppedListener = async () => {
       try {
         logger.debug('Setting up recording-stopped listener for navigation...');
+
+        // Nueva sesión: deferred nuevo. Lo que quedara del stop anterior
+        // (resuelto o vencido) deja de ser alcanzable para el stop que viene.
+        subs.on(TauriEvent.RECORDING_STARTED, () => {
+          recordingStoppedDataRef.current = createDeferred();
+          // El espejo del modo describe a la sesión anterior: fuera antes de que
+          // nadie lo pueda leer como si fuera de ésta.
+          sessionStorage.removeItem('last_recording_transcription_mode');
+        });
+
         subs.on<{
           message: string;
           folder_path?: string;
           meeting_name?: string;
           duration_seconds?: number | null;
           started_at?: string | null;
-        }>(TauriEvent.RECORDING_STOPPED, async (event) => {
-          // Create promise that resolves when sessionStorage is set (prevents race condition)
-          recordingStoppedDataRef.current = (async () => {
-            const { folder_path, meeting_name, duration_seconds, started_at } = event.payload;
+          transcription_mode?: 'batch' | 'streaming';
+        }>(TauriEvent.RECORDING_STOPPED, (event) => {
+          const { folder_path, meeting_name, duration_seconds, started_at, transcription_mode } = event.payload;
 
-            // Store folder_path and meeting_name for later use in handleRecordingStop
-            if (folder_path) {
-              sessionStorage.setItem('last_recording_folder_path', folder_path);
-            }
-            if (meeting_name) {
-              sessionStorage.setItem('last_recording_meeting_name', meeting_name);
-            }
-            // Wall-clock duration capturada por Rust ANTES del teardown del manager.
-            // Inmune al bug 2x de timestamps VAD/Deepgram cuando hay sample rate mismatch.
-            if (typeof duration_seconds === 'number' && duration_seconds > 0) {
-              sessionStorage.setItem('last_recording_duration_seconds', String(duration_seconds));
-            }
-            // Hora de arranque SELLADA por Rust al empezar a grabar. Sustituye a derivarla
-            // restando la duración al cierre, que mentía en cuanto la máquina se suspendía
-            // (#5 del piloto Dingler: 6h45 de "duración" para 67 min de audio).
-            if (started_at) {
-              sessionStorage.setItem('last_recording_started_at', started_at);
-            }
-          })();
+          // Sin campo (Rust viejo) ⇒ streaming, el camino probado.
+          const transcriptionMode: RecordingStoppedData['transcriptionMode'] =
+            transcription_mode === 'batch' ? 'batch' : 'streaming';
 
+          // Espejo INFORMATIVO (DevTools/diagnóstico) del modo de la sesión que
+          // acaba de parar. La decisión lote/streaming NO lo lee: va por el
+          // deferred de abajo. Sobrescritura incondicional para que nunca
+          // describa a otra sesión.
+          sessionStorage.setItem('last_recording_transcription_mode', transcriptionMode);
+
+          // Store folder_path and meeting_name for later use in handleRecordingStop
+          if (folder_path) {
+            sessionStorage.setItem('last_recording_folder_path', folder_path);
+          }
+          if (meeting_name) {
+            sessionStorage.setItem('last_recording_meeting_name', meeting_name);
+          }
+          // Wall-clock duration capturada por Rust ANTES del teardown del manager.
+          // Inmune al bug 2x de timestamps VAD/Deepgram cuando hay sample rate mismatch.
+          if (typeof duration_seconds === 'number' && duration_seconds > 0) {
+            sessionStorage.setItem('last_recording_duration_seconds', String(duration_seconds));
+          }
+          // Hora de arranque SELLADA por Rust al empezar a grabar. Sustituye a derivarla
+          // restando la duración al cierre, que mentía en cuanto la máquina se suspendía
+          // (#5 del piloto Dingler: 6h45 de "duración" para 67 min de audio).
+          if (started_at) {
+            sessionStorage.setItem('last_recording_started_at', started_at);
+          }
+
+          // Resolver el deferred de ESTA sesión, DESPUÉS de poblar las keys que
+          // el stop lee (duración/carpeta). Si esta instancia no vio el
+          // RECORDING_STARTED ni el `isRecording` (montó justo antes del stop),
+          // se crea aquí mismo; `resolve` sobre uno ya resuelto es no-op.
+          const deferred = recordingStoppedDataRef.current ?? createDeferred();
+          recordingStoppedDataRef.current = deferred;
+          deferred.resolve({ folderPath: folder_path ?? null, transcriptionMode });
         });
         logger.debug('Recording stopped listener setup complete');
       } catch (error) {
@@ -200,9 +305,24 @@ export function useRecordingStop(
     let wallClockDuration: number | null = null;
 
     try {
-      // Wait for recording-stopped event data if it arrived
-      if (recordingStoppedDataRef.current) {
-        await recordingStoppedDataRef.current;
+      // Esperar (con tope) el `recording-stopped` de ESTA sesión. Sin deferred
+      // (esta instancia jamás vio la sesión: ni STARTED ni `isRecording`) no se
+      // espera nada — comportamiento histórico: streaming.
+      const deferred = recordingStoppedDataRef.current;
+      const stoppedData = deferred
+        ? await raceWithTimeout(deferred.promise, RECORDING_STOPPED_WAIT_MS)
+        : null;
+      // Consumido: pertenece a este stop. Se suelta DESPUÉS del await (mientras
+      // se espera, el listener tiene que seguir viendo ESTE deferred para
+      // resolverlo) y sólo si nadie arrancó otra sesión entre tanto.
+      if (recordingStoppedDataRef.current === deferred) {
+        recordingStoppedDataRef.current = null;
+      }
+      if (!stoppedData) {
+        logger.warn('[RecordingStop] Sin `recording-stopped` fresco de esta sesión: se asume streaming', {
+          waited_ms: deferred ? RECORDING_STOPPED_WAIT_MS : 0,
+          is_call_api: isCallApi,
+        });
       }
 
       // Leer wall-clock duration de sessionStorage (poblada por el listener de
@@ -228,6 +348,57 @@ export function useRecordingStop(
         stop_initiated_at: new Date(stopStartTime).toISOString(),
         current_transcript_count: transcriptsRef.current.length
       });
+
+      // ── Modo LOTE (F4 de la migración) ──────────────────────────────────
+      // La sesión grabó SÓLO audio: no hay transcripts que guardar, Rust ya
+      // encoló el segmento en `batch_transcription_queue` y la reunión llegará
+      // por `batch-transcription-status {ready, meetingId}` (lo escucha
+      // RecordingPostProcessingProvider). Antes de esto el stop en lote caía
+      // en la rama B: fusionaba checkpoints por duplicado con el planner y
+      // avisaba "Reunión sin transcripción" — ese era el bug concreto de F4.
+      //
+      // Nada de `saveMeeting`, `has_audio_checkpoints`, `recover_audio_from_
+      // checkpoints` ni `enqueueCloudSync`: todo eso es del planner al terminar.
+      //
+      // Se ramifica por el VALOR del evento de esta sesión, no por sessionStorage
+      // (una key rancia de otra sesión fue el bug: ver `recordingStoppedDataRef`).
+      if (stoppedData?.transcriptionMode === 'batch') {
+        const batchFolderPath = stoppedData.folderPath;
+        logger.debug('[RecordingStop] Stop en modo LOTE: el planner transcribe al cerrar', {
+          folder_path: batchFolderPath,
+          is_call_api: isCallApi,
+        });
+
+        // El registro IndexedDB de esta sesión es un fantasma por definición
+        // (dueño = cola de Rust). Marcarlo ANTES de limpiar las keys: lee
+        // `indexeddb_current_meeting_id` como fallback.
+        await markMeetingAsSaved();
+        for (const key of STOP_SESSION_KEYS) sessionStorage.removeItem(key);
+
+        // Ancla para que el provider navegue al detalle cuando llegue `ready`
+        // de ESTA carpeta (y no de un segmento de jornada cualquiera).
+        if (batchFolderPath) {
+          sessionStorage.setItem('batch_pending_navigation', batchFolderPath);
+        }
+
+        clearTranscripts();
+        setIsMeetingActive(false);
+        setStatus(RecordingStatus.IDLE);
+        // El `return` de abajo se salta el `setIsRecordingDisabled(false)` del
+        // final del flujo: sin esta línea el botón de grabar quedaría muerto.
+        setIsRecordingDisabled(false);
+
+        toast.success('Grabación guardada', {
+          description: 'Se transcribirá al terminar; la verás en Conversaciones.',
+          duration: 6000,
+        });
+
+        // Soft navigate a propósito (no `window.location.href`): en lote no hubo
+        // STT ni sidecar que "envenene" el estado, y el provider debe seguir
+        // vivo para recibir `processing`/`ready`.
+        router.push('/conversations');
+        return;
+      }
 
       // Note: stop_recording is already called by RecordingControls.stopRecordingAction
       // This function only handles post-stop processing
@@ -315,6 +486,7 @@ export function useRecordingStop(
           sessionStorage.removeItem('early_meeting_id');
           sessionStorage.removeItem('active_recording_mode');
           sessionStorage.removeItem('indexeddb_current_meeting_id');
+          sessionStorage.removeItem('last_recording_transcription_mode');
 
           // Marcar que esta sesion debe pedir feedback. ConversationDetail lee
           // este flag al montarse y muestra el modal sobre la evaluacion. La
@@ -448,6 +620,7 @@ export function useRecordingStop(
           sessionStorage.removeItem('early_meeting_id');
           sessionStorage.removeItem('last_recording_meeting_name');
           sessionStorage.removeItem('last_recording_folder_path');
+          sessionStorage.removeItem('last_recording_transcription_mode');
         }
 
         // Marcar como guardada SIEMPRE que haya 0 transcripts: ya no hay diálogo

@@ -121,6 +121,18 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
             // Use a better fallback that matches the backend's naming pattern
             const effectiveTitle = meetingName || `Reunión ${new Date().toISOString().slice(0, 19).replace('T', '_').replace(/:/g, '-')}`;
 
+            // F4: el modo de ESTA sesión, sellado por Rust (el manager ya existe
+            // cuando se emite `recording-started`). Un registro en lote se marca
+            // desde el nacimiento para que el filtro de fantasmas lo borre sin
+            // ofrecerlo: la recuperación en lote es de la cola de Rust, no de
+            // IndexedDB. Si no se puede leer, se deja `undefined` (= streaming).
+            let transcriptionMode: 'streaming' | 'batch' | undefined;
+            try {
+              transcriptionMode = (await recordingService.getRecordingState()).transcription_mode;
+            } catch {
+              transcriptionMode = undefined;
+            }
+
             // Initialize meeting metadata in IndexedDB
             await indexedDBService.saveMeetingMetadata({
               meetingId,
@@ -129,7 +141,8 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
               lastUpdated: Date.now(),
               transcriptCount: 0,
               savedToSQLite: false,
-              folderPath: undefined // Will update shortly
+              folderPath: undefined, // Will update shortly
+              transcriptionMode,
             });
 
             // Synchronize meeting title to state (fixes tray stop title issue)

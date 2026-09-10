@@ -132,3 +132,6 @@ frontend/src-tauri/vcredist/
 docs/piloto/
 docs/PILOTO_*.md
 .claude/skills/piloto-analisis/report-interno-ejemplo-dingler.html
+
+# paquetes de entrega para testers (msix + cert público + scripts)
+/entrega_*/

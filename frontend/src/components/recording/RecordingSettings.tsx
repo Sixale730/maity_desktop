@@ -8,7 +8,10 @@ import type { RecordingPreferences } from '@/types/audio';
 import Analytics from '@/lib/analytics';
 import { toast } from 'sonner';
 import { useConfig } from '@/contexts/ConfigContext';
+import { useOnboarding } from '@/contexts/OnboardingContext';
+import { useUserRole } from '@/hooks/useUserRole';
 import { stripDeviceTypeSuffix } from '@/lib/deviceName';
+import { resetTranscriptionModeCache } from '@/lib/transcriptionMode';
 
 export type { RecordingPreferences };
 
@@ -33,12 +36,29 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
     audio_retention_days: 30
   });
   const [loading, setLoading] = useState(true);
+  // `true` SOLO tras un `get_recording_preferences` exitoso. El literal inicial
+  // de arriba no trae `transcription_mode` (ni cualquier campo futuro) y
+  // `set_recording_preferences` REEMPLAZA el objeto entero: si la carga falla y
+  // el usuario guarda, el campo ausente vuelve al default del build (que en un
+  // build piloto `MAITY_PILOT_BATCH=1` es `batch` — ver `types/audio.ts`). Sin
+  // carga exitosa no se guarda nada; el parche de `save_folder` del catch es
+  // sólo para pintar la ruta.
+  const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
   const [showRecordingNotification, setShowRecordingNotification] = useState(true);
   // Setter crudo del contexto (savePreferences ya persiste; con
   // updateSelectedDevices se escribiría el JSON dos veces). Sin esto,
   // /settings guardaba pero el ConfigContext quedaba stale hasta reiniciar.
   const { setSelectedDevices } = useConfig();
+  // Modo de transcripción (F4/F5): opción SOLO para admins mientras el default
+  // siga en streaming (sin flip F6). Fail-closed: `roleKnown` evita pintar el
+  // control con el rol en el aire o con la RPC caída (issue #68).
+  const { isAdmin, roleKnown } = useUserRole();
+  // En lote el coach es por audio y nada consume el sidecar → el modelo de
+  // resumen deja de ser requisito; al volver a streaming hay que relanzar la
+  // descarga que se omitió. Ambos puntos de montaje de este componente viven
+  // bajo `(main)/layout.tsx` → OnboardingProvider disponible.
+  const { refreshSummaryModelRequired, startBackgroundDownloads } = useOnboarding();
 
   // Load recording preferences on component mount
   useEffect(() => {
@@ -46,6 +66,7 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
       try {
         const prefs = await invoke<RecordingPreferences>('get_recording_preferences');
         setPreferences(prefs);
+        setLoaded(true);
       } catch (error) {
         console.error('Failed to load recording preferences:', error);
         // If loading fails, get default folder path
@@ -109,6 +130,33 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
     });
   };
 
+  // Espejo de handleRetentionChange: mismo objeto de estado, mismo escritor
+  // (`savePreferences` — `set_recording_preferences` reemplaza el JSON entero).
+  const handleTranscriptionModeChange = async (mode: 'streaming' | 'batch') => {
+    const newPreferences = { ...preferences, transcription_mode: mode };
+    setPreferences(newPreferences);
+    await savePreferences(newPreferences, {
+      title: 'Modo de transcripción actualizado',
+      description:
+        mode === 'batch'
+          ? 'Las siguientes grabaciones se transcribirán al terminar.'
+          : 'Las siguientes grabaciones se transcribirán en vivo.',
+    });
+
+    // `lib/transcriptionMode` cachea la preferencia por sesión; sin este reset
+    // OnboardingContext seguiría decidiendo con el valor viejo.
+    resetTranscriptionModeCache();
+    await refreshSummaryModelRequired();
+    if (mode === 'streaming') {
+      // Al salir del lote el coach vuelve a necesitar Gemma (si el tier lo
+      // permite): relanzar la descarga que el kickoff omitió. Es idempotente
+      // (promesa de arranque reusada) y no bloquea el guardado.
+      void startBackgroundDownloads(true);
+    }
+
+    await Analytics.track('transcription_mode_changed', { mode });
+  };
+
   const handleDeviceChange = async (devices: SelectedDevices) => {
     const newPreferences = {
       ...preferences,
@@ -166,6 +214,14 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
     prefs: RecordingPreferences,
     successToast?: { title: string; description?: string }
   ) => {
+    // Defensa en profundidad además del `disabled` de los controles: un objeto
+    // que no salió de una carga exitosa pisaría campos que no se pudieron leer.
+    if (!loaded) {
+      toast.error('No se pudieron cargar las preferencias de grabación', {
+        description: 'Recarga la página antes de cambiar la configuración; guardar ahora pisaría valores no leídos.',
+      });
+      return;
+    }
     setSaving(true);
     try {
       await invoke('set_recording_preferences', { preferences: prefs });
@@ -200,6 +256,10 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
     );
   }
 
+  // Controles que escriben `RecordingPreferences`: bloqueados mientras se
+  // guarda Y hasta que la carga haya tenido éxito (ver `loaded`).
+  const prefsLocked = saving || !loaded;
+
   return (
     <div className="space-y-6">
       <div>
@@ -208,6 +268,16 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
           Configura cómo se guardan tus grabaciones de audio durante las reuniones.
         </p>
       </div>
+
+      {!loaded && (
+        <div
+          className="p-4 border border-amber-300 rounded-lg bg-amber-50 dark:bg-amber-900/20 text-sm text-amber-800 dark:text-amber-300"
+          data-testid="recording-preferences-load-failed"
+        >
+          No se pudieron cargar las preferencias de grabación. Recarga la página para
+          poder editarlas: guardar ahora pisaría valores que no se pudieron leer.
+        </div>
+      )}
 
       {/* Auto Save Toggle */}
       <div className="flex items-center justify-between p-4 border rounded-lg">
@@ -220,7 +290,7 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
         <Switch
           checked={preferences.auto_save}
           onCheckedChange={handleAutoSaveToggle}
-          disabled={saving}
+          disabled={prefsLocked}
         />
       </div>
 
@@ -294,6 +364,7 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
           max="300"
           step="10"
           value={(preferences.system_audio_gain ?? 1.5) * 100}
+          disabled={prefsLocked}
           onChange={async (e) => {
             const gain = parseInt(e.target.value) / 100;
             const newPreferences = { ...preferences, system_audio_gain: gain };
@@ -320,7 +391,7 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
         <select
           value={preferences.audio_retention_days ?? 30}
           onChange={(e) => handleRetentionChange(parseInt(e.target.value, 10))}
-          disabled={saving}
+          disabled={prefsLocked}
           className="w-full px-3 py-2 text-sm border border-[#d0d0d3] dark:border-gray-600 rounded-md bg-transparent disabled:opacity-50"
         >
           {/*
@@ -344,6 +415,40 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
         </div>
       </div>
 
+      {/* Modo de transcripción (F4/F5) — solo admins mientras el default sea streaming */}
+      {isAdmin && roleKnown && (
+        <div className="p-4 border rounded-lg" data-testid="transcription-mode-setting">
+          <div className="font-medium mb-1">Modo de Transcripción</div>
+          <div className="text-sm text-[#4a4a4c] dark:text-gray-300 mb-3">
+            Elige cuándo se convierte el audio en texto. Transcribir al terminar usa
+            menos memoria mientras grabas; a cambio, la transcripción y el coach con
+            IA llegan cuando la grabación se cierra.
+          </div>
+          <select
+            value={preferences.transcription_mode ?? 'streaming'}
+            onChange={(e) =>
+              handleTranscriptionModeChange(e.target.value === 'batch' ? 'batch' : 'streaming')
+            }
+            disabled={prefsLocked}
+            className="w-full px-3 py-2 text-sm border border-[#d0d0d3] dark:border-gray-600 rounded-md bg-transparent disabled:opacity-50"
+          >
+            <option value="streaming">Streaming en vivo (transcribe mientras grabas)</option>
+            <option value="batch">Por lote al terminar (menos memoria durante la grabación)</option>
+          </select>
+          <div className="text-xs text-[#8a8a8d] mt-2">
+            Aplica a la siguiente grabación; la que esté en curso conserva su modo.
+            En modo por lote el coach en vivo mide tiempo de palabra y monólogos por
+            audio, sin tips de IA.
+          </div>
+          {!preferences.auto_save && (preferences.transcription_mode ?? 'streaming') === 'batch' && (
+            <div className="mt-3 p-3 rounded-md border border-amber-300 bg-amber-50 dark:bg-amber-900/20 text-xs text-amber-800 dark:text-amber-300">
+              Sin &quot;Guardar Grabaciones de Audio&quot; no hay qué transcribir después:
+              las grabaciones se transcribirán en vivo aunque este modo diga &quot;por lote&quot;.
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Device Preferences */}
       <div className="space-y-4">
         <div className="border-t pt-6">
@@ -359,7 +464,7 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
                 systemDevice: preferences.preferred_system_device
               }}
               onDeviceChange={handleDeviceChange}
-              disabled={saving}
+              disabled={prefsLocked}
             />
           </div>
         </div>

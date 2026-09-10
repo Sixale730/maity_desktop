@@ -4,6 +4,14 @@ import { useEffect, useState } from 'react';
 import { createSubscriptionGroup } from '@/lib/tauriSubscribe';
 import { TauriEvent } from '@/lib/tauri-events';
 
+/**
+ * De dónde salen las métricas del coach (F5). `'transcript'` = del texto
+ * (turnos, preguntas); `'audio'` = de la actividad de voz por canal, que es lo
+ * único que hay en modo lote (no se transcribe en vivo). Opcional: un Rust
+ * anterior a F5 no lo manda y equivale a `'transcript'`.
+ */
+export type CoachMetricsMode = 'audio' | 'transcript';
+
 // §2.3 / §1.2 Payload del evento "meeting-metrics" emitido cada 3s por el backend
 // (live_feedback.rs §1.3). Camel-case porque el backend usa #[serde(rename_all = "camelCase")].
 export interface MeetingMetrics {
@@ -13,13 +21,27 @@ export interface MeetingMetrics {
   sessionSecs: number;
   userTurns: number;
   interlocutorTurns: number;
+  mode?: CoachMetricsMode;
+  /**
+   * Sólo en `mode === 'audio'`: ¿ya hubo voz en algún canal? En audio los
+   * turnos van siempre en 0 (no hay texto del que contarlos), así que sin esto
+   * el gauge diría "Esperando audio" toda la sesión.
+   */
+  voiced?: boolean;
 }
 
 interface UseMeetingMetricsResult {
   /** Ultimo metric recibido. null hasta que llegue el primer evento. */
   metrics: MeetingMetrics | null;
-  /** True cuando el backend aun no ha emitido un payload con turns reales (ambos en 0). */
+  /** True cuando el backend aun no ha emitido un payload con señal real (turnos o voz). */
   isWaitingForAudio: boolean;
+}
+
+/** Puro, exportado para tests: la señal de "todavía no hay nada que medir". */
+export function computeIsWaitingForAudio(metrics: MeetingMetrics | null): boolean {
+  if (metrics === null) return true;
+  if (metrics.mode === 'audio') return !metrics.voiced;
+  return metrics.userTurns === 0 && metrics.interlocutorTurns === 0;
 }
 
 /**
@@ -50,8 +72,7 @@ export function useMeetingMetrics(): UseMeetingMetricsResult {
     return () => subs.dispose();
   }, []);
 
-  const isWaitingForAudio =
-    metrics === null || (metrics.userTurns === 0 && metrics.interlocutorTurns === 0);
+  const isWaitingForAudio = computeIsWaitingForAudio(metrics);
 
   return { metrics, isWaitingForAudio };
 }

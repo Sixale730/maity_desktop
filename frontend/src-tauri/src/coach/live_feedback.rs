@@ -4,11 +4,14 @@
 //! corre NudgeEngine (heurístico puro) y TriggerEngine (señales léxicas),
 //! llama Ollama gemma3:4b cuando hay señal y emite "coach-tip-update".
 
+use crate::audio::voice_activity::VoiceActivityStats;
+use crate::coach::audio_heuristics::{evaluate_audio_tips, AudioSnapshot, AudioTipState};
 use crate::coach::breaker::{
     CoachBreaker, FailureOutcome, COOLDOWN as BREAKER_COOLDOWN,
     FAIL_THRESHOLD as BREAKER_FAIL_THRESHOLD,
 };
 use crate::coach::llama_engine;
+use crate::coach::{CoachMode, CoachSource};
 use crate::coach::llm_helper::{acquire_sidecar_keepalive, build_coach_service_with_model};
 use crate::coach::nudge_engine::{evaluate_nudge, ConversationSnapshot};
 use crate::llm::LlmError;
@@ -132,6 +135,12 @@ pub fn coach_set_presentation_mode(is_presentation: bool) {
 /// El frontend lo consume para pintar HealthGauge (health 0-100), TalkSplitBar
 /// (user/interlocutor %) y para dedup defensivo cuando aun no hay datos
 /// (user_turns + interlocutor_turns == 0 -> "Esperando audio…").
+///
+/// F5: `mode` dice de dónde salen los porcentajes — `"transcript"` (por TURNOS,
+/// pipeline histórico) o `"audio"` (por ms de VOZ del rastreador, modo lote,
+/// `user_turns`/`interlocutor_turns` siempre 0). `voiced` es el "ya hubo audio"
+/// del modo audio (`useMeetingMetrics`: `isWaitingForAudio = mode==='audio' ?
+/// !voiced : ambos turns 0`). Ambos aditivos.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MeetingMetrics {
@@ -141,6 +150,8 @@ pub struct MeetingMetrics {
     pub session_secs: u32,
     pub user_turns: u32,
     pub interlocutor_turns: u32,
+    pub mode: &'static str,         // "transcript" | "audio"
+    pub voiced: bool,
 }
 
 /// Payload emitido como evento "coach-tip-update".
@@ -193,6 +204,14 @@ struct FeedbackState {
     /// las plantillas dominan y el LLM no aporta valor (revisar umbrales o quitar §6).
     tips_from_llm: u32,
     tips_from_heuristic: u32,
+    /// F5: fuente del coach en esta sesión. `Transcript` = todo lo de arriba
+    /// se alimenta del listener; `Audio` = modo lote, las métricas salen de
+    /// `voice` y los tips de `audio_heuristics` (sin LLM, sin listener).
+    coach_mode: CoachMode,
+    /// Estadísticas del rastreador de voz (solo `Some` en modo audio).
+    voice: Option<Arc<VoiceActivityStats>>,
+    /// Gating de los tips por audio (una vez por racha / cada 5 min).
+    audio_tips: AudioTipState,
 }
 
 impl FeedbackState {
@@ -217,7 +236,36 @@ impl FeedbackState {
             llm_latencies_ms: VecDeque::with_capacity(100),
             tips_from_llm: 0,
             tips_from_heuristic: 0,
+            coach_mode: CoachMode::Transcript,
+            voice: None,
+            audio_tips: AudioTipState::default(),
         }
+    }
+
+    /// Estado para la fuente de la sesión (`new()` queda intacto para los tests
+    /// del pipeline por transcript).
+    fn with_source(source: CoachSource) -> Self {
+        let mut st = Self::new();
+        st.coach_mode = source.mode();
+        if let CoachSource::Audio(stats) = source {
+            st.voice = Some(stats);
+        }
+        st
+    }
+
+    /// Vista del coach sobre el rastreador de voz. `None` fuera del modo audio.
+    ///
+    /// El `session_secs` del snapshot es el reloj de AUDIO del mic
+    /// (`session_ms`), no `session_start.elapsed()`: el de pared sigue
+    /// corriendo en pausa y durante un suspend, y los umbrales de los tips
+    /// (60 s / 120 s / 5 min) deben medir audio real. El de pared queda para
+    /// `MeetingMetrics.session_secs` (paridad visual con transcript).
+    fn audio_snapshot(&self) -> Option<AudioSnapshot> {
+        self.voice.as_ref().map(|v| {
+            let snap = v.snapshot();
+            let audio_secs = (snap.session_ms / 1000).min(u32::MAX as u64) as u32;
+            AudioSnapshot::from_voice(&snap, audio_secs, is_presentation_mode())
+        })
     }
 
     /// §1.5.3 Registra una latencia LLM en la sliding window (cap 100).
@@ -280,7 +328,13 @@ impl FeedbackState {
     /// preguntas, balance 40-60%, turnos de interlocutor) — hablar ~100% del tiempo
     /// es lo esperado de un ponente, no un defecto. Se conserva sólo la penalización
     /// por monólogo largo, que refleja ritmo/pausas (lo que el usuario sí quiere medir).
+    ///
+    /// F5: en modo audio delega en `AudioSnapshot::health_score` (misma base 70,
+    /// solo los términos que el audio puede medir).
     fn health_score(&self) -> u32 {
+        if let Some(audio) = self.audio_snapshot() {
+            return audio.health_score();
+        }
         let mut s: i32 = 70;
         let r = self.talk_ratio();
         let session_secs = self.session_secs();
@@ -501,9 +555,20 @@ struct GemmaCoachJson {
 // ─── Public API ───────────────────────────────────────────────────────────────
 
 /// Inicia el motor de feedback en vivo. Llamar justo después de "recording-started".
-pub async fn start<R: Runtime + 'static>(app: AppHandle<R>) -> Result<(), String> {
+///
+/// `source` (F5) decide el pipeline del coach: `Transcript` = listener de
+/// `transcript-update` + nudges + heurísticos por turnos (+ LLM si el tier lo
+/// permite); `Audio` = modo lote: solo el emisor de métricas y el loop
+/// heurístico, alimentados por el rastreador de voz — sin listener, sin nudge
+/// loop, sin lease ni sidecar. El caller la construye con
+/// `CoachSource::from_recording` (verdad sellada por sesión).
+pub async fn start<R: Runtime + 'static>(
+    app: AppHandle<R>,
+    source: CoachSource,
+) -> Result<(), String> {
     // Detener sesión anterior si existe
     stop(&app);
+    let mode = source.mode();
 
     // §1.5.5 Reset de contadores globales por sesion.
     // FeedbackState::new() resetea los campos del state mas abajo automaticamente.
@@ -540,13 +605,19 @@ pub async fn start<R: Runtime + 'static>(app: AppHandle<R>) -> Result<(), String
     // sidecar nunca se carga. Ver `coach::should_use_llm_tips` para el porqué —
     // en resumen, en el piloto Dingler el LLM produjo 1 tip en dos semanas a
     // cambio de 1.2 GB residentes, 75 reinicios y 26 aperturas de breaker en
-    // equipos que ya vivían con 74 MB libres.
-    let model = if !crate::coach::should_use_llm_tips() {
+    // equipos que ya vivían con 74 MB libres. En modo AUDIO (lote, F5) tampoco:
+    // no hay transcript que darle al modelo.
+    let model = if !crate::coach::should_use_llm_tips(mode) {
         LLM_TIPS_ENABLED.store(false, Ordering::Relaxed);
-        info!(
-            "Coach: tier Low — tips LLM apagados esta sesión (heurísticos y gauge siguen activos); \
-             el sidecar no se carga durante la grabación"
-        );
+        match mode {
+            CoachMode::Audio => info!(
+                "Coach: modo AUDIO (lote) — tips LLM apagados, sin listener de transcript, sin sidecar"
+            ),
+            CoachMode::Transcript => info!(
+                "Coach: tier Low — tips LLM apagados esta sesión (heurísticos y gauge siguen activos); \
+                 el sidecar no se carga durante la grabación"
+            ),
+        }
         configured_model.clone()
     } else {
         match llama_engine::resolve_effective_tips_model(&app, Some(&configured_model)).await {
@@ -597,299 +668,307 @@ pub async fn start<R: Runtime + 'static>(app: AppHandle<R>) -> Result<(), String
         *lock = Some(token.clone());
     }
 
-    let state = Arc::new(Mutex::new(FeedbackState::new()));
+    let state = Arc::new(Mutex::new(FeedbackState::with_source(source)));
     if let Ok(mut lock) = FEEDBACK_STATE.lock() {
         *lock = Some(Arc::clone(&state));
     }
 
-    // ── Listener de transcripciones ───────────────────────────────────────────
-    let state_ev = Arc::clone(&state);
-    let app_ev = app.clone();
-    let model_ev = model.clone();
-    let endpoint_ev = endpoint.clone();
-    let token_ev = token.clone();
+    // ── Pipeline por TRANSCRIPT (F5: solo en modo transcript) ──────────────
+    // En modo AUDIO no hay `transcript-update` que escuchar ni nudges que
+    // evaluar (todo `evaluate_nudge` sin tip predefinido = petición al LLM,
+    // que en audio no existe): ni listener ni nudge loop. Sin listener
+    // registrado, `stop()` no tiene nada que des-registrar. Los loops de
+    // métricas y heurísticos (abajo) corren en AMBOS modos.
+    if mode == CoachMode::Transcript {
+        // ── Listener de transcripciones ───────────────────────────────────────────
+        let state_ev = Arc::clone(&state);
+        let app_ev = app.clone();
+        let model_ev = model.clone();
+        let endpoint_ev = endpoint.clone();
+        let token_ev = token.clone();
 
-    let listener_id = app.listen(events::TRANSCRIPT_UPDATE, move |event| {
-        let Ok(payload) = serde_json::from_str::<TranscriptPayload>(event.payload()) else {
-            warn!("🪲 Coach: payload transcript-update inválido");
-            return;
-        };
-        if payload.is_partial || payload.text.trim().is_empty() {
-            return;
-        }
-        info!(
-            "📥 Coach listener received: speaker={:?}, words={}",
-            payload.source_type,
-            payload.text.split_whitespace().count()
-        );
-
-        let speaker = payload
-            .source_type
-            .as_deref()
-            .unwrap_or("user")
-            .to_string();
-
-        // Extraer datos bajo el mutex y decidir si llamar a Ollama
-        let task = {
-            let Ok(mut st) = state_ev.lock() else { return };
-
-            // Actualizar métricas conversacionales
-            if speaker == "user" {
-                st.user_turns += 1;
-                st.user_word_count += payload.text.split_whitespace().count() as u64;
-                if payload.text.contains('?') {
-                    st.user_questions += 1;
-                }
-                if st.mono_start.is_none() {
-                    st.mono_start = Some(Instant::now());
-                }
-                if let Some(s) = st.mono_start {
-                    let mono = s.elapsed().as_secs() as u32;
-                    if mono > st.longest_mono_secs {
-                        st.longest_mono_secs = mono;
-                    }
-                }
-            } else {
-                st.interlocutor_turns += 1;
-                st.last_interlocutor_text = Some(payload.text.clone());
-                st.mono_start = None;
+        let listener_id = app.listen(events::TRANSCRIPT_UPDATE, move |event| {
+            let Ok(payload) = serde_json::from_str::<TranscriptPayload>(event.payload()) else {
+                warn!("🪲 Coach: payload transcript-update inválido");
+                return;
+            };
+            if payload.is_partial || payload.text.trim().is_empty() {
+                return;
             }
-
-            st.window.push_back(TranscriptEntry {
-                text: payload.text.clone(),
-                speaker: speaker.clone(),
-                arrived_at: Instant::now(),
-            });
-            st.prune(window_secs);
-
-            st.turn_ctx.last_speaker = Some(speaker.clone());
-            st.turn_ctx.total_turns += 1;
-            if speaker == "user" {
-                st.turn_ctx.consecutive_user_turns += 1;
-            } else {
-                st.turn_ctx.consecutive_user_turns = 0;
-            }
-
-            // Detectar señales heurísticas (microsegundos, sin LLM)
-            let last_interlocutor = st.last_interlocutor_text.clone();
-            let signals = analyze_turn_with_context(
-                &payload.text,
-                &speaker,
-                st.session_secs(),
-                &st.turn_ctx.clone(),
-                last_interlocutor.as_deref(),
+            info!(
+                "📥 Coach listener received: speaker={:?}, words={}",
+                payload.source_type,
+                payload.text.split_whitespace().count()
             );
 
-            // Suprimir 8s después de señal de precio/objeción para no interrumpir negociación
-            let has_price_or_objection = signals.iter().any(|s| {
-                s.signal_id.contains("price") || s.signal_id.contains("objection")
-            });
-            if has_price_or_objection {
-                st.last_price_signal_at = Some(Instant::now());
-            }
+            let speaker = payload
+                .source_type
+                .as_deref()
+                .unwrap_or("user")
+                .to_string();
 
-            // §7 Si la sesión es monólogo (sin interlocutor tras 30s de gracia), suprimir
-            // el path LLM-via-listener: los triggers de price/objection/empathy_gap se
-            // convierten en falsos positivos cuando el usuario *narra* una conversación
-            // pasada ("el cliente me dijo X"), y el LLM rellena el hueco INTERLOCUTOR
-            // inventando emociones del otro. Los tips heurísticos del loop §6 que sí
-            // aplican a presentaciones (haz pausa, ritmo) siguen disparándose.
-            if st.is_monologue_mode() {
-                return;
-            }
+            // Extraer datos bajo el mutex y decidir si llamar a Ollama
+            let task = {
+                let Ok(mut st) = state_ev.lock() else { return };
 
-            // §5.1 Destrabar listener: aceptar critical+important siempre, soft solo si pasaron 35s
-            // Antes solo critical pasaba el filtro, ahogando el 90% de señales útiles (price,
-            // objection, hesitation, satisfaction, enthusiasm) que vienen como Important.
-            let has_actionable = signals.iter().any(|s| {
-                matches!(
-                    s.priority,
-                    SignalPriority::Critical | SignalPriority::Important
-                )
-            });
-            let has_soft_aged = signals
-                .iter()
-                .any(|s| matches!(s.priority, SignalPriority::Soft))
-                && st
-                    .last_tip_at
-                    .map_or(true, |t| t.elapsed() >= Duration::from_secs(35));
+                // Actualizar métricas conversacionales
+                if speaker == "user" {
+                    st.user_turns += 1;
+                    st.user_word_count += payload.text.split_whitespace().count() as u64;
+                    if payload.text.contains('?') {
+                        st.user_questions += 1;
+                    }
+                    if st.mono_start.is_none() {
+                        st.mono_start = Some(Instant::now());
+                    }
+                    if let Some(s) = st.mono_start {
+                        let mono = s.elapsed().as_secs() as u32;
+                        if mono > st.longest_mono_secs {
+                            st.longest_mono_secs = mono;
+                        }
+                    }
+                } else {
+                    st.interlocutor_turns += 1;
+                    st.last_interlocutor_text = Some(payload.text.clone());
+                    st.mono_start = None;
+                }
 
-            if !(has_actionable || has_soft_aged) {
-                return;
-            }
-            let is_critical = signals
-                .iter()
-                .any(|s| matches!(s.priority, SignalPriority::Critical));
-            if !st.can_emit(is_critical) {
-                return;
-            }
+                st.window.push_back(TranscriptEntry {
+                    text: payload.text.clone(),
+                    speaker: speaker.clone(),
+                    arrived_at: Instant::now(),
+                });
+                st.prune(window_secs);
 
-            // Bloquear el rate-limit optimístamente antes de hacer el spawn
-            st.last_tip_at = Some(Instant::now());
-            let signal_id = signals.into_iter().next().map(|s| s.signal_id);
-            Some((
-                st.window_text(),
-                st.session_secs(),
-                st.previous_tips.clone(),
-                signal_id,
-            ))
-        };
+                st.turn_ctx.last_speaker = Some(speaker.clone());
+                st.turn_ctx.total_turns += 1;
+                if speaker == "user" {
+                    st.turn_ctx.consecutive_user_turns += 1;
+                } else {
+                    st.turn_ctx.consecutive_user_turns = 0;
+                }
 
-        if let Some((window_text, session_secs, prev_tips, signal_id)) = task {
-            let app2 = app_ev.clone();
-            let state2 = Arc::clone(&state_ev);
-            let model2 = model_ev.clone();
-            let endpoint2 = endpoint_ev.clone();
-            let token2 = token_ev.clone();
-            tokio::spawn(async move {
-                call_ollama_and_emit(
-                    &app2,
-                    &state2,
-                    window_text,
-                    session_secs,
-                    prev_tips,
+                // Detectar señales heurísticas (microsegundos, sin LLM)
+                let last_interlocutor = st.last_interlocutor_text.clone();
+                let signals = analyze_turn_with_context(
+                    &payload.text,
+                    &speaker,
+                    st.session_secs(),
+                    &st.turn_ctx.clone(),
+                    last_interlocutor.as_deref(),
+                );
+
+                // Suprimir 8s después de señal de precio/objeción para no interrumpir negociación
+                let has_price_or_objection = signals.iter().any(|s| {
+                    s.signal_id.contains("price") || s.signal_id.contains("objection")
+                });
+                if has_price_or_objection {
+                    st.last_price_signal_at = Some(Instant::now());
+                }
+
+                // §7 Si la sesión es monólogo (sin interlocutor tras 30s de gracia), suprimir
+                // el path LLM-via-listener: los triggers de price/objection/empathy_gap se
+                // convierten en falsos positivos cuando el usuario *narra* una conversación
+                // pasada ("el cliente me dijo X"), y el LLM rellena el hueco INTERLOCUTOR
+                // inventando emociones del otro. Los tips heurísticos del loop §6 que sí
+                // aplican a presentaciones (haz pausa, ritmo) siguen disparándose.
+                if st.is_monologue_mode() {
+                    return;
+                }
+
+                // §5.1 Destrabar listener: aceptar critical+important siempre, soft solo si pasaron 35s
+                // Antes solo critical pasaba el filtro, ahogando el 90% de señales útiles (price,
+                // objection, hesitation, satisfaction, enthusiasm) que vienen como Important.
+                let has_actionable = signals.iter().any(|s| {
+                    matches!(
+                        s.priority,
+                        SignalPriority::Critical | SignalPriority::Important
+                    )
+                });
+                let has_soft_aged = signals
+                    .iter()
+                    .any(|s| matches!(s.priority, SignalPriority::Soft))
+                    && st
+                        .last_tip_at
+                        .map_or(true, |t| t.elapsed() >= Duration::from_secs(35));
+
+                if !(has_actionable || has_soft_aged) {
+                    return;
+                }
+                let is_critical = signals
+                    .iter()
+                    .any(|s| matches!(s.priority, SignalPriority::Critical));
+                if !st.can_emit(is_critical) {
+                    return;
+                }
+
+                // Bloquear el rate-limit optimístamente antes de hacer el spawn
+                st.last_tip_at = Some(Instant::now());
+                let signal_id = signals.into_iter().next().map(|s| s.signal_id);
+                Some((
+                    st.window_text(),
+                    st.session_secs(),
+                    st.previous_tips.clone(),
                     signal_id,
-                    &model2,
-                    &endpoint2,
-                    token2,
-                )
-                .await;
-            });
+                ))
+            };
+
+            if let Some((window_text, session_secs, prev_tips, signal_id)) = task {
+                let app2 = app_ev.clone();
+                let state2 = Arc::clone(&state_ev);
+                let model2 = model_ev.clone();
+                let endpoint2 = endpoint_ev.clone();
+                let token2 = token_ev.clone();
+                tokio::spawn(async move {
+                    call_ollama_and_emit(
+                        &app2,
+                        &state2,
+                        window_text,
+                        session_secs,
+                        prev_tips,
+                        signal_id,
+                        &model2,
+                        &endpoint2,
+                        token2,
+                    )
+                    .await;
+                });
+            }
+        });
+
+        if let Ok(mut lock) = EVENT_LISTENER.lock() {
+            *lock = Some(listener_id);
         }
-    });
 
-    if let Ok(mut lock) = EVENT_LISTENER.lock() {
-        *lock = Some(listener_id);
-    }
+        // ── Loop de nudge (NudgeEngine, sin LLM) ─────────────────────────────────
+        let state_bg = Arc::clone(&state);
+        let app_bg = app.clone();
+        let token_bg = token.clone();
+        let model_bg = model.clone();
+        let endpoint_bg = endpoint.clone();
 
-    // ── Loop de nudge (NudgeEngine, sin LLM) ─────────────────────────────────
-    let state_bg = Arc::clone(&state);
-    let app_bg = app.clone();
-    let token_bg = token.clone();
-    let model_bg = model.clone();
-    let endpoint_bg = endpoint.clone();
+        tokio::spawn(async move {
+            info!(
+                "🎯 Coach nudge loop started (interval={}s, window={}s)",
+                interval_secs, window_secs
+            );
+            let mut ticker =
+                tokio::time::interval(Duration::from_secs(interval_secs as u64));
+            ticker.tick().await; // descartar primer tick inmediato
 
-    tokio::spawn(async move {
-        info!(
-            "🎯 Coach nudge loop started (interval={}s, window={}s)",
-            interval_secs, window_secs
-        );
-        let mut ticker =
-            tokio::time::interval(Duration::from_secs(interval_secs as u64));
-        ticker.tick().await; // descartar primer tick inmediato
-
-        loop {
-            tokio::select! {
-                _ = ticker.tick() => {
-                    let task = {
-                        let Ok(mut st) = state_bg.lock() else { continue };
-                        st.prune(window_secs);
-                        let win_len = st.window.len();
-                        let can_em = st.can_emit(false);
-                        if st.window.is_empty() || !can_em {
-                            info!(
-                                "⏰ Nudge tick @ {}s — skip (window={}, can_emit={})",
-                                st.session_secs(), win_len, can_em
-                            );
-                            None
-                        } else {
-                            let snap = st.snapshot();
-                            let nudge = evaluate_nudge(&snap);
-                            info!(
-                                "⏰ Nudge tick @ {}s — window={}, ratio={:.2}, mono={}s, q={}, health={}, should_nudge={} ({:?})",
-                                snap.session_duration_sec, win_len, snap.user_talk_ratio,
-                                snap.longest_user_monologue_sec, snap.user_questions, snap.health_score,
-                                nudge.should_nudge, nudge.nudge_type
-                            );
-                            if !nudge.should_nudge {
+            loop {
+                tokio::select! {
+                    _ = ticker.tick() => {
+                        let task = {
+                            let Ok(mut st) = state_bg.lock() else { continue };
+                            st.prune(window_secs);
+                            let win_len = st.window.len();
+                            let can_em = st.can_emit(false);
+                            if st.window.is_empty() || !can_em {
+                                info!(
+                                    "⏰ Nudge tick @ {}s — skip (window={}, can_emit={})",
+                                    st.session_secs(), win_len, can_em
+                                );
                                 None
                             } else {
-                                let nudge_type_str = nudge
-                                    .nudge_type
-                                    .as_ref()
-                                    .map(|n| format!("{:?}", n));
-                                // Bloquear rate-limit antes de salir del mutex
-                                st.last_tip_at = Some(Instant::now());
-                                st.last_nudge_type = nudge_type_str.clone();
-                                Some((
-                                    nudge.tip,
-                                    nudge.category.clone(),
-                                    nudge.severity.clone(),
-                                    nudge_type_str,
-                                    st.window_text(),
-                                    st.session_secs(),
-                                    st.previous_tips.clone(),
-                                    snap.session_duration_sec,
-                                ))
+                                let snap = st.snapshot();
+                                let nudge = evaluate_nudge(&snap);
+                                info!(
+                                    "⏰ Nudge tick @ {}s — window={}, ratio={:.2}, mono={}s, q={}, health={}, should_nudge={} ({:?})",
+                                    snap.session_duration_sec, win_len, snap.user_talk_ratio,
+                                    snap.longest_user_monologue_sec, snap.user_questions, snap.health_score,
+                                    nudge.should_nudge, nudge.nudge_type
+                                );
+                                if !nudge.should_nudge {
+                                    None
+                                } else {
+                                    let nudge_type_str = nudge
+                                        .nudge_type
+                                        .as_ref()
+                                        .map(|n| format!("{:?}", n));
+                                    // Bloquear rate-limit antes de salir del mutex
+                                    st.last_tip_at = Some(Instant::now());
+                                    st.last_nudge_type = nudge_type_str.clone();
+                                    Some((
+                                        nudge.tip,
+                                        nudge.category.clone(),
+                                        nudge.severity.clone(),
+                                        nudge_type_str,
+                                        st.window_text(),
+                                        st.session_secs(),
+                                        st.previous_tips.clone(),
+                                        snap.session_duration_sec,
+                                    ))
+                                }
                             }
-                        }
-                    };
-
-                    let Some((nudge_tip, category, severity, trigger_str, window_text, session_secs, prev_tips, dur)) = task else {
-                        continue;
-                    };
-
-                    if let Some(tip_text) = nudge_tip {
-                        // Tip heurístico listo — no necesita Ollama
-                        let update = CoachTipUpdate {
-                            tip: tip_text,
-                            tip_type: "observation".to_string(),
-                            category,
-                            priority: severity,
-                            confidence: 0.9,
-                            trigger: trigger_str,
-                            timestamp_secs: dur as u64,
                         };
-                        let _ = app_bg.emit(events::COACH_TIP_UPDATE, &update);
-                        let ttfb_ms = if let Ok(mut st) = state_bg.lock() {
-                            let ttfb = st.mark_first_tip_if_needed();
-                            st.tips_from_heuristic += 1; // §1.5.4 nudge predefinido = heuristico
-                            st.record_tip(update);
-                            ttfb
-                        } else {
-                            None
-                        };
-                        if let Some(ms) = ttfb_ms {
-                            info!("[METRIC] TTFB primer tip: {}ms", ms);
-                            let _ = app_bg.emit(
-                                events::COACH_METRICS,
-                                serde_json::json!({ "ttfb_first_tip_ms": ms as u64 }),
-                            );
-                        }
-                    } else {
-                        // §7 En monólogo, el LLM con COACH_SYSTEM_PROMPT alucinaría
-                        // tips dialógicos ("Dile al cliente..."). Solo dejamos los
-                        // tips heurísticos del nudge (que ya tienen tip_text) y los
-                        // del loop §6 (`evaluate_health_tips`).
-                        let is_mono = state_bg
-                            .lock()
-                            .map(|s| s.is_monologue_mode())
-                            .unwrap_or(false);
-                        if is_mono {
+
+                        let Some((nudge_tip, category, severity, trigger_str, window_text, session_secs, prev_tips, dur)) = task else {
                             continue;
+                        };
+
+                        if let Some(tip_text) = nudge_tip {
+                            // Tip heurístico listo — no necesita Ollama
+                            let update = CoachTipUpdate {
+                                tip: tip_text,
+                                tip_type: "observation".to_string(),
+                                category,
+                                priority: severity,
+                                confidence: 0.9,
+                                trigger: trigger_str,
+                                timestamp_secs: dur as u64,
+                            };
+                            let _ = app_bg.emit(events::COACH_TIP_UPDATE, &update);
+                            let ttfb_ms = if let Ok(mut st) = state_bg.lock() {
+                                let ttfb = st.mark_first_tip_if_needed();
+                                st.tips_from_heuristic += 1; // §1.5.4 nudge predefinido = heuristico
+                                st.record_tip(update);
+                                ttfb
+                            } else {
+                                None
+                            };
+                            if let Some(ms) = ttfb_ms {
+                                info!("[METRIC] TTFB primer tip: {}ms", ms);
+                                let _ = app_bg.emit(
+                                    events::COACH_METRICS,
+                                    serde_json::json!({ "ttfb_first_tip_ms": ms as u64 }),
+                                );
+                            }
+                        } else {
+                            // §7 En monólogo, el LLM con COACH_SYSTEM_PROMPT alucinaría
+                            // tips dialógicos ("Dile al cliente..."). Solo dejamos los
+                            // tips heurísticos del nudge (que ya tienen tip_text) y los
+                            // del loop §6 (`evaluate_health_tips`).
+                            let is_mono = state_bg
+                                .lock()
+                                .map(|s| s.is_monologue_mode())
+                                .unwrap_or(false);
+                            if is_mono {
+                                continue;
+                            }
+                            // Nudge sin tip predefinido → llamar a Ollama
+                            call_ollama_and_emit(
+                                &app_bg,
+                                &state_bg,
+                                window_text,
+                                session_secs,
+                                prev_tips,
+                                trigger_str,
+                                &model_bg,
+                                &endpoint_bg,
+                                token_bg.clone(),
+                            )
+                            .await;
                         }
-                        // Nudge sin tip predefinido → llamar a Ollama
-                        call_ollama_and_emit(
-                            &app_bg,
-                            &state_bg,
-                            window_text,
-                            session_secs,
-                            prev_tips,
-                            trigger_str,
-                            &model_bg,
-                            &endpoint_bg,
-                            token_bg.clone(),
-                        )
-                        .await;
+                    }
+                    _ = token_bg.cancelled() => {
+                        info!("🛑 Coach nudge loop cancelled");
+                        break;
                     }
                 }
-                _ = token_bg.cancelled() => {
-                    info!("🛑 Coach nudge loop cancelled");
-                    break;
-                }
             }
-        }
-    });
+        });
+    }
 
     // ── §1.3 Loop emisor de meeting-metrics cada 3s ──────────────────────────
     // Lee snapshot del state, calcula health/talk pct y emite evento "meeting-metrics"
@@ -909,21 +988,7 @@ pub async fn start<R: Runtime + 'static>(app: AppHandle<R>) -> Result<(), String
                 _ = ticker.tick() => {
                     let payload = {
                         let Ok(st) = state_mm.lock() else { continue };
-                        let total_turns = st.user_turns + st.interlocutor_turns;
-                        let (user_pct, interlocutor_pct) = if total_turns == 0 {
-                            (50u8, 50u8) // 50/50 al inicio (frontend muestra "Esperando audio")
-                        } else {
-                            let u = ((st.user_turns as f32 / total_turns as f32) * 100.0).round() as u8;
-                            (u, 100u8.saturating_sub(u))
-                        };
-                        MeetingMetrics {
-                            health: st.health_score() as u8,
-                            user_talk_pct: user_pct,
-                            interlocutor_talk_pct: interlocutor_pct,
-                            session_secs: st.session_secs(),
-                            user_turns: st.user_turns,
-                            interlocutor_turns: st.interlocutor_turns,
-                        }
+                        build_meeting_metrics(&st)
                     };
                     let _ = app_mm.emit(events::MEETING_METRICS, &payload);
                 }
@@ -938,11 +1003,13 @@ pub async fn start<R: Runtime + 'static>(app: AppHandle<R>) -> Result<(), String
     // ── §6 Loop heuristico cada 3s (tips directos sin LLM) ───────────────────
     // Reutiliza can_emit (cooldown + hard cap §5.3) y dedup §4.2 (is_duplicate_tip).
     // Cubre los casos urgentes/extremos donde la latencia LLM (2-4s) es inaceptable.
+    // F5: en modo audio este loop es el ÚNICO emisor de tips (monólogo y
+    // dominancia por el rastreador de voz); el tick se elige por `coach_mode`.
     let state_he = Arc::clone(&state);
     let app_he = app.clone();
     let token_he = token.clone();
     tokio::spawn(async move {
-        info!("🎯 Coach heuristic loop started (interval=3s)");
+        info!("🎯 Coach heuristic loop started (interval=3s, mode={})", mode.as_str());
         let mut ticker = tokio::time::interval(Duration::from_secs(3));
         ticker.tick().await; // descartar primer tick inmediato
 
@@ -951,26 +1018,9 @@ pub async fn start<R: Runtime + 'static>(app: AppHandle<R>) -> Result<(), String
                 _ = ticker.tick() => {
                     let task = {
                         let Ok(mut st) = state_he.lock() else { continue };
-                        if st.window.is_empty() {
-                            // Sin actividad aun -> no evaluar; ahorra logs ruidosos al inicio.
-                            None
-                        } else {
-                            let snap = st.snapshot();
-                            match evaluate_health_tips(&snap) {
-                                None => None,
-                                Some(h) => {
-                                    let is_critical = h.priority == "critical";
-                                    if !st.can_emit(is_critical) {
-                                        None
-                                    } else if is_duplicate_tip(h.tip, &st.previous_tips) {
-                                        None
-                                    } else {
-                                        // Bloquear rate-limit antes de emit.
-                                        st.last_tip_at = Some(Instant::now());
-                                        Some((h, snap.session_duration_sec))
-                                    }
-                                }
-                            }
+                        match st.coach_mode {
+                            CoachMode::Transcript => transcript_heuristic_tick(&mut st),
+                            CoachMode::Audio => audio_heuristic_tick(&mut st),
                         }
                     };
 
@@ -1014,10 +1064,90 @@ pub async fn start<R: Runtime + 'static>(app: AppHandle<R>) -> Result<(), String
     });
 
     info!(
-        "✅ Live feedback started (model={}, endpoint={})",
-        model, endpoint
+        "✅ Live feedback started (mode={}, model={}, endpoint={})",
+        mode.as_str(), model, endpoint
     );
     Ok(())
+}
+
+/// Métricas del gauge (`meeting-metrics`, cada 3 s). Por TURNOS en modo
+/// transcript (50/50 sin turnos → "Esperando audio…"); por ms de VOZ en modo
+/// audio (turns siempre 0; `voiced` = ya hubo audio en algún canal; sin voz el
+/// ratio es 0.5 → 50/50). Compartida por el loop emisor y los tests: si el
+/// cálculo diverge, fallan a la vez.
+fn build_meeting_metrics(st: &FeedbackState) -> MeetingMetrics {
+    if let Some(audio) = st.audio_snapshot() {
+        let u = (audio.user_talk_ratio * 100.0).round().clamp(0.0, 100.0) as u8;
+        return MeetingMetrics {
+            health: audio.health_score() as u8,
+            user_talk_pct: u,
+            interlocutor_talk_pct: 100u8.saturating_sub(u),
+            session_secs: st.session_secs(),
+            user_turns: 0,
+            interlocutor_turns: 0,
+            mode: st.coach_mode.as_str(),
+            voiced: audio.any_voiced,
+        };
+    }
+    let total_turns = st.user_turns + st.interlocutor_turns;
+    let (user_pct, interlocutor_pct) = if total_turns == 0 {
+        (50u8, 50u8) // 50/50 al inicio (frontend muestra "Esperando audio")
+    } else {
+        let u = ((st.user_turns as f32 / total_turns as f32) * 100.0).round() as u8;
+        (u, 100u8.saturating_sub(u))
+    };
+    MeetingMetrics {
+        health: st.health_score() as u8,
+        user_talk_pct: user_pct,
+        interlocutor_talk_pct: interlocutor_pct,
+        session_secs: st.session_secs(),
+        user_turns: st.user_turns,
+        interlocutor_turns: st.interlocutor_turns,
+        mode: st.coach_mode.as_str(),
+        voiced: total_turns > 0,
+    }
+}
+
+/// Tick del loop heurístico en modo TRANSCRIPT (lógica original, verbatim):
+/// snapshot conversacional → `evaluate_health_tips` → `can_emit` → dedup
+/// Jaccard → bloquear el rate-limit. Devuelve `(tip, segundo de sesión)`.
+fn transcript_heuristic_tick(st: &mut FeedbackState) -> Option<(HeuristicTip, u32)> {
+    if st.window.is_empty() {
+        // Sin actividad aun -> no evaluar; ahorra logs ruidosos al inicio.
+        return None;
+    }
+    let snap = st.snapshot();
+    let h = evaluate_health_tips(&snap)?;
+    let is_critical = h.priority == "critical";
+    if !st.can_emit(is_critical) {
+        return None;
+    }
+    if is_duplicate_tip(h.tip, &st.previous_tips) {
+        return None;
+    }
+    // Bloquear rate-limit antes de emit.
+    st.last_tip_at = Some(Instant::now());
+    Some((h, snap.session_duration_sec))
+}
+
+/// Tick del loop heurístico en modo AUDIO (F5): snapshot del rastreador →
+/// `evaluate_audio_tips` (gating propio por racha / 5 min) → `can_emit`
+/// (caps y cooldowns de siempre) → `mark` SOLO al emitir, así un tip bloqueado
+/// por cooldown se reintenta al tick siguiente. Sin dedup Jaccard: con textos
+/// fijos avisaría una sola vez por sesión.
+fn audio_heuristic_tick(st: &mut FeedbackState) -> Option<(HeuristicTip, u32)> {
+    let snap = st.audio_snapshot()?;
+    if !snap.any_voiced {
+        return None;
+    }
+    let h = evaluate_audio_tips(&snap, &st.audio_tips)?;
+    let is_critical = h.priority == "critical";
+    if !st.can_emit(is_critical) {
+        return None;
+    }
+    st.audio_tips.mark(&h, &snap);
+    st.last_tip_at = Some(Instant::now());
+    Some((h, snap.session_secs))
 }
 
 /// Detiene el motor de feedback en vivo. Llamar cuando se detiene la grabación.
@@ -1044,13 +1174,23 @@ pub fn stop<R: Runtime>(app: &AppHandle<R>) {
     // §1.5.2 + §1.5.3 + §1.5.4 Emit summary de metricas al cierre de sesion.
     let parse_total = LLM_PARSE_TOTAL.load(Ordering::Relaxed);
     let parse_failed = LLM_PARSE_FAILED.load(Ordering::Relaxed);
-    let (p95_ms, tips_llm, tips_heur) = if let Ok(outer) = FEEDBACK_STATE.lock() {
+    // F5: `coach_mode` y el snapshot del rastreador de voz (solo en audio)
+    // viajan en el mismo summary — `longest_user_mono_ms` es el dato con el
+    // que se calibra `INTERRUPT_MS` tras el piloto. Sin state (stop sin start)
+    // el modo reporta el default histórico y los campos de voz van a `null`.
+    let (p95_ms, tips_llm, tips_heur, coach_mode, voice) = if let Ok(outer) = FEEDBACK_STATE.lock() {
         match outer.as_ref().and_then(|arc| arc.lock().ok()) {
-            Some(s) => (s.llm_latency_p95_ms(), s.tips_from_llm, s.tips_from_heuristic),
-            None => (None, 0, 0),
+            Some(s) => (
+                s.llm_latency_p95_ms(),
+                s.tips_from_llm,
+                s.tips_from_heuristic,
+                s.coach_mode,
+                s.voice.as_ref().map(|v| v.snapshot()),
+            ),
+            None => (None, 0, 0, CoachMode::Transcript, None),
         }
     } else {
-        (None, 0, 0)
+        (None, 0, 0, CoachMode::Transcript, None)
     };
     let parse_failed_pct = if parse_total > 0 {
         (parse_failed as f64 / parse_total as f64) * 100.0
@@ -1087,16 +1227,26 @@ pub fn stop<R: Runtime>(app: &AppHandle<R>) {
     let hw = crate::audio::hardware_detector::HardwareProfile::detect();
 
     info!(
-        "[METRIC] session-summary llm_parse_total={} llm_parse_failed={} ({:.1}%) llm_latency_p95_ms={:?} tips_from_llm={} tips_from_heuristic={} heuristic_pct={:.1}% sidecar_timeouts={} sidecar_restarts={} sidecar_cooldowns={} sidecar_idle_kills={} breaker_opens={} mem_app_rss_peak_mb={} mem_llama_rss_peak_mb={} mem_webview_rss_peak_mb={} sys_avail_min_mb={} llama_procs_max={}",
-        parse_total, parse_failed, parse_failed_pct, p95_ms, tips_llm, tips_heur, heur_pct,
+        "[METRIC] session-summary coach_mode={} llm_parse_total={} llm_parse_failed={} ({:.1}%) llm_latency_p95_ms={:?} tips_from_llm={} tips_from_heuristic={} heuristic_pct={:.1}% sidecar_timeouts={} sidecar_restarts={} sidecar_cooldowns={} sidecar_idle_kills={} breaker_opens={} mem_app_rss_peak_mb={} mem_llama_rss_peak_mb={} mem_webview_rss_peak_mb={} sys_avail_min_mb={} llama_procs_max={} user_voiced_ms={:?} interlocutor_voiced_ms={:?} longest_user_mono_ms={:?} audio_session_ms={:?}",
+        coach_mode.as_str(), parse_total, parse_failed, parse_failed_pct, p95_ms, tips_llm, tips_heur, heur_pct,
         sidecar_timeouts, sidecar_restarts, sidecar_cooldowns, sidecar_idle_kills, breaker_opens,
         peaks.app_rss_peak_mb, peaks.llama_rss_peak_mb, peaks.webview_rss_peak_mb,
-        peaks.sys_avail_min_mb, peaks.llama_procs_max
+        peaks.sys_avail_min_mb, peaks.llama_procs_max,
+        voice.map(|v| v.user_voiced_ms), voice.map(|v| v.interlocutor_voiced_ms),
+        voice.map(|v| v.longest_user_mono_ms), voice.map(|v| v.session_ms)
     );
     let _ = app.emit(
         events::COACH_METRICS,
         serde_json::json!({
             "session_summary": {
+                // F5: viajan por el spread de `useCoachMetricsTelemetry` (cero
+                // entradas de catálogo nuevas). Campos de voz: `null` fuera del
+                // modo audio (no se midieron, no son 0).
+                "coach_mode": coach_mode.as_str(),
+                "user_voiced_ms": voice.map(|v| v.user_voiced_ms),
+                "interlocutor_voiced_ms": voice.map(|v| v.interlocutor_voiced_ms),
+                "longest_user_mono_ms": voice.map(|v| v.longest_user_mono_ms),
+                "audio_session_ms": voice.map(|v| v.session_ms),
                 "llm_parse_total": parse_total,
                 "llm_parse_failed": parse_failed,
                 "llm_parse_failed_pct": parse_failed_pct,
@@ -1434,12 +1584,14 @@ fn extract_json(text: &str) -> Option<String> {
 // sidecar Gemma. Cubre los casos urgentes/extremos donde la latencia LLM (~2-4s)
 // es inaceptable. Reutiliza can_emit() (cooldown + hard cap §5.3) y dedup §4.2.
 
+/// Tip curado (texto fijo, sin LLM). `pub(crate)`: `coach::audio_heuristics`
+/// produce los suyos con el mismo tipo para que el loop los emita igual.
 #[derive(Debug, Clone)]
-struct HeuristicTip {
-    tip: &'static str,
-    category: &'static str,
-    priority: &'static str,
-    trigger: &'static str,
+pub(crate) struct HeuristicTip {
+    pub(crate) tip: &'static str,
+    pub(crate) category: &'static str,
+    pub(crate) priority: &'static str,
+    pub(crate) trigger: &'static str,
 }
 
 /// Evalua snapshot conversacional y devuelve un tip hardcoded si cae en zona critica.
@@ -1789,26 +1941,8 @@ mod tests {
     }
 
     // §1.2-§1.3 MeetingMetrics shape + smoke test del loop emisor ─────────────
-
-    /// Replica el calculo del loop emisor de §1.3 sobre un snapshot deterministico.
-    /// Si este helper diverge del codigo del loop, ambos test fallan al mismo tiempo.
-    fn build_meeting_metrics(st: &FeedbackState) -> MeetingMetrics {
-        let total = st.user_turns + st.interlocutor_turns;
-        let (u, i) = if total == 0 {
-            (50u8, 50u8)
-        } else {
-            let u = ((st.user_turns as f32 / total as f32) * 100.0).round() as u8;
-            (u, 100u8.saturating_sub(u))
-        };
-        MeetingMetrics {
-            health: st.health_score() as u8,
-            user_talk_pct: u,
-            interlocutor_talk_pct: i,
-            session_secs: st.session_secs(),
-            user_turns: st.user_turns,
-            interlocutor_turns: st.interlocutor_turns,
-        }
-    }
+    // `build_meeting_metrics` es la función de PRODUCCIÓN (hoisted en F5): el
+    // loop emisor y estos tests comparten el cálculo.
 
     #[test]
     fn meeting_metrics_50_50_sin_turns() {
@@ -1818,6 +1952,154 @@ mod tests {
         assert_eq!(m.interlocutor_talk_pct, 50);
         assert_eq!(m.user_turns, 0);
         assert_eq!(m.interlocutor_turns, 0);
+        assert_eq!(m.mode, "transcript");
+        assert!(!m.voiced, "sin turnos = esperando audio");
+    }
+
+    #[test]
+    fn meeting_metrics_transcript_voiced_con_turnos() {
+        let mut st = FeedbackState::new();
+        st.interlocutor_turns = 1;
+        let m = build_meeting_metrics(&st);
+        assert!(m.voiced);
+        assert_eq!(m.mode, "transcript");
+    }
+
+    fn audio_state(v: crate::audio::voice_activity::VoiceActivitySnapshot) -> FeedbackState {
+        let stats = VoiceActivityStats::new();
+        stats.seed_for_test(v);
+        FeedbackState::with_source(CoachSource::Audio(stats))
+    }
+
+    #[test]
+    fn meeting_metrics_audio_sin_voz_50_50_y_voiced_false() {
+        let st = audio_state(Default::default());
+        let m = build_meeting_metrics(&st);
+        assert_eq!(m.mode, "audio");
+        assert!(!m.voiced);
+        assert_eq!(m.user_talk_pct, 50);
+        assert_eq!(m.interlocutor_talk_pct, 50);
+        assert_eq!(m.user_turns, 0);
+        assert_eq!(m.interlocutor_turns, 0);
+        assert_eq!(m.health, 70, "baseline audio sin datos");
+    }
+
+    #[test]
+    fn meeting_metrics_audio_pct_por_ms_de_voz() {
+        use crate::audio::voice_activity::VoiceActivitySnapshot;
+        for (user_ms, inter_ms, esperado) in [(3_000u64, 1_000u64, 75u8), (1_000, 3_000, 25), (5_000, 5_000, 50), (7_000, 0, 100), (0, 4_000, 0)] {
+            let st = audio_state(VoiceActivitySnapshot {
+                user_voiced_ms: user_ms,
+                interlocutor_voiced_ms: inter_ms,
+                ..Default::default()
+            });
+            let m = build_meeting_metrics(&st);
+            assert_eq!(m.user_talk_pct, esperado, "user={} inter={}", user_ms, inter_ms);
+            assert_eq!(m.user_talk_pct + m.interlocutor_talk_pct, 100);
+            assert!(m.voiced);
+            assert_eq!(m.user_turns, 0, "en audio no hay turnos");
+            assert_eq!(m.mode, "audio");
+        }
+    }
+
+    #[test]
+    fn audio_snapshot_usa_el_reloj_de_audio_y_metrics_el_de_pared() {
+        use crate::audio::voice_activity::VoiceActivitySnapshot;
+        // Reloj de pared "recién arrancado" pero 90 s de AUDIO de mic con una
+        // racha de 61 s: el tip de monólogo sale igual (el de pared no manda).
+        let mut st = audio_state(VoiceActivitySnapshot {
+            user_voiced_ms: 61_000,
+            current_user_mono_ms: 61_000,
+            longest_user_mono_ms: 61_000,
+            user_mono_runs: 1,
+            session_ms: 90_000,
+            ..Default::default()
+        });
+        st.session_start = Instant::now();
+        assert_eq!(st.audio_snapshot().unwrap().session_secs, 90, "reloj de audio");
+        let (tip, at_secs) = audio_heuristic_tick(&mut st).expect("61 s de racha con 90 s de audio");
+        assert_eq!(tip.trigger, crate::coach::audio_heuristics::TRIGGER_MONO_LONG);
+        assert_eq!(at_secs, 90, "el segundo del tip es el del audio");
+
+        // Al revés: 5 min de pared (pausa/suspend) pero solo 10 s de audio → sin tip,
+        // y `MeetingMetrics.session_secs` sigue siendo el de pared.
+        let mut st = audio_state(VoiceActivitySnapshot {
+            user_voiced_ms: 10_000,
+            current_user_mono_ms: 10_000,
+            longest_user_mono_ms: 10_000,
+            user_mono_runs: 1,
+            session_ms: 10_000,
+            ..Default::default()
+        });
+        st.session_start = Instant::now() - Duration::from_secs(300);
+        assert_eq!(st.audio_snapshot().unwrap().session_secs, 10);
+        assert!(audio_heuristic_tick(&mut st).is_none(), "10 s de audio < MIN_SESSION_SECS aunque la pared diga 300");
+        assert!(build_meeting_metrics(&st).session_secs >= 299, "el gauge conserva el reloj de pared");
+    }
+
+    #[test]
+    fn meeting_metrics_audio_health_delega_en_audio() {
+        use crate::audio::voice_activity::VoiceActivitySnapshot;
+        // ratio 0.9 con 100 s de voz → 70 − 15 = 55 (sin términos de turnos/preguntas).
+        let st = audio_state(VoiceActivitySnapshot {
+            user_voiced_ms: 90_000,
+            interlocutor_voiced_ms: 10_000,
+            ..Default::default()
+        });
+        assert_eq!(build_meeting_metrics(&st).health, 55);
+        assert_eq!(st.health_score(), 55, "FeedbackState::health_score delega en audio");
+    }
+
+    #[test]
+    fn with_source_transcript_no_lleva_voz() {
+        let st = FeedbackState::with_source(CoachSource::Transcript);
+        assert_eq!(st.coach_mode, CoachMode::Transcript);
+        assert!(st.voice.is_none());
+        assert!(st.audio_snapshot().is_none());
+    }
+
+    // F5: audio_heuristic_tick ─────────────────────────────────────────────
+
+    #[test]
+    fn audio_tick_sin_voz_no_emite() {
+        let mut st = audio_state(Default::default());
+        st.session_start = Instant::now() - Duration::from_secs(300);
+        assert!(audio_heuristic_tick(&mut st).is_none());
+    }
+
+    #[test]
+    fn audio_tick_monologo_emite_una_vez_por_racha_y_respeta_can_emit() {
+        use crate::audio::voice_activity::VoiceActivitySnapshot;
+        let mut st = audio_state(VoiceActivitySnapshot {
+            user_voiced_ms: 61_000,
+            current_user_mono_ms: 61_000,
+            longest_user_mono_ms: 61_000,
+            user_mono_runs: 1,
+            session_ms: 61_000,
+            ..Default::default()
+        });
+        st.session_start = Instant::now() - Duration::from_secs(90);
+
+        // Cooldown vivo: bloqueado y SIN marcar (se reintenta al tick siguiente).
+        st.last_tip_at = Some(Instant::now() - Duration::from_secs(5));
+        assert!(audio_heuristic_tick(&mut st).is_none());
+        assert_eq!(st.audio_tips, AudioTipState::default());
+
+        // Cooldown vencido: emite y marca.
+        st.last_tip_at = None;
+        let (tip, _) = audio_heuristic_tick(&mut st).expect("monólogo > 60 s");
+        assert_eq!(tip.trigger, "audio_monologue_long");
+        assert!(st.last_tip_at.is_some(), "bloquea el rate-limit al emitir");
+
+        // Misma racha, cooldown vencido otra vez: ya avisado.
+        st.last_tip_at = None;
+        assert!(audio_heuristic_tick(&mut st).is_none());
+    }
+
+    #[test]
+    fn transcript_tick_sin_ventana_no_emite() {
+        let mut st = FeedbackState::new();
+        assert!(transcript_heuristic_tick(&mut st).is_none());
     }
 
     #[test]
@@ -1845,6 +2127,9 @@ mod tests {
         assert!(json.contains("\"interlocutorTalkPct\""), "json={}", json);
         assert!(json.contains("\"sessionSecs\""), "json={}", json);
         assert!(json.contains("\"userTurns\""), "json={}", json);
+        // F5: contrato con `useMeetingMetrics` (`mode`, `voiced`).
+        assert!(json.contains("\"mode\":\"transcript\""), "json={}", json);
+        assert!(json.contains("\"voiced\":false"), "json={}", json);
     }
 
     // §6 evaluate_health_tips ─────────────────────────────────────────────────

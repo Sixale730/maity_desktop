@@ -226,7 +226,8 @@ Ubicaciones: dev `frontend/models/`; produccion `~/Library/Application Support/c
 ### Coach y sidecar Gemma — reglas vigentes (detalle en `docs/COACH_LLM_ARCHITECTURE.md` § Apéndice)
 
 - **El único consumidor vivo del `llama-helper` son los tips en vivo del coach.** Maity Chat y el análisis V4 son NUBE; `coach_chat`/`coach_evaluate_meeting` son código muerto. **No asumir que algo "usa Gemma" sin buscar su call site en TS.**
-- **En tier Low el LLM del coach está APAGADO**: `coach::should_use_llm_tips()` es el punto de decisión único (lo consultan el warmup y `live_feedback::start`; si divergieran, quedaría un modelo residente sin consumidor).
+- **En tier Low el LLM del coach está APAGADO**: `coach::should_use_llm_tips(CoachMode)` es el punto de decisión único (lo consultan el warmup y `live_feedback::start`; si divergieran, quedaría un modelo residente sin consumidor).
+- **En modo LOTE el coach es por AUDIO** (`audio/voice_activity.rs` + `coach/audio_heuristics.rs`): sin lease del sidecar, sin listener de transcript, solo monólogo y proporción de habla; el warmup del sidecar lee el modo de las preferencias. Detalle: `docs/COACH_LLM_ARCHITECTURE.md` § Apéndice.
 - **El sidecar no muere por idle durante una grabación (#03)**: lease RAII (`SidecarManager::keepalive()`); el breaker del coach es un tipo con política pura. No tocar los timeouts de 300 s.
 - **Provenance del sidecar**: `verify-helper-binary.js` en el pre-build falla si el SHA-256 del binario bundleado no coincide; regenerar con `--fix`. Un stub de 0 bytes en `binaries/` hace fallar el spawn.
 

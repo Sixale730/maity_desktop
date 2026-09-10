@@ -81,6 +81,8 @@ node frontend/scripts/verify-migrations-lf.js   # debe salir OK / exit 0
 
 ### 3. Compilar con frontend EMBEBIDO (CRÍTICO)
 
+> ⚠️ **`MAITY_PILOT_BATCH` NO debe estar puesta al compilar el paquete de la Store** (`Remove-Item Env:MAITY_PILOT_BATCH` antes del build si la sesión la trae de un build piloto). Con `=1` el default de `transcription_mode` pasa a `batch` (build piloto de sep-2026 para testers; ver `docs/PLAN_MIGRACION_LOTE.md` § Fase 6). El log de arranque dice qué build es ("Default de transcripción: …").
+
 **Usar `tauri build`, NO `cargo build` crudo.** Un `cargo build` debug apunta el webview a `localhost:3118` (dev server) → pantalla de error. `tauri build` embebe el frontend. `--no-bundle` salta los instaladores NSIS/MSI y la firma Certum (no la necesitamos para MSIX).
 
 ```powershell

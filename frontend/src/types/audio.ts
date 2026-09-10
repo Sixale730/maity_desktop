@@ -42,6 +42,19 @@ export interface RecordingPreferences {
    * Rust siempre lo devuelve (serde default = 30).
    */
   audio_retention_days?: number;
+  /**
+   * Modo de transcripción (F3/F4 de la migración a lote). `'streaming'` transcribe
+   * mientras graba; `'batch'` graba sólo audio y el planner transcribe al cerrar
+   * el segmento. Sin `auto_save` no hay checkpoints → Rust cae a streaming aunque
+   * diga `'batch'` (`recording_helpers.rs`). Opcional por el mismo motivo que
+   * `audio_retention_days`; Rust siempre lo devuelve. OJO: el default de serde
+   * DEPENDE DEL BUILD (`recording_preferences.rs::default_transcription_mode`):
+   * `'batch'` si se compiló con `MAITY_PILOT_BATCH=1` (build piloto), si no
+   * `'streaming'`. Por eso `RecordingSettings` no debe escribir un objeto que no
+   * salió de un `get_recording_preferences` exitoso: al faltar el campo,
+   * `set_recording_preferences` (reemplazo entero) lo resetearía al default.
+   */
+  transcription_mode?: 'streaming' | 'batch';
 }
 
 // Subset of RecordingPreferences for device-only config

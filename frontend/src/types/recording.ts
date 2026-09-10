@@ -22,6 +22,9 @@ export type BackendRecordingPhase =
   | 'paused'
   | 'stopping';
 
+/** Espejo de `RecordingPreferences.transcription_mode` (Rust). */
+export type TranscriptionMode = 'streaming' | 'batch';
+
 export interface RecordingState {
   isRecording: boolean;           // Is a recording session active
   isPaused: boolean;              // Is the recording paused
@@ -31,6 +34,14 @@ export interface RecordingState {
 
   // Fase exacta reportada por el backend (opcional: builds viejos no la mandan)
   backendPhase?: BackendRecordingPhase;
+
+  /**
+   * Modo de transcripción de la sesión ACTIVA (F4 de la migración a lote).
+   * `'batch'` = el pipeline no transcribe en vivo; el planner lo hace al cerrar
+   * el segmento. Lo sella Rust al arrancar y llega por `get_recording_state`;
+   * `undefined` fuera de una grabación o con un backend viejo.
+   */
+  transcriptionMode?: TranscriptionMode;
 
   // Lifecycle status
   status: RecordingStatus;

@@ -17,6 +17,20 @@ interface CoachSessionSummary {
   /** Muertes por idle durante la sesión. Debe ser 0 en Medium+ con tips LLM (#03 auditoría). */
   sidecar_idle_kills?: number
   breaker_opens?: number
+  // ── Coach por audio (F5, modo lote). Viajan por el spread de abajo: cero
+  // entradas nuevas de catálogo (la fila es `coach.session_summary`). ──
+  //
+  // Los cuatro campos de voz son `Option` en Rust y serde los serializa SIN
+  // `skip_serializing_if`: en streaming llegan como `null` explícito, no
+  // ausentes. `number | null` refleja el JSON real; `?` cubre a un Rust viejo.
+  /** `'transcript'` (streaming) o `'audio'` (lote). */
+  coach_mode?: 'transcript' | 'audio'
+  user_voiced_ms?: number | null
+  interlocutor_voiced_ms?: number | null
+  /** Racha más larga del usuario hablando sin interrupción; calibra INTERRUPT_MS. */
+  longest_user_mono_ms?: number | null
+  /** Reloj de audio del mic (no wall-clock). */
+  audio_session_ms?: number | null
 }
 
 interface CoachMetricsPayload {

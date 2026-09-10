@@ -219,6 +219,49 @@ impl BatchQueueRepository {
             .fetch_optional(pool)
             .await
     }
+
+    /// Filas VIVAS del usuario para el bloque "Transcripciones pendientes"
+    /// de la lista (F4): `pending`, `processing` y `failed`. Excluye a
+    /// propósito `recording` — una fila stale de un crash se vería como
+    /// "Grabando" hasta la pasada de recuperación del planner — y las
+    /// terminales `done`/`discarded` (la reunión ya está en la lista o no
+    /// existe). Más recientes primero, tope 50.
+    pub async fn list_active(
+        pool: &SqlitePool,
+        user_id: &str,
+    ) -> Result<Vec<BatchQueueJob>, SqlxError> {
+        sqlx::query_as::<_, BatchQueueJob>(
+            "SELECT * FROM batch_transcription_queue
+             WHERE user_id = ? AND status IN ('pending', 'processing', 'failed')
+             ORDER BY id DESC LIMIT 50",
+        )
+        .bind(user_id)
+        .fetch_all(pool)
+        .await
+    }
+
+    /// Reintento manual desde la UI: `failed` → `pending` con los intentos a
+    /// cero y sin `last_error` (el planner vuelve a intentar desde limpio; el
+    /// audio sigue en disco). Solo filas del usuario y solo `failed`: un
+    /// `pending`/`processing` no se toca. Devuelve `false` si no había nada
+    /// que revivir. El caller debe seguir con `planner::notify_enqueued()`.
+    pub async fn retry_failed(
+        pool: &SqlitePool,
+        folder_path: &str,
+        user_id: &str,
+    ) -> Result<bool, SqlxError> {
+        let result = sqlx::query(
+            "UPDATE batch_transcription_queue SET
+               status = 'pending', attempts = 0, last_error = NULL,
+               updated_at = datetime('now')
+             WHERE folder_path = ? AND user_id = ? AND status = 'failed'",
+        )
+        .bind(folder_path)
+        .bind(user_id)
+        .execute(pool)
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
 }
 
 #[cfg(test)]
@@ -373,6 +416,112 @@ mod tests {
         let next = BatchQueueRepository::next_pending(&pool, TEST_USER).await.unwrap().unwrap();
         assert_eq!(next.id, a, "FIFO: el más viejo primero");
         assert_eq!(BatchQueueRepository::pending_count(&pool, TEST_USER).await.unwrap(), 2);
+    }
+
+    // ── F4: list_active / retry_failed ──────────────────────────────────
+
+    #[tokio::test]
+    async fn list_active_excluye_terminales_recording_y_otros_usuarios() {
+        let pool = setup_pool().await;
+        // recording (stale de crash): NO debe salir.
+        insert_recording(&pool, "C:/rec/recording").await;
+        // pending
+        insert_recording(&pool, "C:/rec/pending").await;
+        BatchQueueRepository::mark_pending(&pool, "C:/rec/pending").await.unwrap();
+        // processing
+        let p = insert_recording(&pool, "C:/rec/processing").await;
+        BatchQueueRepository::mark_pending(&pool, "C:/rec/processing").await.unwrap();
+        BatchQueueRepository::claim(&pool, p).await.unwrap();
+        // failed
+        let f = insert_recording(&pool, "C:/rec/failed").await;
+        BatchQueueRepository::fail_permanent(&pool, f, "folder_missing").await.unwrap();
+        // done y discarded: terminales, NO deben salir.
+        let d = insert_recording(&pool, "C:/rec/done").await;
+        BatchQueueRepository::mark_pending(&pool, "C:/rec/done").await.unwrap();
+        BatchQueueRepository::claim(&pool, d).await.unwrap();
+        BatchQueueRepository::complete(&pool, d, "done").await.unwrap();
+        let x = insert_recording(&pool, "C:/rec/discarded").await;
+        BatchQueueRepository::mark_pending(&pool, "C:/rec/discarded").await.unwrap();
+        BatchQueueRepository::claim(&pool, x).await.unwrap();
+        BatchQueueRepository::complete(&pool, x, "discarded").await.unwrap();
+        // pending de OTRO usuario: NO debe salir.
+        BatchQueueRepository::upsert_recording(&pool, "C:/rec/otro", None, None, "manual", "otro-user")
+            .await
+            .unwrap();
+        BatchQueueRepository::mark_pending(&pool, "C:/rec/otro").await.unwrap();
+
+        let rows = BatchQueueRepository::list_active(&pool, TEST_USER).await.unwrap();
+        let folders: Vec<&str> = rows.iter().map(|r| r.folder_path.as_str()).collect();
+        assert_eq!(
+            folders,
+            vec!["C:/rec/failed", "C:/rec/processing", "C:/rec/pending"],
+            "solo pending|processing|failed del usuario, más recientes primero"
+        );
+    }
+
+    #[tokio::test]
+    async fn list_active_respeta_el_tope_de_50() {
+        let pool = setup_pool().await;
+        for i in 0..60 {
+            let folder = format!("C:/rec/seg{:03}", i);
+            insert_recording(&pool, &folder).await;
+            BatchQueueRepository::mark_pending(&pool, &folder).await.unwrap();
+        }
+        let rows = BatchQueueRepository::list_active(&pool, TEST_USER).await.unwrap();
+        assert_eq!(rows.len(), 50);
+        assert_eq!(rows[0].folder_path, "C:/rec/seg059", "el más reciente primero");
+    }
+
+    #[tokio::test]
+    async fn retry_failed_revive_y_resetea() {
+        let pool = setup_pool().await;
+        let id = insert_recording(&pool, "C:/rec/seg1").await;
+        BatchQueueRepository::mark_pending(&pool, "C:/rec/seg1").await.unwrap();
+        // Agotar intentos: 2 fallos con max 2 → failed, attempts=2, last_error="e2".
+        BatchQueueRepository::claim(&pool, id).await.unwrap();
+        BatchQueueRepository::fail(&pool, id, "e1", 2).await.unwrap();
+        BatchQueueRepository::claim(&pool, id).await.unwrap();
+        BatchQueueRepository::fail(&pool, id, "e2", 2).await.unwrap();
+        let job = BatchQueueRepository::get_by_id(&pool, id).await.unwrap().unwrap();
+        assert_eq!(job.status, "failed");
+
+        assert!(BatchQueueRepository::retry_failed(&pool, "C:/rec/seg1", TEST_USER).await.unwrap());
+        let job = BatchQueueRepository::get_by_id(&pool, id).await.unwrap().unwrap();
+        assert_eq!(job.status, "pending");
+        assert_eq!(job.attempts, 0, "el reintento manual arranca desde limpio");
+        assert!(job.last_error.is_none());
+        // El planner puede volver a tomarlo.
+        let next = BatchQueueRepository::next_pending(&pool, TEST_USER).await.unwrap().unwrap();
+        assert_eq!(next.id, id);
+    }
+
+    #[tokio::test]
+    async fn retry_failed_no_toca_pending_ni_processing_ni_otros_usuarios() {
+        let pool = setup_pool().await;
+        // pending
+        let a = insert_recording(&pool, "C:/rec/pending").await;
+        BatchQueueRepository::mark_pending(&pool, "C:/rec/pending").await.unwrap();
+        assert!(!BatchQueueRepository::retry_failed(&pool, "C:/rec/pending", TEST_USER).await.unwrap());
+        assert_eq!(BatchQueueRepository::get_by_id(&pool, a).await.unwrap().unwrap().status, "pending");
+        // processing
+        let b = insert_recording(&pool, "C:/rec/processing").await;
+        BatchQueueRepository::mark_pending(&pool, "C:/rec/processing").await.unwrap();
+        BatchQueueRepository::claim(&pool, b).await.unwrap();
+        assert!(!BatchQueueRepository::retry_failed(&pool, "C:/rec/processing", TEST_USER).await.unwrap());
+        assert_eq!(BatchQueueRepository::get_by_id(&pool, b).await.unwrap().unwrap().status, "processing");
+        // failed de otro usuario: aislamiento.
+        BatchQueueRepository::upsert_recording(&pool, "C:/rec/otro", None, None, "manual", "otro-user")
+            .await
+            .unwrap();
+        let (c,): (i64,) = sqlx::query_as("SELECT id FROM batch_transcription_queue WHERE folder_path = 'C:/rec/otro'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        BatchQueueRepository::fail_permanent(&pool, c, "x").await.unwrap();
+        assert!(!BatchQueueRepository::retry_failed(&pool, "C:/rec/otro", TEST_USER).await.unwrap());
+        assert_eq!(BatchQueueRepository::get_by_id(&pool, c).await.unwrap().unwrap().status, "failed");
+        // Carpeta inexistente.
+        assert!(!BatchQueueRepository::retry_failed(&pool, "C:/rec/nada", TEST_USER).await.unwrap());
     }
 
     #[tokio::test]

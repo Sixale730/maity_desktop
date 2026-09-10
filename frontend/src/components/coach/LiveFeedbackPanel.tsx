@@ -4,6 +4,7 @@ import React from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { Sparkles, ExternalLink } from 'lucide-react';
 import { useCoachTips } from '@/hooks/useCoachTips';
+import { useMeetingMetrics } from '@/hooks/useMeetingMetrics';
 import { getPriorityColor } from '@/components/coach/tipMeta';
 
 // §3.9 Color de prioridad inline (style en lugar de className porque tipMeta.ts da hex,
@@ -14,6 +15,10 @@ const priorityIconStyle = (priority: string): React.CSSProperties => ({
 
 export function LiveFeedbackPanel() {
   const { tips } = useCoachTips(3);
+  // F5: en modo lote el coach mide por audio (sin texto → sin tips de IA). El
+  // texto vacío lo dice para que "no llegan tips" no parezca una falla.
+  const { metrics } = useMeetingMetrics();
+  const isAudioCoach = metrics?.mode === 'audio';
 
   const openFloat = () => {
     invoke('open_floating_coach').catch(console.error);
@@ -73,7 +78,9 @@ export function LiveFeedbackPanel() {
         </div>
       ) : (
         <p className="text-xs text-muted-foreground/60 pl-4">
-          Esperando señal conversacional…
+          {isAudioCoach
+            ? 'Coach por audio: monólogo y tiempo de palabra'
+            : 'Esperando señal conversacional…'}
         </p>
       )}
     </div>

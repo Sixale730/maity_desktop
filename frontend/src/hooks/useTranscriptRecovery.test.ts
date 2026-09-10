@@ -32,7 +32,12 @@ import { useTranscriptRecovery, isTransientNoUserError } from './useTranscriptRe
 
 const OLD_ENOUGH = Date.now() - 5 * 60_000; // 5 min: pasa el umbral de 15 s y la retención de 7 días
 
-function meta(id: string, transcriptCount: number, folderPath?: string) {
+function meta(
+  id: string,
+  transcriptCount: number,
+  folderPath?: string,
+  transcriptionMode?: 'streaming' | 'batch',
+) {
   return {
     meetingId: id,
     title: `Reunión ${id}`,
@@ -41,6 +46,7 @@ function meta(id: string, transcriptCount: number, folderPath?: string) {
     transcriptCount,
     savedToSQLite: false,
     folderPath,
+    transcriptionMode,
   };
 }
 
@@ -115,6 +121,47 @@ describe('useTranscriptRecovery — filtro de fantasmas', () => {
     // (fake-indexeddb se comparte entre tests → se comprueba por id, no por longitud)
     expect((candidates as Array<{ meetingId: string }>).map(c => c.meetingId)).not.toContain('g2-audio-only');
     expect(await indexedDBService.getMeetingMetadata('g2-audio-only')).toBeNull();
+  });
+
+  it('un registro en modo lote se borra sin ofrecerse (Rust es el dueño)', async () => {
+    // Con checkpoints de audio presentes: es justo el caso que, sin el filtro,
+    // acabaría en el diálogo de recuperación y en `recoverMeeting` fallando.
+    invokeMock.mockImplementation(async (cmd: string) =>
+      cmd === 'has_audio_checkpoints' ? true : defaultInvoke(cmd)
+    );
+    await indexedDBService.saveMeetingMetadata(meta('g3-batch', 0, 'C:/m/g3', 'batch'));
+
+    const { result } = renderHook(() => useTranscriptRecovery());
+    let candidates: Array<{ meetingId: string }> = [];
+    await act(async () => {
+      candidates = await result.current.checkForRecoverableTranscripts();
+    });
+
+    expect(candidates.map(c => c.meetingId)).not.toContain('g3-batch');
+    expect(await indexedDBService.getMeetingMetadata('g3-batch')).toBeNull();
+    // Ni siquiera se pregunta por el audio: el registro no llega a la fase de candidatas.
+    expect(
+      invokeMock.mock.calls.some(([c, args]) =>
+        c === 'has_audio_checkpoints' && (args as { meetingFolder?: string })?.meetingFolder === 'C:/m/g3'
+      )
+    ).toBe(false);
+    expect(invokeMock.mock.calls.map(([c]) => c)).not.toContain('cleanup_checkpoints');
+  });
+
+  it('un registro en modo lote CON transcripts también se borra (evita el doble guardado con el planner)', async () => {
+    await seedWithTranscripts('g4-batch-with-text', 2, 'C:/m/g4');
+    // seedWithTranscripts escribe el metadata sin modo; se re-sella como lote.
+    await indexedDBService.saveMeetingMetadata(meta('g4-batch-with-text', 2, 'C:/m/g4', 'batch'));
+
+    const { result } = renderHook(() => useTranscriptRecovery());
+    let candidates: Array<{ meetingId: string }> = [];
+    await act(async () => {
+      candidates = await result.current.checkForRecoverableTranscripts();
+    });
+
+    expect(candidates.map(c => c.meetingId)).not.toContain('g4-batch-with-text');
+    expect(await indexedDBService.getMeetingMetadata('g4-batch-with-text')).toBeNull();
+    expect(saveMeetingMock).not.toHaveBeenCalled();
   });
 });
 

@@ -102,7 +102,11 @@ pub async fn get_recording_state() -> serde_json::Value {
             "recording_duration": manager.get_recording_duration(),
             "active_duration": manager.get_active_recording_duration(),
             "total_pause_duration": manager.get_total_pause_duration(),
-            "current_pause_duration": manager.get_current_pause_duration()
+            "current_pause_duration": manager.get_current_pause_duration(),
+            // Campo ADITIVO (F4): modo de la grabación EN CURSO. El
+            // `RecordingStateProvider` lo copia en su poll de 500 ms — cubre
+            // arranque y recarga a mitad de grabación sin evento nuevo.
+            "transcription_mode": if manager.transcription_enabled { "streaming" } else { "batch" }
         })
     } else {
         serde_json::json!({

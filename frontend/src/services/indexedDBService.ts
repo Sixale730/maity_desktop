@@ -16,6 +16,14 @@ export interface MeetingMetadata {
   transcriptCount: number;    // Number of transcript segments
   savedToSQLite: boolean;     // Flag: saved to backend DB
   folderPath?: string;        // Path to recording folder
+  /**
+   * Modo de transcripción de la sesión (F4). Un registro `'batch'` NUNCA es
+   * recuperable desde aquí: el dueño de esa recuperación es la cola de Rust
+   * (`batch_transcription_queue`, trigger `crash_recovery`), así que
+   * `useTranscriptRecovery` lo trata como fantasma y lo borra. Campo aditivo
+   * sobre el mismo `DB_VERSION` (IndexedDB no valida el shape).
+   */
+  transcriptionMode?: 'streaming' | 'batch';
 }
 
 export interface StoredTranscript {

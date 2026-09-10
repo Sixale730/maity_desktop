@@ -6,6 +6,11 @@ fn main() {
     // pasan a delay-load para que no se mapeen en cada arranque.
     configure_windows_delay_load();
 
+    // Build piloto (sep-2026, F4/F5 de la migración por lote): con MAITY_PILOT_BATCH=1
+    // `recording_preferences::default_transcription_mode()` devuelve "batch". Declarar la
+    // dependencia para que cargo NO reuse un binario compilado con el otro default.
+    println!("cargo:rerun-if-env-changed=MAITY_PILOT_BATCH");
+
     #[cfg(target_os = "macos")]
     {
         println!("cargo:rustc-link-lib=framework=AVFoundation");

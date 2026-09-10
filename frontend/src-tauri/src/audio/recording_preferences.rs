@@ -51,7 +51,51 @@ pub struct RecordingPreferences {
 }
 
 fn default_transcription_mode() -> String {
-    "streaming".to_string()
+    if pilot_batch_build() { "batch" } else { "streaming" }.to_string()
+}
+
+/// Build PILOTO (sep-2026, F4/F5 de la migración a lote): compilado con
+/// `MAITY_PILOT_BATCH=1` el default de `transcription_mode` es `"batch"` para que un
+/// tester grabe en lote desde el primer arranque, con cualquier cuenta y sin tocar
+/// Ajustes. Un build sin la variable (Store, GitHub, dev) conserva `"streaming"` hasta
+/// el flip de F6. Sólo afecta al DEFAULT: una preferencia ya persistida manda igual.
+/// `build.rs` declara `rerun-if-env-changed` para que cargo no reuse un binario con el
+/// otro default. Se loguea en el arranque (`lib.rs`) para que los logs digan qué build es.
+pub fn pilot_batch_build() -> bool {
+    matches!(option_env!("MAITY_PILOT_BATCH"), Some("1"))
+}
+
+/// Modo de transcripción EFECTIVO de una grabación (F5 de la migración a lote).
+///
+/// Es el tipo que viaja por `RecordingState` (sellado por sesión en
+/// `initialize_recording`) y del que el coach deriva su fuente
+/// (`coach::CoachSource::from_recording`): `Streaming` = coach por transcript
+/// (pipeline histórico); `Batch` = coach por heurísticos de audio, sin LLM ni
+/// sidecar. Los strings `as_str()` son el contrato con el frontend
+/// (`recording-stopped.transcription_mode`, `get_recording_state`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TranscriptionMode {
+    Streaming,
+    Batch,
+}
+
+impl TranscriptionMode {
+    /// Desde el booleano `batch_mode` que calcula `initialize_recording`
+    /// (`auto_save && prefs.is_batch_mode()`).
+    pub fn from_flag(batch: bool) -> Self {
+        if batch {
+            Self::Batch
+        } else {
+            Self::Streaming
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Streaming => "streaming",
+            Self::Batch => "batch",
+        }
+    }
 }
 
 impl RecordingPreferences {
@@ -59,6 +103,15 @@ impl RecordingPreferences {
     /// desconocido cae a streaming (el pipeline probado).
     pub fn is_batch_mode(&self) -> bool {
         self.transcription_mode == "batch"
+    }
+
+    /// Modo EFECTIVO con el que arrancaría una grabación ahora mismo: espejo
+    /// exacto de la regla de `recording_helpers::initialize_recording` — sin
+    /// `auto_save` no hay checkpoints, así que no hay audio que transcribir
+    /// por lote y la combinación cae a streaming. Lo consume el warmup del
+    /// sidecar en `lib.rs` para no calentar Gemma cuando el coach irá por audio.
+    pub fn effective_mode(&self) -> TranscriptionMode {
+        TranscriptionMode::from_flag(self.auto_save && self.is_batch_mode())
     }
 }
 
