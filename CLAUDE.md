@@ -183,6 +183,8 @@ RecordingSaver WhisperEngine DeepgramProvider
 
 > **La cola se PODA vaciando `payload` (`trim_completed_payloads`), JAMÁS borrando filas completadas (#26).** Un `DELETE` rompe el barrido de audio (#27), el `sync_state` de la lista y los finalize diferidos por cuota — por eso `cleanup_old_completed` se BORRÓ. Detalle: `docs/NUBE_CUENTAS_SYNC.md`.
 
+> **Pool de SQLite (#28): 4 conexiones, WAL explícito y `synchronous=NORMAL` vía `manager.rs::connect_options`/`pool_options`** — no volver a `SqlitePool::connect(path)` pelón: sqlx 0.8 NO fija `journal_mode` (el WAL de hoy era efecto lateral de `create_database`) y una DB copiada del backend legacy quedaría en rollback, donde NORMAL sí puede corromper. NORMAL no pierde nada ante crash de la app; sólo ante corte de luz puede perder los commits desde el último checkpoint (decisión de producto, 2026-09-10). Detalle: comentarios del módulo + `docs/AUDITORIA_RECURSOS_2026-09-02.md` § #28.
+
 ### Comunicacion Rust <-> Frontend
 
 Comandos via `invoke()` (Frontend->Rust), Eventos via `emit()`/`listen()` (Rust->Frontend). Todos los comandos registrados en `lib.rs`. Grupos principales: grabacion (`start/stop/pause/resume_recording`, `get_recording_state`), dispositivos (`list_audio_devices`, `switch_audio_device` — la auto-reconexión lo reusa desde el evento `DeviceReconnected`), transcripcion/checkpoints, Deepgram proxy, sync queue, meeting detector, notificaciones, logging, OAuth, sistema audio. Los comandos del "Whisper paralelo" se ELIMINARON en sep-2026 (#21, código muerto; recuperable de git).

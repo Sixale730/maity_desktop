@@ -1,12 +1,48 @@
+use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
 use sqlx::{migrate::MigrateDatabase, Result, Sqlite, SqlitePool, Transaction};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 use tauri::Manager;
 
 /// Compañero `-wal` de un archivo SQLite: sufijo pegado al nombre completo
 /// (`x.sqlite` → `x.sqlite-wal`, `x.sqlite.bak` → `x.sqlite.bak-wal`).
 fn bak_companion_wal(path: &Path) -> PathBuf {
     PathBuf::from(format!("{}-wal", path.to_string_lossy()))
+}
+
+/// Tope de conexiones del pool (#28 de la auditoría). sqlx abre conexiones bajo demanda y
+/// reapera las inactivas a los 10 min, así que esto acota el PICO de page cache
+/// (≤ 4 × 2 MB en vez de ≤ 10 × 2 MB), no la memoria residente en reposo. Ningún sitio pide
+/// una 2.ª conexión mientras sostiene la 1.ª (las transacciones de los repositorios son
+/// cortas y el worker de sync no retiene conexión durante el HTTP), por eso 4 no puede
+/// producir deadlock; un 5.º concurrente espera milisegundos (`acquire_timeout` 30 s).
+pub(crate) const POOL_MAX_CONNECTIONS: u32 = 4;
+
+/// Opciones de conexión de producción. Todo pool sobre la DB de la app DEBE pasar por aquí
+/// (no volver a `SqlitePool::connect(path)` pelón):
+///
+/// - **WAL explícito.** sqlx 0.8 NO fija `journal_mode` en las conexiones; el WAL que hoy
+///   tienen las DBs lo puso `Sqlite::create_database` al crear el archivo (flag interno
+///   `CREATE_DB_WAL`). Una DB copiada del backend legacy (`meeting_minutes.db`) queda en
+///   modo rollback para siempre, y ahí `synchronous=NORMAL` sí puede corromper. Fijarlo aquí
+///   es no-op cuando la DB ya está en WAL (mismo modo = sin lock) y convierte la legacy en la
+///   1.ª conexión de `new()`, antes de compartir el pool, así que el lock exclusivo que exige
+///   el cambio de modo (y que `busy_timeout` no espera) nunca compite con nadie.
+/// - **`synchronous=NORMAL`.** En WAL no corrompe nunca. Ante crash o kill de la app no se
+///   pierde nada (los commits ya están en la caché del SO). Sólo tras corte de luz/BSOD
+///   pueden perderse los commits posteriores al último checkpoint (automático cada ~4 MB de
+///   WAL, y `cleanup()` hace TRUNCATE al cerrar). A cambio, un fsync menos por commit.
+///   Es el ajuste que la doc de SQLite recomienda para apps de escritorio en WAL.
+/// - `busy_timeout` (5 s) y `foreign_keys` (ON) quedan en el default de sqlx.
+pub(crate) fn connect_options(path: &str) -> Result<SqliteConnectOptions> {
+    Ok(SqliteConnectOptions::from_str(path)?
+        .journal_mode(SqliteJournalMode::Wal)
+        .synchronous(SqliteSynchronous::Normal))
+}
+
+pub(crate) fn pool_options() -> SqlitePoolOptions {
+    SqlitePoolOptions::new().max_connections(POOL_MAX_CONNECTIONS)
 }
 
 #[derive(Clone)]
@@ -36,7 +72,10 @@ impl DatabaseManager {
             }
         }
 
-        let pool = SqlitePool::connect(tauri_db_path).await?;
+        // Pragmas y tope del pool: ver `connect_options` / `POOL_MAX_CONNECTIONS` (#28).
+        let pool = pool_options()
+            .connect_with(connect_options(tauri_db_path)?)
+            .await?;
 
         // Tolerar una DB "más nueva" que este binario: si la base tiene migraciones aplicadas que
         // esta versión NO conoce (p. ej. el usuario abrió una versión vieja después de probar/instalar
@@ -276,24 +315,99 @@ impl DatabaseManager {
 }
 
 #[cfg(test)]
+mod pool_tests {
+    use super::*;
+    use sqlx::ConnectOptions;
+
+    async fn journal_mode(pool: &SqlitePool) -> String {
+        let (mode,): (String,) = sqlx::query_as("PRAGMA journal_mode")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+        mode
+    }
+
+    /// `PRAGMA synchronous` devuelve entero: 0 OFF, 1 NORMAL, 2 FULL, 3 EXTRA.
+    async fn synchronous(pool: &SqlitePool) -> i64 {
+        let (level,): (i64,) = sqlx::query_as("PRAGMA synchronous")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+        level
+    }
+
+    #[tokio::test]
+    async fn new_aplica_wal_normal_y_4_conexiones() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("t.sqlite");
+        let missing_legacy = dir.path().join("no-existe.db");
+        let mgr = DatabaseManager::new(
+            db_path.to_str().unwrap(),
+            missing_legacy.to_str().unwrap(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(journal_mode(mgr.pool()).await, "wal");
+        assert_eq!(synchronous(mgr.pool()).await, 1, "NORMAL");
+        assert_eq!(
+            mgr.pool().options().get_max_connections(),
+            POOL_MAX_CONNECTIONS
+        );
+        mgr.cleanup().await.unwrap();
+    }
+
+    /// Camino de la copia del backend legacy (`meeting_minutes.db` → `.sqlite`): la DB nace
+    /// en modo rollback (sqlx 0.8 no fija `journal_mode`) y `new()` la convierte a WAL.
+    #[tokio::test]
+    async fn new_convierte_db_legacy_en_rollback_a_wal() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("legacy.sqlite");
+        let missing_legacy = dir.path().join("no-existe.db");
+
+        let rollback_opts = SqliteConnectOptions::new()
+            .filename(&db_path)
+            .create_if_missing(true)
+            .journal_mode(SqliteJournalMode::Delete);
+        let mut conn = rollback_opts.connect().await.unwrap();
+        sqlx::query("CREATE TABLE legacy (id INTEGER PRIMARY KEY)")
+            .execute(&mut conn)
+            .await
+            .unwrap();
+        let (before,): (String,) = sqlx::query_as("PRAGMA journal_mode")
+            .fetch_one(&mut conn)
+            .await
+            .unwrap();
+        assert_eq!(before, "delete", "precondición: la DB legacy está en rollback");
+        drop(conn);
+
+        let mgr = DatabaseManager::new(
+            db_path.to_str().unwrap(),
+            missing_legacy.to_str().unwrap(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(journal_mode(mgr.pool()).await, "wal");
+        assert_eq!(synchronous(mgr.pool()).await, 1);
+        mgr.cleanup().await.unwrap();
+    }
+}
+
+#[cfg(test)]
 mod maintenance_tests {
     use super::*;
-    use sqlx::sqlite::SqlitePoolOptions;
 
     /// Pool sobre archivo real en tempdir (no `:memory:`): estos tests verifican el
-    /// comportamiento de los archivos `-wal`/`.bak` en disco. WAL explícito para no
-    /// depender del default de sqlx.
+    /// comportamiento de los archivos `-wal`/`.bak` en disco. Mismos pragmas que producción
+    /// (`connect_options`: WAL + NORMAL); una sola conexión para que el checkpoint no
+    /// compita con lectores.
     async fn file_manager(db_path: &Path) -> DatabaseManager {
         Sqlite::create_database(db_path.to_str().unwrap())
             .await
             .unwrap();
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
-            .connect(db_path.to_str().unwrap())
-            .await
-            .unwrap();
-        sqlx::query("PRAGMA journal_mode=WAL")
-            .execute(&pool)
+            .connect_with(connect_options(db_path.to_str().unwrap()).unwrap())
             .await
             .unwrap();
         sqlx::query("CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)")
