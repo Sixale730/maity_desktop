@@ -632,21 +632,21 @@ jobs:
           cd frontend
           pnpm install
 
-      - name: Build llama-helper sidecar (Vulkan)
+      - name: Build llama-helper sidecar (CPU)
         shell: pwsh
         run: |
-          # Build llama-helper with Vulkan acceleration.
-          # Vulkan SDK ya está instalado para whisper-rs en este runner — reusamos.
-          # Ventajas sobre CUDA: cobertura universal (NVIDIA + AMD + Intel),
-          # bundle 500MB más liviano (no se empaqueta cuBLAS).
-          # vulkan-1.dll en máquina del usuario viene del driver de la GPU.
-          # Verificado localmente: compila estable con llama-cpp-sys-2 0.1.132.
-          Write-Host "Building llama-helper sidecar with Vulkan..."
+          # CPU explícito (#31 de la auditoría de recursos, sep-2026): es lo que
+          # embarcan los releases reales (/build local y /store-msix). Con Vulkan,
+          # n_gpu_layers=999 metía el modelo en la "VRAM" de la iGPU (RAM compartida
+          # invisible para el RSS) y este canal divergía del embarcado sin smoke.
+          # Volver a GPU es decisión con A/B, como #33; el helper acepta
+          # MAITY_LLAMA_N_GPU_LAYERS para esa prueba.
+          Write-Host "Building llama-helper sidecar (CPU-only, #31)..."
 
-          cargo build --release -p llama-helper --features vulkan
+          cargo build --release -p llama-helper
 
           if ($LASTEXITCODE -ne 0) {
-            Write-Error "Failed to build llama-helper with Vulkan"
+            Write-Error "Failed to build llama-helper"
             exit $LASTEXITCODE
           }
 
@@ -694,7 +694,9 @@ jobs:
           SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
         with:
           projectPath: frontend
-          args: --target x86_64-pc-windows-msvc --features vulkan ${{ steps.build-profile.outputs.args }}
+          # Sin feature de GPU (CPU explícito, #31): el mismo binario que producen
+          # /build y /store-msix. whisper es motor opcional (Parakeet CPU es el default).
+          args: --target x86_64-pc-windows-msvc ${{ steps.build-profile.outputs.args }}
 
       - name: Verify build artifacts
         shell: bash

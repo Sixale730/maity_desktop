@@ -215,23 +215,40 @@ Leer `frontend/.env` con Read tool y extraer las variables segun plataforma:
 **En macOS:**
 ```bash
 cd "<repo>/frontend" && \
+  TAURI_GPU_FEATURE=coreml \
   APPLE_ID="<valor>" \
   APPLE_PASSWORD="<valor>" \
   APPLE_TEAM_ID="<valor>" \
   pnpm run tauri:build -- --target universal-apple-darwin
 ```
 
+> **`TAURI_GPU_FEATURE` va SIEMPRE fijado en un release** (#31 de la auditoría de recursos,
+> sep-2026). Sin la variable, `tauri-auto.js` auto-detecta según la máquina que compila:
+> un build de producción no debe cambiar de backend porque alguien instaló un SDK. macOS:
+> `coreml` (incluye Metal; es lo que auto-detect devuelve en Apple Silicon y lo que se ha
+> publicado como universal). Windows: `none` (CPU; ver abajo).
+
 > **`--target universal-apple-darwin`** produce un `.dmg` que instala en Intel y Apple Silicon (un solo artefacto). Requiere ambos toolchains: `rustup target add aarch64-apple-darwin x86_64-apple-darwin` (una vez por máquina). Tarda ~2x que un build single-arch.
 
 **En Windows:**
 ```bash
 cd /c/maity_desktop/frontend && \
+  TAURI_GPU_FEATURE=none \
   TAURI_SIGNING_PRIVATE_KEY="<valor_base64>" \
   TAURI_SIGNING_PRIVATE_KEY_PASSWORD="<password>" \
   pnpm run tauri:build
 ```
 
-**IMPORTANTE**: Timeout de 600000ms (10 minutos). El script `tauri-auto.js` auto-detecta GPU features.
+> **`TAURI_GPU_FEATURE=none` es deliberado (#31):** CPU explícito en Windows/Linux, en
+> todos los canales (este skill, `/store-msix` y CI). Es lo que han recibido siempre los
+> usuarios (esta máquina auto-detectaba CPU porque tiene `nvidia-smi` sin CUDA Toolkit);
+> fijarlo evita que un CUDA instalado un día produzca un exe que exige cuBLAS. whisper es
+> motor opcional (Parakeet CPU es el default). Volver a GPU = decisión con A/B, como #33.
+> El helper local se compila sin features (`verify-helper-binary.js`), también CPU.
+
+**IMPORTANTE**: Timeout de 600000ms (10 minutos). Desde #31 el perfil de release
+(thin LTO + `codegen-units = 1`, en el `Cargo.toml` raíz) alarga la fase de cargo
+~1.3-1.6×: si el build no cabe en 10 min, lanzarlo detached con log + `Monitor`.
 
 ### Paso 7: Verificar resultado del build
 
@@ -423,7 +440,11 @@ Mostrar resumen completo:
 ### Notas
 
 - El build tarda varios minutos. Usar timeout de 600000ms (10 min).
-- El script `tauri-auto.js` auto-detecta GPU features por plataforma.
+- **Features de GPU FIJADAS** (#31 de la auditoría): `TAURI_GPU_FEATURE=none` en Windows,
+  `coreml` en macOS, siempre en el comando del Paso 6. El auto-detect de `tauri-auto.js`
+  queda sólo para `tauri:dev`; `TAURI_GPU_FEATURE=` vacío también significa CPU.
+- Tras cambiar el `[profile.release]` de la raíz cambia el hash del helper: correr
+  `node scripts/verify-helper-binary.js --fix` una vez (el pre-build falla si no).
 - **macOS**: Firma con Developer ID Application (certificado local en Keychain) + notarizacion Apple (requiere APPLE_ID, APPLE_PASSWORD, APPLE_TEAM_ID en `.env`).
 - **Windows**: Dos firmas — Certum Code Signing (via `sign-windows.ps1` + SimplySign Desktop) + Tauri Updater Signing (rsign via `TAURI_SIGNING_PRIVATE_KEY`).
 - Si `TAURI_SIGNING_PRIVATE_KEY` no esta en el entorno, el build saldra con code 0 pero SIN firma de updater (solo warning). Este skill DEBE asegurar que la key este disponible cuando se requiera updater.

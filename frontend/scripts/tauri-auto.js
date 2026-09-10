@@ -28,10 +28,16 @@ const tauriTarget = targetIdx >= 0 ? forwardedTauriArgs[targetIdx + 1] : null;
 // Detect GPU feature
 let feature = '';
 
-// Check for environment variable override first
-if (process.env.TAURI_GPU_FEATURE) {
-  feature = process.env.TAURI_GPU_FEATURE;
-  console.log(`🔧 Using forced GPU feature from environment: ${feature}`);
+// Check for environment variable override first.
+// Si la variable EXISTE, manda aunque esté vacía: `TAURI_GPU_FEATURE=` / `none`
+// = CPU explícito (antes el string vacío caía en auto-detect por truthiness y la
+// receta "Force CPU-only" de docs/BUILDING.md no forzaba nada). Los releases
+// (/build, CI) la fijan SIEMPRE — #31 de la auditoría de recursos: un build de
+// producción no debe depender de qué SDK tenga instalado la máquina que compila.
+// Auto-detect queda sólo para desarrollo local.
+if (process.env.TAURI_GPU_FEATURE !== undefined) {
+  feature = process.env.TAURI_GPU_FEATURE.trim() || 'none';
+  console.log(`🔧 GPU feature FIJADO por entorno (TAURI_GPU_FEATURE): ${feature}`);
 } else {
   try {
     const result = execSync('node scripts/auto-detect-gpu.js', {

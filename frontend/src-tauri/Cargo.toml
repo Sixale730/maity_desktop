@@ -77,7 +77,12 @@ anyhow = "1.0"
 once_cell = "1.17.1"
 uuid = { version = "1.0", features = ["v4", "serde"] }
 
-# Cross-platform audio capture
+# Cross-platform audio capture. Versión PUBLICADA: el `[patch.crates-io]` al fork
+# RustAudio/cpal@51c3b43 (master del 2025-02-16, sin release) heredado de Meetily
+# vivía en este archivo y Cargo lo ignoraba por no ser la raíz del workspace, así
+# que nunca entró a ningún binario de Maity. Retirado en #31 de la auditoría de
+# recursos (sep-2026). Subir cpal (0.16+ trae el fix #946 de CoreAudio) es una
+# actualización de dependencia aparte, con smoke de captura y hot-swap.
 cpal = "0.15.3"
 
 # Wav encoding - now using manual WAV creation instead of hound
@@ -320,6 +325,3 @@ memory-stats = "1.0"
 strsim = "0.10.0"
 futures = "0.3.31"
 tracing-subscriber = "0.3.16"
-
-[patch.crates-io]
-cpal = { git = "https://github.com/RustAudio/cpal", rev = "51c3b43" }

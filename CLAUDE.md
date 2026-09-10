@@ -336,8 +336,11 @@ hipblas            → Linux AMD ROCm                     [whisper-rs]
 openblas, openmp   → Optimizacion CPU                   [whisper-rs]
 onnx-directml      → Windows: DirectML para los motores ONNX. OFF por defecto (#33); ver docs/ONNX_EXECUTION_PROVIDERS.md
 ```
+Ningún release de Windows/Linux lleva feature de GPU (CPU explícito, #31); `tauri:dev` sí auto-detecta.
 
 **Dependencias Rust**: una sola pila TLS (rustls 0.23 + ring vía `rustls-no-provider` + `install_crypto_provider()` en `main.rs` ANTES de `init_sentry()`), cero deps duplicadas/muertas; `cargo tree -i aws-lc-rs` debe estar vacío. Política completa y lint (`lint-cargo-deps.js`): `docs/BUILDING.md` § #35.
+
+**Perfil de release y features de GPU (#31)**: `[profile.release]` vive SOLO en el `Cargo.toml` RAÍZ (thin LTO, `codegen-units = 1`, `panic = "unwind"` obligatorio por Sentry/`panics.rs`, **sin `strip`**: en MSVC no encoge y en macOS deja a Sentry sin nombres). Cargo IGNORA `[profile]`/`[patch]` de los miembros con un warning — así vivieron 8 meses el LTO del helper y un `[patch]` de cpal que nunca entró al binario (retirado; producción siempre fue cpal 0.15.3). Guard: `lint-cargo-workspace.js` (pre-build). **Releases con feature de GPU FIJADA, nunca auto-detect**: `TAURI_GPU_FEATURE=none` (Windows) / `coreml` (macOS) en `/build`; `tauri:build:store` y CI Windows/Linux sin features (CPU explícito en todos los canales, app y helper; macOS sigue metal/coreml). Helper: `MAITY_LLAMA_N_GPU_LAYERS` (default 999, sólo actúa con backend de GPU compilado). Detalle: `docs/BUILDING.md` § #31.
 
 ## Configuracion Multiplataforma
 

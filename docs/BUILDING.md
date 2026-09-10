@@ -213,9 +213,10 @@ TAURI_GPU_FEATURE=vulkan ./build-gpu.sh
 TAURI_GPU_FEATURE=hipblas ./dev-gpu.sh
 TAURI_GPU_FEATURE=hipblas ./build-gpu.sh
 
-# Force CPU-only (for testing)
-TAURI_GPU_FEATURE="" ./dev-gpu.sh
-TAURI_GPU_FEATURE="" ./build-gpu.sh
+# Force CPU-only (releases de Windows/Linux van SIEMPRE así, ver § #31 al final)
+TAURI_GPU_FEATURE=none ./dev-gpu.sh
+TAURI_GPU_FEATURE=none ./build-gpu.sh
+# (`TAURI_GPU_FEATURE=""` vacío también es CPU desde sep-2026; antes caía en auto-detect)
 
 # Force OpenBLAS (CPU-optimized)
 TAURI_GPU_FEATURE=openblas ./dev-gpu.sh
@@ -347,3 +348,32 @@ Hasta entonces el exe compilaba rustls 0.22 **y** 0.23 (sentry 0.34 traía `rust
 - sentry 0.49: `ClientOptions` es `#[non_exhaustive]` — sólo builder (`ClientOptions::new().release(..)…`), el struct literal no compila. tungstenite 0.30: `Message::Text(Utf8Bytes)`/`Binary(Bytes)` → `Message::text(..)` y `Bytes::from(vec)` en `deepgram_provider.rs`.
 - `nnnoiseless` con `default-features = false`: su `default = ["bin", "dasp"]` y `bin` arrastra clap 3 + hound para un binario que nunca se construye (el código sólo usa `DenoiseState`). `zip` y `dirs` en la misma major que tauri/updater/ffmpeg-sidecar; `winreg ≥0.55` para no anclar windows-sys 0.48. `[build-dependencies]` sólo `which`: `build.rs` no hace HTTP.
 - **`frontend/scripts/lint-cargo-deps.js`** (pre-build, `cargo tree`, ~2-4 s) falla si reaparece una segunda versión de reqwest/rustls/tokio-rustls/hyper-rustls/rustls-native-certs/rustls-webpki/webpki-roots/zip/dirs/dirs-sys o si entran aws-lc-rs/clap/esaxx-rs/symphonia. Sólo local (CI llama `tauri build` directo). Pendiente fuera de #35: `windows 0.54/0.57/0.58/0.61` (cpal/sysinfo/nuestro WASAPI/tauri) y `windows-sys 0.59/0.60/0.61` siguen duplicados; `rand` ×4 lo ancla `phf_generator` (build-deps de html5ever), subir el nuestro no elimina versiones.
+
+## Perfil de release en la raíz y features de GPU fijadas (sep-2026, #31 de la auditoría de recursos)
+
+> Reglas de cumplimiento obligatorio al tocar un `Cargo.toml`, el skill `/build` o un workflow de CI.
+
+**Cargo SOLO honra `[profile.*]` y `[patch.*]` del manifiesto RAÍZ del workspace** (`C:\maity_desktop\Cargo.toml`). Un bloque de esos en un miembro compila verde y sólo imprime `warning: profiles for the non root package will be ignored` en medio de un build de cinco minutos. Así vivieron ocho meses, desde el commit inicial `dbc1bc7` (herencia de Meetily):
+- el `[profile.release]` de `llama-helper/Cargo.toml` (`lto = true`, `codegen-units = 1`, `opt-level = "s"`): nunca aplicó; los dos binarios salían con los defaults de Cargo (16 codegen-units, sin LTO; exe de 72 MB, NSIS de 26.5 MB);
+- el `[patch.crates-io]` de cpal en `frontend/src-tauri/Cargo.toml` (fork `RustAudio/cpal@51c3b43` = master del 2025-02-16, sin release, versión 0.15.3 y `windows 0.54`): nunca entró a un binario; todo release 0.2.0..0.2.58 lleva cpal 0.15.3 de crates.io. Su único cambio con nombre es #946 (CoreAudio macOS, `supported_output_configs` en salidas no default); el resto son once meses de master sin probar con Maity. **Se retiró, no se activó**: cambiar el WASAPI real de Windows sin beneficio no tiene sentido; subir cpal a 0.16+ (trae #946; 0.18.2 exige rust 1.85 y `windows 0.62`) es una actualización aparte con smoke de captura y hot-swap.
+
+**El perfil vigente**, en la raíz y para TODOS los miembros:
+
+```toml
+[profile.release]
+lto = "thin"       # cross-crate y paralelo; "fat" = link monohilo sobre ~670 crates, riesgo de OOM (15 GB aquí, 16 GB en el runner)
+codegen-units = 1
+panic = "unwind"   # OBLIGATORIO: hooks de Sentry (main.rs) + logging/telemetry/panics.rs
+```
+
+- **Sin `strip`** (corrección al remedio de la auditoría, que pedía `strip = "symbols"`): en MSVC los símbolos viven en el `.pdb`, el exe no encoge; en macOS/Linux quita la tabla de símbolos y los stack traces de Sentry (`attach_stacktrace(true)`) quedan como direcciones. rustc lo desaconseja para apps con crash reporting.
+- `opt-level` queda en 3 (default): RNNoise, EBU R128 y el resample corren en Rust puro. El `opt-level = "s"` que traía el helper nunca aplicó y no se reintrodujo (cero cambio de comportamiento).
+- Coste: sólo la fase de cargo del build **release** (~1.3-1.6×). El build debug obligatorio de cada cambio no cambia. Al cambiar el perfil cambia el hash del helper → `node scripts/verify-helper-binary.js --fix` una vez.
+- **Guard `frontend/scripts/lint-cargo-workspace.js`** (pre-build, parser de texto, <50 ms): falla si un miembro declara `[profile]`/`[patch]`, si la raíz pierde `lto` o `panic = "unwind"` o gana `strip = "symbols"`, o si un `.cargo/config.toml` declara `[profile]` (un config sobreescribe al manifiesto en silencio). Probado en rojo. Escape: `tauri:build:debug:skip-checks`.
+
+**Features de GPU fijadas: CPU explícito en Windows/Linux, en todos los canales.**
+- Hecho: todo release real (NSIS vía `/build`, MSIX vía `/store-msix`) se compila en la máquina de Julio, donde `auto-detect-gpu.js` ve `nvidia-smi` sin CUDA Toolkit y cae a CPU; el helper local se compila sin features. Los usuarios siempre han recibido whisper CPU + helper CPU. CI, en cambio, compilaba app y helper con `--features vulkan` en unos workflows y helper CPU en otros: artefactos divergentes que nadie smoke-testeaba, y con Vulkan `n_gpu_layers(999)` mete el modelo en la "VRAM" de la iGPU, que es RAM compartida invisible para el RSS del proceso.
+- Regla: `/build` exporta `TAURI_GPU_FEATURE=none` (Windows) / `coreml` (macOS) en el comando; `tauri:build:store` llama `tauri build` directo (sin features); CI Windows/Linux sin `--features vulkan` en app y helper (Linux conserva `openblas`, que es CPU; macOS sigue `metal`/`coreml`: memoria unificada, ahí sí conviene). El auto-detect de `tauri-auto.js` queda sólo para `tauri:dev`; si la variable existe manda aunque esté vacía (`""` = CPU; antes caía en auto-detect por truthiness).
+- Por qué: un build de producción no debe cambiar de backend porque alguien instaló un SDK (un CUDA instalado aquí produciría un exe que exige cuBLAS). whisper es motor opcional (Parakeet CPU es el default). Volver a GPU es decisión con A/B, como #33 (el de Parakeet + DirectML salió 2.3× más lento en iGPU).
+- Helper: `MAITY_LLAMA_N_GPU_LAYERS` (default 999 = todas las que quepan; inválido → 999) fija `n_gpu_layers`; el sidecar no la toca, se hereda del proceso. Sólo actúa en un helper compilado con `metal|cuda|vulkan`; sirve para QA (`=0` fuerza CPU en macOS) y para el opt-in.
+- Fuera de #31: los pasos de instalación del Vulkan SDK en CI quedan sin consumidor (no se tocaron: no se puede correr CI desde local); `Cargo.lock` sigue gitignored (cada máquina/CI resuelve de nuevo).

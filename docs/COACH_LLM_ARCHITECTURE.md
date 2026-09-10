@@ -292,24 +292,23 @@ Igual que Windows:
     mkdir -p frontend/src-tauri/binaries
     cp target/release/llama-helper "frontend/src-tauri/binaries/llama-helper-${TARGET}"
 
-# .github/workflows/build-windows.yml (con CUDA)
-- name: Install CUDA Toolkit
-  uses: Jimver/cuda-toolkit@v0.2.x
-  with:
-    cuda: '12.3.0'
-- name: Build llama-helper sidecar (Windows CUDA)
-  run: |
-    cargo build --release -p llama-helper --features cuda
-    New-Item -ItemType Directory -Force -Path "frontend/src-tauri/binaries"
-    Copy-Item "target/release/llama-helper.exe" `
-      -Destination "frontend/src-tauri/binaries/llama-helper-x86_64-pc-windows-msvc.exe"
-
-# .github/workflows/build-linux.yml
-- name: Build llama-helper sidecar (Linux)
+# .github/workflows/build-windows.yml y build-linux.yml — CPU explícito (#31, sep-2026)
+- name: Build llama-helper sidecar (CPU)
   run: |
     cargo build --release -p llama-helper
-    # CPU only por simplicidad. Activar --features cuda si los runners tienen NVIDIA
+    # Sin feature de GPU: es lo que embarcan /build y /store-msix (helper local sin
+    # features). Con Vulkan, n_gpu_layers=999 metía el modelo en la RAM compartida
+    # de la iGPU (invisible para el RSS). Opt-in con A/B: --features vulkan|cuda +
+    # MAITY_LLAMA_N_GPU_LAYERS para la prueba. Detalle: docs/BUILDING.md § #31.
 ```
+
+> **Decisión vigente (#31 de la auditoría de recursos, sep-2026):** el helper se compila
+> **sin backend de GPU en Windows y Linux** en todos los canales (local y CI) y con `metal`
+> en macOS. `n_gpu_layers=999` sólo actúa con un backend de GPU compilado; el env
+> `MAITY_LLAMA_N_GPU_LAYERS` (default 999, inválido → 999; lo hereda el sidecar del proceso)
+> permite forzar otro valor para QA u opt-in. El `[profile.release]` que traía
+> `llama-helper/Cargo.toml` nunca aplicó (Cargo ignora profiles de miembros); el perfil vive
+> en el `Cargo.toml` raíz.
 
 ### Comportamiento del binario en máquina del usuario
 
@@ -410,10 +409,9 @@ Actuales (idénticos a Poncho) son conservadores y solo gatillan después de 2-3
 - ⏸️ Restaurar tips hardcoded de Poncho como fallback rápido — recomendado
 - ⏸️ Ajustar `max_tokens=200` en llamadas live — recomendado
 - ⏸️ Bajar thresholds del nudge_engine — opcional
-- ⏸️ Recompilar `llama-helper` con GPU:
-  - macOS: `--features metal` — alta prioridad (out-of-the-box win)
-  - Windows: `--features cuda` o `--features vulkan` — requiere instalación de SDK por desarrollador
-  - Linux: `--features cuda` o `--features vulkan` — igual
+- ✅ macOS: `--features metal` (CI y skill `/build`).
+- ⛔ Windows/Linux: **CPU explícito en todos los canales desde #31** (sep-2026). Reabrir sólo con A/B
+  (`--features vulkan|cuda` + `MAITY_LLAMA_N_GPU_LAYERS`), midiendo RAM compartida de la iGPU.
 
 ### Issues residuales conocidos
 

@@ -2,7 +2,8 @@
 // Pre-build checks. Runs BEFORE tauri:build / tauri:build:debug.
 // Currently: state-access lint (fast, ~1s) + providers-tree lint (fast, <100ms)
 // + tauri-events lint (fast, <1s) + telemetry lint + tauri-acl lint (fast, <1s)
-// + cargo-deps lint (cargo tree, ~2-4s) + migrations LF/checksum + llama-helper
+// + cargo-workspace lint (manifiestos, <50ms) + cargo-deps lint (cargo tree, ~2-4s)
+// + migrations LF/checksum + llama-helper
 // provenance (cargo cacheado, ~s; la primera vez compila llama.cpp) + vitest (~45s).
 //
 // Orden deliberado: los checks BARATOS van primero para fallar rápido; la suite
@@ -21,6 +22,7 @@ const TAURI_EVENTS_SCRIPT = path.join(__dirname, 'lint-tauri-events.js');
 const TELEMETRY_SCRIPT = path.join(__dirname, 'lint-telemetry.js');
 const TAURI_ACL_SCRIPT = path.join(__dirname, 'lint-tauri-acl.js');
 const CARGO_DEPS_SCRIPT = path.join(__dirname, 'lint-cargo-deps.js');
+const CARGO_WORKSPACE_SCRIPT = path.join(__dirname, 'lint-cargo-workspace.js');
 const VERIFY_HELPER_SCRIPT = path.join(__dirname, 'verify-helper-binary.js');
 // On Windows, bash (Git Bash/MINGW) treats backslashes as escapes, mangling
 // `C:\maity_desktop\...` into `C:maity_desktop...`. Forward slashes work on
@@ -222,6 +224,27 @@ if (aclResult.status !== 0) {
 }
 
 console.log('[pre-build] OK: tauri-acl lint passed');
+
+// Manifiestos del workspace (#31 de la auditoría de recursos): Cargo ignora con un
+// warning los [profile]/[patch] de los miembros — así vivieron 8 meses un LTO que
+// nunca aplicó y un fork de cpal que nunca entró al binario. Parser de texto, <50 ms.
+console.log('[pre-build] Running cargo-workspace lint...');
+const cargoWorkspaceResult = spawnSync(process.execPath, [CARGO_WORKSPACE_SCRIPT], {
+    stdio: 'inherit',
+    shell: false,
+});
+
+if (cargoWorkspaceResult.status !== 0) {
+    console.error('');
+    console.error('[pre-build] FAIL: cargo-workspace lint failed.');
+    console.error('  Un miembro del workspace declara [profile]/[patch] (Cargo lo ignora), o el');
+    console.error('  [profile.release] de la raíz perdió lto / panic="unwind" / ganó strip="symbols".');
+    console.error('  Ver CLAUDE.md § "Plataformas y GPU" (#31) y docs/BUILDING.md.');
+    console.error('  Escape hatch: pnpm run tauri:build:debug:skip-checks');
+    process.exit(1);
+}
+
+console.log('[pre-build] OK: cargo-workspace lint passed');
 
 // Una sola pila HTTP/TLS y cero deps muertas (#35 de la auditoría de recursos).
 // Va antes de migraciones/helper: es `cargo tree` (~2-4 s) y falla con mensaje

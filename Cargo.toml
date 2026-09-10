@@ -16,3 +16,17 @@ anyhow = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tokio = { version = "1.32.0", features = ["full"] }
+
+# Perfil de release del workspace (#31 de la auditoría de recursos, sep-2026).
+# Cargo SOLO honra [profile.*] y [patch.*] del manifiesto RAÍZ: el [profile.release]
+# que llama-helper/Cargo.toml traía desde el commit inicial se ignoraba con un
+# warning, y ambos binarios (maity-desktop y llama-helper) salían con los defaults
+# de Cargo (16 codegen-units, sin LTO). Aplica a TODOS los miembros.
+# Guard: frontend/scripts/lint-cargo-workspace.js (pre-build).
+[profile.release]
+lto = "thin"       # cross-crate y paralelo; "fat" = link monohilo sobre ~670 crates, riesgo de OOM
+codegen-units = 1
+panic = "unwind"   # OBLIGATORIO: hooks de Sentry (main.rs) + logging/telemetry/panics.rs
+# Sin `strip`: en MSVC los símbolos viven en el .pdb (el exe no encoge) y en macOS/Linux
+# dejaría los stack traces de Sentry (attach_stacktrace) sin nombres de función.
+# opt-level queda en 3 (default): RNNoise, EBU R128 y el resample corren en Rust puro.

@@ -317,10 +317,11 @@ jobs:
         run: |
           FEATURES=""
 
-          # Windows: Use Vulkan for GPU acceleration
+          # Windows: CPU explícito (#31 de la auditoría de recursos), igual que
+          # los releases reales (/build, /store-msix).
           if [[ "${{ matrix.platform }}" == *"windows"* ]]; then
-            FEATURES="--features vulkan"
-            echo "Windows build with Vulkan GPU acceleration"
+            FEATURES=""
+            echo "Windows build CPU-only (#31)"
           fi
 
           # Linux: Use OpenBLAS for optimized CPU performance
@@ -346,11 +347,9 @@ jobs:
           if [[ "${{ matrix.platform }}" == *"macos"* ]]; then
             LLAMA_FEATURES="--features metal"
             echo "Using Metal GPU acceleration for macOS"
-          elif [[ "${{ matrix.platform }}" == *"windows"* ]]; then
-            LLAMA_FEATURES="--features vulkan"
-            echo "Using Vulkan GPU acceleration for Windows"
           else
-            echo "Using CPU-only mode for Linux"
+            # Windows y Linux: CPU explícito (#31 de la auditoría de recursos).
+            echo "Using CPU-only mode for ${{ matrix.platform }} (#31)"
           fi
 
           # Build llama-helper from workspace root

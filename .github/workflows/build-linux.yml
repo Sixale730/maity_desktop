@@ -186,14 +186,13 @@ jobs:
           cd frontend
           pnpm install
 
-      - name: Build llama-helper sidecar (Vulkan)
+      - name: Build llama-helper sidecar (CPU)
         run: |
-          echo "Building llama-helper sidecar with Vulkan acceleration..."
-          # Vulkan SDK ya está instalado para whisper-rs en este runner.
-          # Reusamos el mismo backend para llama.cpp.
-          # vulkan-1.so en máquinas de usuarios viene del driver de la GPU,
-          # no se empaqueta en el .deb/.AppImage.
-          cargo build --release -p llama-helper --features vulkan
+          echo "Building llama-helper sidecar (CPU-only, #31)..."
+          # CPU explícito (#31 de la auditoría de recursos): con Vulkan,
+          # n_gpu_layers=999 metía el modelo en la RAM compartida de la iGPU.
+          # El helper acepta MAITY_LLAMA_N_GPU_LAYERS para un opt-in con A/B.
+          cargo build --release -p llama-helper
 
           # Copy binary to binaries directory
           mkdir -p frontend/src-tauri/binaries

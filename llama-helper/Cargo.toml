@@ -16,7 +16,7 @@ metal = ["llama-cpp-2/metal"]
 cuda = ["llama-cpp-2/cuda"]
 vulkan = ["llama-cpp-2/vulkan"]
 
-[profile.release]
-codegen-units = 1
-lto = true
-opt-level = "s"  # Optimize for size for faster loading
+# Sin [profile.*] aquí: este crate es MIEMBRO del workspace y Cargo ignora los
+# profiles de los miembros (warning "profiles for the non root package will be
+# ignored"). El perfil de release vive en el Cargo.toml de la raíz (#31 de la
+# auditoría de recursos); el bloque que había aquí nunca aplicó.

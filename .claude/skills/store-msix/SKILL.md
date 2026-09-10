@@ -337,7 +337,7 @@ Un usuario puede terminar con NSIS **y** Store a la vez → dos entradas en el m
 - `winapp init` deja **iconos placeholder** → reemplazar por el de Maity.
 - Al `taskkill` la app, un **lock transitorio del plugin single-instance** puede matar el siguiente arranque → reintentar `winapp run`.
 - El **sandbox del shell** bloquea `Remove-Item` y `-Recurse -Force` juntos → usar `Copy-Item` con `-Force` en un solo archivo, o robocopy.
-- Para **producción** usar `--release` (no `--debug`) y evaluar features GPU (`--features cuda`) — aunque para la Store un build CPU/genérico es más portable.
+- Para **producción** usar `--release` (no `--debug`) y **sin features de GPU**: CPU explícito en todos los canales desde #31 de la auditoría de recursos (sep-2026); `tauri:build:store` llama `tauri build` directo, sin auto-detect, y el helper local también es CPU (`verify-helper-binary.js`). El perfil de release (thin LTO) vive en el `Cargo.toml` raíz.
 - `WebView2` runtime debe estar en la máquina del usuario (evergreen, normalmente presente en Win11).
 
 ## Referencias

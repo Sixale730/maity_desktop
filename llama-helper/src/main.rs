@@ -101,6 +101,44 @@ struct ModelState {
     last_activity: Arc<AtomicU64>,
 }
 
+/// Variable de entorno que fija `n_gpu_layers` del modelo. La hereda del proceso
+/// padre (el sidecar no la toca: exportarla antes de lanzar Maity basta).
+const GPU_LAYERS_ENV: &str = "MAITY_LLAMA_N_GPU_LAYERS";
+
+/// Capas que se ofrecen a la GPU. Default 999 = "todas las que quepan" (llama.cpp
+/// recorta al número real del GGUF). Un valor no numérico se ignora con el default:
+/// un typo de QA no debe cambiar el comportamiento de producción en silencio.
+fn gpu_layers_from_env(raw: Option<String>) -> u32 {
+    const DEFAULT_ALL_LAYERS: u32 = 999;
+    raw.as_deref()
+        .map(str::trim)
+        .and_then(|s| s.parse::<u32>().ok())
+        .unwrap_or(DEFAULT_ALL_LAYERS)
+}
+
+#[cfg(test)]
+mod gpu_layers_tests {
+    use super::gpu_layers_from_env;
+
+    #[test]
+    fn sin_variable_ofrece_todas_las_capas() {
+        assert_eq!(gpu_layers_from_env(None), 999);
+    }
+
+    #[test]
+    fn cero_fuerza_todo_en_cpu() {
+        assert_eq!(gpu_layers_from_env(Some("0".to_string())), 0);
+        assert_eq!(gpu_layers_from_env(Some(" 12 ".to_string())), 12);
+    }
+
+    #[test]
+    fn basura_cae_en_el_default() {
+        assert_eq!(gpu_layers_from_env(Some("todas".to_string())), 999);
+        assert_eq!(gpu_layers_from_env(Some("-1".to_string())), 999);
+        assert_eq!(gpu_layers_from_env(Some(String::new())), 999);
+    }
+}
+
 impl ModelState {
     fn new() -> Result<Self> {
         let backend = LlamaBackend::init().context("Failed to init LlamaBackend")?;
@@ -155,8 +193,17 @@ impl ModelState {
         // cabe, la deja en CPU sin error. Patrón estándar documentado:
         //   https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md
         //   https://github.com/ggml-org/llama.cpp/discussions/7678
-        // Configure model parameters with GPU offload
-        let model_params = LlamaModelParams::default().with_n_gpu_layers(999);
+        //
+        // OJO (#31 de la auditoría de recursos): el valor sólo actúa si el helper
+        // se compiló con un backend de GPU (`--features metal|cuda|vulkan`). Todo
+        // release de Windows/Linux se compila SIN feature (CPU) desde sep-2026, así
+        // que ahí es inerte; en macOS (metal) sí aplica. `MAITY_LLAMA_N_GPU_LAYERS`
+        // permite forzar otro valor (p. ej. 0 = todo en CPU) para QA o para un
+        // build opt-in con GPU: en una iGPU la "VRAM" es RAM compartida que el RSS
+        // del proceso no cuenta.
+        let n_gpu_layers = gpu_layers_from_env(std::env::var(GPU_LAYERS_ENV).ok());
+        eprintln!("🧮 n_gpu_layers={} (env {})", n_gpu_layers, GPU_LAYERS_ENV);
+        let model_params = LlamaModelParams::default().with_n_gpu_layers(n_gpu_layers);
         let model_params = pin!(model_params);
 
         let model = LlamaModel::load_from_file(&self.backend, model_path.clone(), &model_params)

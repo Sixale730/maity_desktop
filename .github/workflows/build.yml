@@ -488,10 +488,12 @@ jobs:
         run: |
           FEATURES=""
 
-          # Windows: Use Vulkan for GPU acceleration
+          # Windows: CPU explícito (#31 de la auditoría de recursos). Es lo que
+          # embarcan /build y /store-msix; whisper es motor opcional. Volver a
+          # Vulkan es decisión con A/B, como #33.
           if [[ "${{ inputs.platform }}" == *"windows"* ]]; then
-            FEATURES="--features vulkan"
-            echo "Windows build with Vulkan GPU acceleration"
+            FEATURES=""
+            echo "Windows build CPU-only (#31)"
           fi
 
           # Linux: Use OpenBLAS for optimized CPU performance
