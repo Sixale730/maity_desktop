@@ -155,14 +155,15 @@ impl Drop for BatchSttLease {
 }
 
 /// Señal del modo lote (F2): ¿la grabación ACTIVA consume el motor STT?
-/// `true` = streaming (default histórico, y el valor al que se restaura al
-/// parar). En modo lote la grabación solo captura checkpoints — no toca el
-/// motor — así que las fases `Recording`/`Paused`/`Stopping` dejan de bloquear
-/// el unload. La setea el arranque de grabación (F3); nadie la toca en F2.
+/// `true` = streaming (default histórico). En modo lote la grabación solo
+/// captura checkpoints — no toca el motor — así que las fases
+/// `Recording`/`Paused`/`Stopping` dejan de bloquear el unload. La SELLA el
+/// arranque de grabación (F3) para ambos modos; el stop NO la restaura (con la
+/// fase aún en `Stopping` el planner de lote leía `streaming_active` y difería
+/// cada segmento 5 min, 2026-09-10). En `Idle` nadie la consulta.
 static ACTIVE_RECORDING_USES_STT: AtomicBool = AtomicBool::new(true);
 
-/// La llama el arranque de grabación (F3) según `transcription_mode`, y el
-/// stop la restaura a `true`.
+/// La llama el arranque de grabación (F3) según `transcription_mode`.
 pub fn set_active_recording_uses_stt(uses_stt: bool) {
     ACTIVE_RECORDING_USES_STT.store(uses_stt, Ordering::SeqCst);
 }

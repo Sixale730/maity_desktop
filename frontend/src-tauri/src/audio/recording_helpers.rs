@@ -448,6 +448,13 @@ pub async fn initialize_recording<R: Runtime>(
     // por lote: esa combinación cae a streaming (el pipeline probado).
     let prefs = super::recording_preferences::load_recording_preferences(app).await.ok();
     let batch_mode = auto_save && prefs.as_ref().map(|p| p.is_batch_mode()).unwrap_or(false);
+    // La señal `uses_stt` se SELLA aquí para AMBOS modos y describe a esta sesión
+    // hasta que arranque la siguiente; el stop NO la "restaura" (hacerlo con la
+    // fase aún en `Stopping` hacía que `planner::gate()` viera `streaming_active`
+    // y difiriera cada segmento de lote hasta su tick de 5 min — 5/5 rotaciones
+    // del piloto 0.2.59, 2026-09-10). En `Idle` nadie la consulta: `unload_allowed`
+    // corta por fase y el gate del planner exige grabación activa.
+    crate::audio::transcription::engine::set_active_recording_uses_stt(!batch_mode);
 
     if batch_mode {
         info!("📦 Grabación en modo LOTE: sin validar motor STT (transcribe el planner al cerrar el segmento)");
@@ -542,10 +549,10 @@ pub async fn initialize_recording<R: Runtime>(
     // Modo LOTE (F3): la fila de la cola nace AQUÍ, con la grabación ya activa
     // — patrón outbox: si la app muere a mitad del segmento, el drainer del
     // planner la recupera desde los checkpoints. La señal `uses_stt=false`
-    // le dice al ciclo STT que esta grabación no consume el motor (el unload
-    // por presión/reposo/lote puede proceder aunque la fase sea Recording).
+    // (sellada arriba, al resolver el modo) le dice al ciclo STT que esta
+    // grabación no consume el motor (el unload por presión/reposo/lote puede
+    // proceder aunque la fase sea Recording).
     if batch_mode {
-        crate::audio::transcription::engine::set_active_recording_uses_stt(false);
         // El origen decide la política de descarte al finalizar: los segmentos
         // de jornada aplican MIN_SEGMENT_WORDS, los manuales NUNCA descartan.
         let trigger_kind = if trigger.as_deref().map_or(false, |t| t.starts_with("scheduler")) {
