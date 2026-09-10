@@ -8,8 +8,8 @@
 > | F1 — Núcleo `batch_transcriber` + comando dev | ✅ cerrada | `5f40647` |
 > | F2 — Cola persistente + planificador híbrido | ✅ cerrada | `1768725` |
 > | F3 — Cablear disparadores (default sigue streaming) | ✅ cerrada | `4c38d37` |
-> | F4 — Frontend | ✅ cerrada | (pendiente de hash) |
-> | F5 — Coach por heurísticos de audio | ✅ cerrada | (pendiente de hash) |
+> | F4 — Frontend | ✅ cerrada | `9119753` |
+> | F5 — Coach por heurísticos de audio | ✅ cerrada | `9119753` |
 > | F6 — Flip del default a lote | pendiente | — |
 >
 > Pendientes transversales: medición física F0c (pico de Parakeet en máquina de
@@ -85,7 +85,7 @@ Módulo `frontend/src-tauri/src/audio/transcription/batch/`:
 
 ---
 
-## Fase 4 — Frontend ✅ (pendiente de hash)
+## Fase 4 — Frontend ✅ `9119753`
 
 Detalle del contrato Rust↔TS en `docs/TRANSCRIPTION_PIPELINE.md` § "Frontend del lote (F4)".
 
@@ -112,7 +112,7 @@ Detalle del contrato Rust↔TS en `docs/TRANSCRIPTION_PIPELINE.md` § "Frontend 
 - Fechas del bloque de pendientes: `segment_started_at` es hora LOCAL naive (así lo escribe `recording_helpers.rs`) y `updated_at` es UTC (`datetime('now')`); `parseSqliteTs` los trata distinto. El poll del bloque no se apaga con lista vacía (60 s con sesión; 15 s con filas activas) por la carrera con `set_current_user`.
 - `RecordingSettings` no escribe `set_recording_preferences` hasta que la carga haya tenido éxito (el objeto se reemplaza entero: un guardado con estado incompleto resetearía `transcription_mode` al default del build).
 
-## Fase 5 — Coach por heurísticos de audio ✅ (pendiente de hash)
+## Fase 5 — Coach por heurísticos de audio ✅ `9119753`
 
 Detalle de reglas en `docs/COACH_LLM_ARCHITECTURE.md` § Apéndice "En modo LOTE el coach es por audio".
 
