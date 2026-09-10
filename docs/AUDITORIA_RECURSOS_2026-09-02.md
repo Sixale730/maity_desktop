@@ -73,7 +73,7 @@ exactamente lo cerrado. La tabla de abajo es una foto del estado; la verdad es l
 | 28 | Pool de SQLite sin ajustar | Bajo | RAM/Disco | Post | S | = | abierto |
 | 29 | Gemma 1B se descarga sin consumidor | Bajo | Disco/Red | Arranque | S | ✗ | abierto |
 | 30 | El helper crea un `LlamaContext` por request | Bajo | CPU/RAM | Jornada | M | ✗ | abierto |
-| 31 | El workspace ignora el `[profile.release]` y el `[patch]` de cpal | Medio | CPU/Disco | Arranque | S | = | abierto |
+| 31 | El workspace ignora el `[profile.release]` y el `[patch]` de cpal | Medio | CPU/Disco | Arranque | S | = | **cerrado** `6f46f9f` |
 | 32 | En Windows ffmpeg se descarga en runtime | Alto | Disco/Red/RAM | Jornada/Post | M | = | **cerrado** `6b906a6` |
 | 33 | DirectML y D3D12 son imports de carga del exe | Bajo | RAM/CPU | Arranque | S | = | **cerrado** `06c6da6` |
 | 34 | Los segmentos descartados dejan su carpeta huérfana | Medio | Disco | Post | S | = | **cerrado** `f52472d` |
@@ -736,7 +736,7 @@ Ordenados por impacto estimado en RAM, luego CPU, luego disco y red.
 - **Riesgo**: recrear el contexto cuando cambie `context_size` entre coach (4096) y resumen (8192).
 
 ### #31 · El workspace ignora el `[profile.release]` del helper y el `[patch.crates-io]` de cpal
-`Medio` · CPU/Disco · Arranque · esfuerzo S · verificado · no cambia por lote · abierto
+`Medio` · CPU/Disco · Arranque · esfuerzo S · verificado · no cambia por lote · **CERRADO** `6f46f9f`
 
 - **Impacto**: ambos binarios se compilan con los defaults de Cargo (sin LTO, 16 codegen-units, sin
   strip): exe de 72 MB, NSIS de 26.5 MB. Y `Cargo.lock` resuelve **cpal 0.15.3 desde crates.io**, no la
@@ -753,6 +753,36 @@ Ordenados por impacto estimado en RAM, luego CPU, luego disco y red.
   en CI.
 - **Riesgo**: activar el patch cambia el backend de audio real: probar captura y hot-swap. Mantener
   `panic = "unwind"` por los hooks de Sentry y `telemetry/panics.rs`.
+- **CORRECCIÓN al remedio (09-sep)**, cuatro hechos que el hallazgo no tenía:
+  1. **El patch nunca aplicó en Maity**: la línea y el `Cargo.toml` raíz nacen en el MISMO commit
+     inicial (`dbc1bc7`, 2026-01-29, herencia de Meetily). Todo release 0.2.0..0.2.58 lleva cpal
+     0.15.3 de crates.io: "el backend de audio en producción no es el que se pineó" es cierto, pero
+     el pineado jamás existió como binario. La rev `51c3b43` es master de RustAudio/cpal del
+     2025-02-16, sin release, versión 0.15.3 y `windows 0.54`; su único cambio con nombre es #946
+     (CoreAudio macOS, `supported_output_configs` en salidas no default); el resto son once meses de
+     master. **Se RETIRÓ, no se activó** (decisión de Julio tras explicación): cambiar el WASAPI real
+     de Windows sin beneficio. Subir cpal a 0.16+ (trae #946; 0.18.2 exige rust 1.85 y `windows
+     0.62`) es tarea aparte.
+  2. **`strip = "symbols"` no va**: en MSVC los símbolos viven en el `.pdb` (el exe no encoge) y en
+     macOS/Linux quita la tabla de símbolos, dejando los stack traces de Sentry
+     (`attach_stacktrace(true)`) como direcciones; rustc lo desaconseja para apps con crash reporting.
+  3. **CI ya pasaba `--features vulkan` explícito** (build-windows.yml); el hueco real era el `/build`
+     local (auto-detect: `nvidia-smi` sin CUDA Toolkit → CPU) y la divergencia entre canales: los
+     releases reales (NSIS vía `/build`, MSIX vía `/store-msix`) siempre fueron CPU, app y helper, y
+     CI compilaba app+helper con Vulkan en unos workflows y helper CPU en otros. Con helper CPU,
+     `n_gpu_layers(999)` era inerte para todos los usuarios. Decisión: **CPU explícito en todos los
+     canales** (Windows/Linux; macOS sigue metal/coreml), `TAURI_GPU_FEATURE` fijado en `/build`.
+  4. `TAURI_GPU_FEATURE=""` (receta de BUILDING.md) caía en auto-detect por truthiness.
+- **Cierre** (`6f46f9f`): `[profile.release]` en la raíz con `lto = "thin"`, `codegen-units = 1`,
+  `panic = "unwind"`, sin strip (thin y no fat: link paralelo, sin riesgo de OOM con 15 GB aquí y 16
+  en el runner); bloque del helper y patch borrados; helper con `MAITY_LLAMA_N_GPU_LAYERS` (default
+  999, sólo actúa con backend de GPU compilado); `tauri-auto.js` con variable vacía = CPU; skill
+  `/build` con `none`/`coreml`; 4 workflows sin vulkan; guard `lint-cargo-workspace.js` (pre-build,
+  probado en rojo). **Medido** (release `--no-bundle`): `maity-desktop.exe` 72,254,464 → 63,500,288 B
+  (−12 %); `llama-helper.exe` 3,286,528 → 3,271,680 B; cargo release 22 min en frío (recompiló
+  todas las crates por el cambio de perfil; no hay línea base en frío del perfil viejo);
+  `lint-exe-imports` verde sobre el exe release (el delay-load de #33 sobrevive al LTO);
+  `cargo metadata` sin warnings; build debug + smoke OK. Doc: `docs/BUILDING.md` § #31.
 
 ### #32 · En Windows ffmpeg se descarga en runtime, en el primer checkpoint
 `Alto` · Disco/Red/RAM · Jornada/Post · esfuerzo M · verificado · no cambia por lote · **CERRADO** `6b906a6`
