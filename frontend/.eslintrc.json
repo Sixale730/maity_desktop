@@ -16,6 +16,9 @@
     }, {
       "selector": "CallExpression[callee.property.name='invoke'][callee.object.property.name='functions']",
       "message": "No hay edge functions de Supabase para el desktop (issue #67): el token de Deepgram viene de Vercel /api/deepgram-token y el analisis de conversations-finalize. Si de verdad hace falta una, vive en el repo web con gate server-side."
+    }, {
+      "selector": "CallExpression[callee.property.name='onAuthStateChange'] AwaitExpression",
+      "message": "Nada de await dentro del callback de onAuthStateChange: auth-js lo ejecuta DENTRO de su lock de sesion (TOKEN_REFRESHED / SIGNED_IN) y un await de otro metodo de supabase-js se encola detras del propio holder -> deadlock: desde el primer refresh horario TODA llamada del webview cuelga para siempre (lista, swap local->nube, realtime; incidente 2026-09-10). Difiere el trabajo con setTimeout(() => { void fn() }, 0). Detalle: docs/NUBE_CUENTAS_SYNC.md."
     }],
     "no-restricted-imports": ["error", {
       "paths": [{

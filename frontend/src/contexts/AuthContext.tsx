@@ -157,13 +157,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     /** Backoff del reintento por PGRST116. Ver la nota de abajo. */
     const RETRY_DELAYS_MS = [300, 600, 1200]
 
+    // Acotado a AUTH_REQUEST_TIMEOUT_MS (red de seguridad del deadlock del lock
+    // de auth-js, ver el callback de onAuthStateChange): si alguien vuelve a
+    // hacer await de esto DENTRO del callback, el cuelgue infinito se convierte
+    // en `fetchOrCreateMaityUser exception` a los 30 s, el callback termina y
+    // auth-js suelta el lock (la sesión ya quedó guardada antes del notify).
     const fetchRow = () =>
-      supabase
-        .schema('maity')
-        .from('users')
-        .select(USER_COLUMNS)
-        .eq('auth_id', authUser.id)
-        .single()
+      withTimeout(
+        Promise.resolve(
+          supabase
+            .schema('maity')
+            .from('users')
+            .select(USER_COLUMNS)
+            .eq('auth_id', authUser.id)
+            .single(),
+        ),
+        'fetchMaityUser',
+      )
 
     const doFetch = async () => {
       setMaityUserError(null)
@@ -429,7 +439,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
 
       // Subscribe to auth state changes (token refresh, sign-out, etc.)
-      authSubscription = supabase.auth.onAuthStateChange(async (event, newSession) => {
+      //
+      // SIN `async`/`await` de supabase-js aquí adentro (regla ESLint
+      // no-restricted-syntax): auth-js ejecuta este callback DENTRO de su lock de
+      // sesión (navigator.locks) mientras procesa TOKEN_REFRESHED / SIGNED_IN, y
+      // `_notifyAllSubscribers` espera a que termine. Cualquier consulta Supabase
+      // desde aquí pasa por `getSession()` → `_acquireLock` re-entrante → se encola
+      // detrás del propio holder → deadlock. Así estuvo desde feb-2026: al primer
+      // refresh horario (~58 min tras arrancar) TODA llamada del webview colgaba
+      // para siempre — lista, swap local→nube, reconnect de Realtime, `setSession`
+      // del refresh de Rust. Firma en el log: `fetchOrCreateMaityUser start` sin
+      // `ok` (incidente 2026-09-10, piloto 0.2.59). Detalle: docs/NUBE_CUENTAS_SYNC.md.
+      authSubscription = supabase.auth.onAuthStateChange((event, newSession) => {
         logger.debug('[Auth] Auth state changed:', event, 'session:', !!newSession)
 
         if (!isMounted) return
@@ -459,7 +480,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           if (isHandlingCallback.current) {
             logger.debug('[Auth] Skipping fetchOrCreateMaityUser in onAuthStateChange (callback handler active)')
           } else {
-            await fetchOrCreateMaityUserRef.current(newSession.user)
+            // Diferido a un macrotask: corre cuando auth-js ya soltó el lock (es
+            // lo que recomienda la doc de onAuthStateChange). Nada de await aquí.
+            const authUser = newSession.user
+            setTimeout(() => {
+              if (!isMounted) return
+              void fetchOrCreateMaityUserRef.current(authUser)
+            }, 0)
           }
         } else {
           setMaityUser(null)

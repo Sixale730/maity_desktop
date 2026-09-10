@@ -234,6 +234,7 @@ Ubicaciones: dev `frontend/models/`; produccion `~/Library/Application Support/c
 ### Cuentas, nube y análisis — reglas vigentes (detalle en `docs/NUBE_CUENTAS_SYNC.md`)
 
 - **Cliente Supabase con default `public`**; las tablas de `maity` van SIEMPRE con `.schema('maity')` explícito; los RPC entran por wrappers `public.*`. Guardias: regla ESLint `no-restricted-syntax` (`.rpc()` pelón) + `lib/supabase.test.ts`. `src/shared/maity-shared/**` está exento. Realtime hardcodea `schema: 'maity'` — correcto, no tocar.
+- **El callback de `onAuthStateChange` es SÍNCRONO y no hace `await` de supabase-js** (auth-js lo ejecuta dentro de su lock; un `await` de `getSession`/consultas ahí = deadlock que dejaba muerto TODO el webview al primer refresh horario — lista, swap local→nube, realtime —, incidente 2026-09-10). Diferir con `setTimeout(…, 0)`; guard ESLint `no-restricted-syntax` + `withTimeout` en `fetchRow`. Repro en 2 s: `__pollDebug.forceTokenRefresh()`. Detalle: `docs/NUBE_CUENTAS_SYNC.md`.
 - **Roles (`admin|manager|user`) SIEMPRE desde la DB (RPC `public.get_user_role`), fail-closed**: `null` = desconocido, jamás "es user"; NO reintroducir heurísticos por dominio de email (`ADMIN_DOMAINS` se eliminó y hay test). El Sidebar NO filtra por rol.
 - **Verificación de email**: NO cambiar `emailRedirectTo` a localhost/deep-link; el flujo PKCE `?code=` solo es canjeable en el webview que lo inició.
 - **CTA "Ver planes" → ruta interna `/billing/plans`, NO `PRICING_URL`** (la landing expulsa a usuarios con sesión).

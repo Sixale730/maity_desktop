@@ -111,6 +111,7 @@ declare global {
       fetchConversation: (id: string) => Promise<unknown>;
       sessionState: () => Promise<unknown>;
       realtimeState: () => Promise<unknown>;
+      forceTokenRefresh: () => Promise<unknown>;
     };
   }
 }
@@ -155,6 +156,31 @@ export function installPollDebugHelpers(): void {
         error,
       });
       return data;
+    },
+
+    /**
+     * Fuerza un TOKEN_REFRESHED por el MISMO camino que el refresh horario de
+     * auth-js (`_callRefreshToken` → `_notifyAllSubscribers` bajo el lock de
+     * sesion). Si el callback de AuthContext volviera a hacer await de
+     * supabase-js, esta promesa NUNCA resuelve (deadlock del 2026-09-10); con el
+     * fix resuelve en <2 s y el log muestra `fetchOrCreateMaityUser start` → `ok`.
+     * Rota el refresh_token: Rust recibe el par nuevo por la siembra de AuthContext.
+     */
+    forceTokenRefresh: async () => {
+      const { supabase } = await import('./supabase');
+      const t0 = performance.now();
+      const { data, error } = await supabase.auth.refreshSession();
+      const elapsedMs = Math.round(performance.now() - t0);
+      const expiresAt = data?.session?.expires_at ?? null;
+      const result = {
+        elapsedMs,
+        hasSession: !!data?.session,
+        expiresAt: expiresAt ? new Date(expiresAt * 1000).toISOString() : null,
+        error,
+      };
+      // eslint-disable-next-line no-console
+      console.log('[POLL_DEBUG] forceTokenRefresh', result);
+      return result;
     },
 
     /** Estado del WebSocket de Realtime de Supabase. */
