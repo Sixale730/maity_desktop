@@ -18,6 +18,13 @@ impl BatchQueueRepository {
     /// Crea (o revive) la fila del segmento al ARRANCAR la grabación.
     /// Idempotente por `folder_path` (UNIQUE): reintentar el arranque sobre la
     /// misma carpeta actualiza metadatos en vez de fallar.
+    ///
+    /// `process_id` = `process_session_id()` del proceso que graba: es el
+    /// discriminador de huérfanos del planner (`planner::is_orphan`) — una
+    /// fila `recording` cuyo proceso no es el actual está huérfana. Se
+    /// re-sella también en el conflicto: si no, un re-arranque sobre la misma
+    /// carpeta conservaría un pid viejo y el planner reclamaría la fila VIVA
+    /// como ajena.
     pub async fn upsert_recording(
         pool: &SqlitePool,
         folder_path: &str,
@@ -25,16 +32,18 @@ impl BatchQueueRepository {
         segment_started_at: Option<&str>,
         trigger_kind: &str,
         user_id: &str,
+        process_id: &str,
     ) -> Result<i64, SqlxError> {
         sqlx::query(
             "INSERT INTO batch_transcription_queue
-               (folder_path, meeting_local_id, segment_started_at, trigger_kind, status, user_id)
-             VALUES (?, ?, ?, ?, 'recording', ?)
+               (folder_path, meeting_local_id, segment_started_at, trigger_kind, status, user_id, process_id)
+             VALUES (?, ?, ?, ?, 'recording', ?, ?)
              ON CONFLICT(folder_path) DO UPDATE SET
                meeting_local_id = excluded.meeting_local_id,
                segment_started_at = excluded.segment_started_at,
                trigger_kind = excluded.trigger_kind,
                status = 'recording',
+               process_id = excluded.process_id,
                updated_at = datetime('now')",
         )
         .bind(folder_path)
@@ -42,6 +51,7 @@ impl BatchQueueRepository {
         .bind(segment_started_at)
         .bind(trigger_kind)
         .bind(user_id)
+        .bind(process_id)
         .execute(pool)
         .await?;
 
@@ -172,8 +182,9 @@ impl BatchQueueRepository {
         Ok(result.rows_affected())
     }
 
-    /// Filas `recording` (candidatas a recuperación post-crash: el drainer
-    /// decide contra la grabación activa y el estado del disco).
+    /// Filas `recording` (candidatas a recuperación post-crash). Sin filtro a
+    /// propósito: el planner clasifica cada una con `is_orphan` (`process_id`
+    /// + fase de grabación) y decide contra el estado del disco.
     pub async fn recording_rows(pool: &SqlitePool) -> Result<Vec<BatchQueueJob>, SqlxError> {
         sqlx::query_as::<_, BatchQueueJob>(
             "SELECT * FROM batch_transcription_queue WHERE status = 'recording' ORDER BY id ASC",
@@ -182,15 +193,49 @@ impl BatchQueueRepository {
         .await
     }
 
+    /// Fallo del MERGE de checkpoints en la recuperación post-crash (planner):
+    /// incrementa `attempts` sobre una fila `recording`; al agotar
+    /// `max_attempts` pasa a `failed` (visible en la UI con "Reintentar"; el
+    /// audio sigue en disco). Mientras no agota, la fila SIGUE en `recording`
+    /// y la siguiente pasada del planner (≤ 5 min) la vuelve a intentar — un
+    /// ffmpeg que aún no resuelve a los 120 s del arranque no condena la
+    /// grabación. `fail` NO sirve aquí: su guarda es `status='processing'` y
+    /// sobre `recording` afecta 0 filas (así una fila cuyo merge fallaba
+    /// quedaba `recording` e invisible para siempre).
+    pub async fn fail_recovery(
+        pool: &SqlitePool,
+        id: i64,
+        error_msg: &str,
+        max_attempts: i64,
+    ) -> Result<bool, SqlxError> {
+        let result = sqlx::query(
+            "UPDATE batch_transcription_queue SET
+               attempts = attempts + 1,
+               last_error = ?,
+               status = CASE WHEN attempts + 1 >= ? THEN 'failed' ELSE 'recording' END,
+               updated_at = datetime('now')
+             WHERE id = ? AND status = 'recording'",
+        )
+        .bind(error_msg)
+        .bind(max_attempts)
+        .bind(id)
+        .execute(pool)
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
     /// Recuperación post-crash: `recording` → `pending`. **Conserva el
     /// `trigger_kind` original** — el origen decide la política de descarte al
     /// finalizar (manual NUNCA descarta por umbral; sobreescribirlo con
     /// 'crash_recovery' le aplicaría MIN_SEGMENT_WORDS a una grabación manual
-    /// recuperada). La marca de recuperación queda en `last_error`.
+    /// recuperada). La marca de recuperación queda en `last_error`. `attempts`
+    /// vuelve a cero: los intentos que consumió el merge (`fail_recovery`) no
+    /// se cobran a la transcripción.
     pub async fn mark_crash_recovery(pool: &SqlitePool, id: i64) -> Result<bool, SqlxError> {
         let result = sqlx::query(
             "UPDATE batch_transcription_queue SET
-               status = 'pending', last_error = 'crash_recovery', updated_at = datetime('now')
+               status = 'pending', last_error = 'crash_recovery', attempts = 0,
+               updated_at = datetime('now')
              WHERE id = ? AND status = 'recording'",
         )
         .bind(id)
@@ -223,7 +268,8 @@ impl BatchQueueRepository {
     /// Filas VIVAS del usuario para el bloque "Transcripciones pendientes"
     /// de la lista (F4): `pending`, `processing` y `failed`. Excluye a
     /// propósito `recording` — una fila stale de un crash se vería como
-    /// "Grabando" hasta la pasada de recuperación del planner — y las
+    /// "Grabando" hasta la pasada de recuperación del planner (≤ 5 min:
+    /// corre en cada despertar del loop, no solo al arranque) — y las
     /// terminales `done`/`discarded` (la reunión ya está en la lista o no
     /// existe). Más recientes primero, tope 50.
     pub async fn list_active(
@@ -269,8 +315,8 @@ mod tests {
     use super::*;
     use sqlx::sqlite::SqlitePoolOptions;
 
-    /// Espejo del SQL de la migración `20260909000000` (mismo patrón que los
-    /// tests de `sync_queue`).
+    /// Espejo del SQL de las migraciones `20260909000000` + `20260911100000`
+    /// (`process_id`) — mismo patrón que los tests de `sync_queue`.
     const SCHEMA: &str = r#"
         CREATE TABLE batch_transcription_queue (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -284,11 +330,13 @@ mod tests {
             user_id TEXT,
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-            completed_at TEXT
+            completed_at TEXT,
+            process_id TEXT
         );
     "#;
 
     const TEST_USER: &str = "test-user";
+    const TEST_PID: &str = "proc-1-aaaaaaaa";
 
     async fn setup_pool() -> SqlitePool {
         let pool = SqlitePoolOptions::new()
@@ -301,9 +349,89 @@ mod tests {
     }
 
     async fn insert_recording(pool: &SqlitePool, folder: &str) -> i64 {
-        BatchQueueRepository::upsert_recording(pool, folder, None, Some("2026-09-09 09:00:00"), "rotation", TEST_USER)
-            .await
-            .unwrap()
+        BatchQueueRepository::upsert_recording(
+            pool,
+            folder,
+            None,
+            Some("2026-09-09 09:00:00"),
+            "rotation",
+            TEST_USER,
+            TEST_PID,
+        )
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn upsert_sella_y_actualiza_process_id() {
+        let pool = setup_pool().await;
+        let id = insert_recording(&pool, "C:/rec/seg1").await;
+        let job = BatchQueueRepository::get_by_id(&pool, id).await.unwrap().unwrap();
+        assert_eq!(job.process_id.as_deref(), Some(TEST_PID));
+
+        // Re-arranque sobre la misma carpeta desde OTRO proceso: el pid se
+        // re-sella (si no, el planner reclamaría la fila viva como ajena).
+        let same = BatchQueueRepository::upsert_recording(
+            &pool, "C:/rec/seg1", None, None, "manual", TEST_USER, "proc-2-bbbbbbbb",
+        )
+        .await
+        .unwrap();
+        assert_eq!(same, id);
+        let job = BatchQueueRepository::get_by_id(&pool, id).await.unwrap().unwrap();
+        assert_eq!(job.process_id.as_deref(), Some("proc-2-bbbbbbbb"));
+        assert_eq!(job.status, "recording");
+    }
+
+    #[tokio::test]
+    async fn fail_es_noop_fuera_de_processing() {
+        // Pinnea el defecto que dejaba huérfanos invisibles: `fail` sobre una
+        // fila `recording` no toca nada (su guarda es `processing`).
+        let pool = setup_pool().await;
+        let id = insert_recording(&pool, "C:/rec/seg1").await;
+        assert!(!BatchQueueRepository::fail(&pool, id, "e", 5).await.unwrap());
+        let job = BatchQueueRepository::get_by_id(&pool, id).await.unwrap().unwrap();
+        assert_eq!(job.status, "recording");
+        assert_eq!(job.attempts, 0);
+        assert!(job.last_error.is_none());
+    }
+
+    #[tokio::test]
+    async fn fail_recovery_reintenta_sobre_recording_y_agota_a_failed() {
+        let pool = setup_pool().await;
+        let id = insert_recording(&pool, "C:/rec/seg1").await;
+
+        assert!(BatchQueueRepository::fail_recovery(&pool, id, "e1", 2).await.unwrap());
+        let job = BatchQueueRepository::get_by_id(&pool, id).await.unwrap().unwrap();
+        assert_eq!(job.status, "recording", "sin agotar sigue en recording (la próxima pasada reintenta)");
+        assert_eq!(job.attempts, 1);
+        assert_eq!(job.last_error.as_deref(), Some("e1"));
+
+        assert!(BatchQueueRepository::fail_recovery(&pool, id, "e2", 2).await.unwrap());
+        let job = BatchQueueRepository::get_by_id(&pool, id).await.unwrap().unwrap();
+        assert_eq!(job.status, "failed", "al agotar queda visible con Reintentar");
+        assert_eq!(job.attempts, 2);
+        assert_eq!(job.last_error.as_deref(), Some("e2"));
+
+        // Terminal: no vuelve a tocarla. Y tampoco toca filas pending.
+        assert!(!BatchQueueRepository::fail_recovery(&pool, id, "e3", 2).await.unwrap());
+        let p = insert_recording(&pool, "C:/rec/seg2").await;
+        BatchQueueRepository::mark_pending(&pool, "C:/rec/seg2").await.unwrap();
+        assert!(!BatchQueueRepository::fail_recovery(&pool, p, "x", 2).await.unwrap());
+        assert_eq!(BatchQueueRepository::get_by_id(&pool, p).await.unwrap().unwrap().status, "pending");
+    }
+
+    #[tokio::test]
+    async fn crash_recovery_resetea_attempts() {
+        let pool = setup_pool().await;
+        let id = insert_recording(&pool, "C:/rec/seg1").await;
+        BatchQueueRepository::fail_recovery(&pool, id, "ffmpeg", 5).await.unwrap();
+        assert_eq!(BatchQueueRepository::get_by_id(&pool, id).await.unwrap().unwrap().attempts, 1);
+
+        assert!(BatchQueueRepository::mark_crash_recovery(&pool, id).await.unwrap());
+        let job = BatchQueueRepository::get_by_id(&pool, id).await.unwrap().unwrap();
+        assert_eq!(job.status, "pending");
+        assert_eq!(job.attempts, 0, "los intentos del merge no se cobran a la transcripción");
+        assert_eq!(job.last_error.as_deref(), Some("crash_recovery"));
     }
 
     #[tokio::test]
@@ -408,7 +536,7 @@ mod tests {
         BatchQueueRepository::mark_pending(&pool, "C:/rec/seg1").await.unwrap();
         BatchQueueRepository::mark_pending(&pool, "C:/rec/seg2").await.unwrap();
         // Fila de otro usuario, más vieja imposible (id mayor), no debe salir.
-        BatchQueueRepository::upsert_recording(&pool, "C:/rec/otro", None, None, "manual", "otro-user")
+        BatchQueueRepository::upsert_recording(&pool, "C:/rec/otro", None, None, "manual", "otro-user", TEST_PID)
             .await
             .unwrap();
         BatchQueueRepository::mark_pending(&pool, "C:/rec/otro").await.unwrap();
@@ -445,7 +573,7 @@ mod tests {
         BatchQueueRepository::claim(&pool, x).await.unwrap();
         BatchQueueRepository::complete(&pool, x, "discarded").await.unwrap();
         // pending de OTRO usuario: NO debe salir.
-        BatchQueueRepository::upsert_recording(&pool, "C:/rec/otro", None, None, "manual", "otro-user")
+        BatchQueueRepository::upsert_recording(&pool, "C:/rec/otro", None, None, "manual", "otro-user", TEST_PID)
             .await
             .unwrap();
         BatchQueueRepository::mark_pending(&pool, "C:/rec/otro").await.unwrap();
@@ -510,7 +638,7 @@ mod tests {
         assert!(!BatchQueueRepository::retry_failed(&pool, "C:/rec/processing", TEST_USER).await.unwrap());
         assert_eq!(BatchQueueRepository::get_by_id(&pool, b).await.unwrap().unwrap().status, "processing");
         // failed de otro usuario: aislamiento.
-        BatchQueueRepository::upsert_recording(&pool, "C:/rec/otro", None, None, "manual", "otro-user")
+        BatchQueueRepository::upsert_recording(&pool, "C:/rec/otro", None, None, "manual", "otro-user", TEST_PID)
             .await
             .unwrap();
         let (c,): (i64,) = sqlx::query_as("SELECT id FROM batch_transcription_queue WHERE folder_path = 'C:/rec/otro'")

@@ -569,6 +569,9 @@ pub async fn initialize_recording<R: Runtime>(
                     match state.current_user_id().await {
                         Some(user_id) => {
                             let pool = state.db_manager.pool().clone();
+                            // `process_id`: discriminador de huérfanos del planner (una
+                            // fila `recording` de otro proceso está huérfana). Mismo id
+                            // que la telemetría de esta sesión.
                             crate::database::repositories::batch_queue::BatchQueueRepository::upsert_recording(
                                 &pool,
                                 &folder_str,
@@ -576,6 +579,7 @@ pub async fn initialize_recording<R: Runtime>(
                                 started_at.as_deref(),
                                 trigger_kind,
                                 &user_id,
+                                crate::logging::telemetry::context::process_session_id(),
                             )
                             .await
                             .map_err(|e| e.to_string())

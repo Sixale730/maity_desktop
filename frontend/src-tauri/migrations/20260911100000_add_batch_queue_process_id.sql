@@ -1,0 +1,15 @@
+-- Proceso dueno de cada fila de la cola de lote (recuperacion de huerfanos).
+--
+-- La escribe `BatchQueueRepository::upsert_recording` al ARRANCAR el segmento
+-- con `process_session_id()` (logging/telemetry/context.rs), el mismo id que
+-- lleva la telemetria de esa sesion. El planner
+-- (audio/transcription/batch/planner.rs::is_orphan) lo usa para distinguir la
+-- fila VIVA de las huerfanas sin mirar la carpeta activa ni el reloj: una fila
+-- `recording` cuyo proceso no es el actual esta huerfana por definicion (ese
+-- proceso murio con la grabacion abierta), porque dos procesos jamas comparten
+-- esta DB (single-instance + AppData separado por canal).
+--
+-- NULL = fila escrita por un build anterior a esta columna (o por un canal
+-- viejo con version-skew): se trata como huerfana, que es lo correcto.
+-- Migracion ADITIVA: ninguna fila existente cambia de significado.
+ALTER TABLE batch_transcription_queue ADD COLUMN process_id TEXT;

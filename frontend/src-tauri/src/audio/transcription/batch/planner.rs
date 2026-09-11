@@ -14,8 +14,12 @@
 // **Single-flight**: este loop es el ÚNICO consumidor de `pending` (y el
 // `claim` del repo es un mutex por fila) — jamás dos jobs de lote a la vez.
 //
-// En F2 nadie INSERTA filas todavía (los disparadores llegan en F3): el
-// planner arranca, recupera huérfanos si los hubiera y espera señales.
+// **Recuperación de huérfanos** (`recover_orphans`): al arranque Y en cada
+// despertar del loop, antes de `process_queue`. La fila VIVA se distingue por
+// `process_id` + fase (`is_orphan`), NO por "¿hay grabación activa?": con
+// jornada + arranque automático con Windows SIEMPRE hay grabación a los 120 s,
+// y posponer la pasada entera dejaba el segmento del día anterior en
+// `recording` para siempre, invisible en la UI (2026-09-11).
 
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -138,6 +142,68 @@ pub(crate) fn gate(i: &GateInputs) -> GateDecision {
 }
 
 // ────────────────────────────────────────────────────────────────────────────
+// Huérfanos — clasificación y orden de recuperación PUROS, tabulados en tests
+// ────────────────────────────────────────────────────────────────────────────
+
+/// ¿Es huérfana una fila `recording`? Invariante: una fila `recording`
+/// pertenece al PROCESO que la escribió (`process_id` = `process_session_id()`
+/// sellado en `upsert_recording`). Es huérfana si ese proceso no somos nosotros
+/// (murió con la grabación abierta: corte de luz, kill, crash) o si somos
+/// nosotros pero la fase ya es `Idle` (el stop falló antes de `mark_pending`,
+/// `recording_lifecycle.rs`; nadie la escribe ya). `row_pid == None` = fila de
+/// un build anterior a la columna: siempre ajena, porque dos procesos jamás
+/// comparten esta DB (single-instance + AppData por canal).
+///
+/// Por qué la fila VIVA nunca califica: se inserta DESPUÉS de
+/// `start_gate.commit()` (`recording_helpers.rs`), así que si aparece en el
+/// SELECT, la fase leída DESPUÉS del SELECT ya no es `Idle`; y `mark_pending`
+/// precede estrictamente a `drop(stop_gate)` en el stop, así que en `Idle` no
+/// existe ninguna fila `recording` legítima. En la rotación (finalize de hasta
+/// 300 s, fase `Stopping`) la fila del segmento que se cierra lleva NUESTRO
+/// pid → se salta. Sin comparar carpetas (la del segmento que se cierra ya no
+/// es la activa) y sin reloj (un ajuste NTP tras un corte de luz no puede
+/// volver "huérfana" a la fila viva). Un falso negativo solo espera al
+/// siguiente despertar; toda mutación conserva `AND status='recording'`.
+pub(crate) fn is_orphan(row_pid: Option<&str>, my_pid: &str, phase_idle: bool) -> bool {
+    row_pid != Some(my_pid) || phase_idle
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RecoveryAction {
+    /// Carpeta desaparecida → `failed` permanente (`folder_missing`).
+    FolderMissing,
+    /// Hay `.checkpoints/*.mp4`: re-fusionar SIEMPRE. Un `audio.mp4` presente
+    /// puede estar truncado (corte de luz a mitad del concat de `finalize()`,
+    /// que escribe in-place y solo borra `.checkpoints/` al terminar);
+    /// `concat_args` lleva `-y`, así que sobreescribe.
+    Merge,
+    /// Sin checkpoints y con `audio.mp4`: el finalize completó y la app murió
+    /// después → listo para transcribir.
+    AlreadyMerged,
+    /// Ni checkpoints ni audio → `failed` permanente (`recovery_none`).
+    Nothing,
+}
+
+/// Orden checkpoints-first. Antes se confiaba en "existe `audio.mp4` ⇒ ya
+/// fusionado", y un mp4 sin header quemaba los 5 intentos de transcripción.
+pub(crate) fn recovery_action(
+    folder_exists: bool,
+    has_checkpoints: bool,
+    has_audio: bool,
+) -> RecoveryAction {
+    if !folder_exists {
+        return RecoveryAction::FolderMissing;
+    }
+    if has_checkpoints {
+        return RecoveryAction::Merge;
+    }
+    if has_audio {
+        return RecoveryAction::AlreadyMerged;
+    }
+    RecoveryAction::Nothing
+}
+
+// ────────────────────────────────────────────────────────────────────────────
 // Tarea
 // ────────────────────────────────────────────────────────────────────────────
 
@@ -155,6 +221,13 @@ async fn run<R: Runtime>(app: AppHandle<R>) {
             _ = NOTIFY.notified() => {}
             _ = tokio::time::sleep(RETRY_TICK) => {}
         }
+        // Huérfanos primero (barato: un SELECT casi siempre vacío): así una
+        // pasada perdida al arranque (pool no listo, error de DB) se reintenta,
+        // y se reclaman filas del propio proceso cuyo stop falló. Misma task
+        // que `process_queue`: el single-flight se conserva.
+        if let Some(pool) = db_pool(&app) {
+            recover_orphans(&pool).await;
+        }
         process_queue(&app).await;
     }
 }
@@ -169,14 +242,10 @@ async fn current_user<R: Runtime>(app: &AppHandle<R>) -> Option<String> {
     state.current_user_id().await
 }
 
-/// Recuperación post-crash al arranque: `processing` abandonado → `pending`;
-/// filas `recording` huérfanas → fusionar checkpoints → `pending` con
-/// `trigger_kind='crash_recovery'`; carpeta desaparecida → `failed`.
-///
-/// Si hay una grabación ACTIVA se salta la pasada entera: la fila `recording`
-/// de esa grabación es legítima y en F2 no hay forma de distinguirla por
-/// carpeta (el disparador que registra la carpeta activa llega en F3). Las
-/// filas quedan para el siguiente arranque — nunca se pierde nada.
+/// Arranque: `processing` abandonado → `pending` (SOLO aquí: en régimen un
+/// `processing` es el job en vuelo de esta misma task), pasada de huérfanos
+/// (`recover_orphans`, que además se repite en cada despertar del loop) y,
+/// con backlog pendiente, drain.
 async fn startup_recovery<R: Runtime>(app: &AppHandle<R>) {
     let Some(pool) = db_pool(app) else {
         warn!("[batch-planner] AppState no disponible al arranque; sin recuperación");
@@ -189,20 +258,7 @@ async fn startup_recovery<R: Runtime>(app: &AppHandle<R>) {
         Err(e) => warn!("[batch-planner] reset_processing falló: {}", e),
     }
 
-    if recording_phase::current_phase() != RecordingPhase::Idle {
-        info!("[batch-planner] grabación activa al arranque: recuperación de huérfanos pospuesta");
-    } else {
-        let orphans = match BatchQueueRepository::recording_rows(&pool).await {
-            Ok(rows) => rows,
-            Err(e) => {
-                warn!("[batch-planner] no se pudieron listar filas 'recording': {}", e);
-                Vec::new()
-            }
-        };
-        for job in orphans {
-            recover_orphan(&pool, &job).await;
-        }
-    }
+    recover_orphans(&pool).await;
 
     // Backlog al arranque (pendientes diferidos de la sesión anterior): drenar.
     if let Some(user) = current_user(app).await {
@@ -217,49 +273,113 @@ async fn startup_recovery<R: Runtime>(app: &AppHandle<R>) {
     }
 }
 
+/// Pasada de huérfanos: `recording_rows` → fase (leída UNA vez, DESPUÉS del
+/// SELECT — ver `is_orphan`) → `recover_orphan` por fila huérfana. No exige
+/// sesión: el merge es agnóstico del usuario; el drenaje posterior sí la exige.
+async fn recover_orphans(pool: &sqlx::SqlitePool) {
+    let rows = match BatchQueueRepository::recording_rows(pool).await {
+        Ok(rows) => rows,
+        Err(e) => {
+            warn!("[batch-planner] no se pudieron listar filas 'recording': {}", e);
+            return;
+        }
+    };
+    if rows.is_empty() {
+        return;
+    }
+    let phase_idle = recording_phase::current_phase() == RecordingPhase::Idle;
+    let my_pid = crate::logging::telemetry::context::process_session_id();
+    for job in rows
+        .iter()
+        .filter(|j| is_orphan(j.process_id.as_deref(), my_pid, phase_idle))
+    {
+        info!(
+            "[batch-planner] fila {} huérfana ({}, pid {:?}, fase idle={}): recuperando {}",
+            job.id, job.trigger_kind, job.process_id, phase_idle, job.folder_path
+        );
+        recover_orphan(pool, job).await;
+    }
+}
+
 async fn recover_orphan(pool: &sqlx::SqlitePool, job: &crate::database::models::BatchQueueJob) {
     let folder = Path::new(&job.folder_path);
-    if !folder.exists() {
-        warn!("[batch-planner] carpeta desaparecida, job {} → failed: {}", job.id, job.folder_path);
-        let _ = BatchQueueRepository::fail_permanent(pool, job.id, "folder_missing").await;
-        return;
-    }
-    if folder.join("audio.mp4").exists() {
-        // El merge ya había corrido (crash post-finalize del audio): listo.
-        let _ = BatchQueueRepository::mark_crash_recovery(pool, job.id).await;
-        info!("[batch-planner] job {} recuperado (audio.mp4 ya fusionado)", job.id);
-        return;
-    }
-    // Fusionar los checkpoints que hayan quedado (reusa el comando de la
-    // recuperación clásica; sample rate legacy, el fn lo ignora).
-    match crate::audio::incremental_saver::recover_audio_from_checkpoints(
-        job.folder_path.clone(),
-        48_000,
-    )
-    .await
-    {
-        Ok(status) if status.status == "success" || status.status == "partial" => {
+    let folder_exists = folder.exists();
+    let has_checkpoints = if folder_exists {
+        // Mismo detector que la recuperación clásica del webview (filtra `.mp4`;
+        // cambiar el contenedor rompería AMBAS rutas, ver REGLAS_AUDIO_GRABACION).
+        match crate::audio::incremental_saver::has_audio_checkpoints(job.folder_path.clone()).await {
+            Ok(b) => b,
+            Err(e) => {
+                // `.checkpoints/` ilegible (¿disco desconectado?): transitorio,
+                // reintento acotado.
+                warn!("[batch-planner] job {} no se pudo inspeccionar .checkpoints/: {}", job.id, e);
+                let _ = BatchQueueRepository::fail_recovery(pool, job.id, &e, MAX_ATTEMPTS).await;
+                return;
+            }
+        }
+    } else {
+        false
+    };
+    let has_audio = folder_exists && folder.join("audio.mp4").exists();
+
+    match recovery_action(folder_exists, has_checkpoints, has_audio) {
+        RecoveryAction::FolderMissing => {
+            warn!("[batch-planner] carpeta desaparecida, job {} → failed: {}", job.id, job.folder_path);
+            let _ = BatchQueueRepository::fail_permanent(pool, job.id, "folder_missing").await;
+        }
+        RecoveryAction::AlreadyMerged => {
+            // El finalize completó (borró `.checkpoints/`) y la app murió después.
             let _ = BatchQueueRepository::mark_crash_recovery(pool, job.id).await;
-            info!(
-                "[batch-planner] job {} recuperado de checkpoints ({}, {} chunks)",
-                job.id, status.status, status.chunk_count
-            );
+            info!("[batch-planner] job {} recuperado (audio.mp4 ya fusionado, sin checkpoints)", job.id);
         }
-        Ok(status) => {
-            warn!(
-                "[batch-planner] job {} sin audio recuperable ({}): failed",
-                job.id, status.status
-            );
-            let _ = BatchQueueRepository::fail_permanent(
-                pool,
-                job.id,
-                &format!("recovery_{}", status.status),
+        RecoveryAction::Nothing => {
+            warn!("[batch-planner] job {} sin audio recuperable (ni checkpoints ni audio.mp4): failed", job.id);
+            let _ = BatchQueueRepository::fail_permanent(pool, job.id, "recovery_none").await;
+        }
+        RecoveryAction::Merge => {
+            // Fusionar los checkpoints (reusa el comando de la recuperación
+            // clásica; sample rate legacy, el fn lo ignora). `-y` sobreescribe
+            // un `audio.mp4` truncado.
+            match crate::audio::incremental_saver::recover_audio_from_checkpoints(
+                job.folder_path.clone(),
+                48_000,
             )
-            .await;
-        }
-        Err(e) => {
-            warn!("[batch-planner] recuperación del job {} falló: {}", job.id, e);
-            let _ = BatchQueueRepository::fail(pool, job.id, &e, MAX_ATTEMPTS).await;
+            .await
+            {
+                Ok(status) if status.status == "success" || status.status == "partial" => {
+                    let _ = BatchQueueRepository::mark_crash_recovery(pool, job.id).await;
+                    info!(
+                        "[batch-planner] job {} recuperado de checkpoints ({}, {} chunks)",
+                        job.id, status.status, status.chunk_count
+                    );
+                }
+                Ok(status) if status.status == "none" => {
+                    // Los checkpoints desaparecieron entre el detector y el merge.
+                    warn!("[batch-planner] job {} sin checkpoints al fusionar: failed", job.id);
+                    let _ = BatchQueueRepository::fail_permanent(pool, job.id, "recovery_none").await;
+                }
+                Ok(status) => {
+                    // Concat fallido: puede ser transitorio (ffmpeg, disco) o un
+                    // checkpoint corrupto; reintento acotado y luego `failed`
+                    // visible con Reintentar. NUNCA `fail`: su guarda es
+                    // `processing` y dejaba la fila `recording` e invisible.
+                    warn!(
+                        "[batch-planner] job {} merge de checkpoints falló ({}): reintento acotado",
+                        job.id, status.status
+                    );
+                    let _ = BatchQueueRepository::fail_recovery(
+                        pool,
+                        job.id,
+                        &format!("recovery_{}", status.status),
+                        MAX_ATTEMPTS,
+                    )
+                    .await;
+                }
+                Err(e) => {
+                    warn!("[batch-planner] recuperación del job {} falló: {}", job.id, e);
+                    let _ = BatchQueueRepository::fail_recovery(pool, job.id, &e, MAX_ATTEMPTS).await;
+                }
+            }
         }
     }
 }
@@ -312,6 +432,9 @@ async fn process_queue<R: Runtime>(app: &AppHandle<R>) {
         if !BatchQueueRepository::claim(&pool, job.id).await.unwrap_or(false) {
             continue;
         }
+        // Telemetría: la fila venía de una recuperación post-crash. Fiable en
+        // el intento 1 (un fallo posterior pisa `last_error`).
+        let recovered = job.last_error.as_deref() == Some("crash_recovery");
         emit_status(app, &job.folder_path, None, "processing", Some(&job.trigger_kind));
 
         info!(
@@ -333,18 +456,18 @@ async fn process_queue<R: Runtime>(app: &AppHandle<R>) {
                     SegmentOutcome::Saved(meeting_id) => {
                         let _ = BatchQueueRepository::complete(&pool, job.id, "done").await;
                         emit_status(app, &job.folder_path, Some(&meeting_id), "ready", Some(&job.trigger_kind));
-                        emit_batch_job(app, &job.trigger_kind, TelemetryStatus::Ok, job.attempts + 1, Some(&metrics), "saved").await;
+                        emit_batch_job(app, &job.trigger_kind, recovered, TelemetryStatus::Ok, job.attempts + 1, Some(&metrics), "saved").await;
                     }
                     SegmentOutcome::Discarded => {
                         let _ = BatchQueueRepository::complete(&pool, job.id, "discarded").await;
                         emit_status(app, &job.folder_path, None, "discarded", Some(&job.trigger_kind));
-                        emit_batch_job(app, &job.trigger_kind, TelemetryStatus::Ok, job.attempts + 1, Some(&metrics), "discarded").await;
+                        emit_batch_job(app, &job.trigger_kind, recovered, TelemetryStatus::Ok, job.attempts + 1, Some(&metrics), "discarded").await;
                     }
                     SegmentOutcome::Failed => {
                         let _ = BatchQueueRepository::fail(&pool, job.id, "finalize_failed", MAX_ATTEMPTS).await;
                         let terminal = job.attempts + 1 >= MAX_ATTEMPTS;
                         emit_status(app, &job.folder_path, None, if terminal { "failed" } else { "pending" }, Some(&job.trigger_kind));
-                        emit_batch_job(app, &job.trigger_kind, TelemetryStatus::Error, job.attempts + 1, None, "finalize_failed").await;
+                        emit_batch_job(app, &job.trigger_kind, recovered, TelemetryStatus::Error, job.attempts + 1, None, "finalize_failed").await;
                     }
                 }
             }
@@ -353,7 +476,7 @@ async fn process_queue<R: Runtime>(app: &AppHandle<R>) {
                 let _ = BatchQueueRepository::fail(&pool, job.id, &e, MAX_ATTEMPTS).await;
                 let terminal = job.attempts + 1 >= MAX_ATTEMPTS;
                 emit_status(app, &job.folder_path, None, if terminal { "failed" } else { "pending" }, Some(&job.trigger_kind));
-                emit_batch_job(app, &job.trigger_kind, TelemetryStatus::Error, job.attempts + 1, None, "transcribe_failed").await;
+                emit_batch_job(app, &job.trigger_kind, recovered, TelemetryStatus::Error, job.attempts + 1, None, "transcribe_failed").await;
             }
         }
     }
@@ -442,6 +565,7 @@ fn emit_status<R: Runtime>(
 async fn emit_batch_job<R: Runtime>(
     app: &AppHandle<R>,
     trigger: &str,
+    recovered: bool,
     status: TelemetryStatus,
     attempts: i64,
     metrics: Option<&super::transcriber::BatchMetrics>,
@@ -450,6 +574,7 @@ async fn emit_batch_job<R: Runtime>(
     let payload = match metrics {
         Some(m) => serde_json::json!({
             "trigger": trigger,
+            "recovered": recovered,
             "attempts": attempts,
             "outcome": outcome,
             "audio_secs": m.audio_secs,
@@ -459,7 +584,12 @@ async fn emit_batch_job<R: Runtime>(
             "words": m.words,
             "segments": m.segments,
         }),
-        None => serde_json::json!({ "trigger": trigger, "attempts": attempts, "outcome": outcome }),
+        None => serde_json::json!({
+            "trigger": trigger,
+            "recovered": recovered,
+            "attempts": attempts,
+            "outcome": outcome,
+        }),
     };
     crate::logging::telemetry::emit::emit_event(
         app,
@@ -616,5 +746,38 @@ mod tests {
         assert_eq!(required_headroom_mb(false), BATCH_HEADROOM_MB);
         assert_eq!(required_headroom_mb(true), BATCH_HEADROOM_WARM_MB);
         assert!(BATCH_HEADROOM_MB > BATCH_HEADROOM_WARM_MB);
+    }
+
+    #[test]
+    fn is_orphan_tabla() {
+        let me = "proc-1-aaaaaaaa";
+        let otro = "proc-0-deadbeef";
+        let casos: [(&str, Option<&str>, bool, bool); 6] = [
+            ("propia con grabación activa: VIVA (también en Stopping/rotación)", Some(me), false, false),
+            ("propia con fase Idle: el stop falló antes de mark_pending", Some(me), true, true),
+            ("de otro proceso mientras grabamos: huérfana (el otro murió)", Some(otro), false, true),
+            ("de otro proceso en Idle: huérfana", Some(otro), true, true),
+            ("sin pid (build anterior) mientras grabamos: huérfana", None, false, true),
+            ("sin pid en Idle: huérfana", None, true, true),
+        ];
+        for (nombre, pid, idle, esperado) in casos {
+            assert_eq!(is_orphan(pid, me, idle), esperado, "{}", nombre);
+        }
+    }
+
+    #[test]
+    fn recovery_action_tabla() {
+        use RecoveryAction::*;
+        let casos: [(&str, bool, bool, bool, RecoveryAction); 6] = [
+            ("carpeta desaparecida", false, false, false, FolderMissing),
+            ("carpeta desaparecida gana a cualquier flag", false, true, true, FolderMissing),
+            ("checkpoints sin audio.mp4: merge", true, true, false, Merge),
+            ("checkpoints Y audio.mp4: merge (el mp4 puede estar truncado)", true, true, true, Merge),
+            ("solo audio.mp4: ya fusionado", true, false, true, AlreadyMerged),
+            ("ni checkpoints ni audio.mp4", true, false, false, Nothing),
+        ];
+        for (nombre, folder, ckpt, audio, esperado) in casos {
+            assert_eq!(recovery_action(folder, ckpt, audio), esperado, "{}", nombre);
+        }
     }
 }

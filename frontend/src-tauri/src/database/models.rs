@@ -234,6 +234,11 @@ pub struct BatchQueueJob {
     pub attempts: i64,
     pub last_error: Option<String>,
     pub user_id: Option<String>,
+    /// `process_session_id()` del proceso que grababa (migración aditiva
+    /// `20260911100000`). El planner lo usa para distinguir la fila VIVA de
+    /// las huérfanas: una fila `recording` de OTRO proceso está huérfana por
+    /// definición. `None` = fila de un build anterior a la columna (huérfana).
+    pub process_id: Option<String>,
     pub created_at: String,
     pub updated_at: String,
     pub completed_at: Option<String>,
