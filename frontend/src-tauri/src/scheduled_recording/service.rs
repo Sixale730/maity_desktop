@@ -1363,7 +1363,7 @@ async fn emit_segment_discarded<R: Runtime>(
             "threshold": MIN_SEGMENT_WORDS,
             "trigger": trigger,
         }),
-        Some("skipped"),
+        Some(crate::logging::telemetry::status::TelemetryStatus::Skipped),
         None,
         None,
     )

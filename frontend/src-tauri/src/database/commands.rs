@@ -303,13 +303,24 @@ pub async fn log_recording_event<R: Runtime>(
     app_version: Option<String>,
     device_info: Option<String>,
 ) -> Result<i64, String> {
+    // El status llega como String libre desde JS. Fuera del dominio del CHECK
+    // de platform_logs se degrada a NULL (la fila SÍ llega) y se avisa: un
+    // literal inválido se perdía mudo en la nube (ver `telemetry::status`).
+    let (status, rejected) =
+        crate::logging::telemetry::status::sanitize_status(status.as_deref());
+    if rejected {
+        warn!(
+            "[telemetry] log_recording_event {}: status fuera del dominio, degradado a NULL",
+            event_type
+        );
+    }
     let pool = state.db_manager.pool();
     RecordingLogRepository::log_event(
         pool,
         &session_id,
         &event_type,
         event_data.as_deref(),
-        status.as_deref(),
+        status,
         error.as_deref(),
         meeting_id.as_deref(),
         app_version.as_deref(),

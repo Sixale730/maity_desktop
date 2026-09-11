@@ -211,7 +211,7 @@ pub async fn arm<R: Runtime>(app: &AppHandle<R>, payload: IncidentPayload) -> bo
             "message": payload.message,
             "detail": payload.detail,
         }),
-        Some("warning"),
+        Some(super::telemetry::status::TelemetryStatus::Warning),
         None,
         None,
     )
@@ -437,7 +437,7 @@ async fn emit_upload_failed<R: Runtime>(
             "code": err.code,
             "message": err.message.chars().take(200).collect::<String>(),
         }),
-        Some("warning"),
+        Some(super::telemetry::status::TelemetryStatus::Warning),
         None,
         None,
     )
@@ -528,7 +528,7 @@ pub async fn upload_incident_bundle<R: Runtime>(
             "object_path": path,
             "bytes": bytes,
         }),
-        Some("ok"),
+        Some(super::telemetry::status::TelemetryStatus::Ok),
         None,
         None,
     )

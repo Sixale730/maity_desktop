@@ -424,7 +424,8 @@ pub fn start_transcription_task<R: Runtime>(
                                         let model = engine_clone.get_current_model().await.unwrap_or_default();
                                         super::engine::emit_engine_lifecycle(
                                             &app_clone, "unloaded", "recycle_failed",
-                                            "parakeet", &model, None, "error",
+                                            "parakeet", &model, None,
+                                            crate::logging::telemetry::status::TelemetryStatus::Error,
                                         ).await;
                                     }
                                     let fails = CONSEC_ENGINE_FAILURES.fetch_add(1, Ordering::SeqCst) + 1;

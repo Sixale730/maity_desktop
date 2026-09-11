@@ -328,7 +328,7 @@ pub(crate) async fn emit_engine_lifecycle<R: Runtime>(
     provider: &str,
     model: &str,
     elapsed_ms: Option<u64>,
-    status: &str,
+    status: crate::logging::telemetry::status::TelemetryStatus,
 ) {
     let tier = crate::audio::hardware_detector::HardwareProfile::detect()
         .performance_tier
@@ -447,7 +447,7 @@ pub async fn ensure_stt_warm<R: Runtime>(
             provider,
             model,
             Some(elapsed.as_millis() as u64),
-            "ok",
+            crate::logging::telemetry::status::TelemetryStatus::Ok,
         )
         .await;
     }
@@ -489,7 +489,7 @@ pub async fn ensure_stt_warm_parakeet<R: Runtime>(
             provider,
             model,
             Some(elapsed.as_millis() as u64),
-            "ok",
+            crate::logging::telemetry::status::TelemetryStatus::Ok,
         )
         .await;
     }
@@ -526,7 +526,16 @@ pub async fn unload_stt<R: Runtime>(app: &AppHandle<R>, reason: &'static str) ->
     crate::logging::mem_sampler::snapshot_now("stt-unload");
     for (provider, model) in &unloaded {
         info!("📉 Motor STT descargado ({}): {}={}", reason, provider, model);
-        emit_engine_lifecycle(app, "unloaded", reason, provider, model, None, "ok").await;
+        emit_engine_lifecycle(
+            app,
+            "unloaded",
+            reason,
+            provider,
+            model,
+            None,
+            crate::logging::telemetry::status::TelemetryStatus::Ok,
+        )
+        .await;
     }
     UnloadOutcome::Unloaded(unloaded)
 }
@@ -680,7 +689,7 @@ pub async fn validate_transcription_model_ready<R: Runtime>(app: &AppHandle<R>) 
                     provider,
                     model,
                     Some(elapsed.as_millis() as u64),
-                    "ok",
+                    crate::logging::telemetry::status::TelemetryStatus::Ok,
                 )
                 .await;
             }

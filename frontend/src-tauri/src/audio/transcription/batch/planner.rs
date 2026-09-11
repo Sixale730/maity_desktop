@@ -28,6 +28,7 @@ use tokio::sync::Notify;
 
 use crate::audio::recording_phase::{self, RecordingPhase};
 use crate::database::repositories::batch_queue::BatchQueueRepository;
+use crate::logging::telemetry::status::TelemetryStatus;
 use crate::logging::mem_sampler::{self, PressureLevel};
 
 use super::transcriber::transcribe_folder;
@@ -332,18 +333,18 @@ async fn process_queue<R: Runtime>(app: &AppHandle<R>) {
                     SegmentOutcome::Saved(meeting_id) => {
                         let _ = BatchQueueRepository::complete(&pool, job.id, "done").await;
                         emit_status(app, &job.folder_path, Some(&meeting_id), "ready", Some(&job.trigger_kind));
-                        emit_batch_job(app, &job.trigger_kind, "ok", job.attempts + 1, Some(&metrics), "saved").await;
+                        emit_batch_job(app, &job.trigger_kind, TelemetryStatus::Ok, job.attempts + 1, Some(&metrics), "saved").await;
                     }
                     SegmentOutcome::Discarded => {
                         let _ = BatchQueueRepository::complete(&pool, job.id, "discarded").await;
                         emit_status(app, &job.folder_path, None, "discarded", Some(&job.trigger_kind));
-                        emit_batch_job(app, &job.trigger_kind, "ok", job.attempts + 1, Some(&metrics), "discarded").await;
+                        emit_batch_job(app, &job.trigger_kind, TelemetryStatus::Ok, job.attempts + 1, Some(&metrics), "discarded").await;
                     }
                     SegmentOutcome::Failed => {
                         let _ = BatchQueueRepository::fail(&pool, job.id, "finalize_failed", MAX_ATTEMPTS).await;
                         let terminal = job.attempts + 1 >= MAX_ATTEMPTS;
                         emit_status(app, &job.folder_path, None, if terminal { "failed" } else { "pending" }, Some(&job.trigger_kind));
-                        emit_batch_job(app, &job.trigger_kind, "error", job.attempts + 1, None, "finalize_failed").await;
+                        emit_batch_job(app, &job.trigger_kind, TelemetryStatus::Error, job.attempts + 1, None, "finalize_failed").await;
                     }
                 }
             }
@@ -352,7 +353,7 @@ async fn process_queue<R: Runtime>(app: &AppHandle<R>) {
                 let _ = BatchQueueRepository::fail(&pool, job.id, &e, MAX_ATTEMPTS).await;
                 let terminal = job.attempts + 1 >= MAX_ATTEMPTS;
                 emit_status(app, &job.folder_path, None, if terminal { "failed" } else { "pending" }, Some(&job.trigger_kind));
-                emit_batch_job(app, &job.trigger_kind, "error", job.attempts + 1, None, "transcribe_failed").await;
+                emit_batch_job(app, &job.trigger_kind, TelemetryStatus::Error, job.attempts + 1, None, "transcribe_failed").await;
             }
         }
     }
@@ -441,7 +442,7 @@ fn emit_status<R: Runtime>(
 async fn emit_batch_job<R: Runtime>(
     app: &AppHandle<R>,
     trigger: &str,
-    status: &str,
+    status: TelemetryStatus,
     attempts: i64,
     metrics: Option<&super::transcriber::BatchMetrics>,
     outcome: &str,
@@ -499,7 +500,7 @@ async fn emit_deferred_latched<R: Runtime>(
         crate::logging::telemetry::context::process_session_id(),
         crate::logging::telemetry::catalog::STT_BATCH_DEFERRED,
         serde_json::json!({ "reason": reason, "level": level.as_str() }),
-        Some("ok"),
+        Some(TelemetryStatus::Ok),
         None,
         None,
     )

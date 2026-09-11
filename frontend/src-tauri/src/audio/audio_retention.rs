@@ -330,7 +330,11 @@ async fn emit_retention_swept<R: Runtime>(
             "retention_days": retention_days,
             "failed": failed,
         }),
-        Some(if failed > 0 { "partial" } else { "ok" }),
+        Some(if failed > 0 {
+            crate::logging::telemetry::status::TelemetryStatus::Partial
+        } else {
+            crate::logging::telemetry::status::TelemetryStatus::Ok
+        }),
         None,
         None,
     )

@@ -16,6 +16,14 @@ import { supabase } from '@/lib/supabase'
 import { buildCtx } from '@/lib/telemetryContext'
 import type { TelemetryEventName } from '@/lib/telemetry-events'
 
+/**
+ * Valores que el webview escribe en la columna `status`. Subconjunto del CHECK
+ * de `maity.platform_logs`: el dominio completo (añade `ok`/`partial`/`warning`,
+ * solo emisores Rust) vive en `docs/platform-logs-status.sql` y en
+ * `TelemetryStatus` (Rust), cuyo test verifica que esta unión sea subconjunto.
+ * OJO: el RPC traga la violación del CHECK y responde 200 — un literal fuera
+ * del dominio no falla, desaparece.
+ */
 export type PlatformLogStatus = 'success' | 'error' | 'timeout' | 'skipped'
 
 /**

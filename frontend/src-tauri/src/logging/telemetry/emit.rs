@@ -17,6 +17,8 @@ use tokio::sync::Notify;
 
 use crate::database::repositories::recording_log::RecordingLogRepository;
 
+use super::status::TelemetryStatus;
+
 static DRAIN_NOTIFY: OnceLock<Arc<Notify>> = OnceLock::new();
 
 /// Señal compartida emisores → drenadora. La drenadora la espera junto con su
@@ -31,6 +33,9 @@ pub fn drain_notify() -> Arc<Notify> {
 /// `session_id` es el valor de la COLUMNA (para eventos de grabación, el
 /// `session-…` de esa grabación — misma serie histórica que llenaba el
 /// frontend); la identidad de proceso viaja dentro de `ctx.session_id`.
+/// `status` es el enum cerrado `TelemetryStatus`, no un `&str`: la columna
+/// tiene un CHECK y el RPC traga la violación respondiendo 200 — con un
+/// literal libre la fila se marcaba sincronizada y se perdía (sep-2026).
 /// Nunca propaga error: telemetría jamás rompe al caller.
 #[allow(clippy::too_many_arguments)]
 pub async fn emit_event<R: Runtime>(
@@ -38,12 +43,22 @@ pub async fn emit_event<R: Runtime>(
     session_id: &str,
     event_type: &str,
     payload: serde_json::Value,
-    status: Option<&str>,
+    status: Option<TelemetryStatus>,
     error: Option<&str>,
     meeting_id: Option<&str>,
 ) {
     let ctx = super::context::ctx_value(app);
-    write_to_outbox(app, session_id, event_type, payload, ctx, status, error, meeting_id).await;
+    write_to_outbox(
+        app,
+        session_id,
+        event_type,
+        payload,
+        ctx,
+        status.map(TelemetryStatus::as_str),
+        error,
+        meeting_id,
+    )
+    .await;
 }
 
 /// Evento que NACIÓ en un webview (ventanas aux) y viaja por el outbox nativo.

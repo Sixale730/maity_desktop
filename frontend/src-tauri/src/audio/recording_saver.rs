@@ -476,7 +476,7 @@ impl RecordingSaver {
                                 "merged_bytes": report.merged_bytes,
                                 "merged_duration_est_secs": report.merged_duration_est_secs,
                             }),
-                            Some("partial"),
+                            Some(crate::logging::telemetry::status::TelemetryStatus::Partial),
                             None,
                             None,
                         )

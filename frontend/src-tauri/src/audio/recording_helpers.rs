@@ -621,7 +621,7 @@ pub async fn initialize_recording<R: Runtime>(
                 &recording_session_id,
                 crate::logging::telemetry::catalog::RECORDING_STARTED,
                 payload,
-                Some("success"),
+                Some(crate::logging::telemetry::status::TelemetryStatus::Success),
                 None,
                 None,
             )

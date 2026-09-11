@@ -101,7 +101,7 @@ pub async fn import_pending<R: Runtime>(app: &AppHandle<R>) {
             super::context::process_session_id(),
             super::catalog::APP_ERROR,
             payload,
-            Some("error"),
+            Some(super::status::TelemetryStatus::Error),
             Some(&message),
             None,
         )

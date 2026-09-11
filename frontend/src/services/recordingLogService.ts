@@ -12,6 +12,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { buildCtx, getTelemetryContext } from '@/lib/telemetryContext';
 import type { TelemetryEventName } from '@/lib/telemetry-events';
+import type { PlatformLogStatus } from '@/lib/platformLogger';
 
 class RecordingLogService {
   private sessionId: string | null = null;
@@ -44,7 +45,7 @@ class RecordingLogService {
   async log(
     eventType: TelemetryEventName,
     eventData?: Record<string, unknown> | null,
-    status?: string,
+    status?: PlatformLogStatus,
     error?: string,
   ): Promise<void> {
     try {

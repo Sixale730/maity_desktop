@@ -38,7 +38,9 @@ diagnosticar remotamente. Los logs completos siguen siendo bajo demanda
 1. **JS directo (solo ventana `main`):** `platformLogger` (`frontend/src/lib/platformLogger.ts`) →
    RPC `public.insert_platform_log` (SECURITY DEFINER; resuelve `user_id` desde
    `maity.users WHERE auth_id = auth.uid()`; traga excepciones — nunca rompe la
-   app) → tabla `maity.platform_logs`. Lo usan `app.*`, `nav.*`, `health.*`,
+   app, **y tampoco avisa**: si el INSERT viola un CHECK responde 200 igual y
+   `drain.rs` marca la fila como sincronizada; ver gotcha del `status` abajo)
+   → tabla `maity.platform_logs`. Lo usan `app.*`, `nav.*`, `health.*`,
    `device.profile`, `coach.session_summary` y el passthrough de `Analytics.track`.
 2. **Outbox nativo (store-and-forward):** `telemetry::emit` (Rust),
    `recordingLogService.log` (JS, vía comando) y, desde sep-2026 (#23 de la
@@ -66,6 +68,16 @@ Columnas útiles: `user_id`, `session_id`, `platform` (`'desktop'` | web),
 `event_type`, `event_data` (jsonb, con el envelope `ctx` de abajo), `status`,
 `error`, `app_version`, `device_info` (userAgent), `created_at` (hora de
 inserción — el momento real del evento es `ctx.occurred_at`).
+
+**`status` es un dominio cerrado** (CHECK `platform_logs_status_check`):
+`success | error | timeout | skipped` (los del `platformLogger` JS y del ciclo
+de vida de grabación) + `ok | partial | warning` (emisores Rust de
+mantenimiento). El contrato es `docs/platform-logs-status.sql`; su espejo Rust
+es `logging/telemetry/status.rs::TelemetryStatus` — `emit_event` solo acepta el
+enum, y el test `todo_status_de_rust_esta_en_el_check_del_contrato` lee el SQL
+en las dos direcciones; el TS (`PlatformLogStatus`) es subconjunto (segundo
+test). `log_recording_event` (JS → outbox) degrada a NULL un valor fuera del
+dominio y lo avisa con `warn!`. En SQL, "éxito" es `status in ('success','ok')`.
 
 ### Contrato `ctx` (envelope obligatorio en todo evento, ago-2026)
 
@@ -100,6 +112,17 @@ inserción — el momento real del evento es `ctx.occurred_at`).
 > con un perfil sin sesión: el request sale, el server lo rechaza — verificar
 > con intercepción de red, no con la tabla.
 
+> **Gotcha del CHECK de `status` (2026-09-10/11)**: el RPC traga la violación
+> del CHECK y responde 200; `drain.rs` marca la fila como sincronizada y el
+> evento desaparece sin rastro. Así se perdieron TODOS los `stt.*`, `audio.*` e
+> `incident.*` desde que nacieron (mandaban `ok`/`partial`/`warning` contra un
+> CHECK de cuatro valores): 0 filas all-time hasta ensanchar el CHECK
+> (`docs/platform-logs-status.sql`). Un 2xx del RPC NO prueba que la fila
+> exista; la query de control del runbook (`select event_type, status, count(*)
+> … group by 1,2`) sí. Las filas quedaron en el SQLite local con
+> `synced_to_cloud=1`; la migración `20260911000000_redrain_out_of_domain_status`
+> las re-drena una vez que el CHECK acepta sus valores.
+
 ### Eventos que emite el desktop (inventario = catálogo; lo verifica el lint)
 
 Los nombres marcados **legacy** conservan el snake_case del emisor JS original
@@ -118,7 +141,7 @@ drena `drain.rs`; en el payload: `trigger` (`ui|tray|scheduler|scheduler_rotatio
 | `recording_started` (legacy) | POST-commit del `StartGate` en `initialize_recording` | trigger, dispositivos reales, `recording_session_id` |
 | `recording_start_failed` (legacy) | `Err` de cualquiera de los dos start paths (incluido el `StartGate` ocupado) | trigger, `error`, `code`, `suppressed` |
 | `recording_stopped` (legacy) | `stop_recording_reporting()` | duración, trigger, `recording_session_id` |
-| `recording.segment_discarded` | `finalize_segment_native` descarta un segmento de jornada por contenido insuficiente | `words_total`, `threshold`, `trigger` (`rotation`/`close`) |
+| `recording.segment_discarded` | `finalize_segment_native` descarta un segmento de jornada por contenido insuficiente | `words_total`, `threshold`, `trigger` (`rotation`/`close`); `status` = `skipped` |
 
 > **`recording.segment_discarded` (ago-2026, #4 del piloto Dingler).** La jornada headless
 > guardaba una hora de silencio como conversación: 80 de 144 conversaciones del piloto no eran
@@ -154,7 +177,7 @@ tareas de proceso, así que su payload **no** lleva `trigger` ni
 | `audio.checkpoint_integrity` | El cierre de una grabación (`recording_saver.rs::stop_and_save` → `IncrementalAudioSaver::finalize`) produjo un `audio.mp4` con huecos o anómalo. Sólo se emite si `FinalizeReport::is_anomalous()`: checkpoint perdido, encode con error, o merge <100 KB con ≥4 checkpoints (la firma de las carpetas de 8 KB/h del piloto). Un cierre sano NO deja fila | `checkpoint_count`, `missing`, `encode_errors`, `merged_bytes`, `merged_duration_est_secs`; `status` = `partial` |
 | `stt.engine_lifecycle` | Carga o descarga **real** de un motor STT local (`engine.rs::ensure_stt_warm` / `unload_stt`, y el reciclado de `parakeet_engine.rs`) | `action` = `loaded` \| `unloaded`; `reason` = `login` \| `registration` \| `prewarm` \| `recording_start` \| `download_complete` \| `logout` \| `idle` \| `recycle_failed` \| `batch` \| `batch_done`; `provider`, `model`, `elapsed_ms` (sólo en `loaded`), `tier`; `status` = `ok` \| `error` |
 | `stt.batch_job` | Un job de transcripción por lote terminó (`batch/planner.rs::process_queue`; una fila por intento terminal, éxito o fallo) | `trigger` = `manual` \| `rotation` \| `auto_close` (el ORIGEN del segmento — se conserva en crash recovery porque decide la política de descarte); `outcome` = `saved` \| `discarded` \| `finalize_failed` \| `transcribe_failed`; `attempts`; con éxito además `audio_secs`, `voiced_secs`, `wall_ms`, `rtf`, `words`, `segments`; `status` = `ok` \| `error` |
-| `stt.batch_deferred` | El gate híbrido difirió un job (`batch/planner.rs::gate`); **latch por episodio**: la misma razón consecutiva NO re-emite (un episodio de presión de horas sería una fila cada 5 min) | `reason` = `pressure` \| `headroom` \| `cpu` \| `streaming_active`; `level` = `normal` \| `elevated` \| `critical` |
+| `stt.batch_deferred` | El gate híbrido difirió un job (`batch/planner.rs::gate`); **latch por episodio**: la misma razón consecutiva NO re-emite (un episodio de presión de horas sería una fila cada 5 min) | `reason` = `pressure` \| `headroom` \| `cpu` \| `streaming_active`; `level` = `normal` \| `elevated` \| `critical`; `status` = `ok` |
 
 > **`stt.engine_lifecycle` (sep-2026, #02).** Parakeet se precargaba en el
 > `setup()` sin sesión y nunca se descargaba: 600 MB residentes desde el login
@@ -446,10 +469,13 @@ pathname, dedup_key, seq, session_uptime_s}` + columna `error` = message.
     `incident.bundle_uploaded` (`{kind, object_path, bytes}`) e
     `incident.upload_failed` (`{kind, status, code, message}`; `status: 0` +
     `code: "network"` cuando no hubo respuesta). Los tres vía el outbox
-    (`emit_event` → `drain.rs`, single-writer). Tasa de aceptación =
+    (`emit_event` → `drain.rs`, single-writer). Columna `status`: `warning` en
+    `detected` y `upload_failed`, `ok` en `bundle_uploaded`. Tasa de aceptación =
     `detected` sin `bundle_uploaded` NI `upload_failed`; antes del tercero
     (2026-09-10) "declinó" y "falló" se veían igual y el primer bundle real
-    falló sin que la nube lo supiera.
+    falló sin que la nube lo supiera. **Esa tasa estuvo estructuralmente vacía
+    hasta el 2026-09-11**: los tres eventos violaban el CHECK de `status` y el
+    RPC los tragaba (ver gotcha del `status`).
   - Identidad: la carpeta es `auth.uid()` (claim `sub` del JWT que decodifica
     Rust), NO `maity.users.id` — es lo que compara la policy RLS.
   - **`Content-Type` SIN parámetros** (`incident::BUNDLE_CONTENT_TYPE` =
@@ -572,6 +598,11 @@ group by 1, 2 order by sesiones desc limit 20;
   payload sin una pregunta concreta que responder.
 - **`Analytics.track` fuera del catálogo** (ver inventario): entra por la regla
   de 3 entradas el día que se quiera analizar.
+
+Resueltos en el ciclo sep-2026 (v0.2.60): dominio cerrado de `status`
+(`TelemetryStatus` + contrato `docs/platform-logs-status.sql` + re-drenado de
+las filas que el CHECK rechazó en silencio — `stt.*`, `audio.*` e `incident.*`
+llevaban 0 filas all-time).
 
 Resueltos en el ciclo ago-2026 (v0.2.57): panics a la nube (`rust-panic`,
 arriba); ciclo de vida de grabación desde Rust con `trigger` y dispositivo real

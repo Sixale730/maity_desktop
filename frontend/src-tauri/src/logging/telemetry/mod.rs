@@ -9,6 +9,10 @@
 //! - `emit`: escritura al outbox durable (`recording_logs`) con el envelope
 //!   `ctx` inyectado. Cero red en el camino caliente; la red es asunto de la
 //!   drenadora (`drain`), que es la ÚNICA que postea el outbox a Supabase.
+//! - `status`: dominio cerrado de la columna `status` (`TelemetryStatus`),
+//!   espejo del CHECK de `docs/platform-logs-status.sql`. El RPC traga la
+//!   violación del CHECK y responde 200, así que un literal libre se perdía
+//!   en silencio (sep-2026: `stt.*`, `audio.*`, `incident.*` con 0 filas).
 //!
 //! Regla de oro (aprendida del puente `rust_error_bridge`): la telemetría
 //! nativa NO emite al webview para que otro la suba — WebView2 suspende el JS
@@ -20,3 +24,4 @@ pub mod drain;
 pub mod emit;
 pub mod panics;
 pub mod recording_session;
+pub mod status;

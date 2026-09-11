@@ -220,7 +220,7 @@ async fn emit_start_failed<R: Runtime>(app: &AppHandle<R>, trigger: Option<&str>
         &crate::logging::telemetry::recording_session::new_id(),
         crate::logging::telemetry::catalog::RECORDING_START_FAILED,
         serde_json::json!({ "trigger": trigger, "code": code, "suppressed": suppressed }),
-        Some("error"),
+        Some(crate::logging::telemetry::status::TelemetryStatus::Error),
         Some(error),
         None,
     )
@@ -525,7 +525,7 @@ pub async fn stop_recording_reporting<R: Runtime>(
                 &recording_session_id,
                 crate::logging::telemetry::catalog::RECORDING_STOPPED,
                 payload,
-                Some("success"),
+                Some(crate::logging::telemetry::status::TelemetryStatus::Success),
                 None,
                 None,
             )
