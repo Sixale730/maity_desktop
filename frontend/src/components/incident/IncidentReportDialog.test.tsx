@@ -106,7 +106,10 @@ describe('IncidentReportDialog', () => {
     });
     fireEvent.click(screen.getByTestId('incident-send'));
     await waitFor(() => expect(toastError).toHaveBeenCalled());
-    expect(String(toastError.mock.calls[0][1]?.description)).toMatch(/no está disponible/);
+    const description = String(toastError.mock.calls[0][1]?.description);
+    expect(description).toMatch(/no está disponible/);
+    // El cooldown ya se consumió al armar: la vía de reintento es el manual.
+    expect(description).toMatch(/Ajustes → Diagnóstico y Soporte/);
     await waitFor(() => expect(screen.queryByTestId('incident-report-dialog')).not.toBeInTheDocument());
     expect(invokeMock.mock.calls.filter((c) => c[0] === 'upload_incident_bundle')).toHaveLength(1);
     cleanup();

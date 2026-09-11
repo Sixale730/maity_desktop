@@ -177,7 +177,12 @@ export function IncidentReportDialog() {
       toast.success('Diagnóstico enviado. Gracias.', { description: path })
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
-      toast.error('No se pudo enviar el diagnóstico', { description: message })
+      // El prompt automático consumió su cooldown de 7 días al ARMARSE (no al
+      // enviar): tras un fallo la única vía de reintento es el botón manual,
+      // y sin este hint el usuario no lo sabe.
+      toast.error('No se pudo enviar el diagnóstico', {
+        description: `${message}. Puedes reintentar desde Ajustes → Diagnóstico y Soporte.`,
+      })
     } finally {
       setSending(false)
       await close()

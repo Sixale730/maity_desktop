@@ -442,12 +442,26 @@ pathname, dedup_key, seq, session_uptime_s}` + columna `error` = message.
     `take_pending_incident` — WebView2 suspende el JS con la ventana oculta
     (tray/jornada) y el push se pierde; el diálogo hace pull al montar y en
     `visibilitychange`.
-  - Eventos: `incident.detected` (`{kind, message, detail}`, al armar — sirve
-    para medir la tasa de aceptación por ausencia del segundo) e
-    `incident.bundle_uploaded` (`{kind, object_path, bytes}`). Ambos vía el
-    outbox (`emit_event` → `drain.rs`, single-writer).
+  - Eventos: `incident.detected` (`{kind, message, detail}`, al armar),
+    `incident.bundle_uploaded` (`{kind, object_path, bytes}`) e
+    `incident.upload_failed` (`{kind, status, code, message}`; `status: 0` +
+    `code: "network"` cuando no hubo respuesta). Los tres vía el outbox
+    (`emit_event` → `drain.rs`, single-writer). Tasa de aceptación =
+    `detected` sin `bundle_uploaded` NI `upload_failed`; antes del tercero
+    (2026-09-10) "declinó" y "falló" se veían igual y el primer bundle real
+    falló sin que la nube lo supiera.
   - Identidad: la carpeta es `auth.uid()` (claim `sub` del JWT que decodifica
     Rust), NO `maity.users.id` — es lo que compara la policy RLS.
+  - **`Content-Type` SIN parámetros** (`incident::BUNDLE_CONTENT_TYPE` =
+    `text/plain`): Storage compara el subtipo LITERAL contra
+    `allowed_mime_types`, así que `text/plain; charset=utf-8` es un 415
+    `InvalidMimeType` envuelto en HTTP 400 — y el cliente lo traducía como
+    "destino no disponible". El test
+    `content_type_esta_en_el_contrato_del_bucket` lee el SQL del contrato y
+    falla si la constante no está listada tal cual. El mensaje al usuario
+    manda por el `code` del cuerpo (`upload_error_message(status, body)`); el
+    status HTTP es solo fallback. El bucket también lista
+    `text/plain; charset=utf-8` mientras viva el build piloto 0.2.59.
 
 ## Queries de análisis (listas para pegar)
 
@@ -532,10 +546,13 @@ group by 1, 2 order by sesiones desc limit 20;
 ## Lo que NO existe todavía
 
 - **Reintentos/cola del bundle de incidente** (#61 se cerró best-effort):
-  si Storage falla (bucket ausente hasta que la web aplique
-  `docs/incident-bundles-bucket.sql`, sin red) el usuario ve el error y no se
-  reintenta. Tampoco se suben SQLite ni audio, ni hay lectura de bundles desde
-  la app.
+  si Storage falla (sin red, policy, MIME…) el usuario ve el error, se emite
+  `incident.upload_failed` y no se reintenta; el prompt automático ya consumió
+  su cooldown de 7 días al armarse, así que la vía de reintento es Ajustes →
+  "Enviar diagnóstico" (el toast lo dice). El bucket `incident-bundles` existe
+  en producción desde el 2026-09-10 (04:15Z; contrato en
+  `docs/incident-bundles-bucket.sql`). Tampoco se suben SQLite ni audio, ni
+  hay lectura de bundles desde la app.
 - ~~**`probe_microphone_access` (B4 del ciclo v0.2.57)**~~ — **HECHO (ago-2026,
   ciclo piloto Dingler).** `audio/devices/discovery.rs::probe_microphone_access`
   abre y suelta un input stream corto y devuelve el `AudioStartError`

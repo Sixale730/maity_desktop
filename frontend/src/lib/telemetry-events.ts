@@ -51,6 +51,7 @@ export const TELEMETRY_EVENTS = {
   // ── Bundle de incidente con consentimiento (emisor: Rust, logging/incident.rs) ──
   INCIDENT_DETECTED: 'incident.detected',
   INCIDENT_BUNDLE_UPLOADED: 'incident.bundle_uploaded',
+  INCIDENT_UPLOAD_FAILED: 'incident.upload_failed',
 
   // ── Guardado post-grabación (emisor: recordingLogService, outbox recording_logs) ──
   MEETING_ID_GENERATED: 'meeting_id_generated', // legacy

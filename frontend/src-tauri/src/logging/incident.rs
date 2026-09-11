@@ -20,7 +20,10 @@
 //! - `upload_incident_bundle` — POST a Storage con la sesión nativa
 //!   (`CloudSyncState` + `get_valid_token`, mismo patrón que `drain.rs`). La
 //!   carpeta es `auth.uid()` (claim `sub` del JWT), NO `maity.users.id`: es la
-//!   identidad con la que cierra la policy RLS de Storage.
+//!   identidad con la que cierra la policy RLS de Storage. El `Content-Type`
+//!   es `BUNDLE_CONTENT_TYPE` tal cual (ver su doc: Storage compara literal).
+//!   Un fallo emite `incident.upload_failed` — la contraparte de
+//!   `bundle_uploaded`, sin la cual "declinó" y "falló" se ven igual.
 
 use std::collections::HashMap;
 use std::io::{Read, Seek, SeekFrom};
@@ -36,6 +39,14 @@ use tauri_plugin_store::StoreExt;
 /// Presupuesto del tail del log dentro del bundle.
 pub const TAIL_MAX_BYTES: usize = 200 * 1024;
 const BUCKET: &str = "incident-bundles";
+/// `Content-Type` del bundle, SIN parámetros (`; charset=…`). Supabase Storage
+/// (`src/storage/uploader.ts::validateMimeType`) parte el header en
+/// `tipo/subtipo` y compara el subtipo LITERAL contra `allowed_mime_types` del
+/// bucket: `text/plain; charset=utf-8` ≠ `text/plain` → 415 `InvalidMimeType`
+/// (envuelto en HTTP 400). Así falló el primer bundle real (2026-09-10, build
+/// piloto 0.2.59) y el usuario vio "destino no disponible". El test
+/// `content_type_esta_en_el_contrato_del_bucket` lo ata al SQL del contrato.
+pub const BUNDLE_CONTENT_TYPE: &str = "text/plain";
 const PREFS_FILE: &str = "incident-prefs.json";
 const PREFS_KEY: &str = "preferences";
 /// No volver a preguntar por el mismo `kind` durante 7 días (persistido).
@@ -368,14 +379,69 @@ pub fn object_path(
     )
 }
 
-/// Mensaje corto para el usuario según el status HTTP de Storage.
-pub fn upload_error_message(status: u16) -> String {
-    match status {
-        400 | 404 => "El destino de diagnósticos no está disponible todavía".to_string(),
-        401 | 403 => "Sin permiso para enviar el diagnóstico; vuelve a iniciar sesión".to_string(),
-        413 => "El diagnóstico es demasiado grande".to_string(),
-        other => format!("Error {} al enviar el diagnóstico", other),
+/// Cuerpo de error de Storage, p. ej.
+/// `{"statusCode":"415","error":"invalid_mime_type","message":"mime type … is not supported","code":"InvalidMimeType"}`.
+/// Solo se leen `code` y `message`; cualquier otra forma (HTML de un proxy,
+/// vacío) cae a `Default` y manda el status HTTP.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct StorageErrorBody {
+    #[serde(default)]
+    pub code: String,
+    #[serde(default)]
+    pub message: String,
+}
+
+pub fn parse_storage_error(body: &str) -> StorageErrorBody {
+    serde_json::from_str(body).unwrap_or_default()
+}
+
+/// Mensaje corto para el usuario. Manda el `code` del cuerpo de Storage y el
+/// status HTTP es solo el fallback: Storage envuelve un 415 `InvalidMimeType`
+/// en HTTP 400, y traducir "400" como "destino no disponible" fue exactamente
+/// la mentira del 2026-09-10 (el destino existía; se rechazó el formato).
+pub fn upload_error_message(status: u16, body: &str) -> String {
+    let err = parse_storage_error(body);
+    match (err.code.as_str(), status) {
+        ("InvalidMimeType", _) => {
+            "El servidor rechazó el formato del diagnóstico (InvalidMimeType)".to_string()
+        }
+        ("NoSuchBucket", _) | (_, 404) => {
+            "El destino de diagnósticos no está disponible todavía".to_string()
+        }
+        ("AccessDenied" | "InvalidJWT", _) | (_, 401 | 403) => {
+            "Sin permiso para enviar el diagnóstico; vuelve a iniciar sesión".to_string()
+        }
+        ("EntityTooLarge", _) | (_, 413) => "El diagnóstico es demasiado grande".to_string(),
+        ("", other) => format!("Error {} al enviar el diagnóstico", other),
+        (code, other) => format!("Error {} al enviar el diagnóstico ({})", other, code),
     }
+}
+
+/// `incident.upload_failed`: contraparte de `bundle_uploaded`. Sin él,
+/// `incident.detected` sin `bundle_uploaded` no distingue "el usuario declinó"
+/// de "la subida falló" — y el fallo del 2026-09-10 solo existió en el log
+/// LOCAL, que es justo lo que el bundle intenta evitar tener que pedir.
+async fn emit_upload_failed<R: Runtime>(
+    app: &AppHandle<R>,
+    kind: IncidentKind,
+    status: u16,
+    err: &StorageErrorBody,
+) {
+    super::telemetry::emit::emit_event(
+        app,
+        super::telemetry::context::process_session_id(),
+        super::telemetry::catalog::INCIDENT_UPLOAD_FAILED,
+        serde_json::json!({
+            "kind": kind.as_str(),
+            "status": status,
+            "code": err.code,
+            "message": err.message.chars().take(200).collect::<String>(),
+        }),
+        Some("warning"),
+        None,
+        None,
+    )
+    .await;
 }
 
 /// Sube el bundle. SOLO se invoca tras el consentimiento explícito del usuario
@@ -414,11 +480,11 @@ pub async fn upload_incident_bundle<R: Runtime>(
     );
 
     let bytes = body.len();
-    let response = crate::api::HTTP
+    let response = match crate::api::HTTP
         .post(&url)
         .header("apikey", &session.anon_key)
         .bearer_auth(&token)
-        .header("Content-Type", "text/plain; charset=utf-8")
+        .header("Content-Type", BUNDLE_CONTENT_TYPE)
         .header("x-upsert", "false")
         .body(body)
         // Explícito aunque coincida con el default del cliente compartido: es
@@ -426,7 +492,18 @@ pub async fn upload_incident_bundle<R: Runtime>(
         .timeout(std::time::Duration::from_secs(UPLOAD_TIMEOUT_SECS))
         .send()
         .await
-        .map_err(|e| format!("Sin conexión con el servidor ({})", e))?;
+    {
+        Ok(response) => response,
+        Err(e) => {
+            warn!("[incident] upload {} sin respuesta: {}", path, e);
+            let err = StorageErrorBody {
+                code: "network".to_string(),
+                message: e.to_string(),
+            };
+            emit_upload_failed(&app, kind, 0, &err).await;
+            return Err(format!("Sin conexión con el servidor ({})", e));
+        }
+    };
 
     let status = response.status();
     if !status.is_success() {
@@ -437,7 +514,8 @@ pub async fn upload_incident_bundle<R: Runtime>(
             status.as_u16(),
             detail.chars().take(300).collect::<String>()
         );
-        return Err(upload_error_message(status.as_u16()));
+        emit_upload_failed(&app, kind, status.as_u16(), &parse_storage_error(&detail)).await;
+        return Err(upload_error_message(status.as_u16(), &detail));
     }
 
     info!("[incident] bundle subido: {} ({} bytes)", path, bytes);
@@ -560,11 +638,84 @@ mod tests {
         assert!(p.last_prompt_ms.is_empty());
     }
 
+    /// Cuerpo REAL del primer bundle rechazado (log local del 2026-09-10,
+    /// build piloto 0.2.59): 415 envuelto en HTTP 400.
+    const INVALID_MIME_BODY: &str = r#"{"statusCode":"415","error":"invalid_mime_type","message":"mime type text/plain; charset=utf-8 is not supported","code":"InvalidMimeType"}"#;
+
     #[test]
-    fn upload_error_message_por_status() {
-        assert!(upload_error_message(404).contains("no está disponible"));
-        assert!(upload_error_message(400).contains("no está disponible"));
-        assert!(upload_error_message(403).contains("permiso"));
-        assert!(upload_error_message(500).contains("500"));
+    fn upload_error_message_manda_el_code_del_cuerpo_sobre_el_status() {
+        let m = upload_error_message(400, INVALID_MIME_BODY);
+        assert!(m.contains("InvalidMimeType"), "{}", m);
+        assert!(!m.contains("no está disponible"), "un 400 con code ya no miente: {}", m);
+
+        // Bucket ausente (el caso original del mensaje "no está disponible")
+        let m = upload_error_message(
+            404,
+            r#"{"statusCode":"404","error":"Bucket not found","message":"Bucket not found","code":"NoSuchBucket"}"#,
+        );
+        assert!(m.contains("no está disponible"), "{}", m);
+        assert!(upload_error_message(404, "").contains("no está disponible"));
+
+        // Permisos: por code (InvalidJWT llega como 400) y por status
+        assert!(upload_error_message(400, r#"{"code":"InvalidJWT"}"#).contains("permiso"));
+        assert!(upload_error_message(403, "").contains("permiso"));
+        assert!(upload_error_message(403, "<html>proxy</html>").contains("permiso"));
+
+        assert!(upload_error_message(413, "").contains("demasiado grande"));
+        assert!(upload_error_message(400, r#"{"code":"EntityTooLarge"}"#).contains("demasiado grande"));
+
+        // Sin code: solo el status. Con code desconocido: status + code.
+        assert_eq!(upload_error_message(500, ""), "Error 500 al enviar el diagnóstico");
+        assert_eq!(
+            upload_error_message(400, ""),
+            "Error 400 al enviar el diagnóstico",
+            "un 400 pelón ya NO se reporta como destino ausente"
+        );
+        assert_eq!(
+            upload_error_message(503, r#"{"code":"DatabaseReadOnly"}"#),
+            "Error 503 al enviar el diagnóstico (DatabaseReadOnly)"
+        );
+    }
+
+    #[test]
+    fn parse_storage_error_tolera_cuerpos_no_json() {
+        let e = parse_storage_error(INVALID_MIME_BODY);
+        assert_eq!(e.code, "InvalidMimeType");
+        assert!(e.message.contains("not supported"));
+        let e = parse_storage_error("");
+        assert!(e.code.is_empty() && e.message.is_empty());
+        let e = parse_storage_error("<html>502 Bad Gateway</html>");
+        assert!(e.code.is_empty());
+    }
+
+    /// Contrato ejecutable: el header que manda Rust tiene que estar LITERAL
+    /// en `allowed_mime_types` del bucket (`docs/incident-bundles-bucket.sql`).
+    /// Storage compara el subtipo tal cual, así que ni parámetros en la
+    /// constante ni un string distinto en el SQL: este drift fue el bug del
+    /// 2026-09-10 y el build compilaba verde.
+    #[test]
+    fn content_type_esta_en_el_contrato_del_bucket() {
+        assert!(
+            !BUNDLE_CONTENT_TYPE.contains(';') && !BUNDLE_CONTENT_TYPE.contains(' '),
+            "sin parámetros ni espacios: {:?}",
+            BUNDLE_CONTENT_TYPE
+        );
+        let sql_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/incident-bundles-bucket.sql");
+        let sql = std::fs::read_to_string(&sql_path)
+            .unwrap_or_else(|e| panic!("no se pudo leer el contrato {:?}: {}", sql_path, e));
+        let values = sql
+            .find("values (")
+            .map(|i| &sql[i..])
+            .expect("el contrato inserta el bucket con `values (`");
+        let arr_start = values.find("array[").expect("`allowed_mime_types` como array[...]");
+        let arr_len = values[arr_start..].find(']').expect("cierre del array");
+        let array = &values[arr_start..arr_start + arr_len];
+        assert!(
+            array.contains(&format!("'{}'", BUNDLE_CONTENT_TYPE)),
+            "el SQL del bucket ({:?}) no lista {:?}; hoy: {}",
+            sql_path,
+            BUNDLE_CONTENT_TYPE,
+            array
+        );
     }
 }

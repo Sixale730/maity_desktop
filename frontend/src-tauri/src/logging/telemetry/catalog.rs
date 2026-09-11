@@ -54,6 +54,7 @@ pub const COACH_SESSION_SUMMARY: &str = "coach.session_summary";
 // ── Bundle de incidente con consentimiento (emisor: Rust, `logging/incident.rs`) ──
 pub const INCIDENT_DETECTED: &str = "incident.detected";
 pub const INCIDENT_BUNDLE_UPLOADED: &str = "incident.bundle_uploaded";
+pub const INCIDENT_UPLOAD_FAILED: &str = "incident.upload_failed";
 
 // ── Guardado post-grabación (emisor: recordingLogService, outbox `recording_logs`) ──
 pub const MEETING_ID_GENERATED: &str = "meeting_id_generated"; // legacy
