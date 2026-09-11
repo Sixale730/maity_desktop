@@ -6,6 +6,9 @@
 
 use crate::audio::voice_activity::VoiceActivityStats;
 use crate::coach::audio_heuristics::{evaluate_audio_tips, AudioSnapshot, AudioTipState};
+use crate::coach::presenter_heuristics::{
+    evaluate_presenter_tips, presenter_health_score, PresenterTipState, PresenterView,
+};
 use crate::coach::breaker::{
     CoachBreaker, FailureOutcome, COOLDOWN as BREAKER_COOLDOWN,
     FAIL_THRESHOLD as BREAKER_FAIL_THRESHOLD,
@@ -89,10 +92,13 @@ pub(crate) fn safe_truncate(s: &str, max_bytes: usize) -> &str {
 // Modo Ponente: la grabación activa es una presentación/ponencia (el usuario habla
 // casi todo el tiempo: webinar, clase, pitch). El comando Tauri de inicio de grabación
 // fija este flag ANTES de llamar a `start()` (sincrónicamente, antes del primer await),
-// y `FeedbackState::new()` lo lee. En presentación NO penalizamos talk_ratio alto ni
-// disparamos el tip de dominancia ("estás acaparando, pregúntale al otro") — pero SÍ
-// mantenemos los tips de ritmo (monólogo largo, hablar muy rápido). Default false =
-// conversación, así las grabaciones auto (detector/programadas) no cambian de comportamiento.
+// y el coach lo lee en cada tick. En presentación el coach usa la tabla de
+// `coach/presenter_heuristics.rs` (desde 2026-09-11: rachas de 5/10 min, audiencia
+// callada 10 min, Ritmo de ponente 50-75) en los dos modos, audio y transcript; los
+// tips y penalizaciones de conversación (dominancia, monólogo a los 60/90/150 s,
+// `heuristic_health_*`, nudge `Monologue`) NO aplican. Se conserva `SpeakingTooFast`.
+// Default false = conversación, así las grabaciones auto (detector/programadas) no
+// cambian de comportamiento.
 static PRESENTATION_MODE: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
@@ -220,6 +226,15 @@ struct FeedbackState {
     voice: Option<Arc<VoiceActivityStats>>,
     /// Gating de los tips por audio (una vez por racha / cada 5 min).
     audio_tips: AudioTipState,
+    /// Gating de los tips de ponente (ambos modos): una vez por racha / cada 10 min.
+    presenter_tips: PresenterTipState,
+    /// Transcript: racha de monólogo EN CURSO en segundos (se mide al llegar
+    /// turnos del usuario; la cierra un turno del interlocutor).
+    current_mono_secs: u32,
+    /// Transcript: rachas abiertas en la sesión (id de racha para el gating).
+    mono_runs: u64,
+    /// Transcript: último turno del interlocutor (pared). `None` = nunca.
+    last_interlocutor_at: Option<Instant>,
 }
 
 impl FeedbackState {
@@ -247,6 +262,10 @@ impl FeedbackState {
             coach_mode: CoachMode::Transcript,
             voice: None,
             audio_tips: AudioTipState::default(),
+            presenter_tips: PresenterTipState::default(),
+            current_mono_secs: 0,
+            mono_runs: 0,
+            last_interlocutor_at: None,
         }
     }
 
@@ -269,11 +288,69 @@ impl FeedbackState {
     /// (60 s / 120 s / 5 min) deben medir audio real. El de pared queda para
     /// `MeetingMetrics.session_secs` (paridad visual con transcript).
     fn audio_snapshot(&self) -> Option<AudioSnapshot> {
+        self.audio_snapshot_with(is_presentation_mode())
+    }
+
+    /// Variante con el modo explícito: los tests no pueden tocar el global
+    /// `PRESENTATION_MODE` (es de proceso y corren en paralelo).
+    fn audio_snapshot_with(&self, is_presentation: bool) -> Option<AudioSnapshot> {
         self.voice.as_ref().map(|v| {
             let snap = v.snapshot();
             let audio_secs = (snap.session_ms / 1000).min(u32::MAX as u64) as u32;
-            AudioSnapshot::from_voice(&snap, audio_secs, is_presentation_mode())
+            AudioSnapshot::from_voice(&snap, audio_secs, is_presentation)
         })
+    }
+
+    /// Vista de ponente en modo TRANSCRIPT (reloj de pared): racha = monólogo en
+    /// curso por turnos, audiencia = turnos del interlocutor.
+    fn presenter_view(&self) -> PresenterView {
+        let session_secs = self.session_secs();
+        let total = self.user_turns as u64 + self.interlocutor_turns as u64;
+        PresenterView {
+            session_secs,
+            current_run_secs: self.current_mono_secs,
+            longest_run_secs: self.longest_mono_secs,
+            run_id: self.mono_runs,
+            audience_seen: self.last_interlocutor_at.is_some(),
+            audience_silent_secs: self
+                .last_interlocutor_at
+                .map(|t| t.elapsed().as_secs() as u32)
+                .unwrap_or(session_secs),
+            audience_units: self.interlocutor_turns as u64,
+            total_units: total,
+            any_activity: total > 0,
+        }
+    }
+
+    /// Métricas conversacionales por turno (extraído del listener para poder
+    /// testearlo sin `AppHandle`). Racha del usuario: se abre con su primer
+    /// turno y solo la cierra un turno del interlocutor (semántica histórica de
+    /// `longest_mono_secs`); `current_mono_secs` avanza al llegar turnos.
+    fn apply_turn_metrics(&mut self, speaker: &str, text: &str) {
+        if speaker == "user" {
+            self.user_turns += 1;
+            self.user_word_count += text.split_whitespace().count() as u64;
+            if text.contains('?') {
+                self.user_questions += 1;
+            }
+            if self.mono_start.is_none() {
+                self.mono_start = Some(Instant::now());
+                self.mono_runs += 1;
+            }
+            if let Some(s) = self.mono_start {
+                let mono = s.elapsed().as_secs() as u32;
+                self.current_mono_secs = mono;
+                if mono > self.longest_mono_secs {
+                    self.longest_mono_secs = mono;
+                }
+            }
+        } else {
+            self.interlocutor_turns += 1;
+            self.last_interlocutor_text = Some(text.to_string());
+            self.last_interlocutor_at = Some(Instant::now());
+            self.mono_start = None;
+            self.current_mono_secs = 0;
+        }
     }
 
     /// §1.5.3 Registra una latencia LLM en la sliding window (cap 100).
@@ -331,32 +408,37 @@ impl FeedbackState {
     /// Suben: talk_ratio balanceado (40-60%), preguntas, turns interlocutor.
     /// Es algoritmo simple v1 — iterar despues con datos reales (decision §14).
     ///
-    /// Modo Ponente: cuando `is_presentation`, se omiten TODAS las penalizaciones y
-    /// bonificaciones que asumen diálogo (talk_ratio dominante/pasivo, falta de
-    /// preguntas, balance 40-60%, turnos de interlocutor) — hablar ~100% del tiempo
-    /// es lo esperado de un ponente, no un defecto. Se conserva sólo la penalización
-    /// por monólogo largo, que refleja ritmo/pausas (lo que el usuario sí quiere medir).
+    /// Modo Ponente (2026-09-11): delega en `presenter_health_score` (70 base,
+    /// −10/−20 por racha > 5/10 min, +5 por audiencia ≥ 10 %, rango 50-75). Antes
+    /// se conservaba aquí la penalización por monólogo de 60/120 s y un ponente
+    /// normal vivía en 50.
     ///
     /// F5: en modo audio delega en `AudioSnapshot::health_score` (misma base 70,
     /// solo los términos que el audio puede medir).
     fn health_score(&self) -> u32 {
-        if let Some(audio) = self.audio_snapshot() {
+        self.health_score_with(is_presentation_mode())
+    }
+
+    /// Variante con el modo explícito (testeable sin tocar el global).
+    fn health_score_with(&self, is_presentation: bool) -> u32 {
+        if let Some(audio) = self.audio_snapshot_with(is_presentation) {
             return audio.health_score();
+        }
+        if is_presentation {
+            return presenter_health_score(&self.presenter_view());
         }
         let mut s: i32 = 70;
         let r = self.talk_ratio();
         let session_secs = self.session_secs();
 
-        // Penalización por monólogo largo: aplica SIEMPRE (es sobre ritmo/pausas, no
-        // sobre acaparar). En presentación un ponente que no hace ninguna pausa en >2min
-        // igual debería variar el ritmo.
+        // Penalización por monólogo largo (ritmo/pausas), solo en conversación.
         if self.longest_mono_secs > 120 {
             s -= 20;
         } else if self.longest_mono_secs > 60 {
             s -= 10;
         }
 
-        if !is_presentation_mode() {
+        if !is_presentation {
             // Penalizaciones que asumen conversación bidireccional — se omiten en ponencia.
             if r > 0.80 {
                 s -= 15;
@@ -456,16 +538,21 @@ impl FeedbackState {
     }
 
     fn snapshot(&self) -> ConversationSnapshot {
+        self.snapshot_with(is_presentation_mode())
+    }
+
+    /// Variante con el modo explícito (testeable sin tocar el global).
+    fn snapshot_with(&self, is_presentation: bool) -> ConversationSnapshot {
         ConversationSnapshot {
             user_talk_ratio: self.talk_ratio(),
             user_questions: self.user_questions,
             session_duration_sec: self.session_secs(),
             user_wpm: self.user_wpm(),
             longest_user_monologue_sec: self.longest_mono_secs,
-            health_score: self.health_score(),
+            health_score: self.health_score_with(is_presentation),
             last_nudge_type: self.last_nudge_type.clone(),
             is_monologue: self.is_monologue_mode(),
-            is_presentation: is_presentation_mode(),
+            is_presentation,
         }
     }
 
@@ -719,27 +806,8 @@ pub async fn start<R: Runtime + 'static>(
             let task = {
                 let Ok(mut st) = state_ev.lock() else { return };
 
-                // Actualizar métricas conversacionales
-                if speaker == "user" {
-                    st.user_turns += 1;
-                    st.user_word_count += payload.text.split_whitespace().count() as u64;
-                    if payload.text.contains('?') {
-                        st.user_questions += 1;
-                    }
-                    if st.mono_start.is_none() {
-                        st.mono_start = Some(Instant::now());
-                    }
-                    if let Some(s) = st.mono_start {
-                        let mono = s.elapsed().as_secs() as u32;
-                        if mono > st.longest_mono_secs {
-                            st.longest_mono_secs = mono;
-                        }
-                    }
-                } else {
-                    st.interlocutor_turns += 1;
-                    st.last_interlocutor_text = Some(payload.text.clone());
-                    st.mono_start = None;
-                }
+                // Actualizar métricas conversacionales (turnos, racha, audiencia)
+                st.apply_turn_metrics(&speaker, &payload.text);
 
                 st.window.push_back(TranscriptEntry {
                     text: payload.text.clone(),
@@ -1126,11 +1194,24 @@ fn build_meeting_metrics(st: &FeedbackState) -> MeetingMetrics {
 /// snapshot conversacional → `evaluate_health_tips` → `can_emit` → dedup
 /// Jaccard → bloquear el rate-limit. Devuelve `(tip, segundo de sesión)`.
 fn transcript_heuristic_tick(st: &mut FeedbackState) -> Option<(HeuristicTip, u32)> {
+    transcript_heuristic_tick_with(st, is_presentation_mode())
+}
+
+/// Variante con el modo explícito (testeable sin tocar el global).
+fn transcript_heuristic_tick_with(
+    st: &mut FeedbackState,
+    is_presentation: bool,
+) -> Option<(HeuristicTip, u32)> {
     if st.window.is_empty() {
         // Sin actividad aun -> no evaluar; ahorra logs ruidosos al inicio.
         return None;
     }
-    let snap = st.snapshot();
+    let snap = st.snapshot_with(is_presentation);
+    if snap.is_presentation {
+        // Modo Ponente: tabla propia (sin Jaccard: textos fijos, gating por racha).
+        let view = st.presenter_view();
+        return presenter_heuristic_tick(st, view);
+    }
     let h = evaluate_health_tips(&snap)?;
     let is_critical = h.priority == "critical";
     if !st.can_emit(is_critical) {
@@ -1150,9 +1231,20 @@ fn transcript_heuristic_tick(st: &mut FeedbackState) -> Option<(HeuristicTip, u3
 /// por cooldown se reintenta al tick siguiente. Sin dedup Jaccard: con textos
 /// fijos avisaría una sola vez por sesión.
 fn audio_heuristic_tick(st: &mut FeedbackState) -> Option<(HeuristicTip, u32)> {
-    let snap = st.audio_snapshot()?;
+    audio_heuristic_tick_with(st, is_presentation_mode())
+}
+
+/// Variante con el modo explícito (testeable sin tocar el global).
+fn audio_heuristic_tick_with(
+    st: &mut FeedbackState,
+    is_presentation: bool,
+) -> Option<(HeuristicTip, u32)> {
+    let snap = st.audio_snapshot_with(is_presentation)?;
     if !snap.any_voiced {
         return None;
+    }
+    if snap.is_presentation {
+        return presenter_heuristic_tick(st, snap.presenter_view());
     }
     let h = evaluate_audio_tips(&snap, &st.audio_tips)?;
     let is_critical = h.priority == "critical";
@@ -1162,6 +1254,24 @@ fn audio_heuristic_tick(st: &mut FeedbackState) -> Option<(HeuristicTip, u32)> {
     st.audio_tips.mark(&h, &snap);
     st.last_tip_at = Some(Instant::now());
     Some((h, snap.session_secs))
+}
+
+/// Tick de ponente (ambos modos, 2026-09-11): `evaluate_presenter_tips` (gating
+/// por racha / cada 10 min) → `can_emit` → `mark` SOLO al emitir, así un tip
+/// bloqueado por cooldown se reintenta al tick siguiente. El timestamp lleva el
+/// reloj del modo que construyó la vista (audio: audio; transcript: pared).
+fn presenter_heuristic_tick(
+    st: &mut FeedbackState,
+    view: PresenterView,
+) -> Option<(HeuristicTip, u32)> {
+    let h = evaluate_presenter_tips(&view, &st.presenter_tips)?;
+    let is_critical = h.priority == "critical";
+    if !st.can_emit(is_critical) {
+        return None;
+    }
+    st.presenter_tips.mark(&h, &view);
+    st.last_tip_at = Some(Instant::now());
+    Some((h, view.session_secs))
 }
 
 /// Detiene el motor de feedback en vivo. Llamar cuando se detiene la grabación.
@@ -1684,14 +1794,16 @@ pub(crate) struct HeuristicTip {
 /// aplican a presentaciones en solitario: `heuristic_monologue_long` y
 /// `heuristic_health_pacing`.
 ///
-/// Modo Ponente: cuando `is_presentation`, también se suprimen los tips dialógicos
-/// (aunque haya turnos de interlocutor por Q&A), en particular `heuristic_dominance`
-/// — un ponente DEBE acaparar el habla. Se conservan los de ritmo (`monologue_long`,
-/// `health_pacing`) porque ahí sí aporta el coach.
+/// Modo Ponente (2026-09-11): esta tabla NO aplica — ni dominancia ni monólogo a
+/// los 90 s ni `health_pacing`; `transcript_heuristic_tick` enruta a
+/// `coach/presenter_heuristics.rs` (rachas de 5/10 min, audiencia callada).
 fn evaluate_health_tips(snap: &ConversationSnapshot) -> Option<HeuristicTip> {
-    // Los tips que asumen diálogo bidireccional sólo aplican en conversación real:
-    // ni en monólogo (sin interlocutor) ni en presentación (acaparar es lo esperado).
-    let dialog = !snap.is_monologue && !snap.is_presentation;
+    if snap.is_presentation {
+        return None;
+    }
+    // Los tips que asumen diálogo bidireccional sólo aplican en conversación real,
+    // no en monólogo (sin interlocutor).
+    let dialog = !snap.is_monologue;
 
     // Monologo en curso > 90s — critico, dispara antes que health.
     if snap.longest_user_monologue_sec > 90 {
@@ -2372,11 +2484,136 @@ mod tests {
     }
 
     #[test]
-    fn heuristic_mantiene_monologo_largo_en_presentacion() {
-        // Ritmo SÍ se conserva: monólogo > 90s dispara "haz una pausa" aun en presentación.
+    fn heuristic_conversacional_no_aplica_en_presentacion() {
+        // Desde 2026-09-11 la tabla de conversación no aplica en ponente: ni el
+        // monólogo de 90 s ni el pacing por health; lo cubre presenter_heuristics.
         let pres = ConversationSnapshot { is_presentation: true, ..make_snap(80, 0.98, 100, 200) };
-        let h = evaluate_health_tips(&pres).expect("monólogo largo dispara aun en presentación");
-        assert_eq!(h.trigger, "heuristic_monologue_long");
+        assert!(evaluate_health_tips(&pres).is_none());
+        let low = ConversationSnapshot { is_presentation: true, ..make_snap(35, 0.5, 0, 200) };
+        assert!(evaluate_health_tips(&low).is_none());
+    }
+
+    // Modo Ponente (2026-09-11): enrutado de los ticks a presenter_heuristics ──
+
+    fn transcript_state_en_racha(session_secs: u64, mono_secs: u32, runs: u64) -> FeedbackState {
+        let mut st = FeedbackState::new();
+        st.session_start = Instant::now() - Duration::from_secs(session_secs);
+        st.window.push_back(TranscriptEntry {
+            text: "hola a todos".to_string(),
+            speaker: "user".to_string(),
+            arrived_at: Instant::now(),
+        });
+        st.user_turns = 20;
+        st.current_mono_secs = mono_secs;
+        st.longest_mono_secs = mono_secs;
+        st.mono_runs = runs;
+        st
+    }
+
+    #[test]
+    fn audio_tick_presentacion_enruta_a_la_tabla_de_ponente() {
+        use crate::audio::voice_activity::VoiceActivitySnapshot;
+        let v = VoiceActivitySnapshot {
+            user_voiced_ms: 301_000,
+            current_user_mono_ms: 301_000,
+            longest_user_mono_ms: 301_000,
+            user_mono_runs: 1,
+            session_ms: 400_000,
+            ..Default::default()
+        };
+        let mut st = audio_state(v);
+        st.session_start = Instant::now() - Duration::from_secs(400);
+        let (h, secs) = audio_heuristic_tick_with(&mut st, true).expect("racha de 301 s en ponente");
+        assert_eq!(h.trigger, crate::coach::presenter_heuristics::TRIGGER_PRES_RUN_LONG);
+        assert_eq!(secs, 400, "timestamp con el reloj de audio");
+        assert_ne!(st.presenter_tips, PresenterTipState::default());
+        assert_eq!(st.audio_tips, AudioTipState::default(), "la tabla de conversación no se toca");
+
+        // Mismo estado en conversación: crítico de conversación (301 s > 150 s).
+        let mut conv = audio_state(v);
+        conv.session_start = Instant::now() - Duration::from_secs(400);
+        let (hc, _) = audio_heuristic_tick_with(&mut conv, false).unwrap();
+        assert_eq!(hc.trigger, crate::coach::audio_heuristics::TRIGGER_MONO_CRITICAL);
+    }
+
+    #[test]
+    fn transcript_tick_presentacion_racha_5_min_una_vez_por_racha() {
+        let mut st = transcript_state_en_racha(400, 301, 1);
+        let (h, _) = transcript_heuristic_tick_with(&mut st, true).expect("racha de 301 s");
+        assert_eq!(h.trigger, crate::coach::presenter_heuristics::TRIGGER_PRES_RUN_LONG);
+
+        // Misma racha (cooldown ya vencido): no repite.
+        st.last_tip_at = Some(Instant::now() - Duration::from_secs(120));
+        st.current_mono_secs = 400;
+        assert!(transcript_heuristic_tick_with(&mut st, true).is_none());
+
+        // Racha nueva: vuelve a avisar.
+        st.mono_runs = 2;
+        st.current_mono_secs = 301;
+        assert!(transcript_heuristic_tick_with(&mut st, true).is_some());
+    }
+
+    #[test]
+    fn transcript_tick_presentacion_audiencia_callada_usa_last_interlocutor_at() {
+        let mut st = transcript_state_en_racha(700, 0, 1);
+        st.interlocutor_turns = 2;
+        // Sin `last_interlocutor_at` (nunca intervino): no avisa aunque pasen 10 min.
+        assert!(transcript_heuristic_tick_with(&mut st, true).is_none());
+
+        // Intervino hace 700 s: avisa.
+        st.last_interlocutor_at = Some(Instant::now() - Duration::from_secs(700));
+        let (h, _) = transcript_heuristic_tick_with(&mut st, true).expect("10 min callada");
+        assert_eq!(h.trigger, crate::coach::presenter_heuristics::TRIGGER_PRES_AUDIENCE_SILENT);
+
+        // Intervino hace 100 s: no.
+        let mut recent = transcript_state_en_racha(700, 0, 1);
+        recent.interlocutor_turns = 2;
+        recent.last_interlocutor_at = Some(Instant::now() - Duration::from_secs(100));
+        assert!(transcript_heuristic_tick_with(&mut recent, true).is_none());
+    }
+
+    #[test]
+    fn transcript_tick_presentacion_respeta_can_emit_sin_marcar() {
+        let mut st = transcript_state_en_racha(400, 301, 1);
+        st.last_tip_at = Some(Instant::now() - Duration::from_secs(5));
+        assert!(transcript_heuristic_tick_with(&mut st, true).is_none());
+        assert_eq!(st.presenter_tips, PresenterTipState::default());
+    }
+
+    #[test]
+    fn transcript_health_presentacion_50_75() {
+        let mut st = FeedbackState::new();
+        st.session_start = Instant::now() - Duration::from_secs(200);
+        st.user_turns = 10;
+        st.interlocutor_turns = 2; // 2 / 12 ≈ 16.7 % ≥ 10 %
+        st.longest_mono_secs = 400;
+        assert_eq!(st.health_score_with(true), 65, "70 − 10 (racha > 5 min) + 5 (audiencia)");
+        st.interlocutor_turns = 0;
+        assert_eq!(st.health_score_with(true), 60);
+        st.longest_mono_secs = 601;
+        assert_eq!(st.health_score_with(true), 50);
+        st.longest_mono_secs = 100;
+        assert_eq!(st.health_score_with(true), 70, "sin racha larga ni audiencia");
+    }
+
+    #[test]
+    fn turnos_actualizan_racha_actual_runs_y_last_interlocutor_at() {
+        let mut st = FeedbackState::new();
+        assert_eq!(st.mono_runs, 0);
+        st.apply_turn_metrics("user", "hola a todos");
+        assert_eq!(st.mono_runs, 1);
+        assert!(st.mono_start.is_some());
+        assert!(st.last_interlocutor_at.is_none());
+        st.apply_turn_metrics("user", "sigo hablando");
+        assert_eq!(st.mono_runs, 1, "misma racha");
+        st.apply_turn_metrics("interlocutor", "una pregunta?");
+        assert!(st.last_interlocutor_at.is_some());
+        assert_eq!(st.current_mono_secs, 0);
+        assert!(st.mono_start.is_none());
+        assert_eq!(st.interlocutor_turns, 1);
+        st.apply_turn_metrics("user", "respondo");
+        assert_eq!(st.mono_runs, 2, "racha nueva tras el interlocutor");
+        assert_eq!(st.user_turns, 3);
     }
 
     #[test]

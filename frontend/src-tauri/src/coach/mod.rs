@@ -25,6 +25,7 @@ pub use nudge_engine::coach_evaluate_nudge;
 pub use trigger::coach_analyze_trigger;
 
 pub mod audio_heuristics;
+pub mod presenter_heuristics;
 
 use std::sync::Arc;
 

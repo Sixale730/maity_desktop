@@ -41,7 +41,11 @@ pub struct ConversationSnapshot {
     pub is_monologue: bool,
     /// Modo Ponente: la grabación es una presentación/ponencia. Suprime los nudges
     /// que asumen diálogo bidireccional (TalkRatioDominant, NoQuestions) — un ponente
-    /// DEBE acaparar el habla. Se conservan los de ritmo (Monologue, SpeakingTooFast).
+    /// DEBE acaparar el habla — y, desde 2026-09-11, también `Monologue`: el ritmo del
+    /// ponente lo mide el loop heurístico de 3 s con la tabla de
+    /// `coach/presenter_heuristics.rs` (rachas de 5/10 min), y esta rama no tiene
+    /// guarda de repetición, así que pasado el minuto pedía un tip al LLM en cada
+    /// tick de 15 s. Se conserva `SpeakingTooFast`.
     #[serde(default)]
     pub is_presentation: bool,
 }
@@ -50,7 +54,8 @@ pub struct ConversationSnapshot {
 ///
 /// Prioridad (primera condición que matchea gana):
 /// 1. Health score muy bajo (<30) → urgente
-/// 2. Monólogo activo (>60s) → urgente
+/// 2. Monólogo activo (>60s) → urgente (solo conversación; en ponente lo cubre
+///    `presenter_heuristics`)
 /// 3. Talk ratio >65% (después de 2+ min) → medio
 /// 4. WPM >180 → medio
 /// 5. Sin preguntas en 3+ min → bajo
@@ -78,7 +83,9 @@ pub fn evaluate_nudge(snapshot: &ConversationSnapshot) -> NudgeResult {
         };
     }
 
-    if snapshot.longest_user_monologue_sec > 60 {
+    // Modo Ponente: hablar seguido es lo esperado; el ritmo de ponente (5/10 min)
+    // vive en presenter_heuristics, determinista y sin LLM.
+    if !snapshot.is_presentation && snapshot.longest_user_monologue_sec > 60 {
         return NudgeResult {
             should_nudge: true,
             nudge_type: Some(NudgeType::Monologue),
@@ -257,15 +264,18 @@ mod tests {
         let r = evaluate_nudge(&snap);
         assert!(
             r.nudge_type != Some(NudgeType::TalkRatioDominant)
-                && r.nudge_type != Some(NudgeType::NoQuestions),
-            "presentación no debe disparar nudges de dominancia/preguntas, got {:?}",
+                && r.nudge_type != Some(NudgeType::NoQuestions)
+                && r.nudge_type != Some(NudgeType::Monologue),
+            "presentación no debe disparar nudges de dominancia/preguntas/monólogo, got {:?}",
             r.nudge_type
         );
     }
 
     #[test]
-    fn presentation_mode_keeps_monologue_nudge() {
-        // Ritmo SÍ se mantiene en presentación: monólogo > 60s sigue disparando.
+    fn presentation_mode_suppresses_monologue_nudge() {
+        // Desde 2026-09-11 el monólogo NO empuja al LLM en presentación: el ritmo
+        // del ponente (rachas de 5/10 min) lo mide presenter_heuristics en el loop
+        // de 3 s. En conversación el mismo snapshot sí dispararía Monologue.
         let snap = ConversationSnapshot {
             user_talk_ratio: 0.98,
             user_questions: 0,
@@ -278,8 +288,11 @@ mod tests {
             is_presentation: true,
         };
         let r = evaluate_nudge(&snap);
-        assert!(r.should_nudge);
-        assert_eq!(r.nudge_type, Some(NudgeType::Monologue));
+        assert!(!r.should_nudge, "got {:?}", r.nudge_type);
+        assert_ne!(r.nudge_type, Some(NudgeType::Monologue));
+
+        let conv = ConversationSnapshot { is_presentation: false, ..snap };
+        assert_eq!(evaluate_nudge(&conv).nudge_type, Some(NudgeType::Monologue));
     }
 
     #[test]

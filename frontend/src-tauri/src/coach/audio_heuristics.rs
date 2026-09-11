@@ -3,9 +3,12 @@
 //! En modo LOTE no hay `transcript-update` durante la grabación, así que el
 //! coach no puede contar turnos, preguntas ni palabras. Lo que sí tiene es el
 //! rastreador de voz por canal (`audio/voice_activity.rs`): ms de voz por
-//! canal y la racha de monólogo del usuario. Con eso se cubren las dos cosas
-//! que un ponente/vendedor quiere que le avisen en vivo: **monólogo** y
-//! **dominancia** del tiempo de palabra. Nada más — sin LLM, sin sidecar.
+//! canal y la racha de monólogo del usuario. Con eso se cubren, en
+//! CONVERSACIÓN, las dos cosas que un vendedor quiere que le avisen en vivo:
+//! **monólogo** y **dominancia** del tiempo de palabra. Nada más — sin LLM,
+//! sin sidecar. En modo Ponente esta tabla NO aplica: `health_score` y
+//! `audio_heuristic_tick` delegan en `coach/presenter_heuristics.rs` (rachas
+//! de 5/10 min, audiencia callada, Ritmo 50-75) vía `presenter_view()`.
 //!
 //! Los dos tips viven en el loop heurístico de 3 s de `live_feedback` (no en
 //! el loop de nudges de 15 s: ahí todo `evaluate_nudge` devuelve `tip: None`
@@ -21,6 +24,7 @@
 
 use crate::audio::voice_activity::VoiceActivitySnapshot;
 use crate::coach::live_feedback::HeuristicTip;
+use crate::coach::presenter_heuristics::{presenter_health_score, PresenterView};
 
 /// Antes de este tiempo de sesión no se emite ningún tip por audio (el
 /// arranque de una reunión es ruidoso: saludos, compartir pantalla).
@@ -68,7 +72,13 @@ pub(crate) struct AudioSnapshot {
     pub user_mono_runs: u64,
     /// Sesión ≥ 30 s sin interlocutor (< 2 s de voz en el canal sistema).
     pub is_monologue: bool,
-    /// Modo Ponente: no se penaliza ni se avisa por dominar el tiempo de palabra.
+    /// La audiencia ya tuvo la palabra (≥ `INTERRUPT_MS`) alguna vez.
+    pub audience_seen: bool,
+    /// Segundos de audio desde la última intervención de la audiencia (toda
+    /// la sesión si nunca intervino).
+    pub audience_silent_secs: u32,
+    /// Modo Ponente: esta tabla no aplica; ver `presenter_view()` y
+    /// `coach/presenter_heuristics.rs`.
     pub is_presentation: bool,
 }
 
@@ -89,6 +99,8 @@ impl AudioSnapshot {
             user_mono_runs: v.user_mono_runs,
             is_monologue: session_secs >= MONOLOGUE_GRACE_SECS
                 && v.interlocutor_voiced_ms < MONOLOGUE_INTERLOCUTOR_MAX_MS,
+            audience_seen: v.last_interlocutor_voice_ms > 0,
+            audience_silent_secs: (v.interlocutor_silence_ms() / 1000).min(u32::MAX as u64) as u32,
             is_presentation,
         }
     }
@@ -97,14 +109,35 @@ impl AudioSnapshot {
         self.user_voiced_ms + self.interlocutor_voiced_ms
     }
 
-    /// Health 0-100 del gauge, versión audio. Empieza en 70 como el de
-    /// transcript y conserva sólo los términos que el audio puede medir:
-    /// - monólogo más largo > 120 s −20 / > 60 s −10 (ritmo; aplica también en
-    ///   presentación, igual que en transcript);
-    /// - si NO es presentación y hay ≥ 30 s de voz total: ratio > 0.80 −15,
-    ///   ratio en 0.40-0.60 +5.
+    /// Vista de ponente (reloj de AUDIO): racha = monólogo en curso del
+    /// tracker, audiencia = ms de voz del interlocutor.
+    pub(crate) fn presenter_view(&self) -> PresenterView {
+        PresenterView {
+            session_secs: self.session_secs,
+            current_run_secs: (self.current_user_mono_ms / 1000).min(u32::MAX as u64) as u32,
+            longest_run_secs: (self.longest_user_mono_ms / 1000).min(u32::MAX as u64) as u32,
+            run_id: self.user_mono_runs,
+            audience_seen: self.audience_seen,
+            audience_silent_secs: self.audience_silent_secs,
+            audience_units: self.interlocutor_voiced_ms,
+            total_units: self.total_voiced_ms(),
+            any_activity: self.any_voiced,
+        }
+    }
+
+    /// Health 0-100 del gauge ("Ritmo"), versión audio. Empieza en 70 como el
+    /// de transcript y conserva sólo los términos que el audio puede medir:
+    /// - monólogo más largo > 120 s −20 / > 60 s −10;
+    /// - con ≥ 30 s de voz total: ratio > 0.80 −15, ratio en 0.40-0.60 +5.
     /// Sin términos de preguntas ni de turnos (no existen sin transcript).
+    ///
+    /// Modo Ponente (2026-09-11): delega en `presenter_health_score` (rachas
+    /// de 5/10 min, +5 por audiencia, 50-75). Antes la penalización por
+    /// monólogo aplicaba también aquí y un ponente normal vivía en 50.
     pub(crate) fn health_score(&self) -> u32 {
+        if self.is_presentation {
+            return presenter_health_score(&self.presenter_view());
+        }
         let mut s: i32 = 70;
         let longest_secs = self.longest_user_mono_ms / 1000;
         if longest_secs > 120 {
@@ -166,6 +199,11 @@ pub(crate) fn evaluate_audio_tips(
     if snap.session_secs < MIN_SESSION_SECS || !snap.any_voiced {
         return None;
     }
+    // Modo Ponente: esta tabla no aplica (ni monólogo ni dominancia); la de
+    // ponente la enruta `audio_heuristic_tick` vía `presenter_view()`.
+    if snap.is_presentation {
+        return None;
+    }
     let mono_secs = snap.current_user_mono_ms / 1000;
 
     // (1) Monólogo crítico: > 150 s seguidos, una vez por racha.
@@ -221,6 +259,7 @@ mod tests {
             longest_user_mono_ms: current_mono_ms,
             user_mono_runs: runs,
             session_ms: user_ms + inter_ms,
+            last_interlocutor_voice_ms: 0,
         }
     }
 
@@ -333,14 +372,46 @@ mod tests {
     }
 
     #[test]
-    fn presentacion_suprime_dominancia_pero_no_monologo() {
+    fn presentacion_no_usa_la_tabla_conversacional() {
+        // Desde 2026-09-11 en ponente no sale ni dominancia ni el monólogo de
+        // 60 s: la tabla de ponente (5/10 min) vive en presenter_heuristics y la
+        // enruta audio_heuristic_tick.
         let gate = AudioTipState::default();
         let pres = AudioSnapshot::from_voice(&voice(80_000, 20_000, 0, 3), 200, true);
         assert!(evaluate_audio_tips(&pres, &gate).is_none(), "un ponente DEBE acaparar");
 
         let pres_mono = AudioSnapshot::from_voice(&voice(80_000, 20_000, 70_000, 3), 200, true);
-        let tip = evaluate_audio_tips(&pres_mono, &gate).expect("ritmo sí aplica en ponencia");
-        assert_eq!(tip.trigger, TRIGGER_MONO_LONG);
+        assert!(evaluate_audio_tips(&pres_mono, &gate).is_none(), "70 s seguidos son normales en ponencia");
+    }
+
+    #[test]
+    fn presenter_view_mapea_el_snapshot_de_audio() {
+        let mut v = voice(120_000, 30_000, 61_000, 2);
+        v.last_interlocutor_voice_ms = 100_000;
+        let view = AudioSnapshot::from_voice(&v, 150, true).presenter_view();
+        assert_eq!(view.session_secs, 150);
+        assert_eq!(view.current_run_secs, 61);
+        assert_eq!(view.longest_run_secs, 61);
+        assert_eq!(view.run_id, 2);
+        assert!(view.audience_seen);
+        assert_eq!(view.audience_silent_secs, 50, "(150 000 − 100 000) / 1000");
+        assert_eq!(view.audience_units, 30_000);
+        assert_eq!(view.total_units, 150_000);
+        assert!(view.any_activity);
+
+        let nunca = AudioSnapshot::from_voice(&voice(120_000, 800, 0, 1), 120, true).presenter_view();
+        assert!(!nunca.audience_seen, "800 ms de voz no llegan a tener la palabra");
+        assert_eq!(nunca.audience_silent_secs, 120, "toda la sesión");
+    }
+
+    #[test]
+    fn health_en_presentacion_delega_en_ponente() {
+        let mut v = voice(400_000, 0, 0, 1);
+        v.longest_user_mono_ms = 301_000;
+        // Ponente: −10 por racha > 5 min, sin audiencia → 60.
+        assert_eq!(AudioSnapshot::from_voice(&v, 600, true).health_score(), 60);
+        // Conversación, mismo estado: −20 (> 120 s) −15 (ratio 1.0) → 35.
+        assert_eq!(AudioSnapshot::from_voice(&v, 600, false).health_score(), 35);
     }
 
     #[test]
@@ -373,8 +444,9 @@ mod tests {
         assert_eq!(AudioSnapshot::from_voice(&v, 200, false).health_score(), 60);
         v.longest_user_mono_ms = 121_000;
         assert_eq!(AudioSnapshot::from_voice(&v, 200, false).health_score(), 50);
-        // También en presentación (es ritmo, no dominancia).
-        assert_eq!(AudioSnapshot::from_voice(&v, 200, true).health_score(), 50);
+        // Ponente (2026-09-11): 121 s no llegan a los 5 min, y la audiencia
+        // habló el 30 % con sesión ≥ 3 min → 70 + 5.
+        assert_eq!(AudioSnapshot::from_voice(&v, 200, true).health_score(), 75);
     }
 
     #[test]
@@ -385,9 +457,10 @@ mod tests {
         assert_eq!(snap(50_000, 50_000, 0, 1, 200).health_score(), 75);
         // ratio 0.9 pero solo 10 s de voz total: neutro.
         assert_eq!(snap(9_000, 1_000, 0, 1, 200).health_score(), 70);
-        // Presentación: el ratio no cuenta.
+        // Presentación: el ratio no penaliza; la audiencia con exactamente el
+        // 10 % (frontera entera, a propósito) sí bonifica → 75.
         let pres = AudioSnapshot::from_voice(&voice(90_000, 10_000, 0, 1), 200, true);
-        assert_eq!(pres.health_score(), 70);
+        assert_eq!(pres.health_score(), 75);
     }
 
     #[test]

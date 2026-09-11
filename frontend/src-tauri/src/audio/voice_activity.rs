@@ -99,6 +99,13 @@ pub struct VoiceActivityStats {
     user_mono_runs: AtomicU64,
     /// Reloj de audio del micrófono (ms de audio de mic procesados, sin pausa).
     session_ms: AtomicU64,
+    /// Reloj del mic (`session_ms`) del último bloque de sistema con voz
+    /// MIENTRAS el interlocutor tenía la palabra (`interlocutor_holds_floor`:
+    /// voz continua ≥ `INTERRUPT_MS`), es decir, el mismo evento que rompe la
+    /// racha del usuario; una tos de 300 ms no lo mueve. 0 = la audiencia
+    /// nunca intervino. Lo lee el coach de ponente
+    /// (`coach/presenter_heuristics.rs`) para "nadie ha intervenido en N min".
+    last_interlocutor_voice_ms: AtomicU64,
 }
 
 impl VoiceActivityStats {
@@ -116,6 +123,8 @@ impl VoiceActivityStats {
         self.longest_user_mono_ms.store(s.longest_user_mono_ms, Ordering::Relaxed);
         self.user_mono_runs.store(s.user_mono_runs, Ordering::Relaxed);
         self.session_ms.store(s.session_ms, Ordering::Relaxed);
+        self.last_interlocutor_voice_ms
+            .store(s.last_interlocutor_voice_ms, Ordering::Relaxed);
     }
 
     /// Lectura consistente "a ojo" (cada campo es atómico; el conjunto puede
@@ -129,6 +138,7 @@ impl VoiceActivityStats {
             longest_user_mono_ms: self.longest_user_mono_ms.load(Ordering::Relaxed),
             user_mono_runs: self.user_mono_runs.load(Ordering::Relaxed),
             session_ms: self.session_ms.load(Ordering::Relaxed),
+            last_interlocutor_voice_ms: self.last_interlocutor_voice_ms.load(Ordering::Relaxed),
         }
     }
 }
@@ -141,9 +151,18 @@ pub struct VoiceActivitySnapshot {
     pub longest_user_mono_ms: u64,
     pub user_mono_runs: u64,
     pub session_ms: u64,
+    /// Ver `VoiceActivityStats::last_interlocutor_voice_ms` (0 = nunca).
+    pub last_interlocutor_voice_ms: u64,
 }
 
 impl VoiceActivitySnapshot {
+    /// Ms de audio desde la última intervención (≥ `INTERRUPT_MS`) de la
+    /// audiencia. Si nunca intervino, toda la sesión (`saturating_sub(0)`).
+    /// Mismo reloj que `session_ms` (audio del mic, no pared).
+    pub fn interlocutor_silence_ms(&self) -> u64 {
+        self.session_ms.saturating_sub(self.last_interlocutor_voice_ms)
+    }
+
     /// ¿Algún canal ha tenido voz? El gauge muestra "Esperando audio…" hasta
     /// que sea `true`.
     pub fn any_voiced(&self) -> bool {
@@ -350,6 +369,13 @@ impl MonologueMachine {
                 .interlocutor_voiced_ms
                 .fetch_add(BLOCK_MS as u64, Ordering::Relaxed);
             self.sys_continuous_voiced_ms = self.sys_continuous_voiced_ms.saturating_add(BLOCK_MS);
+            if self.interlocutor_holds_floor() {
+                // "Intervención" de la audiencia = tiene la palabra (≥ INTERRUPT_MS),
+                // el mismo evento que rompe la racha; un `store` Relaxed por bloque.
+                self.stats
+                    .last_interlocutor_voice_ms
+                    .store(self.session_ms, Ordering::Relaxed);
+            }
             if self.run_active && self.interlocutor_holds_floor() {
                 self.close_run();
             }
@@ -476,6 +502,8 @@ mod tests {
         assert_eq!(s.session_ms, 2_000, "el reloj de sesión es el del mic, con o sin voz");
         assert!(!s.any_voiced());
         assert_eq!(s.user_talk_ratio(), 0.5);
+        assert_eq!(s.last_interlocutor_voice_ms, 0);
+        assert_eq!(s.interlocutor_silence_ms(), 2_000, "sin intervención, el silencio es toda la sesión");
     }
 
     #[test]
@@ -518,6 +546,10 @@ mod tests {
         assert_eq!(s.user_voiced_ms, 6_000);
         assert!(s.current_user_mono_ms > 0, "la segunda racha sigue abierta");
         assert!(s.longest_user_mono_ms >= 2_500, "la primera racha duró hasta la interrupción");
+        // La audiencia tuvo la palabra hasta el último bloque con voz (hangover
+        // incluido): 1000 + 2000 + 500 = 3500 en el reloj del mic.
+        assert_eq!(s.last_interlocutor_voice_ms, 3_500);
+        assert_eq!(s.interlocutor_silence_ms(), 2_500);
     }
 
     #[test]
@@ -530,6 +562,8 @@ mod tests {
         assert_eq!(s.user_mono_runs, 1, "300 ms + 500 de hangover = 800 < INTERRUPT_MS");
         assert_eq!(s.current_user_mono_ms, 4_000);
         assert_eq!(s.interlocutor_voiced_ms, 800);
+        assert_eq!(s.last_interlocutor_voice_ms, 0, "una tos no es una intervención");
+        assert_eq!(s.interlocutor_silence_ms(), 4_000);
     }
 
     #[test]
@@ -680,6 +714,21 @@ mod tests {
         };
         assert!((con_voz.user_talk_ratio() - 0.75).abs() < 1e-6);
         assert!(con_voz.any_voiced());
+    }
+
+    #[test]
+    fn interlocutor_silence_ms_es_toda_la_sesion_sin_intervencion() {
+        // Voz del sistema que nunca llegó a INTERRUPT_MS: cuenta como voz pero
+        // no como intervención, así que el silencio es toda la sesión.
+        let s = VoiceActivitySnapshot {
+            interlocutor_voiced_ms: 800,
+            last_interlocutor_voice_ms: 0,
+            session_ms: 4_000,
+            ..Default::default()
+        };
+        assert_eq!(s.interlocutor_silence_ms(), 4_000);
+        let con = VoiceActivitySnapshot { last_interlocutor_voice_ms: 3_500, ..s };
+        assert_eq!(con.interlocutor_silence_ms(), 500);
     }
 
     #[test]
