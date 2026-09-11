@@ -633,7 +633,7 @@ fn restore_db_backup_in_dir(app_data: &std::path::Path) -> Result<String, String
     if !bak_path.exists() {
         // Anómalo: el botón de restaurar solo se muestra cuando get_db_backup_info
         // reportó un respaldo. Llegar aquí sin .bak amerita ERROR (y sirve de disparo
-        // determinista para verificar el puente rust-error).
+        // determinista para verificar el puente Rust ERROR → outbox → app.error).
         error!("[restore_db_backup] No existe {:?}", bak_path);
         return Err("No hay respaldo .bak para restaurar".to_string());
     }

@@ -18,7 +18,6 @@ pub const DB_INIT_FAILED: &str = "db-init-failed";
 pub const DATABASE_INITIALIZED: &str = "database-initialized";
 pub const FIRST_LAUNCH_DETECTED: &str = "first-launch-detected";
 pub const DEEP_LINK_RECEIVED: &str = "deep-link-received";
-pub const RUST_ERROR: &str = "rust-error";
 /// Incidente con consentimiento (#61): Rust detectó un umbral crítico de RAM
 /// sostenido, un panic del proceso anterior, o el usuario lo pidió. Payload
 /// `{ kind: "app-rss-critical"|"system-memory-pressure"|"rust-panic"|"manual",

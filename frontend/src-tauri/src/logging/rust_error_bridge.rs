@@ -1,46 +1,66 @@
-//! Puente Rust ERROR → frontend → `app.error` en maity.platform_logs (issue #60).
+//! Puente Rust ERROR → outbox nativo → `app.error` en maity.platform_logs (issue #60).
 //!
 //! Un `Layer` de tracing captura los eventos ERROR del crate (los ~100
 //! `log::error!` llegan igual, vía el LogTracer implícito de
 //! `SubscriberInitExt::init()`), los filtra/dedupea y los manda por un canal
 //! mpsc acotado. Una task drenadora (arrancada en el `setup()` de lib.rs con el
-//! AppHandle) los emite como evento `rust-error`; el listener del frontend
-//! (`errorTelemetry.ts`, solo ventana principal) los reenvía como `app.error`
-//! con `source:'rust'`.
+//! AppHandle, DESPUÉS del init de la DB) los escribe al outbox durable con
+//! `telemetry::emit::emit_event` como `app.error` `source:"rust"`; `drain.rs`
+//! los sube. Hasta 0.2.59 la drenadora emitía el evento Tauri `rust-error` y un
+//! listener del webview los reenviaba por `platformLogger`: con la ventana en
+//! tray WebView2 duerme y 6 de 8 ERROR del día piloto (2026-09-10) se
+//! perdieron; los emitidos antes de que el listener montara, también. El
+//! outbox no tiene ninguno de los dos huecos (la regla de oro de
+//! `telemetry/mod.rs`, que este módulo inspiró y ahora también cumple).
 //!
-//! ## Por qué canal y NO `app.emit` directo desde `on_event`
+//! ## Por qué canal y NO escribir directo desde `on_event`
 //! `on_event` corre síncrono en el thread que logueó, potencialmente bajo locks
-//! arbitrarios (incluidos internos de Tauri); `app.emit` serializa e itera
-//! ventanas bajo el state de Tauri y puede loguear transitivamente (wry/tao vía
-//! `log`) → deadlock por inversión de locks o reentrada del subscriber. Con el
-//! canal, dentro de `on_event` solo hay filtro + visitor + dedup + `try_send`:
-//! nada bloquea, nada loguea, nada re-entra.
+//! arbitrarios (incluidos internos de Tauri); escribir a SQLite o tocar el
+//! state de Tauri ahí puede loguear transitivamente → deadlock por inversión de
+//! locks o reentrada del subscriber. Con el canal, dentro de `on_event` solo
+//! hay filtro + visitor + dedup + `try_send`: nada bloquea, nada loguea, nada
+//! re-entra.
 //!
 //! ## REGLA: PROHIBIDO loguear dentro de este módulo
 //! Ni `log::*` ni `tracing::*` en `on_event` NI en la drenadora — un log aquí
 //! puede re-entrar el propio layer. Todos los fallos se descartan en silencio
-//! (el log rotativo ya tiene el error original).
+//! (el log rotativo ya tiene el error original). `emit_event` nunca propaga
+//! error y su camino (`emit.rs`, `context.rs`, `recording_log.rs::log_event`,
+//! `drain.rs`) solo hace `warn!`, que este layer no captura; y como cinturón,
+//! el filtro por target EXCLUYE esos módulos (`is_bridged_target`): un
+//! `error!` futuro ahí no puede volver al puente y auto-alimentarse.
 //!
 //! ## Filtro por target
-//! Solo pasan `app_lib` / `app_lib::*`. Excluye a propósito:
+//! Solo pasan `app_lib` / `app_lib::*`, menos los módulos del propio camino del
+//! outbox (arriba). Excluye a propósito:
 //! - `"frontend"` (`log_frontend_event` re-emite errores de JS como
 //!   `tracing::error!(target: "frontend")` → sería un bucle JS→Rust→JS);
 //! - crates de terceros (tauri/wry/sqlx/reqwest…): ruido sin accionable.
 //! OJO: un futuro `log::error!(target: "custom", ...)` NO pasa el filtro —
 //! usar el target implícito (`module_path!`) para que cuente.
 //!
+//! ## Payload (`app.error`, `source:"rust"`)
+//! `{source, name: target, message, rust_ts_ms, dedup_key, seq,
+//! session_uptime_s, pathname: null, stack: null, component_stack: null}`;
+//! columna `error` = message, `status` = `error`, `session_id` = la de proceso
+//! (`proc-…`), `ctx.emitter = "rust"`. `dedup_key` es la del limiter
+//! (`target:message[..120]`, sin la elipsis que añadía el JS al truncar);
+//! `seq` es el nº de envío del proceso; `session_uptime_s` cuenta desde
+//! `make_layer()` (arranque del logging en main.rs).
+//!
 //! ## Gaps conocidos (documentados en docs/TELEMETRIA.md)
 //! - El fallback `tracing_subscriber::fmt::init()` de main.rs (cuando falla el
 //!   file logging) no lleva este layer.
-//! - Eventos emitidos antes de que el frontend monte su listener se pierden
-//!   del lado remoto (Tauri no encola emits); persisten en maity.log.
-//! - Los panics no pasan por tracing (fuera de alcance; ver issue #60).
+//! - Los ERROR que llegan a la drenadora antes de que exista `AppState`
+//!   (pre-DB) se descartan con `warn!` en `write_to_outbox`; persisten en
+//!   maity.log. En la práctica `start()` corre después del init de la DB.
+//! - Los panics no pasan por tracing: los sube `telemetry/panics.rs`.
 
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::collections::{BTreeMap, BTreeSet};
+use std::time::Instant;
 
-use tauri::Emitter;
 use tokio::sync::mpsc;
 use tracing::field::{Field, Visit};
 use tracing::{Event, Level, Subscriber};
@@ -61,10 +81,16 @@ const CHANNEL_CAPACITY: usize = 64;
 pub struct RustErrorPayload {
     pub target: String,
     pub message: String,
-    /// Epoch millis del lado Rust: el pipeline (canal → drenadora → webview →
-    /// gap del limiter JS → RPC) puede retrasar `created_at` varios segundos;
-    /// esto permite correlacionar exacto contra las líneas de maity.log.
+    /// Epoch millis del lado Rust: el pipeline (canal → drenadora → outbox →
+    /// tick de `drain.rs`) puede retrasar `created_at` varios segundos; esto
+    /// permite correlacionar exacto contra las líneas de maity.log.
     pub ts_ms: u64,
+    /// Clave con la que el limiter dedupeó (`target:message[..120]`). Viaja en
+    /// el payload para que el SQL agrupe igual que cuando lo armaba el JS.
+    pub dedup_key: String,
+    /// Nº de envío del proceso (1-based). Se captura en `on_event`, no al
+    /// drenar: la drenadora consume el canal con retraso.
+    pub seq: u64,
 }
 
 /// Contadores del limiter para el `err_budget` del heartbeat. Monótonos por
@@ -130,7 +156,7 @@ impl BridgeLimiter {
     /// true si este error debe enviarse. Dedup por `target:message[..120]`
     /// sobre lo ENVIADO; cada descarte incrementa su contador.
     fn allows(&self, target: &str, message: &str, now_ms: u64) -> bool {
-        let key = format!("{}:{}", target, truncate_chars(message, 120));
+        let key = dedup_key(target, message);
         {
             let Ok(mut seen) = self.seen.lock() else { return false };
             *seen.entry(key.clone()).or_insert(0) += 1;
@@ -159,8 +185,13 @@ impl BridgeLimiter {
         true
     }
 
+    /// Envíos acumulados del proceso: el `seq` del payload.
+    fn sent_count(&self) -> u64 {
+        self.sent.load(Ordering::Relaxed) as u64
+    }
+
     fn budget(&self, dropped_channel: u64) -> BridgeBudget {
-        let sent = self.sent.load(Ordering::Relaxed) as u64;
+        let sent = self.sent_count();
         let (top_suppressed, occurrences_total) = match self.seen.lock() {
             Ok(seen) => {
                 let total: u64 = seen.values().sum();
@@ -204,6 +235,59 @@ pub fn budget_snapshot() -> Option<BridgeBudget> {
     GLOBAL_LIMITER
         .get()
         .map(|limiter| limiter.budget(DROPPED_CHANNEL.load(Ordering::Relaxed)))
+}
+
+/// Instante del `make_layer()` (= arranque del logging, en main.rs): base del
+/// `session_uptime_s` del payload, como el `startedAt` del módulo JS.
+static STARTED_AT: OnceLock<Instant> = OnceLock::new();
+
+fn process_uptime_s() -> u64 {
+    STARTED_AT.get().map(|t| t.elapsed().as_secs()).unwrap_or(0)
+}
+
+/// Clave de dedup del limiter y `dedup_key` del payload: una sola definición.
+pub(crate) fn dedup_key(target: &str, message: &str) -> String {
+    format!("{}:{}", target, truncate_chars(message, 120))
+}
+
+/// Forma del `app.error` nativo (`source:"rust"`). Misma familia de claves que
+/// el JS (`errorTelemetry.ts`) para que las queries por `dedup_key`/`source`
+/// no cambien; lo que solo el webview sabe (`pathname`, `stack`,
+/// `component_stack`) va como `null` explícito, no se inventa.
+pub(crate) fn build_app_error_payload(p: &RustErrorPayload, uptime_s: u64) -> serde_json::Value {
+    serde_json::json!({
+        "source": "rust",
+        "name": p.target,
+        "message": p.message,
+        "rust_ts_ms": p.ts_ms,
+        "dedup_key": p.dedup_key,
+        "seq": p.seq,
+        "session_uptime_s": uptime_s,
+        "pathname": serde_json::Value::Null,
+        "stack": serde_json::Value::Null,
+        "component_stack": serde_json::Value::Null,
+    })
+}
+
+/// Filtro estructural del puente. Pasan `app_lib` / `app_lib::*` MENOS los
+/// módulos del camino del outbox: aunque alguien añada un `error!` en
+/// `logging/telemetry/*`, en este módulo o en `recording_log.rs`, no puede
+/// volver al puente y auto-alimentarse. Prefijo por segmento (`p` exacto o
+/// `p::…`): un módulo hermano con nombre parecido sí pasa.
+fn is_bridged_target(target: &str) -> bool {
+    // Exacto o con separador: `app_lib2::x` NO debe pasar.
+    if !(target == "app_lib" || target.starts_with("app_lib::")) {
+        return false;
+    }
+    const OUTBOX_PATH: [&str; 3] = [
+        "app_lib::logging::telemetry",
+        "app_lib::logging::rust_error_bridge",
+        "app_lib::database::repositories::recording_log",
+    ];
+    !OUTBOX_PATH.iter().any(|p| {
+        target == *p
+            || (target.len() > p.len() && target.starts_with(p) && target[p.len()..].starts_with("::"))
+    })
 }
 
 /// Truncado seguro por caracteres (no parte UTF-8 a la mitad).
@@ -260,8 +344,7 @@ impl<S: Subscriber> Layer<S> for RustErrorLayer {
             return;
         }
         let target = meta.target();
-        // Exacto o con separador: `app_lib2::x` NO debe pasar.
-        if !(target == "app_lib" || target.starts_with("app_lib::")) {
+        if !is_bridged_target(target) {
             return;
         }
         let mut visitor = MessageVisitor::default();
@@ -272,6 +355,8 @@ impl<S: Subscriber> Layer<S> for RustErrorLayer {
         if !self.limiter.allows(target, &visitor.message, now_ms()) {
             return;
         }
+        let dedup_key = dedup_key(target, &visitor.message);
+        let seq = self.limiter.sent_count();
         // try_send: jamás bloquea. Canal lleno o drenadora ausente → drop
         // contado (el error ya está en maity.log; el contador delata el hueco).
         if self
@@ -280,6 +365,8 @@ impl<S: Subscriber> Layer<S> for RustErrorLayer {
                 target: target.to_string(),
                 message: visitor.message,
                 ts_ms: now_ms(),
+                dedup_key,
+                seq,
             })
             .is_err()
         {
@@ -294,6 +381,7 @@ static PENDING_RX: Mutex<Option<mpsc::Receiver<RustErrorPayload>>> = Mutex::new(
 
 /// Crea el layer para el registry de `init_file_logging`. Llamar UNA vez.
 pub fn make_layer() -> RustErrorLayer {
+    let _ = STARTED_AT.set(Instant::now());
     let (tx, rx) = mpsc::channel(CHANNEL_CAPACITY);
     if let Ok(mut slot) = PENDING_RX.lock() {
         *slot = Some(rx);
@@ -305,14 +393,26 @@ pub fn make_layer() -> RustErrorLayer {
 }
 
 /// Arranca la task drenadora con el AppHandle (desde `setup()` de lib.rs,
-/// patrón `mem_sampler::start`). Sin `make_layer()` previo es no-op.
+/// DESPUÉS del init de la DB; patrón `mem_sampler::start`). Sin `make_layer()`
+/// previo es no-op. Cada ERROR se escribe al outbox como `app.error`
+/// (`source:"rust"`); `drain.rs` lo sube aunque el webview esté dormido.
 pub fn start(app: tauri::AppHandle) {
     let rx = PENDING_RX.lock().ok().and_then(|mut slot| slot.take());
     let Some(mut rx) = rx else { return };
     tauri::async_runtime::spawn(async move {
         while let Some(payload) = rx.recv().await {
-            // Fallo de emit → ignorar. JAMÁS loguear aquí (reentrada).
-            let _ = app.emit(crate::events::RUST_ERROR, &payload);
+            // JAMÁS loguear aquí (reentrada). `emit_event` nunca propaga error
+            // y su camino solo hace warn!, que este layer no captura.
+            crate::logging::telemetry::emit::emit_event(
+                &app,
+                crate::logging::telemetry::context::process_session_id(),
+                crate::logging::telemetry::catalog::APP_ERROR,
+                build_app_error_payload(&payload, process_uptime_s()),
+                Some(crate::logging::telemetry::status::TelemetryStatus::Error),
+                Some(&payload.message),
+                None,
+            )
+            .await;
         }
     });
 }
@@ -366,14 +466,21 @@ mod tests {
             tracing::error!(target: "frontend", "bucle JS, no debe pasar");
             tracing::error!(target: "tauri::runtime", "tercero, no debe pasar");
             tracing::warn!(target: "app_lib::audio::worker", "warn no pasa");
+            // Camino del outbox: excluido por estructura (anti auto-alimentación).
+            tracing::error!(target: "app_lib::logging::telemetry::emit", "no debe pasar");
+            tracing::error!(target: "app_lib::logging::rust_error_bridge", "no debe pasar");
+            tracing::error!(target: "app_lib::database::repositories::recording_log", "no debe pasar");
         });
 
         let first = rx.try_recv().expect("app_lib::* debe pasar");
         assert_eq!(first.target, "app_lib::audio::worker");
         assert_eq!(first.message, "boom uno");
         assert!(first.ts_ms > 0);
+        assert_eq!(first.seq, 1, "seq = nº de envío, capturado en on_event");
+        assert_eq!(first.dedup_key, "app_lib::audio::worker:boom uno");
         let second = rx.try_recv().expect("app_lib exacto debe pasar");
         assert_eq!(second.target, "app_lib");
+        assert_eq!(second.seq, 2);
         assert!(rx.try_recv().is_err(), "solo 2 eventos debieron pasar el filtro");
     }
 
@@ -437,5 +544,71 @@ mod tests {
         let s = "ñ".repeat(150);
         let t = truncate_chars(&s, 120);
         assert_eq!(t.chars().count(), 120);
+    }
+
+    #[test]
+    fn targets_del_outbox_quedan_excluidos_del_puente() {
+        // Pasan
+        assert!(is_bridged_target("app_lib"));
+        assert!(is_bridged_target("app_lib::audio::worker"));
+        assert!(is_bridged_target("app_lib::logging::mem_sampler"));
+        assert!(is_bridged_target("app_lib::database::commands"));
+        // Fuera del crate
+        assert!(!is_bridged_target("app_lib2::x"));
+        assert!(!is_bridged_target("frontend"));
+        assert!(!is_bridged_target("sqlx::query"));
+        // Camino del outbox: un error! ahí no puede volver al puente
+        assert!(!is_bridged_target("app_lib::logging::telemetry"));
+        assert!(!is_bridged_target("app_lib::logging::telemetry::emit"));
+        assert!(!is_bridged_target("app_lib::logging::telemetry::drain"));
+        assert!(!is_bridged_target("app_lib::logging::rust_error_bridge"));
+        assert!(!is_bridged_target("app_lib::database::repositories::recording_log"));
+        // El prefijo es por segmento: un módulo hermano con nombre parecido sí pasa
+        assert!(is_bridged_target("app_lib::logging::telemetry_viewer"));
+    }
+
+    #[test]
+    fn payload_app_error_desde_rust_tiene_la_forma_del_contrato() {
+        let p = RustErrorPayload {
+            target: "app_lib::audio::worker".into(),
+            message: "boom".into(),
+            ts_ms: 1234,
+            dedup_key: dedup_key("app_lib::audio::worker", "boom"),
+            seq: 3,
+        };
+        let v = build_app_error_payload(&p, 42);
+        let obj = v.as_object().expect("objeto");
+        let mut keys: Vec<&str> = obj.keys().map(|k| k.as_str()).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            [
+                "component_stack", "dedup_key", "message", "name", "pathname",
+                "rust_ts_ms", "seq", "session_uptime_s", "source", "stack",
+            ]
+        );
+        assert_eq!(v["source"], "rust");
+        assert_eq!(v["name"], "app_lib::audio::worker");
+        assert_eq!(v["message"], "boom");
+        assert_eq!(v["rust_ts_ms"], 1234);
+        assert_eq!(v["seq"], 3);
+        assert_eq!(v["session_uptime_s"], 42);
+        assert_eq!(v["dedup_key"], "app_lib::audio::worker:boom");
+        // Lo que solo el webview sabía va como null explícito, no inventado.
+        assert!(v["pathname"].is_null() && v["stack"].is_null() && v["component_stack"].is_null());
+    }
+
+    #[test]
+    fn dedup_key_es_la_misma_que_usa_el_limiter() {
+        let lim = BridgeLimiter::new(3, 0);
+        let long = "x".repeat(200);
+        assert!(lim.allows("t", &long, 1));
+        let key = dedup_key("t", &long);
+        assert_eq!(key.chars().count(), "t:".len() + 120, "mensaje truncado a 120 chars");
+        assert!(
+            lim.sent_keys.lock().expect("sent_keys").contains(&key),
+            "el limiter dedupea con exactamente la clave que viaja en el payload"
+        );
+        assert_eq!(lim.sent_count(), 1);
     }
 }

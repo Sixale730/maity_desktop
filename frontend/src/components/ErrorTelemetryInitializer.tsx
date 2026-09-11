@@ -13,9 +13,8 @@ import { initErrorTelemetry } from '@/lib/errorTelemetry';
  *
  * Ventanas auxiliares: NUNCA montan este componente — RootLayout hace early
  * return para las rutas de `lib/auxWindows.ts` antes de llegar a esta rama, así
- * que hoy solo la ventana principal reporta. Si eso cambiara, ojo con el puente
- * rust-error: su `emit()` es broadcast a todas las webviews y cada listener
- * duplicaría el reporte (la barrera real es el dedup del lado Rust).
+ * que hoy solo la ventana principal reporta errores de JS. Los ERROR de Rust ya
+ * no pasan por ningún webview: `rust_error_bridge.rs` los escribe al outbox.
  */
 export function ErrorTelemetryInitializer() {
   useEffect(() => {

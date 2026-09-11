@@ -18,7 +18,6 @@ export const TauriEvent = {
   DATABASE_INITIALIZED: 'database-initialized',
   FIRST_LAUNCH_DETECTED: 'first-launch-detected',
   DEEP_LINK_RECEIVED: 'deep-link-received',
-  RUST_ERROR: 'rust-error',
   INCIDENT_DETECTED: 'incident-detected',
 
   // ── Auth (OAuth localhost server) ─────────────────────────────────────────

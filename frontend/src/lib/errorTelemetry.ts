@@ -3,45 +3,42 @@
  *
  * Fuentes: handlers globales de `window` ('error' + 'unhandledrejection', que
  * de facto cubren muchos fallos originados en Rust — los rechazos de `invoke()`
- * llegan como strings), `ErrorBoundary.componentDidCatch`, `DbInitErrorGate`
- * ('db-init') y el puente `rust-error` (los `log::error!` de tareas background
- * de Rust que ningún invoke reporta; ver logging/rust_error_bridge.rs — el lado
- * Rust ya dedupea/capea, este limiter es la segunda barrera). Hookear
- * `logger.error` quedó DESCARTADO (issue #63, cerrado como no-planeado): ruido
- * de errores manejados de rutina, doble conteo con los handlers de window y el
- * vector de bucle más peligroso.
+ * llegan como strings), `ErrorBoundary.componentDidCatch` y `DbInitErrorGate`
+ * ('db-init'). Los `log::error!` de tareas background de Rust YA NO pasan por
+ * aquí: `logging/rust_error_bridge.rs` los escribe al outbox nativo como
+ * `app.error` `source:'rust'` (hasta 0.2.59 llegaban por el evento Tauri
+ * `rust-error` y este módulo los reenviaba — con la ventana en tray WebView2
+ * dormía y se perdían). Hookear `logger.error` quedó DESCARTADO (issue #63,
+ * cerrado como no-planeado): ruido de errores manejados de rutina, doble
+ * conteo con los handlers de window y el vector de bucle más peligroso.
  *
- * Presupuesto por sesión de ventana: máx 20 envíos, dedup por (name+message),
- * mínimo 2s entre envíos, sin cola. Los repetidos solo cuentan local.
+ * Presupuesto por sesión de ventana y POR FUENTE (`SOURCE_BUDGETS`), dedup por
+ * (name+message), mínimo 2s entre envíos, sin cola. Los repetidos solo cuentan
+ * local.
  *
  * REGLA ANTI-BUCLE: dentro de este módulo está prohibido `logger.*` y
  * `console.*`; todo el path de envío va en try/catch vacío y `platformLogger`
  * nunca lanza ni rechaza — un fallo del propio envío no re-dispara
- * 'unhandledrejection'. El path rust jamás toca `log_frontend_event`, y el
- * layer Rust excluye el target "frontend" — el bucle está cortado en ambos
- * extremos.
+ * 'unhandledrejection'. El layer Rust excluye el target "frontend"
+ * (`log_frontend_event`): el bucle JS→Rust→JS está cortado del lado Rust.
  */
-import { listen } from '@tauri-apps/api/event'
-
 import { platformLogger } from '@/lib/platformLogger'
-import { TauriEvent } from '@/lib/tauri-events'
 
 export const MIN_REPORT_GAP_MS = 2_000
 
-export type ErrorSource = 'window' | 'unhandledrejection' | 'error-boundary' | 'db-init' | 'rust'
+export type ErrorSource = 'window' | 'unhandledrejection' | 'error-boundary' | 'db-init'
 
 /**
- * Presupuesto POR FUENTE (anti noisy-neighbor): antes las 5 fuentes compartían
- * un cap de 20 y un render-loop de React se comía el cupo entero, tirando los
- * ERROR de Rust que ya pagaron la barrera del puente (#60). Ahora cada fuente
- * agota solo lo suyo.
+ * Presupuesto POR FUENTE (anti noisy-neighbor): antes las fuentes compartían
+ * un cap de 20 y un render-loop de React se comía el cupo entero. Ahora cada
+ * fuente agota solo lo suyo. Los ERROR de Rust ya no pasan por este limiter:
+ * el puente escribe al outbox con su propio `BridgeLimiter` (20/proceso).
  */
 export const SOURCE_BUDGETS: Record<ErrorSource, number> = {
   window: 8,
   unhandledrejection: 8,
   'error-boundary': 5,
   'db-init': 3,
-  rust: 20,
 }
 
 /** Fuentes futuras no listadas: presupuesto conservador. */
@@ -54,13 +51,6 @@ export interface ErrorBudgetStats {
   dropped_cap: number
   dropped_gap: number
   sent_by_source: Record<string, number>
-}
-
-/** Payload del evento `rust-error` (logging/rust_error_bridge.rs). */
-export interface RustErrorPayload {
-  target: string
-  message: string
-  ts_ms: number
 }
 
 export function truncateStr(s: string, max: number): string {
@@ -174,7 +164,7 @@ export function getErrorTelemetryStats(): ErrorBudgetStats {
 export function reportCaughtError(
   source: ErrorSource,
   error: unknown,
-  extra?: { componentStack?: string; rustTsMs?: number },
+  extra?: { componentStack?: string },
 ): void {
   // Guard síncrono: si construir/enviar el reporte lanza y eso re-entra aquí,
   // cortamos en seco.
@@ -197,9 +187,6 @@ export function reportCaughtError(
         component_stack: extra?.componentStack
           ? truncateStr(extra.componentStack, 1000)
           : null,
-        // Epoch ms del lado Rust (solo source:'rust'): correlaciona contra
-        // maity.log; created_at puede llegar segundos después por el pipeline.
-        rust_ts_ms: extra?.rustTsMs ?? null,
         pathname: typeof window !== 'undefined' ? window.location.pathname : null,
         dedup_key: key,
         seq,
@@ -233,21 +220,4 @@ export function initErrorTelemetry(): void {
   window.addEventListener('unhandledrejection', (event) => {
     reportCaughtError('unhandledrejection', event.reason)
   })
-
-  // Puente rust-error: los ERROR de tareas background de Rust que ningún
-  // invoke reporta. Solo la ventana principal monta este módulo (early return
-  // del layout para las aux), así que el emit broadcast no se multiplica.
-  try {
-    void listen<RustErrorPayload>(TauriEvent.RUST_ERROR, (event) => {
-      const err = new Error(event.payload.message)
-      err.name = event.payload.target
-      // El stack apuntaría a este listener, no al error real de Rust — fuera.
-      err.stack = undefined
-      reportCaughtError('rust', err, { rustTsMs: event.payload.ts_ms })
-    }).catch(() => {
-      // Sin runtime Tauri (dev browser / tests): el puente simplemente no existe.
-    })
-  } catch {
-    // Ídem: jamás romper el init de telemetría por el puente.
-  }
 }

@@ -215,7 +215,7 @@ tareas de proceso, así que su payload **no** lleva `trigger` ni
 | `device.profile` | `healthHeartbeatService.start()` (comando `get_device_profile`) | **1× por sesión** | `cpu_cores`, `gpu_type`, `memory_gb`, `os`, `os_version`, `arch`, `build_channel`, `performance_tier` — *resource attributes*, NO se repiten en cada heartbeat (ver cardinalidad abajo) |
 | `health.heartbeat` | `healthHeartbeatService` (JS) **y `logging/mem_sampler.rs` (Rust, `reason:"native"`)** | JS: cada 5 min activo / 15 min idle + start/stop de grabación. Rust: cada 15 min, SOLO si el webview lleva >20 min sin pedir `get_health_snapshot` (tray / ventana congelada) | ver abajo (+ `err_budget`, `performance_tier`). Etiquetar con `event_data->'ctx'->>'emitter'` (`webview` vs `rust`); para unir la serie de un mismo proceso, agrupar por `event_data->'ctx'->>'session_id'` (la COLUMNA `session_id` difiere entre emisores) |
 | `coach.session_summary` | **`coach/live_feedback.rs::stop()` (Rust, outbox)** — hasta 0.2.59 lo reenviaba el hook `useCoachMetricsTelemetry` desde el evento Tauri `coach-metrics` | al cerrar una sesión de coach **que existió**: sin `start()` previo no hay fila. Hasta 0.2.59 cada arranque de grabación dejaba una fila fantasma (`coach_mode:'transcript'`, voz `null`) porque `start()` llama a `stop()` primero; los históricos se filtran con `ctx->>'emitter'='webview' and user_voiced_ms is null and llm_parse_total=0` | métricas LLM + sidecar (timeouts, restarts, cooldowns, idle_kills, breaker) + picos de RAM + tier. `sidecar_idle_kills` debe ser 0 en Medium+ con tips LLM (lease de sesión, #03 auditoría). Desde F5 (sep-2026) también `coach_mode` (`transcript`\|`audio`), `user_voiced_ms`, `interlocutor_voiced_ms`, `longest_user_mono_ms`, `audio_session_ms`; en modo lote `coach_mode='audio'` y los contadores LLM/sidecar deben ser 0 (`longest_user_mono_ms` calibra `INTERRUPT_MS`). Columna `session_id` = `proc-…`, `ctx.emitter='rust'` (como el latido nativo); sobrevive al webview dormido en tray — en el piloto del 2026-09-10 solo 1 de 9 segmentos dejó summary |
-| `app.error` | `errorTelemetry` (JS) y **`telemetry/panics.rs` (Rust, `source:"rust-panic"`)** | error no manejado / boundary / panic (al outbox; se drena en el siguiente arranque) | ver abajo |
+| `app.error` | `errorTelemetry` (JS: window, unhandledrejection, error-boundary, db-init), **`logging/rust_error_bridge.rs` (Rust, `source:"rust"`, outbox)** y **`telemetry/panics.rs` (Rust, `source:"rust-panic"`, outbox)** | error no manejado / boundary / `log::error!` de Rust / panic (los de Rust al outbox; el panic se drena en el siguiente arranque) | ver abajo |
 
 **Guardado post-grabación — emisor `recordingLogService` (JS → outbox `recording_logs`).**
 Todos legacy. Payload común: `recording_session_id`, `meeting_id`, `is_call_api`.
@@ -333,16 +333,24 @@ Fuentes (`frontend/src/lib/errorTelemetry.ts`):
 - `db-init` (jul-31, issue #64): `DbInitErrorGate` reporta el fallo de
   inicialización de la DB (`name: 'DbInitFailed'`) — antes el incidente era
   invisible remotamente.
-- `rust` (jul-31, issue #60): **puente Rust ERROR→frontend**
+- `rust` (jul-31, issue #60; **outbox desde sep-2026**): **puente Rust ERROR→outbox**
   (`src-tauri/src/logging/rust_error_bridge.rs`). Un Layer de tracing captura
   los ERROR del crate (`log::error!` incluidos vía LogTracer), filtra por
-  target (`app_lib*`; excluye `"frontend"` — anti-bucle — y crates de
-  terceros), dedupea/capea (20/proceso, gap 2s) y los manda por canal mpsc a
-  una task drenadora que emite el evento `rust-error`; el listener del
-  frontend los reenvía con `name` = target Rust y `rust_ts_ms` = epoch ms del
-  lado Rust (para correlacionar contra maity.log). Gaps conocidos: el fallback
-  `fmt::init()` de main.rs no lleva el layer; eventos pre-listener se pierden
-  del lado remoto (persisten en maity.log); los panics no pasan por tracing.
+  target (`app_lib*`; excluye `"frontend"` — anti-bucle —, crates de terceros
+  y los módulos del propio camino del outbox — `logging/telemetry/*`,
+  `recording_log.rs` — para que un `error!` ahí no se auto-alimente),
+  dedupea/capea (20/proceso, gap 2s) y los manda por canal mpsc a una task
+  drenadora que los escribe al outbox con `emit_event` (`name` = target Rust,
+  `rust_ts_ms` = epoch ms del lado Rust para correlacionar contra maity.log,
+  `dedup_key` = la del limiter sin la elipsis del JS, `seq` = nº de envío,
+  `session_uptime_s` desde el init del logging; `pathname`/`stack`/
+  `component_stack` = null). Columna `session_id` = `proc-…`,
+  `ctx.emitter='rust'`. Hasta 0.2.59 la drenadora emitía el evento Tauri
+  `rust-error` y `errorTelemetry.ts` lo reenviaba: con la ventana en tray
+  WebView2 dormía (6 de 8 ERROR del piloto del 2026-09-10 perdidos) y los
+  pre-listener también se perdían — ambos huecos cerrados. Gaps que quedan: el
+  fallback `fmt::init()` de main.rs no lleva el layer; los ERROR pre-`AppState`
+  se descartan con `warn!`; los panics no pasan por tracing (los sube `panics.rs`).
 
 - `rust-panic` (ago-2026, ciclo v0.2.57): `telemetry/panics.rs` encadena un
   `panic::set_hook` al de main.rs (que sigue en Sentry) y escribe el panic a un
@@ -351,9 +359,11 @@ Fuentes (`frontend/src/lib/errorTelemetry.ts`):
   al outbox y `drain.rs` lo sube como `app.error` con `source:"rust-panic"`.
 
 **Presupuesto por fuente, no compartido (ago-2026):** `window 8 ·
-unhandledrejection 8 · error-boundary 5 · db-init 3 · rust 20`. Antes era un
-cupo único de 20 y un render-loop de React se lo comía tirando los ERROR de
-Rust que ya habían pagado la barrera de #60 (anti *noisy neighbor*). Dedup por
+unhandledrejection 8 · error-boundary 5 · db-init 3` en el JS; los ERROR de
+Rust ya no pasan por ese limiter (desde sep-2026 van al outbox con su propio
+`BridgeLimiter`: 20/proceso, gap 2s, message 1000). Antes era un cupo único
+de 20 y un render-loop de React se lo comía tirando los ERROR de Rust que ya
+habían pagado la barrera de #60 (anti *noisy neighbor*). Dedup por
 `name:message[:120]`, gap mínimo 2s, truncado (message 500 / stack 1500 /
 componentStack 1000).
 
@@ -383,13 +393,14 @@ para las otras 8. Beneficio: antes esos datos solo viajaban en
 `ErrorTelemetryInitializer` se monta FUERA de ErrorBoundary/AuthGate
 (invariante en `layout.test.ts`) para capturar errores pre-auth y sobrevivir
 al fallback del boundary; solo la ventana principal lo monta (las aux cuelgan
-del root layout de `app/(aux)`, sin initializers — si eso cambiara, el emit
-broadcast de `rust-error` multiplicaría reportes; la barrera real es el dedup
-del lado Rust). Hook en
+del root layout de `app/(aux)`, sin initializers). Los ERROR de Rust ya no
+dependen de ningún webview (van al outbox). Hook en
 `logger.error`: descartado definitivamente (#63 cerrado como no-planeado).
 
-`event_data`: `{source, name, message, stack, component_stack, rust_ts_ms,
-pathname, dedup_key, seq, session_uptime_s}` + columna `error` = message.
+`event_data`: `{source, name, message, stack, component_stack, pathname,
+dedup_key, seq, session_uptime_s}` + columna `error` = message. En
+`source:"rust"` se añade `rust_ts_ms` y `stack`/`component_stack`/`pathname`
+van `null` (el JS ya no manda `rust_ts_ms`).
 
 ## Nivel 3: logs locales (Rust)
 
@@ -603,7 +614,10 @@ group by 1, 2 order by sesiones desc limit 20;
 Resueltos en el ciclo sep-2026 (v0.2.60): dominio cerrado de `status`
 (`TelemetryStatus` + contrato `docs/platform-logs-status.sql` + re-drenado de
 las filas que el CHECK rechazó en silencio — `stt.*`, `audio.*` e `incident.*`
-llevaban 0 filas all-time).
+llevaban 0 filas all-time); `coach.session_summary` y el puente de ERROR de
+Rust emitidos desde Rust por el outbox (sobreviven al webview dormido en tray:
+8 de 9 summaries y 6 de 8 ERROR del día piloto se habían perdido) y sin filas
+fantasma del coach al arrancar.
 
 Resueltos en el ciclo ago-2026 (v0.2.57): panics a la nube (`rust-panic`,
 arriba); ciclo de vida de grabación desde Rust con `trigger` y dispositivo real

@@ -14,9 +14,10 @@
 //!   violación del CHECK y responde 200, así que un literal libre se perdía
 //!   en silencio (sep-2026: `stt.*`, `audio.*`, `incident.*` con 0 filas).
 //!
-//! Regla de oro (aprendida del puente `rust_error_bridge`): la telemetría
-//! nativa NO emite al webview para que otro la suba — WebView2 suspende el JS
-//! con la ventana oculta y los eventos se pierden. Outbox + drenadora nativa.
+//! Regla de oro (aprendida del puente `rust_error_bridge`, que desde sep-2026
+//! también la cumple): la telemetría nativa NO emite al webview para que otro
+//! la suba — WebView2 suspende el JS con la ventana oculta y los eventos se
+//! pierden. Outbox + drenadora nativa.
 
 pub mod catalog;
 pub mod context;
