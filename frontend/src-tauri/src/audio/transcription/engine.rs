@@ -104,6 +104,25 @@ pub enum WarmOutcome {
     SkippedRegistration,
     /// Provider en la nube (Deepgram): no hay nada que cargar.
     SkippedCloud,
+    /// Modo LOTE (`RecordingPreferences::effective_mode()`): la grabación no
+    /// consume el motor — el planner lo carga con `ensure_stt_warm_parakeet`
+    /// al cerrar cada segmento y lo suelta al vaciar la cola. Precargarlo al
+    /// login eran ~700 MB residentes sin consumidor durante toda la jornada
+    /// (visto el 2026-09-10 en el build piloto 0.2.59: `app_rss_mb` 740 desde
+    /// el login hasta que la presión de memoria forzó el `idle_unload`).
+    SkippedBatch,
+}
+
+/// ¿La precarga se omite por modo LOTE? Decisión pura para la tabla de tests.
+/// Usa `effective_mode()` y no `is_batch_mode()` a secas: sin `auto_save` no
+/// hay checkpoints, la grabación cae a streaming y SÍ necesita el motor (misma
+/// regla que `initialize_recording` y que el warmup del sidecar en `lib.rs`).
+/// `None` (prefs ilegibles) → no se omite: fail-open, como el sidecar.
+pub(crate) fn warm_skipped_by_batch(
+    prefs: Option<&crate::audio::recording_preferences::RecordingPreferences>,
+) -> bool {
+    use crate::audio::recording_preferences::TranscriptionMode;
+    prefs.is_some_and(|p| matches!(p.effective_mode(), TranscriptionMode::Batch))
 }
 
 /// Resultado de `unload_stt`.
@@ -383,6 +402,19 @@ pub async fn ensure_stt_warm<R: Runtime>(
     }
     if !crate::state::registration_completed(app).await {
         return Ok(WarmOutcome::SkippedRegistration);
+    }
+    // Modo lote: la grabación no usa el motor (ver `WarmOutcome::SkippedBatch`).
+    // Se lee ANTES del provider: en lote da igual cuál esté configurado.
+    let prefs = crate::audio::recording_preferences::load_recording_preferences(app)
+        .await
+        .ok();
+    if warm_skipped_by_batch(prefs.as_ref()) {
+        info!(
+            "🦜 Precarga del STT omitida ({}) — modo lote: la grabación no usa el motor; \
+             el planner lo carga al cerrar cada segmento",
+            reason
+        );
+        return Ok(WarmOutcome::SkippedBatch);
     }
     let config = read_transcript_config(app).await?;
     if !is_local_provider(&config.provider) {
@@ -781,6 +813,35 @@ async fn validate_local_provider<R: Runtime>(app: &AppHandle<R>, provider: &str)
 #[cfg(test)]
 mod stt_lifecycle_tests {
     use super::*;
+
+    fn prefs(mode: &str, auto_save: bool) -> crate::audio::recording_preferences::RecordingPreferences {
+        serde_json::from_value(serde_json::json!({
+            "save_folder": "C:/maity-recordings",
+            "auto_save": auto_save,
+            "file_format": "mp4",
+            "transcription_mode": mode,
+        }))
+        .expect("prefs mínimas")
+    }
+
+    /// La precarga al login/registro/descarga/prewarm se omite SOLO cuando la
+    /// grabación efectiva irá por lote. Sin `auto_save` no hay checkpoints y
+    /// el modo cae a streaming, que sí consume el motor; prefs ilegibles no
+    /// bloquean (fail-open).
+    #[test]
+    fn precarga_omitida_solo_en_lote_efectivo() {
+        let cases: [(&str, Option<(&str, bool)>, bool); 5] = [
+            ("lote con auto_save → omitida", Some(("batch", true)), true),
+            ("lote sin auto_save cae a streaming → carga", Some(("batch", false)), false),
+            ("streaming → carga", Some(("streaming", true)), false),
+            ("modo desconocido cae a streaming → carga", Some(("lo-que-sea", true)), false),
+            ("prefs ilegibles → carga (fail-open)", None, false),
+        ];
+        for (name, input, expected) in cases {
+            let p = input.map(|(mode, auto_save)| prefs(mode, auto_save));
+            assert_eq!(warm_skipped_by_batch(p.as_ref()), expected, "{}", name);
+        }
+    }
 
     /// El flag es la única memoria del fast path: armarlo, cotejarlo y limpiarlo
     /// tiene que ser exacto por (provider, model), no por provider.
