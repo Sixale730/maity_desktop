@@ -42,7 +42,8 @@ pub const STT_BATCH_JOB: &str = "stt.batch_job";
 pub const STT_BATCH_DEFERRED: &str = "stt.batch_deferred";
 
 // ── App / salud (emisor: platformLogger; `app.error` también Rust vía
-//    panics.rs, `health.heartbeat` también Rust vía mem_sampler.rs) ──
+//    panics.rs, `health.heartbeat` también Rust vía mem_sampler.rs;
+//    `coach.session_summary` SOLO Rust vía coach/live_feedback.rs::stop) ──
 pub const APP_OPEN: &str = "app.open";
 pub const APP_CLOSE: &str = "app.close";
 pub const APP_ERROR: &str = "app.error";

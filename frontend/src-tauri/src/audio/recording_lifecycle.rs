@@ -581,8 +581,8 @@ pub async fn stop_recording_reporting<R: Runtime>(
         }
     }
 
-    // Stop live feedback engine
-    crate::coach::live_feedback::stop(&app);
+    // Stop live feedback engine (awaiteado: su summary va al outbox SQLite)
+    crate::coach::live_feedback::stop(&app).await;
 
     // Step 2: Signal transcription workers to finish processing ALL queued chunks
     let _ = app.emit(

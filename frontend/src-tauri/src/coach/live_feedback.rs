@@ -566,8 +566,8 @@ pub async fn start<R: Runtime + 'static>(
     app: AppHandle<R>,
     source: CoachSource,
 ) -> Result<(), String> {
-    // Detener sesión anterior si existe
-    stop(&app);
+    // Detener sesión anterior si existe (sin sesión no emite summary)
+    stop(&app).await;
     let mode = source.mode();
 
     // §1.5.5 Reset de contadores globales por sesion.
@@ -1151,7 +1151,17 @@ fn audio_heuristic_tick(st: &mut FeedbackState) -> Option<(HeuristicTip, u32)> {
 }
 
 /// Detiene el motor de feedback en vivo. Llamar cuando se detiene la grabación.
-pub fn stop<R: Runtime>(app: &AppHandle<R>) {
+///
+/// Async porque el `coach.session_summary` va al outbox nativo (`emit_event`):
+/// el `.await` garantiza la fila en SQLite antes de que el caller siga — la
+/// salida de la app con jornada activa incluida (toda la cadena de
+/// `stop_recording_reporting` awaitea). Antes el summary viajaba por el evento
+/// Tauri `coach-metrics` → hook JS → platformLogger, y con la ventana en tray
+/// WebView2 duerme: 8 de 9 segmentos del piloto (2026-09-10) quedaron sin fila.
+///
+/// Sin sesión previa NO emite nada: `start()` llama a `stop()` primero y eso
+/// dejaba una fila fantasma (`coach_mode:"transcript"`, voz `null`) por arranque.
+pub async fn stop<R: Runtime>(app: &AppHandle<R>) {
     if let Ok(mut lock) = CANCEL_TOKEN.lock() {
         if let Some(token) = lock.take() {
             token.cancel();
@@ -1171,111 +1181,167 @@ pub fn stop<R: Runtime>(app: &AppHandle<R>) {
         }
     }
 
-    // §1.5.2 + §1.5.3 + §1.5.4 Emit summary de metricas al cierre de sesion.
-    let parse_total = LLM_PARSE_TOTAL.load(Ordering::Relaxed);
-    let parse_failed = LLM_PARSE_FAILED.load(Ordering::Relaxed);
-    // F5: `coach_mode` y el snapshot del rastreador de voz (solo en audio)
-    // viajan en el mismo summary — `longest_user_mono_ms` es el dato con el
-    // que se calibra `INTERRUPT_MS` tras el piloto. Sin state (stop sin start)
-    // el modo reporta el default histórico y los campos de voz van a `null`.
-    let (p95_ms, tips_llm, tips_heur, coach_mode, voice) = if let Ok(outer) = FEEDBACK_STATE.lock() {
-        match outer.as_ref().and_then(|arc| arc.lock().ok()) {
-            Some(s) => (
+    // Consumir la sesión ANTES de cualquier `.await`: ningún MutexGuard cruza
+    // el await (clippy::await_holding_lock). Sin sesión (stop sin start previo,
+    // o doble stop) NO hay summary — `start()` llama a `stop()` primero y eso
+    // dejaba una fila fantasma por cada arranque de grabación.
+    let Some(session) = take_session(&FEEDBACK_STATE) else {
+        info!("🛑 Live feedback stop sin sesión activa — sin session-summary");
+        return;
+    };
+    let inputs = collect_summary_inputs(&session);
+    drop(session);
+
+    // §1.5.2 + §1.5.3 + §1.5.4 Summary de métricas al cierre de sesión: log
+    // local + fila `coach.session_summary` por el outbox nativo.
+    info!(
+        "[METRIC] session-summary coach_mode={} llm_parse_total={} llm_parse_failed={} ({:.1}%) llm_latency_p95_ms={:?} tips_from_llm={} tips_from_heuristic={} heuristic_pct={:.1}% sidecar_timeouts={} sidecar_restarts={} sidecar_cooldowns={} sidecar_idle_kills={} breaker_opens={} mem_app_rss_peak_mb={} mem_llama_rss_peak_mb={} mem_webview_rss_peak_mb={} sys_avail_min_mb={} llama_procs_max={} user_voiced_ms={:?} interlocutor_voiced_ms={:?} longest_user_mono_ms={:?} audio_session_ms={:?}",
+        inputs.coach_mode.as_str(), inputs.llm_parse_total, inputs.llm_parse_failed, inputs.llm_parse_failed_pct(),
+        inputs.llm_latency_p95_ms, inputs.tips_from_llm, inputs.tips_from_heuristic, inputs.heuristic_pct(),
+        inputs.sidecar_timeouts, inputs.sidecar_restarts, inputs.sidecar_cooldowns, inputs.sidecar_idle_kills,
+        inputs.breaker_opens,
+        inputs.peaks.app_rss_peak_mb, inputs.peaks.llama_rss_peak_mb, inputs.peaks.webview_rss_peak_mb,
+        inputs.peaks.sys_avail_min_mb, inputs.peaks.llama_procs_max,
+        inputs.voice.map(|v| v.user_voiced_ms), inputs.voice.map(|v| v.interlocutor_voiced_ms),
+        inputs.voice.map(|v| v.longest_user_mono_ms), inputs.voice.map(|v| v.session_ms)
+    );
+    crate::logging::telemetry::emit::emit_event(
+        app,
+        crate::logging::telemetry::context::process_session_id(),
+        crate::logging::telemetry::catalog::COACH_SESSION_SUMMARY,
+        session_summary_payload(&inputs),
+        None,
+        None,
+        None,
+    )
+    .await;
+    info!("🛑 Live feedback stopped");
+}
+
+/// Consume el slot de sesión. `None` = stop sin start previo (o doble stop) y
+/// el caller no emite summary: así mueren las filas fantasma
+/// (`coach_mode:"transcript"`, voz `null`) que dejaba cada `start()`.
+fn take_session(
+    slot: &Mutex<Option<Arc<Mutex<FeedbackState>>>>,
+) -> Option<Arc<Mutex<FeedbackState>>> {
+    slot.lock().ok().and_then(|mut guard| guard.take())
+}
+
+/// Insumos del `coach.session_summary`, ya fuera de todos los locks. Datos
+/// planos: `session_summary_payload` es pura y testeable.
+struct SummaryInputs {
+    coach_mode: CoachMode,
+    /// `None` fuera del modo audio: no se midió, no es 0.
+    voice: Option<crate::audio::voice_activity::VoiceActivitySnapshot>,
+    llm_parse_total: u64,
+    llm_parse_failed: u64,
+    llm_latency_p95_ms: Option<u64>,
+    tips_from_llm: u32,
+    tips_from_heuristic: u32,
+    /// Deltas contra el snapshot de `start()` = actividad de ESTA sesión.
+    sidecar_timeouts: u64,
+    sidecar_restarts: u64,
+    sidecar_cooldowns: u64,
+    sidecar_idle_kills: u64,
+    breaker_opens: u64,
+    peaks: crate::logging::mem_sampler::SessionPeaks,
+    total_ram_gb: u8,
+    cpu_cores: u8,
+    tier: String,
+}
+
+impl SummaryInputs {
+    fn llm_parse_failed_pct(&self) -> f64 {
+        if self.llm_parse_total > 0 {
+            (self.llm_parse_failed as f64 / self.llm_parse_total as f64) * 100.0
+        } else {
+            0.0
+        }
+    }
+
+    fn heuristic_pct(&self) -> f64 {
+        let total = self.tips_from_llm + self.tips_from_heuristic;
+        if total > 0 {
+            (self.tips_from_heuristic as f64 / total as f64) * 100.0
+        } else {
+            0.0
+        }
+    }
+}
+
+/// Lee de la sesión consumida y de los contadores globales todo lo que el
+/// summary necesita. `saturating_sub` por si los snapshots de `start()` no
+/// existieran (delta 0). Un lock envenenado no pierde la fila: la sesión
+/// existió y se reporta con lo que hay.
+fn collect_summary_inputs(session: &Arc<Mutex<FeedbackState>>) -> SummaryInputs {
+    let (llm_latency_p95_ms, tips_from_llm, tips_from_heuristic, coach_mode, voice) =
+        match session.lock() {
+            Ok(s) => (
                 s.llm_latency_p95_ms(),
                 s.tips_from_llm,
                 s.tips_from_heuristic,
                 s.coach_mode,
                 s.voice.as_ref().map(|v| v.snapshot()),
             ),
-            None => (None, 0, 0, CoachMode::Transcript, None),
-        }
-    } else {
-        (None, 0, 0, CoachMode::Transcript, None)
-    };
-    let parse_failed_pct = if parse_total > 0 {
-        (parse_failed as f64 / parse_total as f64) * 100.0
-    } else {
-        0.0
-    };
-    let total_tips = tips_llm + tips_heur;
-    let heur_pct = if total_tips > 0 {
-        (tips_heur as f64 / total_tips as f64) * 100.0
-    } else {
-        0.0
-    };
-
-    // Observabilidad de la supervisión (WS3): delta de los contadores del
-    // sidecar respecto al snapshot de start() = actividad de esta sesión.
-    // saturating_sub por si stop() corre sin un start() previo (delta 0).
+            Err(_) => (None, 0, 0, CoachMode::Transcript, None),
+        };
     let (sc_timeouts, sc_restarts, sc_cooldowns, sc_idle_kills) =
         crate::summary::summary_engine::sidecar::supervision_counters();
-    let sidecar_timeouts =
-        sc_timeouts.saturating_sub(SIDECAR_TIMEOUTS_AT_START.load(Ordering::Relaxed));
-    let sidecar_restarts =
-        sc_restarts.saturating_sub(SIDECAR_RESTARTS_AT_START.load(Ordering::Relaxed));
-    let sidecar_cooldowns =
-        sc_cooldowns.saturating_sub(SIDECAR_COOLDOWNS_AT_START.load(Ordering::Relaxed));
-    // Debe ser 0 en Medium+ con tips LLM (#03): el lease impide el idle-kill.
-    let sidecar_idle_kills =
-        sc_idle_kills.saturating_sub(SIDECAR_IDLE_KILLS_AT_START.load(Ordering::Relaxed));
-    let breaker_opens = COACH_BREAKER.opens();
-
-    // Picos de memoria de la sesión + contexto de hardware: viajan enteros a
-    // maity.platform_logs vía useCoachMetricsTelemetry (spread del objeto),
-    // así se puede segmentar por versión/RAM/tier sin tocar el frontend.
-    let peaks = crate::logging::mem_sampler::session_peaks();
     let hw = crate::audio::hardware_detector::HardwareProfile::detect();
-
-    info!(
-        "[METRIC] session-summary coach_mode={} llm_parse_total={} llm_parse_failed={} ({:.1}%) llm_latency_p95_ms={:?} tips_from_llm={} tips_from_heuristic={} heuristic_pct={:.1}% sidecar_timeouts={} sidecar_restarts={} sidecar_cooldowns={} sidecar_idle_kills={} breaker_opens={} mem_app_rss_peak_mb={} mem_llama_rss_peak_mb={} mem_webview_rss_peak_mb={} sys_avail_min_mb={} llama_procs_max={} user_voiced_ms={:?} interlocutor_voiced_ms={:?} longest_user_mono_ms={:?} audio_session_ms={:?}",
-        coach_mode.as_str(), parse_total, parse_failed, parse_failed_pct, p95_ms, tips_llm, tips_heur, heur_pct,
-        sidecar_timeouts, sidecar_restarts, sidecar_cooldowns, sidecar_idle_kills, breaker_opens,
-        peaks.app_rss_peak_mb, peaks.llama_rss_peak_mb, peaks.webview_rss_peak_mb,
-        peaks.sys_avail_min_mb, peaks.llama_procs_max,
-        voice.map(|v| v.user_voiced_ms), voice.map(|v| v.interlocutor_voiced_ms),
-        voice.map(|v| v.longest_user_mono_ms), voice.map(|v| v.session_ms)
-    );
-    let _ = app.emit(
-        events::COACH_METRICS,
-        serde_json::json!({
-            "session_summary": {
-                // F5: viajan por el spread de `useCoachMetricsTelemetry` (cero
-                // entradas de catálogo nuevas). Campos de voz: `null` fuera del
-                // modo audio (no se midieron, no son 0).
-                "coach_mode": coach_mode.as_str(),
-                "user_voiced_ms": voice.map(|v| v.user_voiced_ms),
-                "interlocutor_voiced_ms": voice.map(|v| v.interlocutor_voiced_ms),
-                "longest_user_mono_ms": voice.map(|v| v.longest_user_mono_ms),
-                "audio_session_ms": voice.map(|v| v.session_ms),
-                "llm_parse_total": parse_total,
-                "llm_parse_failed": parse_failed,
-                "llm_parse_failed_pct": parse_failed_pct,
-                "llm_latency_p95_ms": p95_ms,
-                "tips_from_llm": tips_llm,
-                "tips_from_heuristic": tips_heur,
-                "heuristic_pct": heur_pct,
-                "sidecar_timeouts": sidecar_timeouts,
-                "sidecar_restarts": sidecar_restarts,
-                "sidecar_cooldowns": sidecar_cooldowns,
-                "sidecar_idle_kills": sidecar_idle_kills,
-                "breaker_opens": breaker_opens,
-                "mem_app_rss_peak_mb": peaks.app_rss_peak_mb,
-                "mem_llama_rss_peak_mb": peaks.llama_rss_peak_mb,
-                "mem_webview_rss_peak_mb": peaks.webview_rss_peak_mb,
-                "sys_avail_min_mb": peaks.sys_avail_min_mb,
-                "llama_procs_max": peaks.llama_procs_max,
-                "app_version": env!("CARGO_PKG_VERSION"),
-                "total_ram_gb": hw.memory_gb,
-                "cpu_cores": hw.cpu_cores,
-                "tier": format!("{:?}", hw.performance_tier),
-            }
-        }),
-    );
-
-    if let Ok(mut lock) = FEEDBACK_STATE.lock() {
-        *lock = None;
+    SummaryInputs {
+        coach_mode,
+        voice,
+        llm_parse_total: LLM_PARSE_TOTAL.load(Ordering::Relaxed),
+        llm_parse_failed: LLM_PARSE_FAILED.load(Ordering::Relaxed),
+        llm_latency_p95_ms,
+        tips_from_llm,
+        tips_from_heuristic,
+        sidecar_timeouts: sc_timeouts.saturating_sub(SIDECAR_TIMEOUTS_AT_START.load(Ordering::Relaxed)),
+        sidecar_restarts: sc_restarts.saturating_sub(SIDECAR_RESTARTS_AT_START.load(Ordering::Relaxed)),
+        sidecar_cooldowns: sc_cooldowns.saturating_sub(SIDECAR_COOLDOWNS_AT_START.load(Ordering::Relaxed)),
+        // Debe ser 0 en Medium+ con tips LLM (#03): el lease impide el idle-kill.
+        sidecar_idle_kills: sc_idle_kills.saturating_sub(SIDECAR_IDLE_KILLS_AT_START.load(Ordering::Relaxed)),
+        breaker_opens: COACH_BREAKER.opens(),
+        peaks: crate::logging::mem_sampler::session_peaks(),
+        total_ram_gb: hw.memory_gb,
+        cpu_cores: hw.cpu_cores,
+        tier: format!("{:?}", hw.performance_tier),
     }
-    info!("🛑 Live feedback stopped");
+}
+
+/// Payload PLANO de `coach.session_summary`: sin envolvente `session_summary`
+/// (el evento ES la fila) y sin `ctx` (lo inyecta `emit_event`). Las 26 claves
+/// son las históricas — las queries del runbook no cambian. Campos de voz:
+/// `null` fuera del modo audio (no se midieron, no son 0).
+fn session_summary_payload(i: &SummaryInputs) -> serde_json::Value {
+    serde_json::json!({
+        "coach_mode": i.coach_mode.as_str(),
+        "user_voiced_ms": i.voice.map(|v| v.user_voiced_ms),
+        "interlocutor_voiced_ms": i.voice.map(|v| v.interlocutor_voiced_ms),
+        "longest_user_mono_ms": i.voice.map(|v| v.longest_user_mono_ms),
+        "audio_session_ms": i.voice.map(|v| v.session_ms),
+        "llm_parse_total": i.llm_parse_total,
+        "llm_parse_failed": i.llm_parse_failed,
+        "llm_parse_failed_pct": i.llm_parse_failed_pct(),
+        "llm_latency_p95_ms": i.llm_latency_p95_ms,
+        "tips_from_llm": i.tips_from_llm,
+        "tips_from_heuristic": i.tips_from_heuristic,
+        "heuristic_pct": i.heuristic_pct(),
+        "sidecar_timeouts": i.sidecar_timeouts,
+        "sidecar_restarts": i.sidecar_restarts,
+        "sidecar_cooldowns": i.sidecar_cooldowns,
+        "sidecar_idle_kills": i.sidecar_idle_kills,
+        "breaker_opens": i.breaker_opens,
+        "mem_app_rss_peak_mb": i.peaks.app_rss_peak_mb,
+        "mem_llama_rss_peak_mb": i.peaks.llama_rss_peak_mb,
+        "mem_webview_rss_peak_mb": i.peaks.webview_rss_peak_mb,
+        "sys_avail_min_mb": i.peaks.sys_avail_min_mb,
+        "llama_procs_max": i.peaks.llama_procs_max,
+        "app_version": env!("CARGO_PKG_VERSION"),
+        "total_ram_gb": i.total_ram_gb,
+        "cpu_cores": i.cpu_cores,
+        "tier": i.tier,
+    })
 }
 
 // ─── Llamada a Ollama ─────────────────────────────────────────────────────────
@@ -2056,6 +2122,102 @@ mod tests {
         assert_eq!(st.coach_mode, CoachMode::Transcript);
         assert!(st.voice.is_none());
         assert!(st.audio_snapshot().is_none());
+    }
+
+    // coach.session_summary desde Rust (sep-2026) ─────────────────────────────
+
+    /// Las 26 claves históricas del summary: las queries SQL del runbook dependen de ellas.
+    const SUMMARY_KEYS: [&str; 26] = [
+        "coach_mode", "user_voiced_ms", "interlocutor_voiced_ms", "longest_user_mono_ms",
+        "audio_session_ms", "llm_parse_total", "llm_parse_failed", "llm_parse_failed_pct",
+        "llm_latency_p95_ms", "tips_from_llm", "tips_from_heuristic", "heuristic_pct",
+        "sidecar_timeouts", "sidecar_restarts", "sidecar_cooldowns", "sidecar_idle_kills",
+        "breaker_opens", "mem_app_rss_peak_mb", "mem_llama_rss_peak_mb", "mem_webview_rss_peak_mb",
+        "sys_avail_min_mb", "llama_procs_max", "app_version", "total_ram_gb", "cpu_cores", "tier",
+    ];
+
+    fn summary_inputs(
+        coach_mode: CoachMode,
+        voice: Option<crate::audio::voice_activity::VoiceActivitySnapshot>,
+    ) -> SummaryInputs {
+        SummaryInputs {
+            coach_mode,
+            voice,
+            llm_parse_total: 0,
+            llm_parse_failed: 0,
+            llm_latency_p95_ms: None,
+            tips_from_llm: 0,
+            tips_from_heuristic: 0,
+            sidecar_timeouts: 0,
+            sidecar_restarts: 0,
+            sidecar_cooldowns: 0,
+            sidecar_idle_kills: 0,
+            breaker_opens: 0,
+            peaks: crate::logging::mem_sampler::SessionPeaks {
+                app_rss_peak_mb: 512,
+                llama_rss_peak_mb: 0,
+                webview_rss_peak_mb: 300,
+                sys_avail_min_mb: 2048,
+                llama_procs_max: 0,
+            },
+            total_ram_gb: 16,
+            cpu_cores: 8,
+            tier: "High".to_string(),
+        }
+    }
+
+    #[test]
+    fn take_session_sin_start_devuelve_none_y_con_sesion_vacia_el_slot() {
+        let slot: Mutex<Option<Arc<Mutex<FeedbackState>>>> = Mutex::new(None);
+        assert!(take_session(&slot).is_none(), "stop sin start: nada que resumir");
+        *slot.lock().expect("slot") =
+            Some(Arc::new(Mutex::new(FeedbackState::with_source(CoachSource::Transcript))));
+        assert!(take_session(&slot).is_some());
+        assert!(
+            take_session(&slot).is_none(),
+            "el take vacía el slot: un segundo stop (o el stop interno de start) no emite"
+        );
+    }
+
+    #[test]
+    fn session_summary_conserva_las_26_claves_del_contrato() {
+        let payload = session_summary_payload(&summary_inputs(CoachMode::Transcript, None));
+        let obj = payload.as_object().expect("objeto plano");
+        assert!(!obj.contains_key("session_summary"), "sin envolvente: el evento ES la fila");
+        assert!(!obj.contains_key("ctx"), "el ctx lo inyecta emit_event");
+        for k in SUMMARY_KEYS {
+            assert!(obj.contains_key(k), "falta la clave {}", k);
+        }
+        assert_eq!(obj.len(), SUMMARY_KEYS.len(), "claves de más: {:?}", obj.keys().collect::<Vec<_>>());
+        assert_eq!(obj["coach_mode"], "transcript");
+        for k in ["user_voiced_ms", "interlocutor_voiced_ms", "longest_user_mono_ms", "audio_session_ms"] {
+            assert!(obj[k].is_null(), "{} debe ser null explícito fuera del modo audio", k);
+        }
+        assert_eq!(obj["llm_parse_failed_pct"], 0.0);
+        assert_eq!(obj["heuristic_pct"], 0.0);
+        assert_eq!(obj["tier"], "High");
+        assert_eq!(obj["mem_app_rss_peak_mb"], 512);
+    }
+
+    #[test]
+    fn session_summary_audio_lleva_voz_y_llm_en_cero() {
+        use crate::audio::voice_activity::VoiceActivitySnapshot;
+        let voice = VoiceActivitySnapshot {
+            user_voiced_ms: 24_000,
+            interlocutor_voiced_ms: 12_100,
+            longest_user_mono_ms: 10_300,
+            session_ms: 1_648_600,
+            ..Default::default()
+        };
+        let payload = session_summary_payload(&summary_inputs(CoachMode::Audio, Some(voice)));
+        assert_eq!(payload["coach_mode"], "audio");
+        assert_eq!(payload["user_voiced_ms"], 24_000);
+        assert_eq!(payload["interlocutor_voiced_ms"], 12_100);
+        assert_eq!(payload["longest_user_mono_ms"], 10_300);
+        assert_eq!(payload["audio_session_ms"], 1_648_600);
+        assert_eq!(payload["tips_from_llm"], 0);
+        assert_eq!(payload["llm_parse_total"], 0);
+        assert_eq!(payload["sidecar_idle_kills"], 0);
     }
 
     // F5: audio_heuristic_tick ─────────────────────────────────────────────

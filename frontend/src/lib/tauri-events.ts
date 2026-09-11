@@ -80,6 +80,7 @@ export const TauriEvent = {
 
   // ── Coach (live feedback + evaluación + setup) ────────────────────────────
   COACH_TIP_UPDATE: 'coach-tip-update',
+  // Solo ttfb_first_tip_ms (sin listener); el session-summary va por el outbox nativo.
   COACH_METRICS: 'coach-metrics',
   COACH_ENGINE_READY: 'coach-engine-ready',
   COACH_EVAL_COMPLETE: 'coach-eval-complete',

@@ -93,6 +93,9 @@ pub const TRANSCRIPT_CHUNK_LOSS_DETECTED: &str = "transcript-chunk-loss-detected
 
 // ── Coach (live feedback + evaluación + setup) ─────────────────────────────
 pub const COACH_TIP_UPDATE: &str = "coach-tip-update";
+/// Solo `{ttfb_first_tip_ms}` (diagnóstico local, sin listener). El
+/// `session_summary` YA NO viaja aquí: `live_feedback::stop()` lo escribe al
+/// outbox como `coach.session_summary` (sobrevive al webview dormido).
 pub const COACH_METRICS: &str = "coach-metrics";
 pub const COACH_ENGINE_READY: &str = "coach-engine-ready";
 pub const COACH_EVAL_COMPLETE: &str = "coach-eval-complete";

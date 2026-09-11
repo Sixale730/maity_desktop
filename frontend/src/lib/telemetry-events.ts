@@ -39,7 +39,8 @@ export const TELEMETRY_EVENTS = {
   STT_BATCH_JOB: 'stt.batch_job',
   STT_BATCH_DEFERRED: 'stt.batch_deferred',
 
-  // ── App / salud (emisor: platformLogger; app.error también Rust vía panics.rs) ──
+  // ── App / salud (emisor: platformLogger; app.error también Rust vía panics.rs;
+  //    coach.session_summary SOLO Rust vía coach/live_feedback.rs::stop) ──
   APP_OPEN: 'app.open',
   APP_CLOSE: 'app.close',
   APP_ERROR: 'app.error',
