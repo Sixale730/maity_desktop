@@ -69,6 +69,14 @@ export interface AudioLevelBarsProps {
   /** rms → px. coach-float usa 600 (barras chicas, sensibles); recording-widget usa 200 (barras grandes). */
   multiplier?: number;
   durationMs?: number;
+  /**
+   * Desde dónde "crecen" las barras. `bottom` (default) es el medidor
+   * clásico; `top` las cuelga del borde superior — el hero de grabación en
+   * lote pone mic con `bottom` y sistema con `top` para el efecto espejo.
+   */
+  origin?: 'bottom' | 'top';
+  /** Separación entre barras en px (default 2, el `gap-[2px]` histórico). */
+  gapPx?: number;
   className?: string;
 }
 
@@ -82,6 +90,8 @@ function AudioLevelBarsImpl({
   barWidthPx = DEFAULT_BAR_WIDTH_PX,
   multiplier = DEFAULT_MULTIPLIER,
   durationMs = DEFAULT_DURATION_MS,
+  origin = 'bottom',
+  gapPx = 2,
   className = '',
 }: AudioLevelBarsProps) {
   const { micRms, sysRms } = useAudioLevels({ enabled: true });
@@ -91,8 +101,12 @@ function AudioLevelBarsImpl({
 
   return (
     <div
-      className={`flex items-end gap-[2px] ${className}`}
-      style={{ height: `${maxHeightPx}px` }}
+      className={`flex ${className}`}
+      style={{
+        height: `${maxHeightPx}px`,
+        alignItems: origin === 'bottom' ? 'flex-end' : 'flex-start',
+        gap: `${gapPx}px`,
+      }}
     >
       {scales.map((scale, i) => {
         const heightPx = isActive
@@ -113,7 +127,7 @@ function AudioLevelBarsImpl({
               height: `${maxHeightPx}px`,
               backgroundColor: color,
               transform: `scaleY(${scaleY})`,
-              transformOrigin: 'bottom',
+              transformOrigin: origin,
               transitionDuration: `${durationMs}ms`,
             }}
           />

@@ -28,6 +28,13 @@ export interface MeetingMetrics {
    * el gauge diría "Esperando audio" toda la sesión.
    */
   voiced?: boolean;
+  /**
+   * Sólo en `mode === 'audio'` (sep-2026, aditivos): segundos de voz por
+   * canal, para el anillo de tiempo de palabra del hero de grabación en lote.
+   * Ausentes en transcript (o en un Rust anterior): el anillo cae a %.
+   */
+  userVoicedSecs?: number;
+  interlocutorVoicedSecs?: number;
 }
 
 interface UseMeetingMetricsResult {

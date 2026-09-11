@@ -152,6 +152,14 @@ pub struct MeetingMetrics {
     pub interlocutor_turns: u32,
     pub mode: &'static str,         // "transcript" | "audio"
     pub voiced: bool,
+    /// Sólo en modo audio (sep-2026, aditivos): segundos de VOZ acumulados por
+    /// canal. El hero de la pantalla de grabación en lote los muestra como
+    /// "Tú 12:04 / Otro 9:10"; en transcript van `None` y el frontend cae a
+    /// porcentajes. Un frontend anterior simplemente los ignora.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_voiced_secs: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub interlocutor_voiced_secs: Option<u32>,
 }
 
 /// Payload emitido como evento "coach-tip-update".
@@ -1087,6 +1095,10 @@ fn build_meeting_metrics(st: &FeedbackState) -> MeetingMetrics {
             interlocutor_turns: 0,
             mode: st.coach_mode.as_str(),
             voiced: audio.any_voiced,
+            user_voiced_secs: Some((audio.user_voiced_ms / 1000).min(u32::MAX as u64) as u32),
+            interlocutor_voiced_secs: Some(
+                (audio.interlocutor_voiced_ms / 1000).min(u32::MAX as u64) as u32,
+            ),
         };
     }
     let total_turns = st.user_turns + st.interlocutor_turns;
@@ -1105,6 +1117,8 @@ fn build_meeting_metrics(st: &FeedbackState) -> MeetingMetrics {
         interlocutor_turns: st.interlocutor_turns,
         mode: st.coach_mode.as_str(),
         voiced: total_turns > 0,
+        user_voiced_secs: None,
+        interlocutor_voiced_secs: None,
     }
 }
 

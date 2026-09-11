@@ -14,6 +14,17 @@
 - **NO bajar `WATCHDOG_TICK_MS` (100 ms) en `recording_helpers.rs` para "arreglar" esto**: no es solo el intervalo de emisión, es el tick del watchdog de silencio de micrófono del mismo loop y `ticks_per_sec` deriva de él sus umbrales. El throttle va del lado del cliente. Tampoco sirve `emit_to` en vez de broadcast (verificado en tauri 2.11.2: no ahorra wakeups).
 - Pendiente anotado: el `setInterval` de 2 s con doble `invoke` (`is_recording`/`is_recording_paused`) y el ticker de 1 s siguen en ambas páginas.
 
+## Pantalla de grabación en lote: `BatchRecordingHero` (sep-2026)
+
+Sin transcripción en vivo, la home quedaba vacía durante toda la grabación: una barra "Grabando • mm:ss", un punto azul y dos líneas de texto, y el resto del panel en blanco hasta la píldora. Los note-takers que tampoco muestran texto en vivo (Plaud, Granola, Voice Memos) enseñan siempre tres cosas: un visual que reacciona al sonido como prueba de captura, un temporizador y algo con significado. `app/(main)/_components/BatchRecordingHero.tsx` (montado por `TranscriptPanel` cuando `isRecording && transcriptionMode === 'batch'`) implementa la composición aprobada el 2026-09-11 (mockups: artifact "Pantalla de grabación", opciones 1 + 3): temporizador grande, barras por canal en espejo (mic arriba en `#485df4`, sistema abajo en `#10b981`), tarjeta **Ritmo** + anillo de **tiempo de palabra** (`components/coach/TalkTimeRing.tsx`), última recomendación del coach y una leyenda. Reglas:
+
+- **Las barras son `AudioLevelBars`** (hoja memoizada sobre `audioLevelsStore`, #07): el hero NO conoce los niveles ni se re-renderiza por audio; nada de `useState` de niveles en la página ni animar `height`. Las props `origin` (`bottom|top`) y `gapPx` son aditivas. La envolvente (`buildEnvelope`) es determinista y se calcula una vez por módulo (test en `BatchRecordingHero.test.ts`).
+- **"Ritmo", no "Salud"**: en lote el score sale de `coach/audio_heuristics.rs::health_score` (base 70; −10/−20 por monólogo >60/>120 s; −15 si hablas >80 %, +5 entre 40 y 60 %) y sólo puede valer entre 35 y 75. Etiquetarlo "Salud" prometía la rúbrica completa (preguntas, turnos, escucha) que sólo existe con texto. Reescalar el rango es decisión pendiente.
+- **Minutos por canal** vienen de `MeetingMetrics.user_voiced_secs`/`interlocutor_voiced_secs` (aditivos, sólo en modo audio, `skip_serializing_if` en transcript); sin ellos el anillo cae a porcentajes.
+- **Sin indicador de guardados/checkpoints** en esta pantalla: decisión de producto (2026-09-11), al usuario no le interesa.
+- El último tip también lo muestra `LiveFeedbackPanel` arriba (stack de 3); si molesta el duplicado, decidir cuál de los dos lo pinta, no meter un tercer sitio.
+- Las variantes descartadas (barras por persona, balanza con zona ideal, sólo números, onda con historial, animación ambiental, prueba de guardado) siguen en el artifact por si se retoman.
+
 ## Guardado de archivos generados (.md / .pdf / .pptx) — ago-2026
 
 **Nunca usar `<a download>` en el desktop.** Dentro de WebView2 el destino lo decide el WebView: guarda en su propia carpeta de descargas sin preguntar, sin UI visible dentro de Tauri, y la app **nunca aprende la ruta** — por eso no podía confirmar el guardado ni ofrecer "abrir carpeta". Ese era exactamente el síntoma de los botones de descarga de Maity Chat ("parece que no hace nada, pero el archivo sí está en Descargas"). La ruta que "se recordaba" era del perfil de WebView2, no de la app.
