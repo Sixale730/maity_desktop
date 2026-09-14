@@ -204,7 +204,11 @@ async fn process_region(
             continue;
         }
         drafts.push(BatchSegmentDraft {
-            text: spanish_postprocess::enhance(raw, "es"),
+            // Orden obligado: is_hallucination → enhance → apply (correcciones
+            // de términos al final para que el casing del canonical mande).
+            text: crate::audio::transcription::stt_corrections::apply(
+                &spanish_postprocess::enhance(raw, "es"),
+            ),
             start_secs,
             duration_secs,
             source_type: channel.source_type(),

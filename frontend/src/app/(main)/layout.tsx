@@ -38,6 +38,7 @@ import { ModelDownloadGate } from '@/components/ModelDownloadGate'
 import { BackgroundDownloadStarter } from '@/components/Onboarding/BackgroundDownloadStarter'
 import { LoginScreen } from '@/components/Auth'
 import { CloudSyncInitializer } from '@/components/CloudSyncInitializer'
+import { SttTermsInitializer } from '@/components/SttTermsInitializer'
 import { ErrorTelemetryInitializer } from '@/components/ErrorTelemetryInitializer'
 import { GlobalConversationNotifier } from '@/components/GlobalConversationNotifier'
 import { HealthHeartbeatInitializer } from '@/components/HealthHeartbeatInitializer'
@@ -821,6 +822,7 @@ export default function RootLayout({
                 <AuthProvider>
                   <AuthGate>
                     <CloudSyncInitializer />
+                    <SttTermsInitializer />
                     <HealthHeartbeatInitializer />
                     <GlobalConversationNotifier />
                     <AppContent>{children}</AppContent>

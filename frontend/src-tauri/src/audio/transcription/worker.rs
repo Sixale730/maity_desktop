@@ -471,7 +471,9 @@ pub fn start_transcription_task<R: Runtime>(
                                         info!("🚫 Worker {} descarta hallucination: '{}'", worker_id, transcript);
                                         String::new()
                                     } else {
-                                        crate::audio::transcription::spanish_postprocess::enhance(&transcript, "es")
+                                        crate::audio::transcription::stt_corrections::apply(
+                                            &crate::audio::transcription::spanish_postprocess::enhance(&transcript, "es"),
+                                        )
                                     };
 
                                     // Provider-aware confidence threshold

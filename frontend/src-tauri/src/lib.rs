@@ -743,6 +743,15 @@ pub fn run() {
                 }
             });
 
+            // Diccionario de correcciones STT: carga el cache del store y
+            // compila el regex. Spawn para no bloquear el arranque; cubre
+            // sesiones offline y transcripción por lote temprana antes de que
+            // el frontend empuje los términos frescos de la RPC.
+            let app_handle_for_stt_terms = _app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                audio::transcription::stt_corrections::init_from_store(&app_handle_for_stt_terms);
+            });
+
             // Puente Rust ERROR → frontend (telemetría app.error source:'rust',
             // issue #60): arranca la task drenadora del canal que llenó el layer
             // de logging/rust_error_bridge.rs. Los ERROR entre el init del
@@ -1547,6 +1556,9 @@ pub fn run() {
             // Language preference commands
             get_language_preference,
             set_language_preference,
+            audio::transcription::stt_corrections::set_stt_company_terms,
+            audio::transcription::stt_corrections::set_stt_personal_terms,
+            audio::transcription::stt_corrections::get_stt_personal_terms,
             // Notification system commands
             notifications::commands::get_notification_settings,
             notifications::commands::set_notification_settings,

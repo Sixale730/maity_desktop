@@ -113,6 +113,8 @@ This document describes the audio transcription pipeline in Maity, including cap
 | `worker.rs` | `src/audio/transcription/` | Parallel worker pool and event emission |
 | `whisper_provider.rs` | `src/audio/transcription/` | Whisper implementation |
 | `parakeet_provider.rs` | `src/audio/transcription/` | Parakeet (ONNX) implementation |
+| `spanish_postprocess.rs` | `src/audio/transcription/` | Filtro de alucinaciones + heurísticas ES (ver § Post-procesado) |
+| `stt_corrections.rs` | `src/audio/transcription/` | Diccionario de correcciones de términos (ver § Post-procesado) |
 
 ### Configuration
 
@@ -328,3 +330,24 @@ No hay columna `transcription_status` ni reunión placeholder: **la cola `batch_
 - UI: select "Modo de transcripción" en `RecordingSettings` (solo `isAdmin && roleKnown`; único escritor `savePreferences` porque `set_recording_preferences` reemplaza el objeto entero; aviso ámbar si `!auto_save && batch`; "Aplica a la siguiente grabación"); bloque "Transcripciones pendientes" al inicio de `ConversationsList` (`pending` → "Pendiente de transcribir" + "reintento N" si `attempts>0` — `processing→pending` ocurre en reintentos; `processing` → "Transcribiendo…"; `failed` → "No se pudo transcribir" + `title={last_error}` + Reintentar; origen Manual / Jornada / Recuperada por `last_error==='crash_recovery'`; `refetchInterval` 15 s con no-terminales); `TranscriptPanel` monta `BatchRecordingHero` en lugar de la vista en vivo (desde sep-2026: temporizador + barras por canal desde `audioLevelsStore` + Ritmo y anillo de tiempo de palabra desde `meeting-metrics`, que en modo audio trae además `userVoicedSecs`/`interlocutorVoicedSecs` aditivos + último tip; antes sólo decía "Transcribiendo al finalizar la grabación" y la pantalla quedaba vacía; reglas en `docs/UI_REGLAS.md` § "Pantalla de grabación en lote"). Sin telemetría nueva ni `recordingLogService.log` en la rama de lote (el lint exige literales del catálogo).
 
 **Ajustes tras la refutación (2026-09-09):** (1) el stop del frontend ya no decide por `sessionStorage`: *deferred* por sesión creado en `recording-started` y resuelto por `recording-stopped` (`{folderPath, transcriptionMode}`, race de 3 s → streaming); por eso **todo arranque de sesión debe emitir `recording-started`**. (2) El scheduler resuelve "este segmento es lote" con el modo SELLADO de la sesión (`recording_lifecycle::active_session_transcription_mode()`, leído antes de parar; política pura `segment_is_batch` en `service.rs`), no releyendo preferencias — con lote+`auto_save=false` el segmento grabó en streaming y debe finalizarse como tal. (3) `segment_started_at` de la cola es hora LOCAL naive; `updated_at` es UTC.
+
+## Post-procesado de texto: filtro de alucinaciones + diccionario de correcciones (sep-2026)
+
+Todo texto de un motor local pasa por el mismo pipeline de post-proceso ANTES de persistirse en SQLite (y por tanto antes del sync: la nube analiza el texto ya corregido). **Orden obligado — no reordenar**: `is_hallucination` → `enhance` → `stt_corrections::apply` (las correcciones no deben "rescatar" una alucinación ni perder el casing del canonical). Call sites: lote `batch/transcriber.rs` (principal, es el modo al que migra prod) y streaming `worker.rs` (mismo pipeline durante la transición).
+
+### Filtro de alucinaciones EN (`spanish_postprocess.rs`)
+
+Parakeet v3 autodetecta idioma por chunk y sobre ruido/español ambiguo decodifica frases inglesas completas. `is_hallucination(text, language)` está **gateado por el idioma configurado** (`get_language_preference_internal`; `None` = español, default del producto): si el usuario configura inglés, todo el filtro EN se apaga solo. Reglas de `looks_english_phrase`:
+
+- Frases cortas (≤8 tokens): descarta con ≥2 function-words EN y CERO marcadores ES (regla histórica).
+- Frases largas (>8 tokens, sep-2026): descarta solo si CERO marcadores ES ∧ CERO caracteres españoles (tildes/ñ) en toda la frase ∧ ≥3 function-words EN ∧ ratio EN ≥30%.
+- Salvaguarda spanglish: UNA palabra de `ES_MARKERS` o UNA tilde/ñ salva la frase entera. No bajar el umbral a 2 hits ni quitar la exigencia de cero marcadores.
+
+### Diccionario de correcciones de términos (`stt_corrections.rs`)
+
+Corrige términos sistemáticamente mal transcritos (ej. "Alien" → "Allianz"). Dos fuentes combinadas (personal GANA sobre empresa en colisión de clave plegada):
+
+- **Empresa**: tabla `maity.company_stt_terms` (Supabase; la escribe Maity por SQL, sin policies de escritura). El desktop la lee vía el wrapper `public.get_stt_terms()` (SECURITY DEFINER, resuelve empresa con `auth.uid()` — el cliente NO necesita `company_id`). `SttTermsInitializer` la baja al tener sesión y la empuja con `set_stt_company_terms`; queda cacheada en el store nativo `stt_corrections.json` para sesiones offline (la carga `init_from_store` en el `setup()` de `lib.rs`).
+- **Personal**: pares que el usuario captura en Ajustes → Transcripción (`SttCorrectionsSettings.tsx`, comandos `get/set_stt_personal_terms`; el set reemplaza el array completo).
+
+Matching: UNA alternación `\b(?:…)\b` case-insensitive, vocales tolerantes a tildes (`[aá]`…), `\s+` entre palabras, todo lo demás con `regex::escape` (los términos son DATOS, nunca sintaxis regex); alternativas ordenadas por longitud DESC (leftmost-first: "modo lote" gana a "lote"); `ñ` NO se pliega (año/ano). El regex se compila SOLO al cambiar términos (límite 500 pares); el hot path toma un read-lock. **Guard de idempotencia**: un par cuyo canonical re-matchea su propio patrón (ej. "acme" → "Acme Inc") se descarta en compile con `warn!` — sin él, cada pasada re-expandiría el texto. Si la compilación fallara, degrada a sin-correcciones (jamás panic ni bloquear transcripción).

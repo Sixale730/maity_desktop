@@ -11,6 +11,7 @@ import { MoonshineModelManager } from '@/components/models/MoonshineModelManager
 import { toast } from 'sonner';
 import { useUserRole } from '@/hooks/useUserRole';
 import { CanaryAPI } from '@/lib/canary';
+import { SttCorrectionsSettings } from '@/components/settings/SttCorrectionsSettings';
 import type { TranscriptModelProps } from '@/types/transcript';
 
 export type { TranscriptModelProps };
@@ -416,6 +417,9 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
                             )}
                         </Button>
                     </div>
+
+                    {/* Correcciones personales de términos (diccionario STT) */}
+                    <SttCorrectionsSettings />
                 </div>
             </div>
         </div>
