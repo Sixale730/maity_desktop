@@ -212,7 +212,7 @@ tareas de proceso, así que su payload **no** lleva `trigger` ni
 |---|---|---|---|
 | `app.open` / `app.close` | `layout.tsx` (`AppContent`) | arranque / cierre de la ventana main | — |
 | `nav.page_view` | `usePageViewTracker` | cada navegación | ruta |
-| `device.profile` | `healthHeartbeatService.start()` (comando `get_device_profile`) | **1× por sesión** | `cpu_cores`, `gpu_type`, `memory_gb`, `os`, `os_version`, `arch`, `build_channel`, `performance_tier` — *resource attributes*, NO se repiten en cada heartbeat (ver cardinalidad abajo) |
+| `device.profile` | `healthHeartbeatService.start()` (comando `get_device_profile`) | **1× por sesión** | `cpu_cores`, `gpu_type`, `memory_gb`, `os`, `os_version`, `arch`, `build_channel`, `performance_tier` — *resource attributes*, NO se repiten en cada heartbeat (ver cardinalidad abajo). Desde 0.2.59 (caso Dingler): `started_at_boot` (bool — el proceso arrancó por autostart del OS, no a mano) y `autostart_state` (`enabled\|enabledByPolicy\|disabled\|disabledByUser\|disabledByPolicy\|unknown` — StartupTask WinRT bajo MSIX, plugin autostart en el resto; `disabledByUser` = apagado en Task Manager y la app NO puede reactivarlo, solo mandar a `ms-settings:startupapps`) |
 | `health.heartbeat` | `healthHeartbeatService` (JS) **y `logging/mem_sampler.rs` (Rust, `reason:"native"`)** | JS: cada 5 min activo / 15 min idle + start/stop de grabación. Rust: cada 15 min, SOLO si el webview lleva >20 min sin pedir `get_health_snapshot` (tray / ventana congelada) | ver abajo (+ `err_budget`, `performance_tier`). Etiquetar con `event_data->'ctx'->>'emitter'` (`webview` vs `rust`); para unir la serie de un mismo proceso, agrupar por `event_data->'ctx'->>'session_id'` (la COLUMNA `session_id` difiere entre emisores) |
 | `coach.session_summary` | **`coach/live_feedback.rs::stop()` (Rust, outbox)** — hasta 0.2.59 lo reenviaba el hook `useCoachMetricsTelemetry` desde el evento Tauri `coach-metrics` | al cerrar una sesión de coach **que existió**: sin `start()` previo no hay fila. Hasta 0.2.59 cada arranque de grabación dejaba una fila fantasma (`coach_mode:'transcript'`, voz `null`) porque `start()` llama a `stop()` primero; los históricos se filtran con `ctx->>'emitter'='webview' and user_voiced_ms is null and llm_parse_total=0` | métricas LLM + sidecar (timeouts, restarts, cooldowns, idle_kills, breaker) + picos de RAM + tier. `sidecar_idle_kills` debe ser 0 en Medium+ con tips LLM (lease de sesión, #03 auditoría). Desde F5 (sep-2026) también `coach_mode` (`transcript`\|`audio`), `user_voiced_ms`, `interlocutor_voiced_ms`, `longest_user_mono_ms`, `audio_session_ms`; en modo lote `coach_mode='audio'` y los contadores LLM/sidecar deben ser 0 (`longest_user_mono_ms` calibra `INTERRUPT_MS`). Columna `session_id` = `proc-…`, `ctx.emitter='rust'` (como el latido nativo); sobrevive al webview dormido en tray — en el piloto del 2026-09-10 solo 1 de 9 segmentos dejó summary |
 | `app.error` | `errorTelemetry` (JS: window, unhandledrejection, error-boundary, db-init), **`logging/rust_error_bridge.rs` (Rust, `source:"rust"`, outbox)** y **`telemetry/panics.rs` (Rust, `source:"rust-panic"`, outbox)** | error no manejado / boundary / `log::error!` de Rust / panic (los de Rust al outbox; el panic se drena en el siguiente arranque) | ver abajo |
@@ -547,6 +547,29 @@ group by 1, 2, 3, 4 having count(*) >= 3 order by growth_mb desc;
 > mismo en ambos emisores. Para "¿hubo jornada sin webview?":
 > `emitter='rust' and reason='native'` — cada fila es 15 min de app viva con el
 > frontend suspendido.
+
+¿La app se abre sola? — autostart por usuario (caso Dingler sep-2026: "no se
+abre sola" era indistinguible de "la abren a mano"). Una fila por instalación
+con su último perfil; `started_at_boot=false` recurrente + `autostart_state`
+`enabled` = arranca a mano aunque el mecanismo esté bien (¿boot lento? ¿la
+cierran?); `disabledByUser` = apagado en Task Manager (la app no puede
+reactivarlo — toca guiar al usuario a `ms-settings:startupapps`):
+
+```sql
+select distinct on (pl.event_data->'ctx'->>'install_id')
+       u.email,
+       pl.created_at,
+       pl.app_version,
+       pl.event_data->>'build_channel'    as canal,
+       pl.event_data->>'started_at_boot'  as arranco_al_boot,
+       pl.event_data->>'autostart_state'  as autostart
+from maity.platform_logs pl
+join maity.users u on u.id = pl.user_id
+where pl.platform = 'desktop' and pl.event_type = 'device.profile'
+  and pl.created_at > now() - interval '30 days'
+  -- opcional: and u.company_id = '<company_id>'
+order by pl.event_data->'ctx'->>'install_id', pl.created_at desc;
+```
 
 Top de errores por versión:
 

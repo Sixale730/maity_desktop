@@ -115,6 +115,8 @@ interface DeviceProfile {
   os_version: string | null
   arch: string
   build_channel: string
+  started_at_boot: boolean
+  autostart_state: string
 }
 
 class HealthHeartbeatService {

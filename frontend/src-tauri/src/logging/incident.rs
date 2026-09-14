@@ -323,16 +323,19 @@ pub async fn build_bundle<R: Runtime>(
         "lag_seconds": crate::audio::transcription::worker::transcription_lag_seconds(),
     });
 
+    // Async desde que incluye el estado del autostart (WinRT bajo MSIX).
+    let device = serde_json::to_value(super::commands::get_device_profile(app.clone()).await)
+        .unwrap_or(serde_json::Value::Null);
+
     // system_info recorre la tabla de procesos y el tail toca disco: fuera del runtime.
-    let (device, sysinfo, tail) = tokio::task::spawn_blocking(|| {
+    let (sysinfo, tail) = tokio::task::spawn_blocking(|| {
         (
-            serde_json::to_value(super::commands::get_device_profile()).unwrap_or(serde_json::Value::Null),
             super::commands::generate_system_info(),
             read_log_tail(TAIL_MAX_BYTES),
         )
     })
     .await
-    .unwrap_or_else(|e| (serde_json::Value::Null, format!("(system_info falló: {})", e), String::new()));
+    .unwrap_or_else(|e| (format!("(system_info falló: {})", e), String::new()));
 
     let mut header = header;
     if let Some(obj) = header.as_object_mut() {

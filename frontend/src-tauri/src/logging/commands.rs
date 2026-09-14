@@ -409,11 +409,35 @@ pub struct DeviceProfile {
     /// `store` (MSIX con identidad de paquete) o `direct` (NSIS/dev) — permite
     /// segmentar incidentes por canal de distribución.
     pub build_channel: &'static str,
+    /// true si ESTE proceso arrancó por el autostart del OS (`--autostart` en
+    /// NSIS / StartupTask en MSIX) — distingue "abre sola" de "la abren a mano".
+    pub started_at_boot: bool,
+    /// Estado del mecanismo de autoarranque: `enabled | enabledByPolicy |
+    /// disabled | disabledByUser | disabledByPolicy | unknown`. Bajo MSIX sale
+    /// del StartupTask (WinRT); en el resto de canales, del plugin autostart.
+    /// `disabledByUser` = apagado en Task Manager y la app NO puede reactivarlo.
+    pub autostart_state: String,
 }
 
 #[tauri::command]
-pub fn get_device_profile() -> DeviceProfile {
+pub async fn get_device_profile<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> DeviceProfile {
     use crate::audio::hardware_detector::{GpuType, HardwareProfile, PerformanceTier};
+
+    let autostart_state = match crate::startup_task::startup_task_get_state().await {
+        // "unsupported" = no-MSIX (NSIS/dev/macOS/Linux): ahí el autostart vive
+        // en el plugin (registry Run / LaunchAgent / .desktop).
+        Ok(state) if state == "unsupported" => {
+            use tauri_plugin_autostart::ManagerExt;
+            match app.autolaunch().is_enabled() {
+                Ok(true) => "enabled".to_string(),
+                Ok(false) => "disabled".to_string(),
+                Err(_) => "unknown".to_string(),
+            }
+        }
+        Ok(state) => state,
+        // Err solo ocurre bajo MSIX (WinRT falló); el plugin no aplica ahí.
+        Err(_) => "unknown".to_string(),
+    };
 
     let hw = HardwareProfile::detect();
     DeviceProfile {
@@ -441,6 +465,8 @@ pub fn get_device_profile() -> DeviceProfile {
         } else {
             "direct"
         },
+        started_at_boot: crate::STARTED_AT_BOOT.load(std::sync::atomic::Ordering::Relaxed),
+        autostart_state,
     }
 }
 
