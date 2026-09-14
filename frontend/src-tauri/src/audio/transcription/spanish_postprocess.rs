@@ -308,12 +308,13 @@ pub fn is_hallucination(text: &str, language: Option<&str>) -> bool {
     false
 }
 
-/// Heurística de dominancia léxica inglesa para frases CORTAS cuando el target es español.
+/// Heurística de dominancia léxica inglesa cuando el target es español.
 ///
-/// Descarta solo si: <= 8 tokens, >= 2 function-words EN y CERO marcadores ES.
-/// Salvaguarda spanglish: cualquier palabra funcional española salva la frase
-/// ("It's muy important", "el feature está ready" se conservan). Frases largas se
-/// conservan siempre: a mayor longitud, mayor riesgo de descartar contenido real.
+/// Frases CORTAS (<= 8 tokens): descarta si >= 2 function-words EN y CERO marcadores ES.
+/// Frases LARGAS (> 8 tokens): descarta solo si CERO marcadores ES, CERO caracteres
+/// españoles (tildes/ñ/¿¡) en toda la frase, >= 3 function-words EN y ratio EN >= 30%.
+/// Salvaguarda spanglish: cualquier palabra funcional española O cualquier tilde salva
+/// la frase entera ("It's muy important", "el feature está ready" se conservan).
 fn looks_english_phrase(normalized: &str) -> bool {
     const EN_FUNCTION_WORDS: &[&str] = &[
         "the", "and", "is", "are", "was", "were", "that", "this", "these", "those",
@@ -322,6 +323,8 @@ fn looks_english_phrase(normalized: &str) -> bool {
         "me", "but", "what", "when", "where", "how", "why", "have", "has", "had",
         "there", "be", "been", "not", "do", "does", "did", "can", "will", "would",
         "just", "know", "thats", "that's", "it's", "thank", "very", "much", "good",
+        "should", "going", "want", "need", "like", "now", "here", "all", "some",
+        "we're", "our", "us", "get", "got", "make", "really", "about",
     ];
     const ES_MARKERS: &[&str] = &[
         "el", "la", "los", "las", "de", "del", "que", "y", "o", "en", "es", "son",
@@ -334,12 +337,20 @@ fn looks_english_phrase(normalized: &str) -> bool {
     ];
 
     let tokens: Vec<&str> = normalized.split_whitespace().collect();
-    if tokens.len() < 2 || tokens.len() > 8 {
+    if tokens.len() < 2 {
         return false;
     }
 
     let mut en_hits = 0usize;
     for tok in &tokens {
+        // Cualquier carácter español (tilde/ñ/ü o signos de apertura) salva la
+        // frase entera: cubre palabras ES que no están en ES_MARKERS.
+        if tok
+            .chars()
+            .any(|c| matches!(c, 'á' | 'é' | 'í' | 'ó' | 'ú' | 'ü' | 'ñ' | '¿' | '¡'))
+        {
+            return false;
+        }
         if ES_MARKERS.contains(tok) {
             return false;
         }
@@ -347,7 +358,17 @@ fn looks_english_phrase(normalized: &str) -> bool {
             en_hits += 1;
         }
     }
-    en_hits >= 2
+
+    if tokens.len() <= 8 {
+        // Regla histórica para frases cortas.
+        en_hits >= 2
+    } else {
+        // Frases largas 100% inglesas (Parakeet v3 decodifica oraciones EN
+        // completas sobre ruido/español ambiguo): cero marcadores ES y cero
+        // tildes ya garantizados arriba; exigir además >= 3 function words
+        // EN y ratio >= 30% para no descartar español sin tildes atípico.
+        en_hits >= 3 && en_hits * 10 >= tokens.len() * 3
+    }
 }
 
 /// Correcciones de errores frecuentes de Parakeet/Canary en español.
@@ -610,12 +631,71 @@ mod tests {
         assert!(!is_hallucination("el feature está ready", Some("es-419")));
         assert!(!is_hallucination("Tengo los boletos", Some("es-419")));
         assert!(!is_hallucination("Yeah, mañana would be.", Some("es-419")));
-        // Frases largas se conservan aunque sean inglesas (riesgo de contenido real).
-        assert!(!is_hallucination(
+        // Con target ingles el filtro EN no aplica.
+        assert!(!is_hallucination("I think that's it.", Some("en-US")));
+    }
+
+    #[test]
+    fn descarta_frases_largas_100_inglesas() {
+        // Antes se conservaban por diseño; ahora se descartan (ruido → EN largo).
+        assert!(is_hallucination(
             "I think we should review the quarterly numbers together tomorrow morning",
             Some("es-419")
         ));
-        // Con target ingles el filtro EN no aplica.
-        assert!(!is_hallucination("I think that's it.", Some("en-US")));
+        assert!(is_hallucination(
+            "So what do you want to do with all of this stuff right now my friend",
+            None
+        ));
+        // Con target ingles el filtro largo tampoco aplica.
+        assert!(!is_hallucination(
+            "I think we should review the quarterly numbers together tomorrow morning",
+            Some("en-US")
+        ));
+    }
+
+    #[test]
+    fn conserva_frase_larga_con_marcador_es() {
+        // Un solo marcador funcional español salva la frase larga.
+        assert!(!is_hallucination(
+            "I think we should review el quarterly report together tomorrow morning",
+            Some("es-419")
+        ));
+    }
+
+    #[test]
+    fn conserva_frase_larga_con_tilde() {
+        // Cualquier tilde/ñ salva la frase entera, aunque no haya ES_MARKERS.
+        assert!(!is_hallucination(
+            "I think we should review versión quarterly numbers together tomorrow morning",
+            Some("es-419")
+        ));
+        assert!(!is_hallucination(
+            "Compañeros favor revisar reportes trimestrales juntos siguiente semana antes viernes proximo",
+            Some("es-419")
+        ));
+    }
+
+    #[test]
+    fn conserva_espanol_largo_sin_tildes_ni_marcadores() {
+        // Español atípico sin tildes ni palabras de ES_MARKERS: pocos EN hits →
+        // no alcanza el umbral de la rama larga (>= 3 hits y >= 30%).
+        assert!(!is_hallucination(
+            "necesitamos revisar reportes trimestrales juntos manana temprano antes junta directiva",
+            Some("es-419")
+        ));
+    }
+
+    #[test]
+    fn borde_de_ratio_frases_largas() {
+        // 12 tokens, 3 hits (25%) → se conserva ("is", "the", "and"; resto no-EN).
+        assert!(!is_hallucination(
+            "is zorp the blarg and flim quantum zetta piv wug snark fnord",
+            Some("es-419")
+        ));
+        // 10 tokens, 3 hits (30%) → se descarta.
+        assert!(is_hallucination(
+            "is zorp the blarg and flim quantum zetta piv wug",
+            Some("es-419")
+        ));
     }
 }
