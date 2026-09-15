@@ -230,6 +230,7 @@ Ubicaciones: dev `frontend/models/`; produccion `~/Library/Application Support/c
 - **En modo LOTE el coach es por AUDIO** (`audio/voice_activity.rs` + `coach/audio_heuristics.rs`): sin lease del sidecar, sin listener de transcript, solo monólogo y proporción de habla; el warmup del sidecar lee el modo de las preferencias. Detalle: `docs/COACH_LLM_ARCHITECTURE.md` § Apéndice.
 - **El sidecar no muere por idle durante una grabación (#03)**: lease RAII (`SidecarManager::keepalive()`); el breaker del coach es un tipo con política pura. No tocar los timeouts de 300 s.
 - **Provenance del sidecar**: `verify-helper-binary.js` en el pre-build falla si el SHA-256 del binario bundleado no coincide; regenerar con `--fix`. Un stub de 0 bytes en `binaries/` hace fallar el spawn.
+- **`llama-cpp-2` va con `default-features = false`** (su default `openmp` enlaza `vcomp140.dll`, que NO se embarca → "no se encontró VCOMP140.DLL" en Windows sin VC++ Redist, sep-2026). No revertir. Guard: `lint-exe-imports.js` cruza los imports del VC++ Runtime del exe Y del helper contra `src-tauri/vcredist/` (post-build debug + `tauri:build:store`). Detalle: `docs/CANALES_DISTRIBUCION.md` § VC++ Runtime app-local.
 
 ### Cuentas, nube y análisis — reglas vigentes (detalle en `docs/NUBE_CUENTAS_SYNC.md`)
 

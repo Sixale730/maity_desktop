@@ -12,13 +12,23 @@
 // 2026-07-17 con la politica 10.2.4.1 (Software Dependencies, "Undisclosed
 // software: C++"), y afecta igual al .exe NSIS de GitHub Releases.
 //
-// Cierre de dependencias (verificado sobre los binarios con dumpbin/grep):
+// Cierre de dependencias (lo VERIFICA scripts/lint-exe-imports.js en el
+// post-build y en tauri:build:store leyendo la tabla de imports de ambos
+// binarios contra el contenido real de src-tauri/vcredist/):
 //   maity-desktop.exe -> MSVCP140.dll, MSVCP140_1.dll
 //   llama-helper.exe  -> MSVCP140.dll, VCRUNTIME140.dll, VCRUNTIME140_1.dll
 //   msvcp140.dll      -> VCRUNTIME140.dll, VCRUNTIME140_1.dll
 //   msvcp140_1.dll    -> MSVCP140.dll, VCRUNTIME140.dll
 // Las api-ms-win-crt-*.dll son la UCRT: parte de Windows 10+ (el manifest MSIX
 // exige MinVersion 10.0.18362) => NO se embarcan.
+//
+// Historia (sep-2026): el helper importaba ademas VCOMP140.dll (OpenMP, feature
+// por defecto de llama-cpp-2) y este inventario no lo sabia; en dev/CI el Redist
+// completo esta instalado y resolvia desde System32, hasta que un usuario sin
+// Redist (v0.2.52) reporto "no se encontro VCOMP140.DLL" en cada spawn del
+// coach. Se quito la dependencia (`default-features = false` en
+// llama-helper/Cargo.toml) en vez de embarcar el DLL, y el cierre dejo de ser
+// una lista de confianza: lo cruza el lint. Detalle: docs/CANALES_DISTRIBUCION.md.
 //
 // Se copian del VC Redist del VS Build Tools que compila el binario, NO de una
 // copia commiteada: asi la version del DLL siempre coincide con el toolset. Un
@@ -35,7 +45,10 @@ const DEST_DIR = path.join(__dirname, '..', 'src-tauri', 'vcredist');
 
 // Solo el cierre de imports. NO agregar concrt140/msvcp140_2/vccorlib140/
 // vcomp140 "por si acaso": es peso y superficie de escaneo en la Store sin
-// razon. Si un dia un binario nuevo los importa, verificarlo y sumarlos aqui.
+// razon. Si un dia un binario los importa, lint-exe-imports.js falla el build
+// nombrandolo; primero intentar QUITAR la dependencia (feature de Cargo, como
+// se hizo con OpenMP/vcomp140) y solo si es imprescindible sumarlo aqui y al
+// staging MSIX (.claude/skills/store-msix/SKILL.md).
 const DLLS = [
     'msvcp140.dll',
     'msvcp140_1.dll',

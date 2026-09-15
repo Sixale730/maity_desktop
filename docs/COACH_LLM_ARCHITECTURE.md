@@ -131,7 +131,7 @@ live_feedback.rs
 
 ### Diagnóstico raíz
 
-**Compilamos `llama-helper.exe` sin features de GPU** — corre 100% en CPU.
+**Compilamos `llama-helper.exe` sin features de GPU** — corre 100% en CPU. Y **sin OpenMP**: `llama-cpp-2` va con `default-features = false` en `llama-helper/Cargo.toml` porque su feature por defecto `openmp` enlaza `vcomp140.dll`, que no se embarca (incidente sep-2026: "no se encontró VCOMP140.DLL" en Windows sin VC++ Redist). ggml usa su propio thread pool; `with_n_threads` sigue aplicando. No revertir — el guard `frontend/scripts/lint-exe-imports.js` falla el build. Detalle: `docs/CANALES_DISTRIBUCION.md` § VC++ Runtime app-local.
 
 ```bash
 # Lo que hicimos (CPU only):

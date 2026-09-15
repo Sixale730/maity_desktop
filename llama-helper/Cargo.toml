@@ -7,7 +7,14 @@ edition = "2021"
 anyhow = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-llama-cpp-2 = "0.1.128"
+# default-features = false: el default de llama-cpp-2 incluye `openmp`, que en
+# MSVC enlaza vcomp140.dll (OpenMP no existe estático) y ese DLL NO viaja en el
+# paquete (stage-vcredist.js) → "no se encontró VCOMP140.DLL" en cualquier
+# Windows sin VC++ Redist instalado (incidente sep-2026, v0.2.52). Sin OpenMP
+# ggml usa su propio thread pool; `with_n_threads` (main.rs) sigue mandando.
+# NO revertir a las features por defecto. Guard: frontend/scripts/lint-exe-imports.js
+# (cierre CRT de todos los binarios embarcados). Detalle: docs/CANALES_DISTRIBUCION.md.
+llama-cpp-2 = { version = "0.1.128", default-features = false }
 encoding_rs = "0.8"
 
 [features]

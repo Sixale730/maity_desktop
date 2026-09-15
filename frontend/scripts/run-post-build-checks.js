@@ -44,11 +44,14 @@ if (mainLint.status !== 0) {
     process.exit(1);
 }
 
-// Windows: la tabla de imports del exe antes de lanzarlo. DirectML/D3D12/DXGI/DXCORE
-// deben ser delay-load (#33 de la auditoría de recursos, build.rs); si vuelven a
-// ser imports de carga, el exe arranca igual y el smoke no lo vería.
+// Windows: la tabla de imports del exe Y del sidecar llama-helper antes de lanzarlos.
+// (1) DirectML/D3D12/DXGI/DXCORE deben ser delay-load (#33 de la auditoría de
+// recursos, build.rs); si vuelven a ser imports de carga, el exe arranca igual y el
+// smoke no lo vería. (2) Todo DLL del VC++ Runtime que importe cualquiera de los dos
+// tiene que estar en src-tauri/vcredist/: en esta máquina el Redist está instalado y
+// el smoke tampoco lo vería (así se embarcó vcomp140.dll en el helper, sep-2026).
 if (platform === 'win32') {
-    console.log('[post-build] Checking exe import table (delay-load de DirectML/D3D12)...');
+    console.log('[post-build] Checking import tables (DirectML delay-load + cierre VC++ Runtime)...');
     const lint = spawnSync(process.execPath, [EXE_IMPORTS_LINT], { stdio: 'inherit', shell: false });
     if (lint.status !== 0) {
         console.error('');

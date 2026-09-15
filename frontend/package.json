@@ -14,7 +14,7 @@
         "target:gc:dry": "node scripts/gc-target-dir.js --dry-run --report",
         "tauri:build": "node scripts/run-pre-build-checks.js && node scripts/tauri-auto.js build",
         "tauri:build:debug": "node scripts/run-pre-build-checks.js && node scripts/tauri-auto.js build --debug && node scripts/run-post-build-checks.js",
-        "tauri:build:store": "node scripts/stage-vcredist.js && node scripts/stage-ffmpeg-windows.js && node scripts/verify-migrations-lf.js && node scripts/verify-helper-binary.js && tauri build --no-bundle",
+        "tauri:build:store": "node scripts/stage-vcredist.js && node scripts/stage-ffmpeg-windows.js && node scripts/verify-migrations-lf.js && node scripts/verify-helper-binary.js && tauri build --no-bundle && node scripts/lint-exe-imports.js --exe ../target/release/maity-desktop.exe && node scripts/lint-exe-imports.js --exe src-tauri/binaries/llama-helper-x86_64-pc-windows-msvc.exe",
         "tauri:build:appstore": "node scripts/run-pre-build-checks.js && tauri build --target universal-apple-darwin --config src-tauri/tauri.appstore.conf.json",
         "tauri:build:skip-checks": "node scripts/tauri-auto.js build",
         "tauri:build:debug:skip-checks": "node scripts/tauri-auto.js build --debug",
