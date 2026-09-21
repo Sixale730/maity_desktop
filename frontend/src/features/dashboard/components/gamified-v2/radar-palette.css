@@ -1,0 +1,14 @@
+/* Origen: web Sixale730/maity@3ef2914 src/features/dashboard/components/gamified-v2/radar-palette.css
+   Adaptación desktop (scripts/port-dashboard-css.js): @media de ancho → @container dashboard
+   (1100→820, 1099→819, 767→560, 600→440; DPI de Windows, docs/UI_REGLAS.md).
+   NO editar a mano: re-copiar con `node scripts/port-dashboard-css.js --from <clon web>`. */
+.maity-radar-colors {
+  --radar-first: #139a78;
+  --radar-last: #ff0050;
+  --radar-self: #485df4;
+}
+html[data-portal-theme='dark'] .maity-radar-colors {
+  --radar-first: #1bea9a;
+  --radar-last: #ff5c91;
+  --radar-self: #929fff;
+}

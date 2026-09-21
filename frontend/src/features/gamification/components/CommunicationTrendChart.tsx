@@ -9,6 +9,9 @@
  * sólo cuando la rama D se renderiza (#24 de la auditoría de recursos).
  * NO importar este archivo directo desde `GamifiedDashboardV2` ni desde
  * nada que entre al home — usar el wrapper Lazy.
+ *
+ * Colores con tokens (hsl(var(--…))) igual que la web (Sixale730/maity@3ef2914,
+ * `GamifiedDashboardV2.tsx`): sigue al tema claro/oscuro.
  */
 
 import {
@@ -31,13 +34,13 @@ export function CommunicationTrendChart({ data }: { data: CommunicationTrendPoin
             <stop offset="100%" stopColor="#ec4899" stopOpacity={0} />
           </linearGradient>
         </defs>
-        <CartesianGrid stroke="#1a1a2e" strokeDasharray="3 3" vertical={false} />
-        <XAxis dataKey="fecha" tick={{ fontSize: 10, fill: '#6b7280' }} axisLine={false} tickLine={false} />
-        <YAxis domain={[0, 100]} ticks={[0, 25, 50, 75, 100]} tick={{ fontSize: 10, fill: '#6b7280' }} axisLine={false} tickLine={false} />
+        <CartesianGrid stroke="hsl(var(--border))" strokeDasharray="3 3" vertical={false} />
+        <XAxis dataKey="fecha" tick={{ fontSize: 10, fill: 'hsl(var(--muted-foreground))' }} axisLine={false} tickLine={false} />
+        <YAxis domain={[0, 100]} ticks={[0, 25, 50, 75, 100]} tick={{ fontSize: 10, fill: 'hsl(var(--muted-foreground))' }} axisLine={false} tickLine={false} />
         <Tooltip
-          contentStyle={{ background: '#141418', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, fontSize: 12 }}
-          labelStyle={{ color: '#a0a0b0' }}
-          itemStyle={{ color: '#fff' }}
+          contentStyle={{ background: 'hsl(var(--popover))', border: '1px solid hsl(var(--border))', borderRadius: 8, fontSize: 12 }}
+          labelStyle={{ color: 'hsl(var(--muted-foreground))' }}
+          itemStyle={{ color: 'hsl(var(--foreground))' }}
           formatter={(v) => [typeof v === 'number' ? v : 0, 'Score']}
         />
         <Area
@@ -46,8 +49,8 @@ export function CommunicationTrendChart({ data }: { data: CommunicationTrendPoin
           stroke="#ec4899"
           strokeWidth={2.5}
           fill="url(#commTrendGrad)"
-          dot={{ r: 5, fill: '#0a0a12', stroke: '#ec4899', strokeWidth: 2 }}
-          activeDot={{ r: 7, fill: '#ec4899', stroke: '#fff', strokeWidth: 2 }}
+          dot={{ r: 5, fill: 'hsl(var(--card))', stroke: '#ec4899', strokeWidth: 2 }}
+          activeDot={{ r: 7, fill: '#ec4899', stroke: 'hsl(var(--foreground))', strokeWidth: 2 }}
         />
       </AreaChart>
     </ResponsiveContainer>

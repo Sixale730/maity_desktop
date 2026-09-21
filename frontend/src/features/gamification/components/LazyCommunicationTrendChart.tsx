@@ -18,7 +18,7 @@ const CommunicationTrendChart = dynamic(
   () => import('./CommunicationTrendChart').then((m) => ({ default: m.CommunicationTrendChart })),
   {
     ssr: false,
-    loading: () => <div className="h-full min-h-[240px] rounded-lg bg-white/5 animate-pulse" />,
+    loading: () => <div className="h-full min-h-[240px] rounded-lg bg-muted animate-pulse" />,
   },
 );
 

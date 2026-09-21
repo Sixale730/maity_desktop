@@ -1,0 +1,77 @@
+/* Origen: web Sixale730/maity@3ef2914 src/features/dashboard/components/gamified-v2/dashboard-fit.css
+   Adaptación desktop (scripts/port-dashboard-css.js): @media de ancho → @container dashboard
+   (1100→820, 1099→819, 767→560, 600→440; DPI de Windows, docs/UI_REGLAS.md).
+   También se quitan las reglas `.adventure-*` (tarjeta de misión vieja, sin uso; su fondo de 2 MB no se embarca).
+   NO editar a mano: re-copiar con `node scripts/port-dashboard-css.js --from <clon web>`. */
+.dashboard-fit-content { padding:16px 22px; }
+.dashboard-fit-layout { display:flex; flex-direction:column; gap:14px; min-height:100%; }
+.dashboard-fit-profile { min-height:56px; flex-shrink:0; }
+.dashboard-fit-profile .w-16 { width:48px; height:48px; }
+.dashboard-main-grid { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1.5fr) minmax(0,.8fr); gap:14px; flex:1; min-height:0; }
+.dashboard-fit-charts { display:flex; flex-direction:column; min-width:0; min-height:0; }
+.dashboard-fit-charts > [role='tabpanel'] { flex:1; min-height:0; margin-top:8px; }
+.dashboard-fit-charts > [role='tabpanel'] > .bg-card { height:100%; }
+.dashboard-fit-mission,.dashboard-fit-ranking { min-width:0; min-height:0; }
+.dashboard-fit-mission > .bg-card,.dashboard-fit-ranking > .bg-card { height:100%; }
+.dashboard-fit-mission > .bg-card > div { flex-direction:column; }
+.dashboard-fit-mission .md\:w-1\/2 { width:100%; }
+.dashboard-fit-mission .md\:min-h-\[260px\] { min-height:115px; height:115px; flex-shrink:0; }
+.dashboard-fit-mission .text-2xl { font-size:21px; }
+.dashboard-fit-mission .p-5 { padding:12px; }
+.dashboard-fit-mission .gap-4 { gap:10px; }
+.dashboard-fit-mission .text-4xl { font-size:26px; }
+.dashboard-fit-mission .px-4 { padding-left:10px; padding-right:10px; }
+.dashboard-fit-mission .py-3 { padding-top:8px; padding-bottom:8px; }
+.dashboard-fit-ranking .p-5 { padding:14px; }
+.dashboard-fit-ranking .p-2\.5 { padding:8px 4px; }
+.dashboard-fit-ranking .gap-3 { gap:6px; }
+.dashboard-fit-ranking .text-sm { font-size:12px; }
+.dashboard-fit-ranking .font-medium { overflow-wrap:anywhere; }
+.dashboard-fit-tips { flex-shrink:0; }
+.dashboard-fit-tips > .mb-6 { margin:0; }
+.dashboard-fit-tips .mb-4 { margin-bottom:8px; }
+.dashboard-fit-tips .p-4 { padding:12px; }
+.dashboard-fit-tips .bg-card { position:relative; }
+.dashboard-fit-tips .w-9 { position:absolute; top:12px; left:12px; }
+.dashboard-fit-tips h4 { padding-left:32px; min-height:26px; display:flex; align-items:center; }
+.dashboard-fit-tips .w-9 { width:26px; height:26px; font-size:13px; }
+.dashboard-fit-tips .gap-2 { gap:5px; }
+.dashboard-fit-tips .text-sm { font-size:12px; }
+.dashboard-fit-tips .leading-relaxed { line-height:1.4; }
+.dashboard-fit-charts .min-h-\[240px\] { min-height:160px; }
+.dashboard-fit-charts .maity-radar-legend > div { flex-direction:row; gap:5px; }
+.dashboard-fit-charts .maity-radar-legend > div > span:first-child { display:none; }
+.dashboard-fit-charts .maity-radar-legend .text-\[10px\] { font-size:9px; letter-spacing:0; white-space:normal; }
+.dashboard-fit-charts .grid-cols-2 .block { display:inline; margin:0 4px 0 0; }
+.dashboard-fit-charts .grid-cols-2 { font-size:10px; }
+.dashboard-fit-charts [data-state='active'][role='tabpanel'] > .mt-8 { margin-top:0; }
+.dashboard-fit-charts [data-state='active'][role='tabpanel'] > .mt-8 > .flex:first-child { display:none; }
+.dashboard-fit-charts [data-state='active'][role='tabpanel'] > .mt-8 > .bg-card { margin-top:0; }
+@container dashboard (min-width: 820px) {
+ .maity-home-dashboard:has(.dashboard-fit-layout) > .dashboard-page-header { min-height:68px; padding-top:10px; padding-bottom:10px; }
+ .dashboard-fit-content { overflow:visible; padding-top:12px; padding-bottom:12px; }
+ .dashboard-fit-profile { min-height:48px; }
+ .dashboard-fit-layout { gap:10px; }
+ .dashboard-fit-layout { height:100%; min-height:0; }
+ .dashboard-main-grid { min-height:325px; }
+ .dashboard-fit-tips .grid { grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; }
+ .dashboard-fit-tips .text-2xs { font-size:9px; }
+ .dashboard-fit-charts .p-4 { padding:10px; }
+ .dashboard-fit-charts .gap-4 { gap:8px; }
+ .dashboard-fit-charts .text-2xl { font-size:20px; }
+ .dashboard-fit-charts .gap-1\.5 { gap:4px; }
+}
+@container dashboard (max-width: 819px) {
+ .dashboard-main-grid { grid-template-columns:minmax(0,1fr) minmax(0,1.5fr); flex:none; }
+ .dashboard-fit-ranking { grid-column:1 / -1; }
+ .dashboard-fit-ranking .space-y-2 { display:flex; flex-wrap:wrap; gap:12px; }
+ .dashboard-fit-ranking .space-y-2 > div { min-width:150px; flex:1; margin:0; }
+ .dashboard-fit-charts .min-h-\[240px\] { height:230px; flex:none; }
+}
+@container dashboard (max-width: 560px) {
+ .dashboard-fit-content { padding:14px; }
+ .dashboard-main-grid { grid-template-columns:1fr; }
+ .dashboard-fit-charts { grid-row:1; }
+ .dashboard-fit-profile .text-sm { font-size:12px; }
+ .dashboard-fit-mission .md\:min-h-\[260px\] { height:150px; }
+}

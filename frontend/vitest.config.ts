@@ -5,9 +5,18 @@ import path from 'node:path';
 export default defineConfig({
   plugins: [react()],
   resolve: {
-    alias: {
-      '@': path.resolve(__dirname, './src'),
-    },
+    // Array (no objeto): la primera coincidencia gana, así que los alias
+    // específicos (espejo de `paths` en tsconfig.json) van ANTES que `@`.
+    // Los `@/features/omi/*` los usan los archivos copiados tal cual de la web
+    // (dashboard de expedición) y resuelven a adapters del desktop.
+    alias: [
+      { find: /^@\/features\/omi\/services\/omi\.service$/, replacement: path.resolve(__dirname, './src/features/dashboard/adapters/omi.service.ts') },
+      { find: /^@\/features\/omi\/utils\/feedback-scores$/, replacement: path.resolve(__dirname, './src/features/dashboard/adapters/feedback-scores.ts') },
+      { find: /^@\/features\/omi\/components\/analysis\/dashboard-v1\/adapter$/, replacement: path.resolve(__dirname, './src/features/conversations/components/analysis/dashboard-v1/adapter.ts') },
+      { find: /^@\/ui\/components\/ui\/(.*)$/, replacement: path.resolve(__dirname, './src/components/ui') + '/$1' },
+      { find: /^@maity\/shared$/, replacement: path.resolve(__dirname, './src/shared/maity-shared.ts') },
+      { find: '@', replacement: path.resolve(__dirname, './src') },
+    ],
   },
   test: {
     environment: 'jsdom',

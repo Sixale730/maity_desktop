@@ -67,6 +67,39 @@ export { getAttachmentPoints } from './maity-shared/domain/avatar/attachment-poi
 export type { ItemCode, ItemCategory } from './maity-shared/domain/avatar/items.types'
 export { ITEM_CATEGORIES, getItemsByCategory } from './maity-shared/domain/avatar/items.types'
 
+// Personaje animal + recompensas cosméticas (dashboard de expedición, web 3ef2914).
+export {
+  ANIMALS,
+  ANIMAL_COLORS,
+  MOUNTAIN_BOSSES,
+  COSMETIC_REWARDS,
+  CLIMBING_GEAR_IDS,
+  DEFAULT_ANIMAL,
+  bossAsset,
+  gearAsset,
+  animalAsset,
+  equippedItems,
+  toggleEquipment,
+  parseAnimalDesign,
+  buildAnimalUpdate,
+  deriveAdventure,
+} from './maity-shared/domain/avatar/animal-avatar'
+export type { AnimalId, AnimalDesign, GearId } from './maity-shared/domain/avatar/animal-avatar'
+
+// ============================================================
+// Learning path — solo tipos + hook STUB "sin ruta" (el RPC da PGRST202 en prod)
+// ============================================================
+export type {
+  NodeType,
+  NodeStatus,
+  VisualPosition,
+  LearningPathNode,
+  UserLearningPath,
+  LearningPathSummary,
+} from './maity-shared/domain/learning-path/learning-path.types'
+export { useLearningPath } from './maity-shared/domain/learning-path/useLearningPath'
+export type { LearningPathQuery } from './maity-shared/domain/learning-path/useLearningPath'
+
 // ============================================================
 // Registration types + service
 // ============================================================

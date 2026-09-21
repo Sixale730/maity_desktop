@@ -1,0 +1,25 @@
+/* Origen: web Sixale730/maity@3ef2914 src/features/expedition/expedition-visual-system.css
+   Adaptación desktop (scripts/port-dashboard-css.js): @media de ancho → @container dashboard
+   (1100→820, 1099→819, 767→560, 600→440; DPI de Windows, docs/UI_REGLAS.md).
+   NO editar a mano: re-copiar con `node scripts/port-dashboard-css.js --from <clon web>`. */
+/* Shared finish for the expedition UI; world scenery retains its identity. */
+.expedition-atlas,.expedition-pilot{--exp-surface:linear-gradient(145deg,#f9fcff,#f1edfc);--exp-edge:#e0e3f2;--exp-ink:#514677;--exp-shadow:0 6px 20px #5e639d12}
+.dark .expedition-atlas,.dark .expedition-pilot{--exp-surface:linear-gradient(145deg,#28344a,#252b40);--exp-edge:#46516c;--exp-ink:#e1d8ff;--exp-shadow:0 6px 20px #0002}
+.expedition-atlas .forge-art{background:radial-gradient(ellipse,#aa92ed22,transparent 70%),var(--exp-surface);border:1px solid var(--exp-edge)}
+.expedition-atlas .forge-art img{filter:drop-shadow(0 5px 7px #37385a33)}
+.expedition-atlas .atlas-benefit-icon{padding:13px;width:76px;height:76px;border-radius:22px;background:var(--exp-surface);border:1px solid var(--exp-edge);box-shadow:inset 0 2px 0 #ffffff55,var(--exp-shadow);color:var(--exp-ink);stroke-width:1.8}
+.expedition-atlas .atlas-benefits .atlas-item:nth-child(2) .atlas-benefit-icon{color:#17896f}
+.expedition-atlas .atlas-benefits .atlas-item:nth-child(3) .atlas-benefit-icon{color:#ba438e}
+.dark .expedition-atlas .atlas-benefits .atlas-item:nth-child(2) .atlas-benefit-icon{color:#7be6c5}
+.dark .expedition-atlas .atlas-benefits .atlas-item:nth-child(3) .atlas-benefit-icon{color:#ff9ed7}
+.expedition-atlas .atlas-benefit-flow{gap:12px;line-height:1.5}
+.expedition-atlas .atlas-benefit-flow>span{min-height:32px;padding:4px 9px;border-radius:10px;background:var(--exp-surface);color:var(--exp-ink)}
+.expedition-atlas .fire-stage,.expedition-atlas .additional-stage{background:linear-gradient(145deg,#fbfcff,#dddfee);color:#4e5578;border:2px solid white;box-shadow:inset 0 2px 0 #fff,0 3px 0 #738099,0 6px 12px #09172866}
+.expedition-atlas .fire-stage[aria-pressed=true],.expedition-atlas .additional-stage[aria-pressed=true]{background:linear-gradient(135deg,#e32494,#7550d9);color:white;box-shadow:inset 0 1px 0 #ffa8d6,0 3px 0 #57346f,0 0 0 4px #fff4}
+.expedition-atlas .fire-stage>svg,.expedition-atlas .additional-stage>svg{stroke-width:2.3;filter:drop-shadow(0 1px 1px #33314b22)}
+.expedition-atlas .fire-mission,.expedition-atlas .additional-mission,.expedition-pilot .expedition-mission,.expedition-pilot .expedition-reward-card{box-shadow:var(--exp-shadow)}
+.expedition-atlas .fire-prize,.expedition-atlas .additional-prize{border-radius:16px;background:var(--exp-surface);padding:12px;border:1px solid var(--exp-edge)}
+.expedition-atlas .fire-prize img,.expedition-atlas .additional-prize img{filter:drop-shadow(0 4px 4px #53487922)}
+.expedition-atlas .atlas-item button:disabled{border:1px solid hsl(var(--border));opacity:1}
+.expedition-atlas .lava-motion-toggle,.expedition-pilot .lava-motion-toggle{background:hsl(var(--card));color:hsl(var(--foreground));border:1px solid hsl(var(--border));border-radius:12px;min-height:44px;padding:8px 12px}
+@container dashboard (max-width: 440px){.expedition-atlas .atlas-benefit-flow{gap:8px}.expedition-atlas .fire-prize,.expedition-atlas .additional-prize{padding:8px}}

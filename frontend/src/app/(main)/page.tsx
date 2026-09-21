@@ -285,7 +285,7 @@ export default function Home() {
                   <button
                     onClick={() => invoke('open_floating_coach').catch(console.error)}
                     title="Abrir coach flotante"
-                    className="mt-0.5 flex items-center gap-1 px-2 py-1 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-xs text-muted-foreground hover:text-foreground transition-colors"
+                    className="mt-0.5 flex items-center gap-1 px-2 py-1 rounded-lg bg-muted/50 hover:bg-muted border border-border text-xs text-muted-foreground hover:text-foreground transition-colors"
                   >
                     <span className="text-base leading-none">🎙</span>
                     <span className="hidden sm:inline">Coach</span>
@@ -300,7 +300,7 @@ export default function Home() {
             />
           </div>
         ) : (
-          <div className="w-full overflow-y-auto">
+          <div className="w-full h-full min-h-0 flex flex-col">
             <GamifiedDashboardV2 />
           </div>
         )}
@@ -324,7 +324,7 @@ export default function Home() {
     {(hasMicrophone || isRecording) &&
       status !== RecordingStatus.PROCESSING_TRANSCRIPTS &&
       status !== RecordingStatus.SAVING && (
-        <div className="fixed bottom-0 left-0 right-0 z-30 pb-12 pt-4 bg-gradient-to-t from-[#0a0a1a] via-[#0a0a1a]/95 to-transparent pointer-events-none">
+        <div className="fixed bottom-0 left-0 right-0 z-30 pb-12 pt-4 bg-gradient-to-t from-background via-background/95 to-transparent pointer-events-none">
           <div
             className="flex flex-col items-center pl-8 transition-[margin] duration-300 pointer-events-auto"
             style={{
@@ -333,7 +333,7 @@ export default function Home() {
           >
             <HeadphonesRecommendationWarning enabled={hasMicrophone && !isRecording} />
             <div className="w-2/3 max-w-[750px] min-w-[200px] flex justify-center">
-              <div className="bg-white dark:bg-gray-900 rounded-full shadow-lg flex items-center overflow-visible">
+              <div className="bg-card rounded-full shadow-lg flex items-center overflow-visible">
                 <RecordingControls
                   isRecording={isRecording}
                   onRecordingStop={handleRecordingStopCallback}
@@ -366,14 +366,14 @@ export default function Home() {
     {!hasMicrophone && !isRecording && !isCheckingPermissions &&
       status !== RecordingStatus.PROCESSING_TRANSCRIPTS &&
       status !== RecordingStatus.SAVING && (
-        <div className="fixed bottom-0 left-0 right-0 z-30 pb-12 pt-4 bg-gradient-to-t from-[#0a0a1a] via-[#0a0a1a]/95 to-transparent pointer-events-none">
+        <div className="fixed bottom-0 left-0 right-0 z-30 pb-12 pt-4 bg-gradient-to-t from-background via-background/95 to-transparent pointer-events-none">
           <div
             className="flex justify-center pl-8 transition-[margin] duration-300 pointer-events-auto"
             style={{
               marginLeft: sidebarCollapsed ? '4rem' : '16rem'
             }}
           >
-            <div className="bg-white dark:bg-gray-900 border border-yellow-500/30 rounded-2xl shadow-[0_4px_20px_rgba(0,0,0,0.3)] px-6 py-4 flex items-center gap-4 max-w-[500px]">
+            <div className="bg-card text-card-foreground border border-yellow-500/30 rounded-2xl shadow-[0_4px_20px_rgba(0,0,0,0.3)] px-6 py-4 flex items-center gap-4 max-w-[500px]">
               <div className="flex-shrink-0 w-10 h-10 rounded-full bg-yellow-500/10 flex items-center justify-center">
                 <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5 text-yellow-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <line x1="1" y1="1" x2="23" y2="23" />
@@ -384,10 +384,10 @@ export default function Home() {
                 </svg>
               </div>
               <div className="flex-1 min-w-0">
-                <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
+                <p className="text-sm font-medium text-foreground">
                   No se detectó micrófono
                 </p>
-                <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                <p className="text-xs text-muted-foreground mt-0.5">
                   Conecta un micrófono externo (USB o Bluetooth) para grabar
                 </p>
               </div>

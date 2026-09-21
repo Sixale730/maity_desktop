@@ -1,0 +1,87 @@
+/* Origen: web Sixale730/maity@3ef2914 src/features/dashboard/components/gamified-v2/expedition-pilot.css
+   Adaptación desktop (scripts/port-dashboard-css.js): @media de ancho → @container dashboard
+   (1100→820, 1099→819, 767→560, 600→440; DPI de Windows, docs/UI_REGLAS.md).
+   NO editar a mano: re-copiar con `node scripts/port-dashboard-css.js --from <clon web>`. */
+.expedition-tabs{display:flex;flex-direction:column;flex:1;min-height:0;gap:10px}
+.expedition-tabs>.expedition-tab-content{margin:0;min-height:0;flex:1}
+.expedition-tabs>.expedition-tab-content[data-state=inactive]{display:none}
+.expedition-tabs>.expedition-tab-content[id$="content-expedition"][data-state=active]{overflow:visible}
+.expedition-pilot{height:100%;display:flex;flex-direction:column;gap:8px;color:hsl(var(--foreground))}
+.expedition-heading{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.expedition-heading h2{font-size:24px;font-weight:750;letter-spacing:-.7px}
+.expedition-eyebrow{font-size:10px;font-weight:750;letter-spacing:.09em;color:hsl(var(--muted-foreground));display:flex;align-items:center;gap:6px}
+.expedition-badge{font-size:11px;border:1px solid hsl(var(--border));border-radius:30px;padding:6px 12px;background:hsl(var(--card));flex-shrink:0}
+.expedition-status{font-size:12px;color:hsl(var(--muted-foreground));line-height:1.5}
+.expedition-status button{margin-left:10px;text-decoration:underline;color:hsl(var(--foreground))}
+.expedition-month{font-size:12px;font-weight:700;color:hsl(var(--foreground));padding:5px 0}.expedition-month span{font-weight:400;color:hsl(var(--muted-foreground))}
+.expedition-node-lock{position:absolute;right:-3px;bottom:-3px;display:grid;place-items:center;width:18px;height:18px;border-radius:50%;background:#344477;color:white;border:2px solid white}
+.expedition-stage{margin:12px 0}.expedition-stage>div{display:flex;gap:5px}.expedition-stage span{height:4px;flex:1;background:hsl(var(--border));border-radius:4px}.expedition-stage .is-stage-selected{background:linear-gradient(90deg,#ed176f,#4965e9)}.expedition-stage small{display:block;margin-top:5px;font-size:11px;color:hsl(var(--muted-foreground))}
+.expedition-trail path{fill:none;stroke-linecap:round;stroke-linejoin:round}.expedition-trail-shadow{stroke:#20355788;stroke-width:1.8}.expedition-trail-road{stroke:#f6e4c9;stroke-width:1.15}.expedition-trail-steps{stroke:white;stroke-width:.4;stroke-dasharray:.15 1.8}
+.expedition-trail .expedition-trail-conquered{stroke:#087f72;stroke-width:1.4}
+.expedition-legend .expedition-earned-key{color:#08665e;font-weight:700}
+.expedition-stop.is-current::before{content:'';position:absolute;inset:-8px;border:2px solid #604be2;border-radius:50%;pointer-events:none;animation:expedition-next-pulse 2s ease-out 3}
+@keyframes expedition-next-pulse{0%,100%{opacity:.7;scale:1}65%{opacity:0;scale:1.45}}
+@media(prefers-reduced-motion:reduce){.expedition-stop.is-current::before{animation:none}}
+.expedition-body{display:grid;grid-template-columns:minmax(0,1fr) 290px;gap:16px;flex:1;min-height:390px}
+.expedition-map{position:relative;min-height:390px;overflow:hidden;border-radius:24px;border:1px solid hsl(var(--border));background:#a9bbd7 url('/assets/expedition/fire-mountain-sculpted-v2.webp') center/cover;box-shadow:0 12px 38px #4965e915}
+.expedition-trail{position:absolute;inset:0;width:100%;height:100%;filter:drop-shadow(0 2px 3px #28364daa);pointer-events:none}
+.expedition-map-caption,.expedition-discovery,.expedition-legend{position:absolute;display:flex;align-items:center;gap:7px;color:#22324c;background:#fffffff0;border:1px solid #ffffff;border-radius:14px;padding:9px 12px;font-size:11px;box-shadow:0 4px 18px #28364d16}
+.expedition-map-caption{top:14px;left:14px}.expedition-discovery{right:16px;bottom:64px;color:#53369f;min-height:44px}.expedition-legend{bottom:14px;left:14px;right:14px;justify-content:center;flex-wrap:wrap;gap:16px}.expedition-legend span{display:flex;align-items:center;gap:4px}
+.expedition-stop{position:absolute;z-index:2;width:44px;height:44px;border-radius:50%;background:#f7f7ff;color:#344477;border:3px solid white;display:grid;place-items:center;transform:translate(-50%,-50%);box-shadow:0 4px 12px #24375666;font-weight:750}
+.expedition-stop.is-completed{background:#097d72;color:white}.expedition-stop.is-in_progress,.expedition-stop.is-available{background:#4965e9;color:white}.expedition-stop.is-selected{outline:3px solid #ec278a;outline-offset:4px}.expedition-stop-label{position:absolute;top:48px;left:50%;transform:translateX(-50%);white-space:nowrap;font-size:10px;background:#fff;color:#243454;padding:2px 7px;border-radius:20px;box-shadow:0 2px 7px #28364d20}
+.expedition-avatar{position:absolute;z-index:3;transform:translate(calc(-100% - 12px),calc(-100% + 12px));width:124px;height:124px;background:transparent;border:0;pointer-events:none;display:grid;place-items:center;filter:drop-shadow(1.5px 0 0 #fff) drop-shadow(-1.5px 0 0 #fff) drop-shadow(0 1.5px 0 #fff) drop-shadow(0 -1.5px 0 #fff) drop-shadow(0 3px 2px #172c46b3) drop-shadow(0 8px 8px #172c4673)}
+.expedition-details{display:flex;flex-direction:column;gap:12px;min-width:0}.expedition-mission,.expedition-boss,.expedition-detour{padding:16px;border:1px solid hsl(var(--border));border-radius:20px;background:hsl(var(--card))}
+.expedition-mission{flex:1}.expedition-details h3{font-weight:750;font-size:17px;line-height:1.2;margin:7px 0}.expedition-details p:not(.expedition-eyebrow){font-size:12px;line-height:1.55;color:hsl(var(--muted-foreground))}.expedition-duration,.expedition-lock{display:flex;gap:6px;align-items:flex-start;margin-top:10px}.expedition-lock svg{flex-shrink:0;margin-top:2px}
+.expedition-cta{display:flex;align-items:center;justify-content:center;gap:8px;min-height:44px;border-radius:14px;background:linear-gradient(105deg,#c50058,#6740c9,#305bce);color:white;font-size:12px;font-weight:700;padding:10px;margin-top:14px}
+.expedition-boss{display:flex;gap:12px;align-items:center}.expedition-boss img{width:68px;height:84px;object-fit:contain;border-radius:14px;background:white}.expedition-boss h3{font-size:15px}.expedition-boss a,.expedition-detour a{display:flex;gap:5px;align-items:center;font-size:12px;margin-top:8px;text-decoration:underline}.expedition-detour small{display:block;font-size:10px;color:hsl(var(--muted-foreground));margin-top:8px}
+.expedition-pilot button:focus-visible,.expedition-pilot a:focus-visible{outline:3px solid #ec278a;outline-offset:4px}
+.expedition-summit-boss{position:absolute;right:2%;top:7%;width:23%;max-width:190px;z-index:1;display:flex;flex-direction:column;align-items:center;text-align:center;text-decoration:none;color:#fff;filter:drop-shadow(0 3px 4px #25173066)}
+.expedition-boss-art{display:block;width:100%;background:radial-gradient(ellipse,#f9b24366,transparent 68%);filter:drop-shadow(1px 0 0 #fff) drop-shadow(-1px 0 0 #fff) drop-shadow(0 2px 0 #fff)}
+.expedition-boss-art img{display:block;width:100%;aspect-ratio:1;object-fit:contain;clip-path:polygon(6% 53%,8% 46%,10% 39%,16% 31%,17% 25%,21% 23%,21% 15%,25% 12%,29% 11%,29% 5%,31% 3%,36% 4%,41% 9%,45% 4%,51% 1%,51% 6%,58% 7%,63% 6%,68% 3%,70% 8%,76% 9%,81% 12%,86% 16%,88% 23%,92% 35%,93% 47%,92% 52%,94% 56%,92% 62%,89% 66%,84% 68%,79% 64%,77% 58%,73% 62%,77% 72%,74% 78%,79% 83%,82% 91%,81% 95%,66% 94%,57% 92%,56% 84%,58% 78%,55% 76%,52% 68%,48% 69%,45% 77%,42% 79%,43% 91%,37% 94%,17% 94%,18% 87%,20% 83%,25% 77%,23% 74%,23% 64%,25% 59%,22% 60%,21% 65%,18% 67%,13% 67%,9% 64%,8% 60%,6% 59%)}
+.expedition-summit-boss strong{font-size:13px;border:1px solid #ffffffa0;border-radius:12px;padding:5px 10px;background:linear-gradient(120deg,#612b55,#33345e);box-shadow:0 3px 12px #23274744}.expedition-summit-boss small{font-size:10px;background:#29324be8;border-radius:0 0 9px 9px;padding:3px 8px}
+.expedition-reward small{display:block;color:hsl(var(--muted-foreground));font-size:10px;line-height:1.4;margin-top:6px}
+.expedition-celebration{position:absolute;top:52px;left:14px;max-width:60%;z-index:4;display:flex;align-items:center;gap:8px;padding:12px;border-radius:16px;background:#f0fffa;color:#075e53;border:1px solid #73d5b8;box-shadow:0 8px 24px #17394b33;pointer-events:none;animation:expedition-celebrate .45s ease-out}
+.expedition-celebration strong{font-size:13px}.expedition-celebration p,.expedition-celebration small{font-size:11px;line-height:1.4}
+.expedition-summit-boss.is-near-summit .expedition-boss-art{background:radial-gradient(ellipse,#ffb14fcc,#ec537b55 45%,transparent 70%);animation:expedition-summit-glow 3s ease-in-out 2}
+@keyframes expedition-celebrate{from{opacity:0;translate:0 8px}to{opacity:1;translate:0 0}}
+@keyframes expedition-summit-glow{50%{filter:drop-shadow(0 0 10px #ffc075)}}
+@media(prefers-reduced-motion:reduce){.expedition-celebration,.expedition-summit-boss.is-near-summit .expedition-boss-art{animation:none}}
+@container dashboard (max-width: 560px){.expedition-summit-boss{top:11%;right:2%;width:27%}.expedition-summit-boss strong{font-size:10px;padding:4px 5px}.expedition-summit-boss small{font-size:9px;padding:3px 4px}}
+.expedition-avatar>div{transform-origin:center bottom;animation:expedition-breathe 4.8s ease-in-out infinite}
+@keyframes expedition-breathe{0%,100%{transform:scale(1)}50%{transform:scale(1.006,1.015)}}
+.expedition-avatar.is-paused>div,.expedition-avatar.is-paused .explorer-eyes-live{animation:none}
+@media(prefers-reduced-motion:reduce){.expedition-avatar>div{animation:none}}
+@media(prefers-reduced-motion:reduce){.expedition-avatar{animation:none}}
+@container dashboard (min-width: 820px){.expedition-details{gap:8px}.expedition-mission,.expedition-boss,.expedition-detour{padding:12px}.expedition-heading h2{font-size:22px}.expedition-pilot{gap:6px}.expedition-boss img{height:64px;width:52px}.expedition-detour small{margin-top:4px}.expedition-tabs>.expedition-tab-content[data-state=active]{overflow:auto}.expedition-tabs>.expedition-tab-content:first-of-type{overflow:visible}}
+@container dashboard (max-width: 819px){.expedition-body{grid-template-columns:minmax(0,1fr) 260px}.expedition-map{min-height:460px}}
+@container dashboard (max-width: 560px){.expedition-body{grid-template-columns:1fr}.expedition-heading{align-items:flex-start;flex-direction:column;gap:4px}.expedition-heading h2{font-size:23px}.expedition-map{min-height:540px}.expedition-map-caption{font-size:10px}.expedition-legend{gap:8px;font-size:10px}.expedition-discovery{bottom:60px;right:10px}.expedition-avatar{width:90px;height:90px;transform:translate(calc(-100% - 4px),calc(-100% + 10px))}.expedition-tabs{flex:none}.expedition-boss img{width:80px}}
+.dashboard-unified .expedition-avatar.is-explorer{width:72px;height:154px;transform:translate(calc(-100% - 12px),calc(-100% + 12px));grid-template-rows:minmax(0,1fr);grid-template-columns:minmax(0,1fr)}
+.expedition-avatar.is-explorer>div{width:100%!important;height:100%!important;min-height:0;min-width:0}
+.expedition-avatar::before{content:'';position:absolute;inset:20% -12% -3%;background:radial-gradient(ellipse,#baffef60,transparent 65%);border-radius:50%;pointer-events:none;z-index:-1}
+@container dashboard (max-width: 819px){.dashboard-unified .expedition-body{grid-template-columns:minmax(0,1fr)}.dashboard-unified .expedition-avatar.is-explorer{width:54px;height:120px;transform:translate(calc(-100% - 5px),calc(-100% + 10px))}}
+.expedition-map .expedition-stop{--node-tone:#3477bd;background:linear-gradient(145deg,#fff 10%,#edf1ff 70%,#d7e0fa);color:var(--node-tone);border:2px solid #fff;box-shadow:inset 0 2px 1px #fff, inset 0 -4px 2px #a1aed344,0 4px 0 #7b8ba8,0 7px 12px #17294566}
+.expedition-map .expedition-stop[data-kind=quiz]{--node-tone:#a144b9}
+.expedition-map .expedition-stop[data-kind=resource]{--node-tone:#138570}
+.expedition-map .expedition-stop[data-kind=checkpoint]{--node-tone:#ad6817}
+.expedition-stop>svg{stroke-width:2.4;filter:drop-shadow(0 1px 0 #fff)}
+.expedition-map .expedition-stop.is-completed{color:#fff;background:linear-gradient(145deg,#48d3b0,#087d70);box-shadow:inset 0 2px 1px #9ff5dc,0 4px 0 #07584f,0 7px 12px #17294566}
+.expedition-map .expedition-stop.is-current{color:#fff;background:linear-gradient(140deg,#ff399c,#b626c8 52%,#526cec);box-shadow:inset 0 2px 1px #ffabd9,0 4px 0 #633b91,0 0 18px #f34aaf66}
+.expedition-stop.is-current>svg,.expedition-stop.is-completed>svg{filter:drop-shadow(0 1px 1px #25305355)}
+.expedition-map .expedition-stop.is-locked{color:#65738d;background:linear-gradient(145deg,#f9fbff,#dce3f0)}
+.expedition-map .expedition-node-lock{background:#52617e;box-shadow:0 2px 4px #18253655}
+.expedition-map .expedition-stop.is-selected{outline-color:#ee52af}
+.expedition-map .expedition-trail-road{stroke:#e9e5ff;stroke-width:1.05}
+.expedition-map .expedition-trail-shadow{stroke:#5a518c99;stroke-width:1.6}
+.expedition-map .expedition-trail-steps{stroke:#fff;stroke-width:.3}
+.expedition-legend b{display:inline-grid;place-items:center;min-width:20px;height:20px;border-radius:7px;background:#e9edf7;color:#354460;font-size:10px}
+.expedition-legend .expedition-earned-key b{background:#ccf4e7;color:#08665e}
+.expedition-stop.is-completed::after{content:'';position:absolute;inset:4px;border:1px solid #ffffff80;border-radius:50%;pointer-events:none}
+.expedition-map .expedition-stop.is-skipped{background:repeating-linear-gradient(135deg,#eef0f5 0 5px,#dce1eb 5px 8px);color:#526078;border-style:dashed}
+@media(prefers-reduced-motion:no-preference){
+ .expedition-pilot[data-motion=active] .expedition-mission{animation:expedition-mission-in .22s ease-out}
+ .expedition-pilot[data-motion=active] .expedition-stop:hover>svg{animation:expedition-node-lift .4s ease-out 1}
+}
+@keyframes expedition-mission-in{from{opacity:.65;translate:0 4px}to{opacity:1;translate:0 0}}
+.expedition-pilot[data-motion=paused] .expedition-stop::before,.expedition-pilot[data-motion=paused] .expedition-celebration,.expedition-pilot[data-motion=paused] .expedition-summit-boss .expedition-boss-art{animation:none}
+@container dashboard (max-width: 440px){.expedition-legend{gap:7px}.expedition-legend b{min-width:17px;height:17px}}
+@keyframes expedition-node-lift{0%,100%{transform:translateY(0)}50%{transform:translateY(-2px)}}

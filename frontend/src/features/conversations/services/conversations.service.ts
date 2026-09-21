@@ -970,7 +970,7 @@ export async function getOmiConversationsForAnalysis(userId?: string): Promise<O
     .schema('maity')
     .from('omi_conversations')
     .select(
-      'id,title,overview,emoji,category,created_at,duration_seconds,words_count,analysis_status,communication_feedback,communication_feedback_v4'
+      'id,user_id,title,overview,emoji,category,created_at,duration_seconds,words_count,analysis_status,communication_feedback,communication_feedback_v4'
     )
     .eq('user_id', userId)
     .eq('deleted', false)

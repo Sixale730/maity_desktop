@@ -163,6 +163,8 @@ export interface UpdateAvatarInput {
   pants_color?: string;
   accessories?: AccessoryCode[];
   items?: string[];  // ItemCode[]
+  /** Igual que la web (animal-avatar.ts / explorer-design.ts escriben aquí). Aditivo. */
+  full_config?: Record<string, unknown>;
 }
 
 // ===== Display Types =====

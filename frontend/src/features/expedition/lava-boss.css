@@ -1,0 +1,16 @@
+/* Origen: web Sixale730/maity@3ef2914 src/features/expedition/lava-boss.css
+   Adaptación desktop (scripts/port-dashboard-css.js): @media de ancho → @container dashboard
+   (1100→820, 1099→819, 767→560, 600→440; DPI de Windows, docs/UI_REGLAS.md).
+   NO editar a mano: re-copiar con `node scripts/port-dashboard-css.js --from <clon web>`. */
+.lava-boss{position:relative;display:block;width:100%;height:100%;isolation:isolate;pointer-events:none}
+.lava-boss .lava-boss-image{display:block;width:100%;height:100%;object-fit:contain;clip-path:none;aspect-ratio:auto;background:none;filter:drop-shadow(0 2px 1px #ffe0ad99) drop-shadow(0 6px 5px #150b10a6)}
+.lava-boss-heat{position:absolute;inset:20% 7% 5%;z-index:-1;background:radial-gradient(ellipse,#ff6c0045,transparent 68%);opacity:.6}
+.lava-boss-core{position:absolute;left:39%;top:47%;width:24%;height:18%;background:radial-gradient(ellipse,#ffe6a970,#ff640040 38%,transparent 70%);mix-blend-mode:screen;opacity:.4}
+.lava-boss-embers{position:absolute;inset:0;overflow:hidden}.lava-boss-embers i{position:absolute;left:var(--ember-x);bottom:12%;width:3.5px;height:6px;border-radius:80% 20% 60% 30%;background:#ffd38a;box-shadow:0 0 7px #ff7200;opacity:0}
+.lava-boss-live .lava-boss-core{animation:lava-breathe 3.8s ease-in-out infinite}.lava-boss-live .lava-boss-heat{animation:lava-breathe 4.7s ease-in-out infinite}.lava-boss-live .lava-boss-embers i{animation:lava-ember 3.8s var(--ember-delay) ease-out infinite}
+@keyframes lava-breathe{0%,100%{opacity:.3;transform:scale(.96)}50%{opacity:.85;transform:scale(1.05)}}
+@keyframes lava-ember{0%{opacity:0;transform:translate(0,0) scale(.6)}18%{opacity:.9}100%{opacity:0;transform:translate(var(--ember-drift),-100px) scale(.15)}}
+.lava-motion-toggle{font-size:11px;padding:7px 10px;min-height:44px;border:1px solid hsl(var(--border));border-radius:10px;background:hsl(var(--card));color:hsl(var(--foreground))}
+.expedition-boss-art:has(.lava-boss){background:none;filter:none;aspect-ratio:1}.fire-boss:has(.lava-boss){filter:none}
+@media(prefers-reduced-motion:reduce){.lava-boss-live .lava-boss-core,.lava-boss-live .lava-boss-heat,.lava-boss-live .lava-boss-embers i{animation:none}.lava-boss-embers{display:none}}
+.lava-motion-toggle:focus-visible{outline:3px solid hsl(var(--ring));outline-offset:3px}

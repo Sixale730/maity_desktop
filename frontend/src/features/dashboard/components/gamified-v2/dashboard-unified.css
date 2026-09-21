@@ -1,0 +1,136 @@
+/* Origen: web Sixale730/maity@3ef2914 src/features/dashboard/components/gamified-v2/dashboard-unified.css
+   Adaptación desktop (scripts/port-dashboard-css.js): @media de ancho → @container dashboard
+   (1100→820, 1099→819, 767→560, 600→440; DPI de Windows, docs/UI_REGLAS.md).
+   NO editar a mano: re-copiar con `node scripts/port-dashboard-css.js --from <clon web>`. */
+/* Mission and reward precede optional analytics in DOM and visual order. */
+.dashboard-unified{flex:1;min-height:0}
+.dashboard-unified>.expedition-pilot{min-width:0}
+.dashboard-unified .expedition-body{grid-template-columns:minmax(0,1fr) 340px;gap:16px;min-height:540px}
+.dashboard-unified .expedition-map{min-height:540px}
+.dashboard-unified .expedition-details{gap:10px}
+.dashboard-unified .expedition-mission{flex:none;border-top:3px solid #6740c9;padding:18px}
+.dashboard-unified .expedition-details h3{font-size:18px;line-height:1.3}
+.dashboard-unified .expedition-reward h3{font-size:15px}
+.dashboard-unified .expedition-stage{margin:8px 0}
+.dashboard-unified .expedition-cta{margin-top:12px}
+.dashboard-unified .expedition-reward img{width:68px;height:80px}
+.expedition-return{display:flex;align-items:center;gap:5px;font-size:12px;text-decoration:underline;color:hsl(var(--foreground));min-height:44px}
+.dashboard-unified-metrics{display:flex;flex-direction:column;gap:8px;min-width:0;padding:16px;border-radius:20px;background:hsl(var(--card));border:1px solid hsl(var(--border))}
+.dashboard-unified-metrics .dashboard-fit-charts{min-height:0;flex:none}
+.dashboard-unified-metrics .dashboard-fit-charts [role=tabpanel]{min-height:0;flex:none}
+.dashboard-unified-metrics .maity-radar-plot{height:220px!important}
+.dashboard-unified-metrics .dashboard-fit-charts .min-h-\[240px\]{height:240px;min-height:240px}
+.dashboard-unified-metrics .dashboard-fit-charts [role=tabpanel]>.bg-card{border:0;padding:12px 0;box-shadow:none}
+.dashboard-unified-metrics .dashboard-fit-charts h3{font-size:13px}
+.dashboard-unified-metrics summary{cursor:pointer;font-size:12px;font-weight:650;padding:12px 0;min-height:44px;border-top:1px solid hsl(var(--border));color:hsl(var(--foreground))}
+.dashboard-unified-metrics summary:focus-visible{outline:2px solid hsl(var(--primary));outline-offset:2px}
+.dashboard-unified-metrics .dashboard-fit-ranking .space-y-2{display:block}
+.dashboard-unified-metrics .dashboard-fit-tips .grid{grid-template-columns:1fr}
+.dashboard-fit-content:has(.dashboard-unified){overflow-y:auto}
+.dashboard-fit-layout:has(.dashboard-unified){height:auto;min-height:100%}
+@container dashboard (max-width: 819px){.dashboard-unified .expedition-body{grid-template-columns:minmax(0,1fr)}.dashboard-unified .expedition-avatar{width:100px;height:100px}}
+@container dashboard (max-width: 560px){.dashboard-unified .expedition-body{display:flex;flex-direction:column}.dashboard-unified .expedition-map{min-height:500px}.dashboard-unified .expedition-details{display:contents}.dashboard-unified .expedition-mission{order:-1}.dashboard-unified-metrics{padding:14px}.dashboard-unified .expedition-heading h2{font-size:21px}}
+
+.expedition-reward-card{position:relative;border:1px solid hsl(var(--border));border-radius:20px;padding:14px;background:hsl(var(--card));min-height:145px}
+.expedition-reward-art{float:right;display:flex;align-items:center;max-width:45%;margin:0 0 6px 8px}
+.expedition-fitting{width:80px;height:80px;filter:drop-shadow(0 2px 3px #28364d33)}
+.expedition-reward-art>img{width:38px;height:50px;object-fit:contain}
+.expedition-reward-card small{display:block;font-size:11px;color:hsl(var(--muted-foreground));line-height:1.5}
+.expedition-equipment-link{display:flex;align-items:center;gap:5px;font-size:12px;min-height:30px;text-decoration:underline;clear:both}
+.expedition-boss-brief{padding:0 14px;border:1px solid hsl(var(--border));border-radius:14px;background:hsl(var(--card))}
+.expedition-boss-brief summary{cursor:pointer;font-size:12px;font-weight:650;min-height:44px;padding:12px 0}
+.expedition-boss-brief p{margin-bottom:10px}
+.performance-summary{padding:10px;border-radius:12px;background:hsl(var(--muted));font-size:12px}
+.performance-summary p{margin:6px 0}
+.performance-summary a{display:block;text-decoration:underline;min-height:32px;padding-top:8px}
+.performance-score{display:flex;align-items:center;gap:12px}
+.performance-score>strong{font-size:26px;color:hsl(var(--foreground))}
+.performance-score small{font-size:12px;font-weight:400}
+.performance-score span{font-size:11px;color:hsl(var(--muted-foreground))}
+
+/* Performance is a visible sibling, never buried inside the expedition sidebar. */
+.dashboard-unified{display:flex;flex-direction:column;gap:16px}
+.dashboard-visible-charts{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;align-items:start}
+.dashboard-visible-charts>section{min-width:0}
+.dashboard-visible-charts>section>.bg-card{padding:14px;height:100%}
+.dashboard-visible-charts .maity-radar-plot{height:220px!important}
+.dashboard-unified-metrics>.performance-summary{display:grid;grid-template-columns:minmax(150px,.7fr) 1.2fr 1.2fr auto;gap:16px;align-items:center}
+.dashboard-unified-metrics>.performance-summary p{margin:0}
+.dashboard-unified-metrics>.performance-summary a{max-width:150px}
+@container dashboard (min-width: 820px){
+ .dashboard-unified .expedition-body{height:auto;min-height:0;align-items:stretch}
+ .dashboard-unified .expedition-map{height:auto;min-height:440px}
+ .dashboard-unified .expedition-details{overflow:visible;padding-right:0}
+}
+@container dashboard (max-width: 819px){.dashboard-visible-charts{grid-template-columns:repeat(2,minmax(0,1fr))}.dashboard-unified-metrics>.performance-summary{grid-template-columns:1fr 1fr}}
+@container dashboard (max-width: 560px){.dashboard-visible-charts{grid-template-columns:1fr}.dashboard-unified-metrics>.performance-summary{display:block}.dashboard-unified-metrics>.performance-summary p{margin:8px 0}}
+
+.dashboard-visible-charts .min-h-\[240px\]{height:240px;min-height:240px;flex:none}
+
+.dashboard-visible-charts section[aria-label="Evolución de muletillas"]>.mt-8{margin-top:0}
+.dashboard-visible-charts section[aria-label="Evolución de muletillas"]>.mt-8>.flex:first-child{display:none}
+.dashboard-visible-charts section[aria-label="Evolución de muletillas"]>.mt-8>.bg-card{margin-top:0}
+
+/* Desktop overview: permanent radar plus independent chart tabs. */
+.dashboard-unified{display:grid;grid-template-columns:minmax(0,1fr) minmax(350px,390px);gap:14px}
+.dashboard-visible-charts{display:flex;flex-direction:column;gap:10px;min-height:0;flex:1}
+.dashboard-unified-metrics{min-height:0;gap:4px;padding:12px}
+.dashboard-visible-charts>section>.bg-card{padding:8px;border:0;box-shadow:none}
+.dashboard-explore-charts{min-height:0;display:flex;flex-direction:column;flex:1}
+.dashboard-explore-charts>[role=tabpanel]{min-height:0;overflow:auto;margin-top:6px}
+.dashboard-explore-charts>[role=tabpanel]>.bg-card{padding:10px;border:0;box-shadow:none}
+.dashboard-explore-charts [aria-label="Evolución de muletillas"]>.mt-8{margin:0}
+.dashboard-explore-charts [aria-label="Evolución de muletillas"]>.mt-8>.flex:first-child{display:none}
+.dashboard-explore-charts [aria-label="Evolución de muletillas"]>.mt-8>.bg-card{margin-top:0;padding:10px;border:0}
+@container dashboard (min-width: 820px){
+ .dashboard-fit-content:has(.dashboard-unified){padding:10px 16px}
+ .dashboard-fit-layout:has(.dashboard-unified){height:auto;min-height:0;gap:8px}
+ .dashboard-unified{min-height:0}
+ .dashboard-unified>.expedition-pilot{height:auto;min-height:0;gap:5px}
+ /* Desktop density never depends on viewport height: the page flows and scrolls inside the shell. */
+ .dashboard-unified .expedition-body{display:grid;grid-template-columns:1fr;grid-template-rows:auto auto;min-height:0;height:auto;flex:none;gap:8px}
+ .dashboard-unified .expedition-map{min-height:clamp(440px,52dvh,640px);height:auto}
+ /* Keep mission text from resizing the map and its cover background on selection. */
+ .dashboard-unified .expedition-details{display:grid;grid-template-columns:1fr 1fr;gap:8px;min-height:0;overflow:visible;align-content:start}
+ .dashboard-unified .expedition-mission{padding:10px}
+ .dashboard-unified .expedition-details h3{font-size:14px;margin:4px 0}
+ .dashboard-unified .expedition-boss-brief{grid-column:1/-1;order:3}
+ .dashboard-unified .expedition-boss-brief summary{padding:5px 0;min-height:28px}
+ .dashboard-unified .expedition-reward-card{padding:10px;min-height:0}
+ .dashboard-unified .expedition-fitting{width:60px;height:60px}
+ .dashboard-unified .expedition-reward-art>img{width:28px;height:40px}
+ .dashboard-unified .expedition-return{min-height:30px}
+ .dashboard-unified .expedition-equipment-link{min-height:24px}
+ .dashboard-unified .expedition-stage{margin:4px 0}
+ .dashboard-unified .expedition-stage>div{display:none}
+ .dashboard-unified .expedition-cta{margin-top:6px}
+ .dashboard-visible-charts>section>.bg-card>p{font-size:11px;margin:4px 0}
+ .dashboard-visible-charts>section>.bg-card>.pt-2{display:none}
+ .dashboard-visible-charts>section .gap-4{gap:6px}
+ .dashboard-explore-charts .min-h-\[240px\]{height:240px;min-height:240px;flex:none}
+ .dashboard-explore-charts .h-\[220px\]{height:220px}
+ .dashboard-explore-charts h3{font-size:13px}
+ .dashboard-explore-charts .mb-4{margin-bottom:6px}
+ .dashboard-unified .expedition-avatar{width:100px;height:100px}
+ .dashboard-unified .expedition-summit-boss{max-width:145px}
+}
+@container dashboard (max-width: 819px){.dashboard-unified{grid-template-columns:1fr}.dashboard-unified .expedition-body{grid-template-columns:minmax(0,1fr)}.dashboard-unified-metrics .maity-radar-plot{height:230px!important}.dashboard-explore-charts .min-h-\[240px\]{height:220px}}
+@container dashboard (max-width: 560px){.dashboard-unified .expedition-body{display:flex}.dashboard-unified .expedition-details{display:contents}}
+
+.dashboard-unified .expedition-avatar>div{width:100%!important;height:100%!important}
+.dashboard-explore-charts [aria-label="Evolución de muletillas"] .mt-3{display:none}
+.dashboard-atlas-link{margin-left:auto;display:flex;align-items:center;gap:6px;border:1px solid hsl(var(--border));background:hsl(var(--card));border-radius:12px;padding:8px 12px;min-height:36px;font-size:12px;font-weight:650;white-space:nowrap}
+.dashboard-explore-charts [role=tab]{padding-left:4px;padding-right:4px;font-size:11px}
+@container dashboard (max-width: 560px){.dashboard-atlas-link{white-space:normal;max-width:130px;font-size:11px}}
+
+.dashboard-collection-links{margin-left:auto;display:flex;gap:5px;flex-wrap:wrap;justify-content:flex-end}.dashboard-collection-links a{border:1px solid hsl(var(--border));background:hsl(var(--card));border-radius:10px;padding:7px 10px;font-size:11px;font-weight:650;min-height:32px}.dashboard-collection-links a:focus-visible{outline:2px solid hsl(var(--ring))}@container dashboard (max-width: 560px){.dashboard-collection-links{width:100%}.dashboard-collection-links a{min-height:44px;display:flex;align-items:center}}
+
+/* Readable comparison keys; color distinguishes series, not success/failure. */
+.dashboard-unified-metrics .maity-radar-legend { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; }
+.dashboard-unified-metrics .maity-radar-legend > div { flex-direction:column; gap:4px; }
+.dashboard-unified-metrics .maity-radar-legend .tracking-wider { font-size:10px; letter-spacing:0; white-space:normal; text-transform:none; }
+.dashboard-explore-charts > [role=tablist] { min-height:40px; border:1px solid hsl(var(--border)); }
+.dashboard-explore-charts [role=tab] { min-height:32px; }
+.dashboard-explore-charts [role=tab][data-state=active] { color:hsl(var(--foreground)); box-shadow:0 1px 3px #00000012; }
+
+.dashboard-skill-guide summary{font-size:12px;min-height:32px;padding:6px 0}.dashboard-skill-guide nav{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}.dashboard-skill-guide a{padding:8px 4px;border-radius:8px;background:hsl(var(--muted));font-size:12px;text-align:center}.dashboard-skill-guide a:focus-visible{outline:2px solid hsl(var(--ring))}

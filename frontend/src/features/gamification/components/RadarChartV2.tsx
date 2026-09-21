@@ -1,4 +1,20 @@
+'use client';
+/**
+ * Radar "IA vs Autoevaluación" del dashboard — SVG propio (SIN recharts: entra
+ * al home en el arranque, #24 de la auditoría de recursos).
+ *
+ * Recoloreado sep-2026 para la paridad con la web (Sixale730/maity@3ef2914
+ * `gamified-v2/RadarChart.tsx`): mismos colores por serie vía `--radar-*`
+ * (`radar-palette.css`, cambian con el tema claro/oscuro), mismo trazo
+ * (primera sesión punteada, autoevaluación a rayas), sin glow, y la misma DOM
+ * de leyenda (`maity-radar-colors` / `maity-radar-plot` / `maity-radar-legend`)
+ * para que el CSS portado (`dashboard-unified.css`, `dashboard-fit.css`) aplique igual.
+ * El color va en CSS (`radar-v2.css`), no en atributos de presentación del SVG:
+ * `fill="var(--x)"` no resuelve variables.
+ */
 import { useMemo } from 'react';
+import '@/features/dashboard/components/gamified-v2/radar-palette.css';
+import './radar-v2.css';
 
 export interface RadarSeriesPoint {
   name: string;
@@ -14,9 +30,9 @@ interface RadarChartProps {
 }
 
 const SERIES = [
-  { key: 's1' as const,   label: 'Primera sesión', color: '#ef4444', fillOpacity: 0.18 },
-  { key: 's6' as const,   label: 'Última sesión',  color: '#1bea9a', fillOpacity: 0.20 },
-  { key: 'auto' as const, label: 'Autoevaluación', color: '#3b82f6', fillOpacity: 0.15 },
+  { key: 's1' as const, label: 'Primera sesión', color: 'var(--radar-first)' },
+  { key: 's6' as const, label: 'Última sesión', color: 'var(--radar-last)' },
+  { key: 'auto' as const, label: 'Autoevaluación', color: 'var(--radar-self)' },
 ];
 
 export function RadarChartV2({ data, size = 220 }: RadarChartProps) {
@@ -48,14 +64,14 @@ export function RadarChartV2({ data, size = 220 }: RadarChartProps) {
       points: data.map((d, i) => getPoint(d[s.key], i)).map(p => `${p.x},${p.y}`).join(' '),
     }));
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data]);
+  }, [data, size]);
 
   const averages = useMemo(() => {
     if (data.length === 0) return { s1: 0, s6: 0, auto: 0 };
     const sum = (key: 's1' | 's6' | 'auto') => data.reduce((acc, d) => acc + d[key], 0);
     return {
-      s1:   Math.round(sum('s1')   / data.length),
-      s6:   Math.round(sum('s6')   / data.length),
+      s1: Math.round(sum('s1') / data.length),
+      s6: Math.round(sum('s6') / data.length),
       auto: Math.round(sum('auto') / data.length),
     };
   }, [data]);
@@ -63,125 +79,71 @@ export function RadarChartV2({ data, size = 220 }: RadarChartProps) {
   const gridLevels = [0.25, 0.5, 0.75, 1];
 
   return (
-    <div className="relative flex flex-col items-center justify-center gap-3 w-full">
-      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
-        <defs>
-          {SERIES.map(s => (
-            <filter key={s.key} id={`radarGlow-${s.key}`} x="-50%" y="-50%" width="200%" height="200%">
-              <feGaussianBlur stdDeviation="2.5" result="blur" />
-              <feMerge>
-                <feMergeNode in="blur" />
-                <feMergeNode in="SourceGraphic" />
-              </feMerge>
-            </filter>
-          ))}
-        </defs>
-
-        {/* Grid */}
-        {gridLevels.map((level, i) => {
-          const gridPoints = data.map((_, idx) => {
-            const p = getPoint(100, idx, level);
-            return `${p.x},${p.y}`;
-          }).join(' ');
-          return (
+    <div className="maity-radar-colors radar-v2 flex flex-col items-center gap-4 w-full">
+      <div className="w-full maity-radar-plot" style={{ height: size }}>
+        <svg width="100%" height="100%" viewBox={`0 0 ${size} ${size}`} role="img" aria-label="Radar de habilidades">
+          {/* Grid */}
+          {gridLevels.map((level, i) => (
             <polygon
               key={i}
-              points={gridPoints}
-              fill="none"
-              stroke="#2a2a3e"
-              strokeWidth="1"
-              opacity={0.6}
+              className="radar-v2-grid"
+              points={data.map((_, idx) => {
+                const p = getPoint(100, idx, level);
+                return `${p.x},${p.y}`;
+              }).join(' ')}
             />
-          );
-        })}
+          ))}
 
-        {/* Axis lines */}
-        {data.map((_, i) => {
-          const p = getPoint(100, i);
-          return (
-            <line
-              key={i}
-              x1={center}
-              y1={center}
-              x2={p.x}
-              y2={p.y}
-              stroke="#2a2a3e"
-              strokeWidth="1"
-              opacity={0.6}
-            />
-          );
-        })}
+          {/* Axis lines */}
+          {data.map((_, i) => {
+            const p = getPoint(100, i);
+            return <line key={i} className="radar-v2-grid" x1={center} y1={center} x2={p.x} y2={p.y} />;
+          })}
 
-        {/* Series polygons (drawn in order: s1, s6, auto on top) */}
-        {seriesPaths.map(s => (
-          <polygon
-            key={s.key}
-            points={s.points}
-            fill={s.color}
-            fillOpacity={s.fillOpacity}
-            stroke={s.color}
-            strokeWidth="2"
-            filter={`url(#radarGlow-${s.key})`}
-          />
-        ))}
+          {/* Series polygons (s1, s6, auto on top) */}
+          {seriesPaths.map(s => (
+            <polygon key={s.key} className={`radar-v2-area radar-v2-${s.key}`} points={s.points} />
+          ))}
 
-        {/* Series dots */}
-        {seriesPaths.flatMap(s =>
-          data.map((d, i) => {
-            const p = getPoint(d[s.key], i);
+          {/* Series dots */}
+          {seriesPaths.flatMap(s =>
+            data.map((d, i) => {
+              const p = getPoint(d[s.key], i);
+              return <circle key={`${s.key}-${i}`} className={`radar-v2-dot radar-v2-${s.key}`} cx={p.x} cy={p.y} r="3.5" />;
+            })
+          )}
+
+          {/* Axis labels (dimensions) */}
+          {data.map((d, i) => {
+            const pos = getLabelPosition(i);
             return (
-              <circle
-                key={`${s.key}-${i}`}
-                cx={p.x}
-                cy={p.y}
-                r="3.5"
-                fill={s.color}
-                stroke="#0a0a0f"
-                strokeWidth="1.5"
-              />
+              <text
+                key={i}
+                className="radar-v2-label"
+                x={pos.x}
+                y={pos.y}
+                fontSize="11"
+                fontWeight="700"
+                textAnchor="middle"
+                dominantBaseline="middle"
+              >
+                {d.name}
+              </text>
             );
-          })
-        )}
+          })}
+        </svg>
+      </div>
 
-        {/* Axis labels (dimensions) */}
-        {data.map((d, i) => {
-          const pos = getLabelPosition(i);
-          return (
-            <text
-              key={i}
-              x={pos.x}
-              y={pos.y}
-              fill="#a0a0b0"
-              fontSize="11"
-              fontWeight="700"
-              textAnchor="middle"
-              dominantBaseline="middle"
-            >
-              {d.name}
-            </text>
-          );
-        })}
-      </svg>
-
-      {/* Legend with neon dots and averages */}
-      <div className="flex items-center justify-around w-full gap-2 pt-1">
-        {SERIES.map(s => (
-          <div key={s.key} className="flex flex-col items-center gap-1 min-w-0">
-            <span
-              className="w-2.5 h-2.5 rounded-full inline-block flex-shrink-0"
-              style={{
-                backgroundColor: s.color,
-                boxShadow: `0 0 6px ${s.color}, 0 0 12px ${s.color}80`,
-              }}
-            />
-            <span className="text-[9px] uppercase tracking-wider font-bold text-gray-400 truncate text-center">
-              {s.label}
+      {/* Comparison legend (misma DOM que la web) */}
+      <div className="maity-radar-legend flex items-center justify-around w-full gap-2 pt-2">
+        {SERIES.map(({ key, label, color }) => (
+          <div key={key} className="flex flex-col items-center gap-1.5 min-w-0">
+            <span className="w-3 h-3 rounded-full inline-block flex-shrink-0" style={{ backgroundColor: color }} />
+            <span className="text-[10px] uppercase tracking-wider font-bold text-muted-foreground truncate text-center">
+              {label}
             </span>
-            <span
-              className="text-xl font-extrabold leading-none"
-              style={{ color: s.color, textShadow: `0 0 8px ${s.color}80` }}
-            >
-              {averages[s.key]}
+            <span className="text-2xl font-extrabold leading-none" style={{ color }}>
+              {averages[key]}
             </span>
           </div>
         ))}

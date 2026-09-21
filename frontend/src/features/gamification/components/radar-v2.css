@@ -1,0 +1,14 @@
+/* Colores del radar SVG del dashboard (RadarChartV2). Mismo trazo que el
+   RadarChart (recharts) de la web Sixale730/maity@3ef2914; las variables
+   --radar-* vienen de features/dashboard/components/gamified-v2/radar-palette.css
+   y cambian con el tema (html[data-portal-theme]). */
+.radar-v2-grid { fill: none; stroke: hsl(var(--border)); stroke-width: 1; }
+.radar-v2-label { fill: hsl(var(--muted-foreground)); }
+.radar-v2-area { stroke-width: 2.5; stroke-linejoin: round; }
+.radar-v2-dot { stroke: hsl(var(--card)); stroke-width: 1.5; }
+.radar-v2-area.radar-v2-s1 { fill: var(--radar-first); fill-opacity: .05; stroke: var(--radar-first); stroke-dasharray: 4 3; }
+.radar-v2-area.radar-v2-s6 { fill: var(--radar-last); fill-opacity: .2; stroke: var(--radar-last); }
+.radar-v2-area.radar-v2-auto { fill: var(--radar-self); fill-opacity: .15; stroke: var(--radar-self); stroke-dasharray: 2 3; }
+.radar-v2-dot.radar-v2-s1 { fill: var(--radar-first); }
+.radar-v2-dot.radar-v2-s6 { fill: var(--radar-last); }
+.radar-v2-dot.radar-v2-auto { fill: var(--radar-self); }

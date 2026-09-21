@@ -1,0 +1,28 @@
+/* Origen: web Sixale730/maity@3ef2914 src/features/dashboard/components/gamified-v2/conversation-moments.css
+   Adaptación desktop (scripts/port-dashboard-css.js): @media de ancho → @container dashboard
+   (1100→820, 1099→819, 767→560, 600→440; DPI de Windows, docs/UI_REGLAS.md).
+   NO editar a mano: re-copiar con `node scripts/port-dashboard-css.js --from <clon web>`. */
+.conversation-moments{padding:4px;font-size:12px;line-height:1.45}
+.conversation-moments header{display:grid;gap:3px;margin-bottom:8px}
+.conversation-moments header>span,.conversation-moments footer,.moment-card small{font-size:10px;color:hsl(var(--muted-foreground))}
+.conversation-moments a{display:flex;align-items:center;gap:4px;text-decoration:underline;min-width:0;overflow-wrap:anywhere}
+.conversation-moments header a{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:11px}
+.conversation-moments header a svg{display:inline}
+.moments-choices{display:flex;gap:6px;margin-bottom:8px}
+.moments-choices button{display:flex;align-items:center;justify-content:center;gap:5px;flex:1;min-height:34px;border:1px solid hsl(var(--border));border-radius:10px;color:hsl(var(--muted-foreground));font-weight:600}
+.moments-choices button[aria-pressed=true]{background:hsl(var(--primary)/.09);border-color:hsl(var(--primary)/.4);color:hsl(var(--foreground))}
+.moments-choices button:disabled{opacity:.45}
+.moments-choices button:focus-visible,.moment-evidence summary:focus-visible{outline:2px solid hsl(var(--ring));outline-offset:2px}
+.moment-card{border:1px solid hsl(var(--border));border-left:3px solid #9470ed;border-radius:12px;padding:10px;display:grid;gap:6px;background:hsl(var(--card))}
+.moment-strength{border-left-color:#16a58c}
+.moment-card h3{font-size:13px;font-weight:700}
+.moment-evidence{border-radius:8px;background:hsl(var(--muted)/.65);padding:6px 8px}
+.moment-evidence summary{display:flex;align-items:center;gap:4px;font-size:11px;cursor:pointer;min-height:24px}
+.moment-evidence summary>span{margin-left:auto;text-decoration:underline}
+.moment-evidence blockquote{border-left:2px solid hsl(var(--primary)/.4);padding-left:8px;margin:8px 0;font-style:italic;white-space:pre-wrap}
+.moment-context{font-size:11px;color:hsl(var(--muted-foreground));white-space:pre-wrap}
+.moment-next{background:hsl(var(--primary)/.07);border-radius:8px;padding:8px}
+.moment-next strong{display:block;font-size:10px;margin-bottom:3px}
+.conversation-moments footer{margin-top:6px}
+.moments-empty{display:grid;gap:8px;padding:12px;color:hsl(var(--muted-foreground))}
+@container dashboard (max-width: 560px){.moments-choices button,.moment-evidence summary{min-height:44px}}

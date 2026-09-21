@@ -1,0 +1,16 @@
+/* Ajustes SOLO desktop del dashboard de expedición (no existen en la web).
+   - El dashboard es el contenedor `dashboard` de TODAS las container queries del
+     CSS portado (scripts/port-dashboard-css.js): el ancho que cuenta es el del
+     panel (ventana − sidebar), no el viewport — el DPI de Windows lo desfasa.
+   - Estados vacíos de "Evolución" (A–D) y botón de grabar con el puente del Sidebar. */
+.maity-home-dashboard { container: dashboard / inline-size; }
+.dashboard-evolution-empty { display:flex; flex-direction:column; align-items:center; justify-content:center; text-align:center; gap:10px; min-height:240px; padding:20px 12px; }
+.dashboard-evolution-empty h3 { font-size:15px; font-weight:700; color:hsl(var(--foreground)); }
+.dashboard-evolution-empty p { font-size:12px; line-height:1.5; color:hsl(var(--muted-foreground)); max-width:320px; }
+.dashboard-evolution-empty .dashboard-first-score { font-size:56px; font-weight:900; line-height:1; color:hsl(var(--foreground)); }
+.dashboard-record-button { display:inline-flex; align-items:center; gap:8px; min-height:44px; padding:10px 20px; border-radius:12px; font-size:13px; font-weight:700; color:#fff; background:linear-gradient(90deg,#ff0050,#485df4); box-shadow:0 8px 20px #ff005033; transition:opacity .2s, transform .2s; }
+.dashboard-record-button:hover { opacity:.92; transform:translateY(-1px); }
+.dashboard-record-button:focus-visible { outline:2px solid hsl(var(--ring)); outline-offset:3px; }
+.dashboard-milestone { width:100%; max-width:260px; }
+.dashboard-milestone-track { height:8px; border-radius:999px; background:hsl(var(--muted)); overflow:hidden; }
+.dashboard-milestone-track > span { display:block; height:100%; width:50%; border-radius:999px; background:linear-gradient(90deg,#ff0050,#485df4); }
