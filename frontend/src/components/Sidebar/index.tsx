@@ -2,7 +2,7 @@
 
 import React, { useState, useMemo, useEffect } from 'react';
 import { createSubscriptionGroup } from '@/lib/tauriSubscribe';
-import { ChevronDown, ChevronRight, File, Settings, ChevronLeftCircle, ChevronRightCircle, Calendar, Home, Trash2, Mic, Square, Plus, Pencil, MessageSquare, FileText, ListChecks, Bot } from 'lucide-react';
+import { ChevronDown, ChevronRight, File, ChevronLeftCircle, ChevronRightCircle, Calendar, Trash2, Mic, Square, Plus, Pencil } from 'lucide-react';
 import { useRouter, usePathname } from 'next/navigation';
 import { useSidebar } from './SidebarProvider';
 import type { CurrentMeeting } from '@/components/Sidebar/SidebarProvider';
@@ -22,6 +22,9 @@ import Logo from '@/components/shared/Logo';
 import Info from '@/components/shared/Info';
 import { SidebarControls } from './SidebarControls';
 import { PlanIndicator } from './PlanIndicator';
+import { DesktopNavRow } from './DesktopNavRow';
+import { ThemeToggle } from './ThemeToggle';
+import { NAV_ITEMS, SETTINGS_NAV_ITEM, isNavItemActive } from './navItems';
 
 interface SidebarItem {
   id: string;
@@ -297,6 +300,8 @@ const Sidebar: React.FC = () => {
         })
         .filter((item): item is SidebarItem => item !== undefined); // Type-safe filter
     }
+    // Warning preexistente: se conserva el cálculo intacto (ver comentario de arriba).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sidebarItems, searchQuery, searchResults, expandedFolders]);
 
   const handleDelete = async (itemId: string) => {
@@ -426,96 +431,14 @@ const Sidebar: React.FC = () => {
   const renderCollapsedIcons = () => {
     if (!isCollapsed) return null;
 
-    const isHomePage = pathname === '/';
-    const isConversationsPage = pathname === '/conversations';
-    const isNotesPage = pathname === '/notes';
-    const isTasksPage = pathname === '/tasks';
-    const isChatPage = pathname === '/chat';
-    const isSettingsPage = pathname === '/settings';
-
     return (
       <TooltipProvider>
-        <div className="flex flex-col items-center space-y-4 mt-4">
+        <div className="flex flex-col items-center space-y-2 mt-4">
           <Logo isCollapsed={isCollapsed} />
 
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                onClick={() => router.push('/')}
-                className={`p-2 rounded-lg transition-colors duration-150 ${isHomePage ? 'bg-secondary' : 'hover:bg-secondary'
-                  }`}
-                aria-label="Ir al inicio"
-              >
-                <Home className="w-5 h-5 text-muted-foreground" />
-              </button>
-            </TooltipTrigger>
-            <TooltipContent side="right">
-              <p>Inicio</p>
-            </TooltipContent>
-          </Tooltip>
-
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                onClick={() => router.push('/conversations')}
-                className={`p-2 rounded-lg transition-colors duration-150 ${isConversationsPage ? 'bg-secondary' : 'hover:bg-secondary'
-                  }`}
-                aria-label="Conversaciones"
-              >
-                <MessageSquare className="w-5 h-5 text-[#00f5d4]" />
-              </button>
-            </TooltipTrigger>
-            <TooltipContent side="right">
-              <p>Conversaciones</p>
-            </TooltipContent>
-          </Tooltip>
-
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                onClick={() => router.push('/notes')}
-                className={`p-2 rounded-lg transition-colors duration-150 ${isNotesPage ? 'bg-secondary' : 'hover:bg-secondary'
-                  }`}
-                aria-label="Notas"
-              >
-                <FileText className="w-5 h-5 text-[#a78bfa]" />
-              </button>
-            </TooltipTrigger>
-            <TooltipContent side="right">
-              <p>Notas</p>
-            </TooltipContent>
-          </Tooltip>
-
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                onClick={() => router.push('/tasks')}
-                className={`p-2 rounded-lg transition-colors duration-150 ${isTasksPage ? 'bg-secondary' : 'hover:bg-secondary'
-                  }`}
-                aria-label="Tareas"
-              >
-                <ListChecks className="w-5 h-5 text-orange-500" />
-              </button>
-            </TooltipTrigger>
-            <TooltipContent side="right">
-              <p>Tareas</p>
-            </TooltipContent>
-          </Tooltip>
-
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                onClick={() => router.push('/chat')}
-                className={`p-2 rounded-lg transition-colors duration-150 ${isChatPage ? 'bg-secondary' : 'hover:bg-secondary'}`}
-                aria-label="Chat con Maity"
-              >
-                <Bot className="w-5 h-5 text-[#485df4]" />
-              </button>
-            </TooltipTrigger>
-            <TooltipContent side="right">
-              <p>Chat con Maity</p>
-            </TooltipContent>
-          </Tooltip>
+          {NAV_ITEMS.map((item) => (
+            <DesktopNavRow key={item.id} item={item} active={isNavItemActive(pathname, item)} collapsed />
+          ))}
 
           <Tooltip>
             <TooltipTrigger asChild>
@@ -537,21 +460,9 @@ const Sidebar: React.FC = () => {
             </TooltipContent>
           </Tooltip>
 
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                onClick={() => router.push('/settings')}
-                className={`p-2 rounded-lg transition-colors duration-150 ${isSettingsPage ? 'bg-secondary' : 'hover:bg-secondary'
-                  }`}
-                aria-label="Abrir configuración"
-              >
-                <Settings className="w-5 h-5 text-muted-foreground" />
-              </button>
-            </TooltipTrigger>
-            <TooltipContent side="right">
-              <p>Configuración</p>
-            </TooltipContent>
-          </Tooltip>
+          <DesktopNavRow item={SETTINGS_NAV_ITEM} active={isNavItemActive(pathname, SETTINGS_NAV_ITEM)} collapsed />
+
+          <ThemeToggle isCollapsed={isCollapsed} />
 
           <Info isCollapsed={isCollapsed} />
         </div>
@@ -681,7 +592,7 @@ const Sidebar: React.FC = () => {
       {/* Floating collapse button */}
       <button
         onClick={toggleCollapse}
-        className="absolute -right-6 top-20 z-50 p-1 bg-background hover:bg-secondary rounded-full shadow-lg border border-border"
+        className="absolute -right-6 top-20 z-50 p-1 bg-sidebar text-sidebar-foreground hover:bg-sidebar-accent rounded-full shadow-lg border border-sidebar-border"
         style={{ transform: 'translateX(50%)' }}
         aria-label={isCollapsed ? 'Expandir barra lateral' : 'Contraer barra lateral'}
       >
@@ -693,7 +604,7 @@ const Sidebar: React.FC = () => {
       </button>
 
       <div
-        className={`h-screen bg-background border-r border-border shadow-sm flex flex-col transition-all duration-300 ${isCollapsed ? 'w-16' : 'w-64'
+        className={`h-screen bg-sidebar text-sidebar-foreground border-r border-sidebar-border shadow-sm flex flex-col transition-all duration-300 ${isCollapsed ? 'w-16' : 'w-64'
           }`}
       >
         {/*  Header with traffic light spacing */}
@@ -721,41 +632,11 @@ const Sidebar: React.FC = () => {
           <div className="flex-shrink-0">
             {!isCollapsed && (
               <>
-                <div
-                  onClick={() => router.push('/')}
-                  className={`p-3 text-lg font-semibold items-center hover:bg-secondary h-10 flex mx-3 mt-3 rounded-lg cursor-pointer text-foreground ${pathname === '/' ? 'bg-secondary' : ''}`}
-                >
-                  <Home className="w-4 h-4 mr-2" />
-                  <span>Inicio</span>
-                </div>
-                <div
-                  onClick={() => router.push('/conversations')}
-                  className={`p-3 text-lg font-semibold items-center hover:bg-secondary h-10 flex mx-3 mt-2 rounded-lg cursor-pointer text-foreground ${pathname === '/conversations' ? 'bg-secondary' : ''}`}
-                >
-                  <MessageSquare className="w-4 h-4 mr-2 text-[#00f5d4]" />
-                  <span>Conversaciones</span>
-                </div>
-                <div
-                  onClick={() => router.push('/notes')}
-                  className={`p-3 text-lg font-semibold items-center hover:bg-secondary h-10 flex mx-3 mt-2 rounded-lg cursor-pointer text-foreground ${pathname === '/notes' ? 'bg-secondary' : ''}`}
-                >
-                  <FileText className="w-4 h-4 mr-2 text-[#a78bfa]" />
-                  <span>Notas</span>
-                </div>
-                <div
-                  onClick={() => router.push('/tasks')}
-                  className={`p-3 text-lg font-semibold items-center hover:bg-secondary h-10 flex mx-3 mt-2 rounded-lg cursor-pointer text-foreground ${pathname === '/tasks' ? 'bg-secondary' : ''}`}
-                >
-                  <ListChecks className="w-4 h-4 mr-2 text-orange-500" />
-                  <span>Tareas</span>
-                </div>
-                <div
-                  onClick={() => router.push('/chat')}
-                  className={`p-3 text-lg font-semibold items-center hover:bg-secondary h-10 flex mx-3 mt-2 rounded-lg cursor-pointer text-foreground ${pathname === '/chat' ? 'bg-secondary' : ''}`}
-                >
-                  <Bot className="w-4 h-4 mr-2 text-[#485df4]" />
-                  <span>Chat con Maity</span>
-                </div>
+                <nav aria-label="Navegación principal" className="flex flex-col px-3 mt-3">
+                  {NAV_ITEMS.map((item) => (
+                    <DesktopNavRow key={item.id} item={item} active={isNavItemActive(pathname, item)} collapsed={false} />
+                  ))}
+                </nav>
               </>
             )}
           </div>

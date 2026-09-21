@@ -1,11 +1,14 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
-import { Settings, Mic, Square, User, LogOut } from 'lucide-react';
-import { useRouter } from 'next/navigation';
+import { Mic, Square, User, LogOut } from 'lucide-react';
+import { usePathname } from 'next/navigation';
 import { getVersion } from '@tauri-apps/api/app';
 import Info from '@/components/shared/Info';
 import { useAuth } from '@/contexts/AuthContext';
+import { DesktopNavRow } from './DesktopNavRow';
+import { ThemeToggle } from './ThemeToggle';
+import { SETTINGS_NAV_ITEM, isNavItemActive } from './navItems';
 
 interface SidebarControlsProps {
   isRecording: boolean;
@@ -18,7 +21,7 @@ export const SidebarControls: React.FC<SidebarControlsProps> = ({
   isCollapsed,
   onRecordingToggle,
 }) => {
-  const router = useRouter();
+  const pathname = usePathname();
   const [version, setVersion] = useState('');
   const { user, maityUser, signOut } = useAuth();
 
@@ -42,10 +45,10 @@ export const SidebarControls: React.FC<SidebarControlsProps> = ({
   const isSignedIn = !!user;
 
   return (
-    <div className="flex-shrink-0 p-2 border-t border-gray-100 dark:border-gray-700">
+    <div className="flex-shrink-0 p-2 border-t border-sidebar-border">
       {/* Account badge */}
       <div
-        className="w-full flex items-center gap-2 px-2 py-2 mb-2 rounded-lg bg-secondary/50 border border-border"
+        className="w-full flex items-center gap-2 px-2 py-2 mb-2 rounded-lg bg-sidebar-accent/60 border border-sidebar-border"
         title={isSignedIn ? `Sesión activa: ${displayEmail}` : 'Sin sesión iniciada'}
       >
         <div className="w-8 h-8 rounded-full bg-primary/15 text-primary flex items-center justify-center flex-shrink-0">
@@ -62,7 +65,7 @@ export const SidebarControls: React.FC<SidebarControlsProps> = ({
             }}
             aria-label="Cerrar sesión"
             title="Cerrar sesión"
-            className="p-1 rounded hover:bg-secondary text-muted-foreground hover:text-foreground transition-colors"
+            className="p-1 rounded hover:bg-sidebar-accent text-muted-foreground hover:text-foreground transition-colors"
           >
             <LogOut className="w-3.5 h-3.5" />
           </button>
@@ -88,14 +91,14 @@ export const SidebarControls: React.FC<SidebarControlsProps> = ({
         )}
       </button>
 
-      <button
-        onClick={() => router.push('/settings')}
-        aria-label="Abrir configuración"
-        className="w-full flex items-center justify-center px-3 py-1.5 mt-1 mb-1 text-sm font-medium text-foreground bg-secondary hover:bg-secondary/80 rounded-lg transition-colors shadow-sm"
-      >
-        <Settings className="w-4 h-4 mr-2" />
-        <span>Configuración</span>
-      </button>
+      <div className="mt-1">
+        <DesktopNavRow
+          item={SETTINGS_NAV_ITEM}
+          active={isNavItemActive(pathname, SETTINGS_NAV_ITEM)}
+          collapsed={false}
+        />
+      </div>
+      <ThemeToggle isCollapsed={isCollapsed} />
       <Info isCollapsed={isCollapsed} />
       <div className="w-full flex items-center justify-center px-3 py-1 text-xs text-muted-foreground">
         {version ? `v${version}` : ''}

@@ -120,7 +120,7 @@ export function PlanIndicator({ isCollapsed }: PlanIndicatorProps) {
   return (
     <button
       onClick={goToPlan}
-      className="flex items-center gap-2 w-full px-3 py-2 text-xs text-muted-foreground hover:text-foreground transition-colors border-t border-border"
+      className="flex items-center gap-2 w-full px-3 py-2 text-xs text-muted-foreground hover:text-foreground transition-colors border-t border-sidebar-border"
     >
       <Gauge className="h-3.5 w-3.5 shrink-0" />
       <span className="truncate">{label}</span>

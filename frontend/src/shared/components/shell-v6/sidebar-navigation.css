@@ -1,0 +1,27 @@
+/* Origen: web Sixale730/maity@3ef2914 src/shared/components/shell-v6/sidebar-navigation.css — copia tal cual. */
+[data-nav-route] { --nav-color: var(--nav-fallback); }
+[data-nav-route='/hoy'] { --nav-color: #60a5fa; }
+html[data-portal-theme='light'] [data-nav-route='/hoy'] { --nav-color: #2563eb; }
+[data-nav-route='/chat'] { --nav-color: #a78bfa; }
+html[data-portal-theme='light'] [data-nav-route='/chat'] { --nav-color: #6d28d9; }
+[data-nav-route='/documentos'] { --nav-color: #2dd4bf; }
+html[data-portal-theme='light'] [data-nav-route='/documentos'] { --nav-color: #0f766e; }
+[data-nav-route='/base-conocimiento'] { --nav-color: #fbbf24; }
+html[data-portal-theme='light'] [data-nav-route='/base-conocimiento'] { --nav-color: #a16207; }
+[data-nav-route='/notas'] { --nav-color: #f472b6; }
+html[data-portal-theme='light'] [data-nav-route='/notas'] { --nav-color: #be185d; }
+[data-nav-route='/configuracion'] { --nav-color: #94a3b8; }
+html[data-portal-theme='light'] [data-nav-route='/configuracion'] { --nav-color: #475569; }
+.portal-nav-icon { width: 30px; height: 30px; display: grid; place-items: center; border-radius: 9px; background: color-mix(in srgb, var(--nav-color) 12%, transparent); }
+[data-nav-route='/dashboard'] { --nav-color: #60a5fa; }
+[data-nav-route='/conversaciones'] { --nav-color: #2dd4bf; }
+[data-nav-route='/roleplay'] { --nav-color: #f472b6; }
+[data-nav-route='/skills-arena'] { --nav-color: #a78bfa; }
+[data-nav-route='/learning-content'] { --nav-color: #fbbf24; }
+[data-nav-route='/download'] { --nav-color: #94a3b8; }
+/* Maity UI kit: route accents match the illustration family in both themes. */
+html [data-nav-route='/dashboard'],html [data-nav-route='/hoy'],html [data-nav-route='/skills-arena'],html [data-nav-route='/download'],html [data-nav-route='/configuracion']{--nav-color:#485df4}
+html [data-nav-route='/chat']{--nav-color:#7351e8}
+html [data-nav-route='/roleplay'],html [data-nav-route='/notas']{--nav-color:#ff0050}
+html [data-nav-route='/documentos'],html [data-nav-route='/base-conocimiento'],html [data-nav-route='/learning-content'],html [data-nav-route='/conversaciones']{--nav-color:#139a78}
+html[data-portal-theme='dark'] [data-nav-route]{--nav-color:var(--nav-fallback)}

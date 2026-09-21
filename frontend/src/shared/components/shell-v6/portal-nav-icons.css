@@ -1,0 +1,5 @@
+/* Origen: web Sixale730/maity@3ef2914 src/shared/components/shell-v6/portal-nav-icons.css — copia tal cual. */
+.portal-nav-art { display: inline-flex; width: 28px; height: 28px; flex-shrink: 0; vertical-align: middle; }
+.portal-nav-art > svg { width: 100%; height: 100%; overflow: visible; filter: drop-shadow(0 2px 1px #24385822); }
+.portal-nav-art .expedition-icon { width: 28px; height: 28px; }
+.portal-nav-icon:has(.portal-nav-art) { background: transparent; }

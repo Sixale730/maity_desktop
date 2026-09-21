@@ -16,14 +16,14 @@ const Info = React.forwardRef<HTMLButtonElement, InfoProps>(({ isCollapsed }, re
           ref={ref} 
           className={`flex items-center justify-center mb-2 cursor-pointer border-none transition-colors ${
             isCollapsed 
-              ? "bg-transparent p-2 hover:bg-[#e7e7e9] dark:hover:bg-gray-700 rounded-lg"
-              : "w-full px-3 py-1.5 mt-1 text-sm font-medium text-[#3a3a3c] dark:text-gray-200 bg-[#d0d0d3] dark:bg-gray-600 hover:bg-[#d0d0d3] dark:hover:bg-gray-600 rounded-lg shadow-sm"
+              ? "bg-transparent p-2 hover:bg-sidebar-accent rounded-lg"
+              : "w-full px-3 py-1.5 mt-1 text-sm font-medium text-secondary-foreground bg-secondary hover:bg-secondary/80 rounded-lg shadow-sm"
           }`}
           title="Acerca de Maity"
         >
-          <InfoIcon className={`text-[#4a4a4c] dark:text-gray-300 ${isCollapsed ? "w-5 h-5" : "w-4 h-4"}`} />
+          <InfoIcon className={`text-muted-foreground ${isCollapsed ? "w-5 h-5" : "w-4 h-4"}`} />
           {!isCollapsed && (
-            <span className="ml-2 text-sm text-[#3a3a3c] dark:text-gray-200">Acerca de</span>
+            <span className="ml-2 text-sm text-secondary-foreground">Acerca de</span>
           )}
         </button>
       </DialogTrigger>
