@@ -165,151 +165,173 @@
 }
 
 @layer base {
-  /* === PALETA MAITY - MODO CLARO === */
+  /* === PALETA MAITY — TEMA CLARO (default desde sep-2026) ===
+     Origen: web Sixale730/maity@3ef2914 src/index.css (:root). Paridad de tokens con la web.
+     Extras del desktop que la web no tiene: --chart-1..5 (Recharts/tailwind `chart.*`) y
+     --maity-warning (chat v5; = ámbar). La paleta oscura vive en `.dark` (abajo). */
   :root {
-    --background: 0 0% 100%;           /* #ffffff - Blanco MAITY */
-    --foreground: 0 0% 0%;             /* #000000 - Negro MAITY */
-    --card: 0 0% 100%;                 /* #ffffff - Blanco MAITY */
-    --card-foreground: 0 0% 0%;        /* #000000 - Negro MAITY */
-    --popover: 0 0% 100%;              /* #ffffff - Blanco MAITY */
-    --popover-foreground: 0 0% 0%;     /* #000000 - Negro MAITY */
-    --primary: 341 100% 50%;           /* #ff0050 - Rosa MAITY */
-    --primary-foreground: 0 0% 100%;   /* #ffffff */
-    --secondary: 240 3% 91%;           /* #e7e7e9 - Gris MAITY */
-    --secondary-foreground: 0 0% 0%;   /* #000000 - Negro MAITY */
-    --muted: 240 3% 91%;               /* #e7e7e9 - Gris MAITY */
-    --muted-foreground: 0 0% 40%;      /* Gris medio */
-    --accent: 341 100% 50%;            /* #ff0050 - Rosa MAITY */
-    --accent-foreground: 0 0% 100%;    /* #ffffff */
-    --destructive: 341 100% 50%;       /* #ff0050 - Rosa MAITY */
+    --background: 225 100% 98%;
+    --foreground: 225 35% 19%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 225 35% 19%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 225 35% 19%;
+
+    /* Default Primary (Maity Rosa #ff0050) */
+    --primary: 341 100% 50%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 232 65% 96%;
+    --secondary-foreground: 225 35% 19%;
+
+    --muted: 230 50% 96%;
+    --muted-foreground: 225 15% 42%;
+
+    /* Accent (Maity Green) */
+    --accent: 163 82% 29%;
+    --accent-foreground: 0 0% 100%;
+
+    --destructive: 340 90% 44%;   /* más oscuro que el rosa de marca para que text-destructive lea sobre fondo claro */
     --destructive-foreground: 0 0% 100%;
-    --border: 240 3% 85%;              /* Variación Gris MAITY */
-    --input: 240 3% 85%;               /* Variación Gris MAITY */
-    --ring: 341 100% 50%;              /* #ff0050 - Rosa MAITY */
+
+    /* Brand Specific Colors */
+    --maity-pink: 341 100% 50%;
+    --maity-blue: 235 75% 56%;
+    --maity-green: 156 82% 51%;
+    --maity-amber: 35 91% 65%;
+    --maity-warning: 35 91% 65%;  /* desktop: alias de ámbar para chat v5 (open loops, urgencia) */
+    --dashboard-gold: 37 86% 33%;
+
+    /* Shell v4/v5 surfaces (chat) */
+    --card-hi: 232 65% 94%;
+    --border-strong: 230 30% 80%;
+    --rail-bg: 225 100% 98%;
+
+    /* Surface variants */
+    --surface-elevated: 232 60% 97%;
+    --surface-elevated-foreground: 225 35% 19%;
+
+    /* Game accent colors */
+    --game-accent-adiccion: 16 100% 60%;
+    --game-accent-black-stories: 280 100% 59%;
+    --game-accent-active-listening: 156 82% 51%;
+    --game-accent-bingo: 45 100% 55%;
+
+    --border: 227 35% 88%;
+    --input: 227 35% 86%;
+    --ring: 341 100% 50%;
+
     --radius: 0.5rem;
-    /* Charts con colores MAITY */
+
+    /* Charts (desktop; la web no los define) — mismos valores que antes del rediseño */
     --chart-1: 341 100% 50%;           /* Rosa MAITY */
     --chart-2: 233 88% 62%;            /* Azul MAITY */
     --chart-3: 157 83% 51%;            /* Verde MAITY */
     --chart-4: 341 100% 65%;           /* Rosa claro */
     --chart-5: 233 88% 72%;            /* Azul claro */
-    /* Tokens semánticos chat v5 */
-    --maity-blue: 232 89% 62%;         /* #485df4 - Azul Maity (voz de Maity, branding chat) */
-    --maity-warning: 33 89% 64%;       /* #f6b352 - Ámbar urgencia week / open loops / highlights */
+
+    --sidebar-background: 0 0% 100%;
+    --sidebar-foreground: 225 35% 19%;
+    --sidebar-primary: 341 100% 50%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 232 65% 95%;
+    --sidebar-accent-foreground: 225 35% 19%;
+    --sidebar-border: 227 35% 88%;
+    --sidebar-ring: 341 100% 50%;
   }
 
-  /* === PALETA MAITY - MODO OSCURO === */
+  /* === PALETA MAITY — TEMA OSCURO ===
+     Origen: web `html.dark`. Aquí va como `.dark` (no `html.dark`) para que también la tomen
+     las ventanas aux, que llevan `class="dark bg-transparent"` en su propio root layout.
+     OJO: nada de `background` en este selector — rompería la transparencia de las aux. */
   .dark {
-    --background: 0 0% 0%;             /* #000000 - Negro MAITY */
-    --foreground: 0 0% 100%;           /* #ffffff - Blanco MAITY */
-    --card: 0 0% 5%;                   /* Negro suave */
-    --card-foreground: 0 0% 100%;      /* #ffffff */
-    --popover: 0 0% 5%;                /* Negro suave */
-    --popover-foreground: 0 0% 100%;   /* #ffffff */
-    --primary: 341 100% 50%;           /* #ff0050 - Rosa MAITY */
-    --primary-foreground: 0 0% 100%;   /* #ffffff */
-    --secondary: 0 0% 10%;             /* Negro suave */
-    --secondary-foreground: 0 0% 100%; /* #ffffff */
-    --muted: 0 0% 15%;                 /* Gris oscuro */
-    --muted-foreground: 0 0% 60%;      /* Gris claro */
-    --accent: 341 100% 50%;            /* #ff0050 - Rosa MAITY */
-    --accent-foreground: 0 0% 100%;    /* #ffffff */
-    --destructive: 341 100% 40%;       /* Rosa oscuro */
-    --destructive-foreground: 0 0% 100%;
-    --border: 0 0% 20%;                /* Gris oscuro */
-    --input: 0 0% 20%;                 /* Gris oscuro */
-    --ring: 341 100% 50%;              /* #ff0050 - Rosa MAITY */
-    /* Charts modo oscuro */
-    --chart-1: 341 100% 55%;           /* Rosa MAITY claro */
-    --chart-2: 233 88% 67%;            /* Azul MAITY claro */
-    --chart-3: 157 83% 56%;            /* Verde MAITY claro */
-    --chart-4: 341 100% 70%;           /* Rosa más claro */
-    --chart-5: 233 88% 77%;            /* Azul más claro */
-    /* Tokens semánticos chat v5 */
-    --maity-blue: 232 89% 62%;
-    --maity-warning: 33 89% 64%;
-    /* v5 chat zone tokens */
-    --card-hi: 0 0% 10%;
-    --rail-bg: 0 0% 1%;
-    --border-strong: 0 0% 18%;
+    --background: 0 0% 2%;  /* #050505 */
+    --foreground: 240 4% 91%;
+
+    --card: 0 0% 6%;
+    --card-foreground: 240 4% 91%;
+
+    --popover: 0 0% 6%;
+    --popover-foreground: 240 4% 91%;
+
+    --primary: 341 100% 50%;
+    --primary-foreground: 240 4% 91%;
+
+    --secondary: 0 0% 6%;
+    --secondary-foreground: 240 4% 91%;
+
+    --muted: 0 0% 6%;
+    --muted-foreground: 235 12% 65%;
+
+    /* Accent (Maity Green #1bea9a) */
+    --accent: 156 82% 51%;
+    --accent-foreground: 0 0% 0%;
+
+    --destructive: 340 100% 50%;
+    --destructive-foreground: 240 4% 91%;
+
+    /* Brand Specific Colors */
+    --maity-pink: 341 100% 50%;
+    --maity-blue: 229 93% 65%;
+    --maity-green: 156 82% 51%;
+    --maity-amber: 35 91% 65%;       /* #f6b352 */
+    --maity-warning: 35 91% 65%;
+    --dashboard-gold: 43 90% 62%;
+
+    /* Shell v4/v5 surfaces (chat) */
+    --card-hi: 240 11% 11%;          /* #1a1a22 */
+    --border-strong: 0 0% 18%;       /* #2e2e2e */
+    --rail-bg: 240 18% 2%;           /* #030305 */
+
+    /* Surface variants */
+    --surface-elevated: 240 7% 9%;
+    --surface-elevated-foreground: 240 4% 91%;
+
+    /* Game accent colors */
+    --game-accent-adiccion: 16 100% 60%;
+    --game-accent-black-stories: 280 100% 59%;
+    --game-accent-active-listening: 156 82% 51%;
+    --game-accent-bingo: 45 100% 55%;
+
+    --border: 0 0% 12%;
+    --input: 0 0% 12%;
+    --ring: 341 100% 50%;
+
+    --radius: 0.5rem;
+
+    /* Charts (desktop) — mismos valores que antes del rediseño */
+    --chart-1: 341 100% 55%;
+    --chart-2: 233 88% 67%;
+    --chart-3: 157 83% 56%;
+    --chart-4: 341 100% 70%;
+    --chart-5: 233 88% 77%;
+
+    --sidebar-background: 0 0% 2%;
+    --sidebar-foreground: 240 4% 91%;
+    --sidebar-primary: 341 100% 50%;
+    --sidebar-primary-foreground: 240 4% 91%;
+    --sidebar-accent: 0 0% 6%;
+    --sidebar-accent-foreground: 240 4% 91%;
+    /* La web usa `0 0% 100% / 0.1` (white/10); en el desktop tailwind añade `/ <alpha-value>`
+       a sidebar.*, y un alpha doble sería inválido. Equivalente opaco sobre #050505. */
+    --sidebar-border: 0 0% 12%;
+    --sidebar-ring: 341 100% 50%;
   }
 
-  /* === PALETA GRIS NEUTRO (default) === */
-  .dark.theme-neutral {
-    --background: 0 0% 7%;              /* #121212 */
-    --foreground: 0 0% 98%;             /* #fafafa */
-    --card: 0 0% 10%;                   /* #1a1a1a */
-    --card-foreground: 0 0% 98%;
-    --popover: 0 0% 10%;
-    --popover-foreground: 0 0% 98%;
-    --secondary: 0 0% 13%;              /* #212121 */
-    --secondary-foreground: 0 0% 98%;
-    --muted: 0 0% 15%;                  /* #262626 */
-    --muted-foreground: 0 0% 64%;       /* #a3a3a3 */
-    --border: 0 0% 18%;                 /* #2e2e2e */
-    --input: 0 0% 18%;
-    /* Mantener rosa como acento */
-    --primary: 341 100% 50%;
-    --accent: 341 100% 50%;
-    --ring: 341 100% 50%;
-    /* v5 chat zone tokens */
-    --maity-blue: 232 89% 62%;
-    --maity-warning: 33 89% 64%;
-    --card-hi: 0 0% 12%;
-    --rail-bg: 0 0% 5%;
-    --border-strong: 0 0% 22%;
+  /* Lienzo del documento: SOLO en la ventana principal, que es la única con
+     `data-portal-theme` (lo estampa public/theme-boot.js). Nunca en `html`/`html.dark`
+     a secas: las ventanas aux son `dark bg-transparent` y un fondo aquí taparía sus
+     esquinas transparentes (lo vigila app/globals-tokens.test.ts). */
+  html[data-portal-theme='light'] {
+    color-scheme: light;
+    background: #f8faff;
   }
 
-  /* === PALETA GRIS FRÍO (tinte azul sutil) === */
-  .dark.theme-cool {
-    --background: 240 5% 7%;            /* gris oscuro con tinte azul apenas perceptible */
-    --foreground: 220 5% 95%;
-    --card: 240 4% 10%;
-    --card-foreground: 220 5% 95%;
-    --popover: 240 4% 10%;
-    --popover-foreground: 220 5% 95%;
-    --secondary: 240 4% 13%;
-    --secondary-foreground: 220 5% 95%;
-    --muted: 240 3% 16%;
-    --muted-foreground: 230 3% 60%;
-    --border: 240 3% 18%;
-    --input: 240 3% 18%;
-    /* Mantener rosa como acento */
-    --primary: 341 100% 50%;
-    --accent: 341 100% 50%;
-    --ring: 341 100% 50%;
-    /* v5 chat zone tokens */
-    --maity-blue: 232 89% 62%;
-    --maity-warning: 33 89% 64%;
-    --card-hi: 240 4% 12%;
-    --rail-bg: 240 5% 5%;
-    --border-strong: 240 3% 22%;
-  }
-
-  /* === PALETA GRIS CÁLIDO (tinte marrón) === */
-  .dark.theme-warm {
-    --background: 30 10% 7%;            /* #141210 */
-    --foreground: 40 10% 95%;           /* #f5f3f0 */
-    --card: 30 8% 9%;                   /* #1a1816 */
-    --card-foreground: 40 10% 95%;
-    --popover: 30 8% 9%;
-    --popover-foreground: 40 10% 95%;
-    --secondary: 30 8% 12%;             /* #211f1c */
-    --secondary-foreground: 40 10% 95%;
-    --muted: 30 6% 15%;                 /* #282522 */
-    --muted-foreground: 35 8% 58%;      /* #9e968a */
-    --border: 30 8% 16%;                /* #2e2a26 */
-    --input: 30 8% 16%;
-    /* Mantener rosa como acento */
-    --primary: 341 100% 50%;
-    --accent: 341 100% 50%;
-    --ring: 341 100% 50%;
-    /* v5 chat zone tokens */
-    --maity-blue: 232 89% 62%;
-    --maity-warning: 33 89% 64%;
-    --card-hi: 30 8% 11%;
-    --rail-bg: 30 10% 5%;
-    --border-strong: 30 8% 20%;
+  html[data-portal-theme='dark'] {
+    color-scheme: dark;
+    background: #050505;
   }
 }
 

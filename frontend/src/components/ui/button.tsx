@@ -22,7 +22,8 @@ const buttonVariants = cva(
         green: "bg-[#1bea9a] text-white hover:bg-[#16bb7b]",
         blue: "bg-[#485df4] text-white hover:bg-[#3a4ac3]",
         red: "bg-[#ff0050] text-white hover:bg-[#cc0040]",
-        gray: "border bg-[#e7e7e9] border-input shadow-sm hover:bg-[#d0d0d3] hover:text-accent-foreground",
+        // gray → tokens (sep-2026): el #e7e7e9 fijo quedaba blanco-sobre-blanco en claro y chillón en oscuro.
+        gray: "border bg-secondary text-secondary-foreground border-input shadow-sm hover:bg-muted",
       },
       size: {
         default: "h-9 px-4 py-2",

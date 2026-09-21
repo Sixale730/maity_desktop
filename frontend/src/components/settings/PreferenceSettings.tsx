@@ -337,7 +337,7 @@ export function PreferenceSettings() {
           <h3 className="text-lg font-semibold text-foreground">Tema</h3>
         </div>
         <p className="text-sm text-muted-foreground mb-4">
-          Elige la paleta de colores para la interfaz
+          Elige entre el tema claro y el oscuro
         </p>
         <ThemeSelector />
       </div>

@@ -5,7 +5,8 @@ import { usePathname, useRouter } from 'next/navigation'
 import Sidebar from '@/components/Sidebar'
 import { SidebarProvider } from '@/components/Sidebar/SidebarProvider'
 import MainContent from '@/components/MainContent'
-import { Toaster } from 'sonner'
+// Toaster con el tema del documento (observa data-portal-theme; ver components/ui/sonner.tsx)
+import { Toaster } from '@/components/ui/sonner'
 import { useState, useEffect, useRef } from 'react'
 import { emit } from '@tauri-apps/api/event'
 import { createSubscriptionGroup } from '@/lib/tauriSubscribe'
@@ -88,10 +89,13 @@ const queryClient = new QueryClient({
  * como ATRIBUTOS HTML/SVG (inmunes a CSP) y el layout como clases Tailwind
  * (el CSS externo viene de 'self' y es render-blocking → aplica al primer
  * paint). Colores/opacidades del spinner: atributos SVG, tambien inmunes.
+ *
+ * Fondo con token (`bg-background`), no negro fijo: public/theme-boot.js ya estampó
+ * el tema (claro por defecto) en <html> antes de este primer paint.
  */
 function SplashScreen() {
   return (
-    <div className="flex h-screen flex-col items-center justify-center gap-5 bg-black">
+    <div className="flex h-screen flex-col items-center justify-center gap-5 bg-background">
       <img
         src="icon_128x128.png"
         alt="Maity"
@@ -233,13 +237,13 @@ function AuthGate({ children }: { children: React.ReactNode }) {
     return (
       <div className="flex flex-col items-center justify-center h-screen bg-background gap-6">
         {/* Logo Maity */}
-        <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-[#ff0050]/10 to-[#485df4]/10 dark:from-[#ff0050]/20 dark:to-[#485df4]/20 flex items-center justify-center shadow-lg">
+        <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-maity-pink/15 to-maity-blue/15 flex items-center justify-center shadow-lg">
           <img src="icon_128x128.png" alt="Maity" width={48} height={48} className="w-12 h-12" />
         </div>
 
         {showError ? (
           <>
-            <p className="text-red-400 text-sm text-center max-w-xs">
+            <p className="text-destructive text-sm text-center max-w-xs">
               {maityUserError || 'No se pudo conectar con el servidor. Verifica tu conexión e intenta de nuevo.'}
             </p>
             <div className="flex gap-3">
@@ -251,7 +255,7 @@ function AuthGate({ children }: { children: React.ReactNode }) {
               </button>
               <button
                 onClick={() => signOut()}
-                className="px-4 py-2 rounded-lg bg-zinc-700 hover:bg-zinc-600 text-white text-sm font-medium transition-colors"
+                className="px-4 py-2 rounded-lg border border-border bg-secondary hover:bg-muted text-secondary-foreground text-sm font-medium transition-colors"
               >
                 Cerrar sesión
               </button>
@@ -297,12 +301,12 @@ function RegistrationRedirect() {
 function RegistrationUnverified({ onRetry }: { onRetry: () => void }) {
   return (
     <div
-      className="flex h-screen flex-col items-center justify-center gap-4 bg-black px-8 text-center"
+      className="flex h-screen flex-col items-center justify-center gap-4 bg-background px-8 text-center"
       data-testid="registration-unverified"
     >
       <img src="icon_128x128.png" alt="Maity" width={56} height={56} className="opacity-90" />
-      <h1 className="text-lg font-medium text-white">No pudimos verificar el estado de tu cuenta</h1>
-      <p className="max-w-md text-sm text-neutral-400">
+      <h1 className="text-lg font-medium text-foreground">No pudimos verificar el estado de tu cuenta</h1>
+      <p className="max-w-md text-sm text-muted-foreground">
         Revisa tu conexión a internet e inténtalo de nuevo. Para grabar, Maity necesita confirmar
         que tu registro está completo.
       </p>
@@ -791,8 +795,18 @@ export default function RootLayout({
     )
   }
 
+  // Tema claro/oscuro (sep-2026): SIN className="dark" fijo. public/theme-boot.js corre
+  // bloqueante en <head> ANTES del primer paint y estampa `data-portal-theme` + `.dark`
+  // según localStorage 'maity-portal-theme' (claro por defecto). Por eso <html> difiere del
+  // HTML prerenderizado → suppressHydrationWarning, y NO se le pasa className: React nunca
+  // toca class/data-* del <html> y DashboardTheme (vía ThemeProvider) es el único escritor.
+  // Archivo externo y no inline: la CSP es script-src 'self'.
   return (
-    <html lang="es" className="dark">
+    <html lang="es" suppressHydrationWarning>
+      <head>
+        {/* eslint-disable-next-line @next/next/no-sync-scripts -- Bloqueante a propósito: debe fijar el tema antes del primer paint (sin flash); next/script beforeInteractive no garantiza correr antes del paint en export estático. */}
+        <script src="/theme-boot.js" />
+      </head>
       <body className="font-sans antialiased">
         <Script
           id="chunk-error-recovery"

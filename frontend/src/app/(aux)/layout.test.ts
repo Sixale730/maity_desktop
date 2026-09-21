@@ -154,6 +154,17 @@ describe('app/(aux) — root layout propio de las ventanas auxiliares (#23)', ()
     expect(/\sstyle=\{/.test(src), 'style={{…}} inline se bloquea por la CSP con nonce en el primer paint; usar clases').toBe(false);
   });
 
+  // Tema claro/oscuro (sep-2026): la main arranca en claro vía public/theme-boot.js, pero las
+  // ventanas aux siguen OSCURAS y con esquinas transparentes en ambos modos. Si el layout aux
+  // cargara theme-boot, un usuario en claro vería los floats con fondo claro y opaco.
+  it('(aux)/layout.tsx sigue "dark bg-transparent" y no carga theme-boot.js', () => {
+    const src = readFileSync(AUX_LAYOUT, 'utf8');
+    expect(src).toContain('<html lang="es" className="dark bg-transparent">');
+    expect(src).toContain('<body className="bg-transparent');
+    expect(/theme-boot/.test(src), 'las ventanas aux no deben cargar theme-boot.js').toBe(false);
+    expect(/data-portal-theme/.test(src), 'data-portal-theme es solo de la main (activa el lienzo de fondo)').toBe(false);
+  });
+
   it('el grafo de imports de las ventanas aux no alcanza supabase-js, platformLogger, analytics, contexts ni (main)', () => {
     const entries = [AUX_LAYOUT, ...AUX_LABELS.map((l) => path.join(AUX_GROUP, l, 'page.tsx'))];
     const { files, externals } = reachable(entries);

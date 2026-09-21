@@ -1,0 +1,22 @@
+/* Origen: web Sixale730/maity@3ef2914 src/features/expedition/expedition-icons.css
+   Adaptación desktop: el `@media(max-width:600px)` pasa a `@container dashboard (max-width: 440px)`
+   (breakpoints de viewport no confiables con el DPI scaling de Windows; mapeo proporcional al de
+   scripts/port-dashboard-css.js). Resto tal cual. */
+.expedition-icon{display:inline-flex;width:29px;height:29px;flex-shrink:0;vertical-align:middle;filter:drop-shadow(0 2px 1px #24385822)}
+.expedition-icon svg{width:100%;height:100%;overflow:visible}
+.atlas-tabs [role=tab]{gap:6px}
+.atlas-tabs [role=tab][data-state=active] .expedition-icon{filter:drop-shadow(0 1px 2px #ffffff99)}
+@media(prefers-reduced-motion:no-preference){
+  .atlas-tabs [role=tab]:is(:hover,:focus-visible) .expedition-icon{animation:expedition-icon-lift .45s ease-out 1}
+  .encounter-switch button:is(:hover,:focus-visible) .world-skill-icon{animation:expedition-icon-lift .45s ease-out 1}
+  .atlas-equipment-grid .atlas-item:focus-within>img{animation:expedition-item-reveal .5s ease-out 1}
+  @media(hover:hover){.atlas-equipment-grid .atlas-item:hover>img{animation:expedition-item-reveal .5s ease-out 1}}
+}
+@keyframes expedition-icon-lift{0%,100%{transform:translateY(0) rotate(0)}45%{transform:translateY(-3px) rotate(-6deg)}}
+@keyframes expedition-item-reveal{0%,100%{transform:translateY(0)}50%{transform:translateY(-4px)}}
+@container dashboard (max-width: 440px){.atlas-tabs [role=tab]{flex-direction:column;gap:3px}.expedition-icon{width:25px;height:25px}}
+/* Reference kit: filled silhouettes stay colorful; state belongs to the surrounding control. */
+.world-skill-icon .expedition-icon{width:25px;height:25px}
+.expedition-node .expedition-icon{width:24px;height:24px;pointer-events:none}
+.expedition-node.is-locked .expedition-icon{filter:saturate(.6) drop-shadow(0 1px 1px #24385822)}
+.fire-stage .expedition-icon,.additional-stage .expedition-icon{width:24px;height:24px;pointer-events:none}

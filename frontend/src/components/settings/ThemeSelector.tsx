@@ -1,67 +1,40 @@
 'use client'
 
+import { Moon, Sun } from 'lucide-react'
+import { Switch } from '@/components/ui/switch'
 import { useTheme } from '@/contexts/ThemeContext'
-import { Check } from 'lucide-react'
 
-const PALETTES = [
-  {
-    id: 'neutral' as const,
-    name: 'Gris Neutro',
-    description: 'Estilo minimalista tipo VS Code',
-    preview: ['#121212', '#1a1a1a', '#2e2e2e']
-  },
-  {
-    id: 'cool' as const,
-    name: 'Gris Frío',
-    description: 'Tinte azulado moderno',
-    preview: ['#0f0f14', '#16161e', '#2a2a3d']
-  },
-  {
-    id: 'warm' as const,
-    name: 'Gris Cálido',
-    description: 'Tinte marrón acogedor',
-    preview: ['#141210', '#1a1816', '#2e2a26']
-  }
-]
-
+/**
+ * Switch Claro/Oscuro (sep-2026). Reemplaza al selector de paletas neutral/cool/warm,
+ * que se retiró al adoptar la paleta de la web. Escribe vía `useTheme().toggle`
+ * (DashboardTheme es el único escritor de `.dark`/`data-portal-theme`).
+ */
 export function ThemeSelector() {
-  const { palette, setPalette } = useTheme()
+  const { theme, toggle } = useTheme()
+  const dark = theme === 'dark'
 
   return (
-    <div className="space-y-3">
-      {PALETTES.map((p) => (
-        <button
-          key={p.id}
-          onClick={() => setPalette(p.id)}
-          className={`w-full p-4 rounded-lg border transition-all flex items-center gap-4 ${
-            palette === p.id
-              ? 'border-primary bg-primary/10'
-              : 'border-border hover:border-muted-foreground/50 bg-card'
-          }`}
-        >
-          {/* Preview de colores */}
-          <div className="flex gap-1">
-            {p.preview.map((color, i) => (
-              <div
-                key={i}
-                className="w-6 h-6 rounded"
-                style={{ backgroundColor: color }}
-              />
-            ))}
+    <div className="flex items-center justify-between gap-4 rounded-lg border border-border bg-card p-4">
+      <div className="flex items-center gap-3">
+        {dark ? (
+          <Moon className="h-5 w-5 text-foreground" aria-hidden="true" />
+        ) : (
+          <Sun className="h-5 w-5 text-foreground" aria-hidden="true" />
+        )}
+        <div className="text-left">
+          <div className="font-medium text-foreground">{dark ? 'Oscuro' : 'Claro'}</div>
+          <div className="text-sm text-muted-foreground">
+            {dark ? 'Fondo oscuro, ideal con poca luz' : 'Fondo claro (predeterminado)'}
           </div>
-
-          {/* Info */}
-          <div className="flex-1 text-left">
-            <div className="font-medium text-foreground">{p.name}</div>
-            <div className="text-sm text-muted-foreground">{p.description}</div>
-          </div>
-
-          {/* Check */}
-          {palette === p.id && (
-            <Check className="w-5 h-5 text-primary" />
-          )}
-        </button>
-      ))}
+        </div>
+      </div>
+      <Switch
+        checked={dark}
+        onCheckedChange={(next) => {
+          if (next !== dark) toggle()
+        }}
+        aria-label="Tema oscuro"
+      />
     </div>
   )
 }

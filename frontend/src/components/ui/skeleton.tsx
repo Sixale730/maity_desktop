@@ -1,3 +1,4 @@
+// Tokens semánticos (paridad con web Sixale730/maity@3ef2914 skeleton.tsx, sep-2026).
 import { cn } from "@/lib/utils"
 
 function Skeleton({
@@ -6,7 +7,7 @@ function Skeleton({
 }: React.HTMLAttributes<HTMLDivElement>) {
   return (
     <div
-      className={cn("animate-pulse rounded-md bg-gray-100 dark:bg-gray-800", className)}
+      className={cn("animate-pulse rounded-md bg-muted", className)}
       {...props}
     />
   )
