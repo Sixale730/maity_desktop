@@ -205,7 +205,7 @@ Ubicaciones: dev `frontend/models/`; produccion `~/Library/Application Support/c
 |------|-------------|
 | `/` | Interfaz principal de grabacion (el dashboard gamificado se renderiza AQUÍ, `app/(main)/page.tsx`) |
 | `/conversations` | Lista de conversaciones (local-first); detalle con `?id=` (cloud) o `?localId=` (SQLite) |
-| `/gamification` | Dashboard gamificado (volcan de progreso) |
+| `/gamification` | Dashboard gamificado (mismo componente de expedición que la home) |
 | `/notes`, `/tasks` | Notas y tareas extraidas de conversaciones |
 | `/settings` | Configuracion de la app |
 | `/registration` | Onboarding de registro (17 pasos) — solo `registration_form_completed=false` |
@@ -295,11 +295,12 @@ Reglas asociadas (detalle en `docs/REGLAS_AUDIO_GRABACION.md`):
 ## UI: reglas de patrones visuales
 
 Detalle completo en `docs/UI_REGLAS.md` — resumen de lo que NO hay que romper:
-- **Dashboard de gamificación (`GamifiedDashboardV2.tsx`)**: CERO breakpoints `md:`/`lg:` en el Card de misión (el DPI scaling de Windows los rompe); estructura híbrida imagen full-width + cartel con `bg-[#0F0F0F]` propio; el `opacity-60` de la imagen es crítico. 4 regresiones documentadas.
+- **Tema claro por defecto (sep-2026, paridad web)**: `public/theme-boot.js` (script externo por la CSP) + `DashboardTheme` como ÚNICO escritor de `.dark`/`data-portal-theme`; `useTheme() → {theme, toggle}`; sin paletas `theme-*`. Fondos de `html` SOLO en `html[data-portal-theme=…]` (en `html.dark` rompen la transparencia de las ventanas aux, que siguen `dark bg-transparent`). Colores nuevos = tokens; guard de una dirección `src/test/themeTokens.test.ts`.
+- **Dashboard de la home = expedición portada de la web** (`features/dashboard/components/gamified-v2/`, misma ruta que la web): layout por `@container dashboard` (nada de media queries de ancho ni `md:`/`lg:` — DPI de Windows; al re-copiar CSS correr `scripts/port-dashboard-css.js`), radar SVG propio, recharts/paneles diferidos, retrato 2D (sin three.js), `useLearningPath` stub hasta que exista el wrapper del RPC.
 - **Botones "Empezar a grabar" del dashboard**: NO `router.push('/')` (el dashboard YA está en `/`); usar el puente del Sidebar (`start-recording-from-sidebar`).
 - **Píldora de grabación**: contenedor en `z-30` + `pointer-events-none` (interior `pointer-events-auto`); NO subir a `z-50`.
 - **Todo `onCloseRequested` de JS DEBE hacer `event.preventDefault()`** — sin él `@tauri-apps/api` llama `destroy()` y mata la app con jornada activa (así se embarcó en la 0.2.57 de la Store).
-- **Bundle de arranque (#24)**: `framer-motion` SOLO bajo `features/auth/**` (registro; chunk dinámico) — las entradas del resto son keyframes de `globals.css` sin `forwards`; `recharts` SOLO en `CommunicationTrendChart.tsx` vía `LazyCommunicationTrendChart` (`dynamic`); `next/font` SOLO en `app/(main)/chat/page.tsx`, nunca en el root layout. Guard post-build: `scripts/lint-main-bundle.js` (marcadores + presupuesto + `@font-face`).
+- **Bundle de arranque (#24)**: `framer-motion` SOLO bajo `features/auth/**` (registro; chunk dinámico) — las entradas del resto son keyframes de `globals.css` sin `forwards`; `recharts` SOLO en `CommunicationTrendChart.tsx`/`ProgressChartsSection.tsx` vía sus wrappers `Lazy*` (`dynamic`); `next/font` SOLO en `app/(main)/chat/page.tsx`, nunca en el root layout. Guard post-build: `scripts/lint-main-bundle.js` (marcadores + presupuesto + `@font-face`).
 
 ## Telemetria y diagnostico remoto
 

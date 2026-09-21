@@ -16,6 +16,18 @@ description: Portar un feature del repo web (Sixale730/maity) al desktop usando 
 - El user quiere una traducción manual o tokenización personalizada
 - El feature ya está en el desktop y solo necesita un patch puntual
 
+## ⚠️ Estado real del desktop (actualizado 2026-09-21, port del rediseño web sep-2026)
+
+Antes de seguir los pasos de abajo, ten en cuenta que varios quedaron obsoletos:
+- **Casi nada es copia exacta de la web**: dashboard (`features/dashboard/components/gamified-v2/`), minuta-v2 y dashboard-v1 son copias ADAPTADAS; cada archivo lleva cabecera con su commit de origen web y la lista de adaptaciones. Al re-portar, diffea contra esa cabecera; no sobrescribas a ciegas.
+- **Paso 7.3 (opt-out de `/chat` del Sidebar) NO aplica**: `/chat` conserva el Sidebar global del desktop.
+- **Paso 8 (fuentes en el root layout) está PROHIBIDO**: `next/font` solo en `app/(main)/chat/page.tsx` (#24, `lint-main-bundle.js` falla con `@font-face` en el arranque). No hay `app/layout.tsx`: los root layouts son `app/(main)/layout.tsx` y `app/(aux)/layout.tsx`.
+- **Tema**: claro por defecto con `public/theme-boot.js` + `DashboardTheme` (copias web). Los tokens viven en `src/app/globals.css` (`:root` claro / `.dark`); no hay `index.css`. Ver `docs/UI_REGLAS.md` § Tema claro/oscuro.
+- **CSS de la web con `@media` de ancho**: pasarlo por `node scripts/port-dashboard-css.js` (→ `@container dashboard`) por el DPI de Windows.
+- **Bundle de arranque**: recharts/three/framer nunca estáticos en nada que llegue al home; usar wrappers `Lazy*` con `next/dynamic`. Presupuesto 1400 KB ejecutados.
+- **Imports web que no existen en el desktop** (`@/features/omi/...`, `@/ui/components/ui/*`): resolverlos con aliases de `tsconfig.json` + `vitest.config.ts` hacia adapters, no editando la copia.
+- **Rutas web → desktop**: `lib/router-compat.ts` (`useNavigate`, `Link`) traduce `/conversaciones`, `/notas`, `/configuracion`, y manda a maity.cloud lo que el desktop no tiene.
+
 ## Filosofía
 
 **Cero drift entre web y desktop**: copia el código real de `Sixale730/maity@main` tal cual. Los imports que la web usa (`useUser`, `useLanguage`, `MaityLogo`, `useNavigate`) se resuelven con **adapter shims** en el desktop. Cuando la web cambia, se vuelve a copiar — no se re-traduce.
