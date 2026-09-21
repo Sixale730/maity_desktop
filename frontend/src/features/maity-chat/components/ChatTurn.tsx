@@ -116,7 +116,7 @@ export function ChatTurn({
   // a la burbuja (mismo estilo del chip del composer, sin botón de quitar).
   const userAttachments = !isMaity ? (message.attachments ?? []) : [];
 
-  const dotColor = move ? move.color : 'rgba(241,241,245,0.25)';
+  const dotColor = move ? move.color : 'hsl(var(--muted-foreground) / 0.35)';
 
   /** Genera el PDF con @react-pdf/renderer y lo guarda vía Rust. Ambos módulos
    *  se lazy-importan (mismo patrón que MinutaToolbar) para que la lib pesada no

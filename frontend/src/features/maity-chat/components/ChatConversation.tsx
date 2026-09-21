@@ -142,7 +142,7 @@ function TypingTurn() {
           style={{
             width: 10,
             height: 10,
-            background: 'rgba(241,241,245,0.25)',
+            background: 'hsl(var(--foreground) / 0.25)',
           }}
         />
         <div className="flex-1 w-px bg-border mt-0.5" />

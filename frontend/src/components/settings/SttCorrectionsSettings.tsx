@@ -81,11 +81,11 @@ export function SttCorrectionsSettings() {
   };
 
   return (
-    <div className="mt-8 border-t border-[#e7e7e9] dark:border-gray-700 pt-6">
-      <Label className="block text-sm font-medium text-[#3a3a3c] dark:text-gray-200 mb-1">
+    <div className="mt-8 border-t border-border pt-6">
+      <Label className="block text-sm font-medium text-foreground mb-1">
         Correcciones de transcripción
       </Label>
-      <p className="text-xs text-[#6a6a6d] dark:text-gray-400 mb-3 mx-1">
+      <p className="text-xs text-muted-foreground mb-3 mx-1">
         Si un nombre o término sale mal transcrito de forma repetida (por ejemplo
         &quot;alien&quot; en lugar de &quot;Allianz&quot;), agrégalo aquí y se corregirá
         automáticamente en tus próximas grabaciones.
@@ -99,7 +99,7 @@ export function SttCorrectionsSettings() {
           maxLength={MAX_TERM_LEN}
           className="focus:ring-1 focus:ring-[#485df4] focus:border-[#485df4]"
         />
-        <ArrowRight className="h-4 w-4 shrink-0 text-[#6a6a6d]" />
+        <ArrowRight className="h-4 w-4 shrink-0 text-muted-foreground" />
         <Input
           value={right}
           onChange={(e) => setRight(e.target.value)}
@@ -123,16 +123,16 @@ export function SttCorrectionsSettings() {
       </div>
 
       {loading ? (
-        <p className="text-xs text-[#6a6a6d] dark:text-gray-400 mt-3 mx-1">Cargando…</p>
+        <p className="text-xs text-muted-foreground mt-3 mx-1">Cargando…</p>
       ) : terms.length > 0 ? (
         <ul className="mt-3 mx-1 space-y-1">
           {terms.map((t, i) => (
             <li
               key={`${t.wrong}-${i}`}
-              className="flex items-center justify-between rounded-md bg-[#f4f4f5] dark:bg-gray-800 px-3 py-1.5 text-sm"
+              className="flex items-center justify-between rounded-md bg-muted px-3 py-1.5 text-sm"
             >
-              <span className="truncate text-[#3a3a3c] dark:text-gray-200">
-                {t.wrong} <span className="text-[#6a6a6d]">→</span> {t.right}
+              <span className="truncate text-foreground">
+                {t.wrong} <span className="text-muted-foreground">→</span> {t.right}
               </span>
               <Button
                 type="button"
@@ -142,7 +142,7 @@ export function SttCorrectionsSettings() {
                 onClick={() => void handleRemove(i)}
                 title="Eliminar corrección"
               >
-                <Trash2 className="h-4 w-4 text-[#6a6a6d]" />
+                <Trash2 className="h-4 w-4 text-muted-foreground" />
               </Button>
             </li>
           ))}

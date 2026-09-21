@@ -37,29 +37,29 @@ export function DownloadingView({
 
   return (
     <div className="flex flex-col items-center space-y-8">
-      <div className="w-16 h-16 rounded-full bg-[#f0f2fe] dark:bg-violet-950/40 flex items-center justify-center">
-        <Loader2 className="w-8 h-8 text-[#3a4ac3] dark:text-violet-300 animate-spin" />
+      <div className="w-16 h-16 rounded-full bg-maity-blue/10  flex items-center justify-center">
+        <Loader2 className="w-8 h-8 text-maity-blue animate-spin" />
       </div>
 
       <div className="w-full max-w-md space-y-3">
         <div className="flex items-center justify-between text-sm">
-          <span className="font-medium text-[#000000] dark:text-white">{label}</span>
+          <span className="font-medium text-foreground">{label}</span>
           {!isConnecting && (
-            <span className="text-[#3a4ac3] dark:text-violet-300 font-semibold">
+            <span className="text-maity-blue font-semibold">
               {Math.round(safeProgress)}%
             </span>
           )}
         </div>
 
-        <div className="w-full bg-[#e7e7e9] dark:bg-gray-700 rounded-full h-2 overflow-hidden">
+        <div className="w-full bg-muted rounded-full h-2 overflow-hidden">
           <div
-            className="bg-[#3a4ac3] dark:bg-violet-400 h-2 rounded-full transition-all duration-300 ease-out"
+            className="bg-maity-blue h-2 rounded-full transition-all duration-300 ease-out"
             style={{ width: `${isConnecting ? 0 : safeProgress}%` }}
           />
         </div>
 
         {!isConnecting && !isVerifying && totalMb > 0 && (
-          <div className="flex items-center justify-between text-xs text-[#6a6a6d] dark:text-gray-400">
+          <div className="flex items-center justify-between text-xs text-muted-foreground">
             <span>
               {formatMb(downloadedMb)} / {formatMb(totalMb)}
             </span>
@@ -68,7 +68,7 @@ export function DownloadingView({
         )}
       </div>
 
-      <p className="text-xs text-[#8a8a8d] dark:text-gray-500 text-center max-w-xs">
+      <p className="text-xs text-muted-foreground text-center max-w-xs">
         Mantén la app abierta. Esto solo ocurre la primera vez. El modelo de análisis
         sigue descargándose en segundo plano; no necesitas esperarlo.
       </p>

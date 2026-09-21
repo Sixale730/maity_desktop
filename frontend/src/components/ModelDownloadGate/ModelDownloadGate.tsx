@@ -133,8 +133,8 @@ export function ModelDownloadGate({ onComplete }: ModelDownloadGateProps) {
     <div className="fixed inset-0 bg-background flex items-center justify-center z-50 overflow-hidden">
       <div className="w-full max-w-2xl h-full max-h-screen flex flex-col px-6 py-6">
         <div className="mb-6 text-center space-y-3 flex-shrink-0">
-          <h1 className="text-3xl font-semibold text-[#000000] dark:text-white">{title}</h1>
-          <p className="text-base text-[#4a4a4c] dark:text-gray-300 max-w-md mx-auto">
+          <h1 className="text-3xl font-semibold text-foreground">{title}</h1>
+          <p className="text-base text-muted-foreground max-w-md mx-auto">
             {description}
           </p>
         </div>

@@ -114,7 +114,7 @@ export function InlineDeviceSelector({
           <ChevronUp className="h-3 w-3 flex-shrink-0" />
         </button>
         {openDropdown === 'mic' && (
-          <div className="absolute bottom-full left-0 mb-1 z-[60] bg-white dark:bg-gray-900 border border-border rounded-md shadow-lg py-1 min-w-[200px] max-h-[160px] overflow-y-auto">
+          <div className="absolute bottom-full left-0 mb-1 z-[60] bg-popover text-popover-foreground border border-border rounded-md shadow-lg py-1 min-w-[200px] max-h-[160px] overflow-y-auto">
             {inputDevices.length === 0 ? (
               <div className="px-3 py-2 text-muted-foreground">Sin dispositivos</div>
             ) : (
@@ -122,7 +122,7 @@ export function InlineDeviceSelector({
                 <button
                   key={d.name}
                   onClick={() => handleSelect(d.name, 'Microphone')}
-                  className={`w-full text-left px-3 py-1.5 hover:bg-accent transition-colors text-xs ${d.name === currentMicDevice ? 'bg-accent font-medium' : ''}`}
+                  className={`w-full text-left px-3 py-1.5 hover:bg-muted transition-colors text-xs ${d.name === currentMicDevice ? 'bg-muted font-medium' : ''}`}
                 >
                   {d.name}
                 </button>
@@ -149,7 +149,7 @@ export function InlineDeviceSelector({
           <ChevronUp className="h-3 w-3 flex-shrink-0" />
         </button>
         {openDropdown === 'system' && (
-          <div className="absolute bottom-full left-0 mb-1 z-[60] bg-white dark:bg-gray-900 border border-border rounded-md shadow-lg py-1 min-w-[200px] max-h-[160px] overflow-y-auto">
+          <div className="absolute bottom-full left-0 mb-1 z-[60] bg-popover text-popover-foreground border border-border rounded-md shadow-lg py-1 min-w-[200px] max-h-[160px] overflow-y-auto">
             {outputDevices.length === 0 ? (
               <div className="px-3 py-2 text-muted-foreground">Sin dispositivos</div>
             ) : (
@@ -157,7 +157,7 @@ export function InlineDeviceSelector({
                 <button
                   key={d.name}
                   onClick={() => handleSelect(d.name, 'SystemAudio')}
-                  className={`w-full text-left px-3 py-1.5 hover:bg-accent transition-colors text-xs ${d.name === currentSystemDevice ? 'bg-accent font-medium' : ''}`}
+                  className={`w-full text-left px-3 py-1.5 hover:bg-muted transition-colors text-xs ${d.name === currentSystemDevice ? 'bg-muted font-medium' : ''}`}
                 >
                   {d.name}
                 </button>

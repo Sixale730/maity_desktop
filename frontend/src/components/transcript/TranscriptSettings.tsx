@@ -197,11 +197,11 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
         <div>
             <div>
                 {/* <div className="flex justify-between items-center mb-4">
-                    <h3 className="text-lg font-semibold text-[#000000] dark:text-white">Transcript Settings</h3>
+                    <h3 className="text-lg font-semibold text-foreground">Transcript Settings</h3>
                 </div> */}
                 <div className="space-y-4 pb-6">
                     <div>
-                        <Label className="block text-sm font-medium text-[#3a3a3c] dark:text-gray-200 mb-1">
+                        <Label className="block text-sm font-medium text-foreground mb-1">
                             Modelo de Transcripción
                         </Label>
                         <div className="flex space-x-2 mx-1">
@@ -251,7 +251,7 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
 
                         </div>
                         {transcriptModelConfig.provider === 'deepgram' && (
-                            <p className="text-xs text-[#6a6a6d] dark:text-gray-400 mt-2 mx-1">
+                            <p className="text-xs text-muted-foreground mt-2 mx-1">
                                 Deepgram usa autenticacion automatica. Solo necesitas iniciar sesion con Google.
                             </p>
                         )}
@@ -260,7 +260,7 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
                     {/* Language selector for Deepgram */}
                     {transcriptModelConfig.provider === 'deepgram' && (
                         <div>
-                            <Label className="block text-sm font-medium text-[#3a3a3c] dark:text-gray-200 mb-1">
+                            <Label className="block text-sm font-medium text-foreground mb-1">
                                 Idioma de Transcripción
                             </Label>
                             <div className="mx-1">
@@ -286,7 +286,7 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
                                     </SelectContent>
                                 </Select>
                             </div>
-                            <p className="text-xs text-[#6a6a6d] dark:text-gray-400 mt-2 mx-1">
+                            <p className="text-xs text-muted-foreground mt-2 mx-1">
                                 Nova-3 soporta español latinoamericano (es-419) con alta precision.
                             </p>
                         </div>
@@ -324,10 +324,10 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
 
                     {transcriptModelConfig.provider === 'canary' && isAdmin && (
                         <div className="mt-4 rounded-md border border-dashed border-[#485df4]/40 p-3 space-y-2">
-                            <p className="text-sm font-medium text-[#3a3a3c] dark:text-gray-200">
+                            <p className="text-sm font-medium text-foreground">
                                 🐦 Canary Flash (dev-only) — mejor español medido, idioma forzado a es
                             </p>
-                            <p className="text-xs text-[#6b6b6e] dark:text-gray-400">
+                            <p className="text-xs text-muted-foreground">
                                 Modelo canary-1b-flash-int8 (~1GB). Descárgalo una vez, verifica el estado y
                                 graba normal para el A/B contra Parakeet. Los usuarios regulares no ven esta opción.
                             </p>
@@ -344,13 +344,13 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
 
                     {requiresApiKey && (
                         <div>
-                            <Label className="block text-sm font-medium text-[#3a3a3c] dark:text-gray-200 mb-1">
+                            <Label className="block text-sm font-medium text-foreground mb-1">
                                 Clave API
                             </Label>
                             <div className="relative mx-1">
                                 <Input
                                     type={showApiKey ? "text" : "password"}
-                                    className={`pr-24 focus:ring-1 focus:ring-[#485df4] focus:border-[#485df4] ${isApiKeyLocked ? 'bg-[#e7e7e9] dark:bg-gray-700 cursor-not-allowed' : ''
+                                    className={`pr-24 focus:ring-1 focus:ring-[#485df4] focus:border-[#485df4] ${isApiKeyLocked ? 'bg-card-hi cursor-not-allowed' : ''
                                         }`}
                                     value={apiKey || ''}
                                     onChange={(e) => setApiKey(e.target.value)}
@@ -361,7 +361,7 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
                                 {isApiKeyLocked && (
                                     <div
                                         onClick={handleInputClick}
-                                        className="absolute inset-0 flex items-center justify-center bg-[#e7e7e9] dark:bg-gray-700 bg-opacity-50 rounded-md cursor-not-allowed"
+                                        className="absolute inset-0 flex items-center justify-center bg-card-hi bg-opacity-50 rounded-md cursor-not-allowed"
                                     />
                                 )}
                                 <div className="absolute inset-y-0 right-0 pr-1 flex items-center">
@@ -386,8 +386,8 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
                                     </Button>
                                 </div>
                             </div>
-                            <p className="text-xs text-[#6a6a6d] dark:text-gray-400 mt-2 mx-1">
-                                Obtén tu clave API desde <a href="https://console.deepgram.com/" target="_blank" rel="noopener noreferrer" className="text-[#3a4ac3] hover:underline">Consola de Deepgram</a>
+                            <p className="text-xs text-muted-foreground mt-2 mx-1">
+                                Obtén tu clave API desde <a href="https://console.deepgram.com/" target="_blank" rel="noopener noreferrer" className="text-maity-blue hover:underline">Consola de Deepgram</a>
                             </p>
                         </div>
                     )}
@@ -397,7 +397,7 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
                         <Button
                             onClick={handleSaveConfig}
                             disabled={isSaving}
-                            className="w-full bg-[#000000] hover:bg-[#1a1a1a] text-white"
+                            className="w-full bg-foreground hover:bg-foreground/90 text-background"
                         >
                             {isSaving ? (
                                 <>

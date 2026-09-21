@@ -29,17 +29,17 @@ export function SetupOverviewStep() {
 
   const features = [
     {
-      icon: <Mic className="w-5 h-5 text-[#3a4ac3]" />,
+      icon: <Mic className="w-5 h-5 text-maity-blue" />,
       title: 'Transcripción en Tiempo Real',
       description: 'Impulsado por Deepgram Nova-2',
     },
     {
-      icon: <FileText className="w-5 h-5 text-[#16bb7b]" />,
+      icon: <FileText className="w-5 h-5 text-emerald-600 dark:text-maity-green" />,
       title: 'Resúmenes Inteligentes',
       description: 'Impulsado por OpenAI GPT-4o',
     },
     {
-      icon: <Zap className="w-5 h-5 text-[#3a4ac3]" />,
+      icon: <Zap className="w-5 h-5 text-maity-blue" />,
       title: 'Configuración Instantánea',
       description: 'Sin descargas necesarias',
     },
@@ -58,24 +58,24 @@ export function SetupOverviewStep() {
     >
       <div className="flex flex-col items-center space-y-8">
         {/* Cloud Icon */}
-        <div className="w-20 h-20 rounded-full bg-gradient-to-br from-blue-50 to-green-50 flex items-center justify-center">
-          <Cloud className="w-10 h-10 text-[#3a4ac3]" />
+        <div className="w-20 h-20 rounded-full bg-gradient-to-br from-maity-blue/10 to-maity-green/10 flex items-center justify-center">
+          <Cloud className="w-10 h-10 text-maity-blue" />
         </div>
 
         {/* Features Card */}
-        <div className="w-full max-w-md bg-white dark:bg-gray-800 rounded-lg border border-[#e7e7e9] dark:border-gray-700 p-5">
+        <div className="w-full max-w-md bg-card rounded-lg border border-border p-5">
           <div className="space-y-4">
             {features.map((feature, idx) => (
               <div
                 key={idx}
                 className="flex items-center gap-4 p-2"
               >
-                <div className="w-10 h-10 rounded-full bg-[#f5f5f6] flex items-center justify-center flex-shrink-0">
+                <div className="w-10 h-10 rounded-full bg-muted flex items-center justify-center flex-shrink-0">
                   {feature.icon}
                 </div>
                 <div>
-                  <h3 className="font-medium text-[#000000]">{feature.title}</h3>
-                  <p className="text-sm text-[#6a6a6d]">{feature.description}</p>
+                  <h3 className="font-medium text-foreground">{feature.title}</h3>
+                  <p className="text-sm text-muted-foreground">{feature.description}</p>
                 </div>
               </div>
             ))}
@@ -83,8 +83,8 @@ export function SetupOverviewStep() {
         </div>
 
         {/* API Key Reminder */}
-        <div className="w-full max-w-md bg-amber-50 border border-amber-200 rounded-lg p-4">
-          <p className="text-sm text-amber-800 text-center">
+        <div className="w-full max-w-md bg-amber-50 border border-amber-200 dark:bg-amber-500/10 dark:border-amber-500/30 rounded-lg p-4">
+          <p className="text-sm text-amber-800 dark:text-amber-200 text-center">
             <strong>Importante:</strong> Asegúrate de tener tus claves API de Deepgram y OpenAI
             configuradas en tu entorno o en la configuración.
           </p>
@@ -94,7 +94,7 @@ export function SetupOverviewStep() {
         <div className="w-full max-w-xs space-y-4">
           <Button
             onClick={handleContinue}
-            className="w-full h-11 bg-[#000000] hover:bg-[#1a1a1a] text-white"
+            className="w-full h-11 bg-foreground hover:bg-foreground/90 text-background"
           >
             ¡Vamos!
           </Button>
@@ -103,7 +103,7 @@ export function SetupOverviewStep() {
               href="https://github.com/Zackriya-Solutions/meeting-minutes"
               target="_blank"
               rel="noopener noreferrer"
-              className="text-xs text-[#4a4a4c] hover:underline"
+              className="text-xs text-muted-foreground hover:underline"
             >
               Reportar problemas en GitHub
             </a>

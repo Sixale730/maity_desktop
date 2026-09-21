@@ -42,7 +42,7 @@ export function RegistrationInstructions({ onStart, onBack }: RegistrationInstru
         <Card className="bg-gradient-to-br from-blue-900/20 to-blue-800/10 border-blue-500/30">
           <CardContent className="pt-6 space-y-3">
             <div className="flex items-center gap-2">
-              <MessageCircle className="h-5 w-5 text-blue-400" />
+              <MessageCircle className="h-5 w-5 text-blue-700 dark:text-blue-400" />
               <h3 className="font-semibold text-base">1. Introducción</h3>
             </div>
             <p className="text-sm text-muted-foreground">
@@ -55,7 +55,7 @@ export function RegistrationInstructions({ onStart, onBack }: RegistrationInstru
         <Card className="bg-gradient-to-br from-pink-900/20 to-pink-800/10 border-pink-500/30">
           <CardContent className="pt-6 space-y-3">
             <div className="flex items-center gap-2">
-              <Target className="h-5 w-5 text-pink-400" />
+              <Target className="h-5 w-5 text-pink-700 dark:text-pink-400" />
               <h3 className="font-semibold text-base">2. Evaluación rápida</h3>
             </div>
             <p className="text-sm text-muted-foreground">
@@ -68,7 +68,7 @@ export function RegistrationInstructions({ onStart, onBack }: RegistrationInstru
         <Card className="bg-gradient-to-br from-yellow-900/20 to-yellow-800/10 border-yellow-500/30">
           <CardContent className="pt-6 space-y-3">
             <div className="flex items-center gap-2">
-              <Sparkles className="h-5 w-5 text-yellow-400" />
+              <Sparkles className="h-5 w-5 text-yellow-700 dark:text-yellow-400" />
               <h3 className="font-semibold text-base">3. Resultados</h3>
             </div>
             <p className="text-sm text-muted-foreground">
@@ -124,7 +124,7 @@ export function RegistrationInstructions({ onStart, onBack }: RegistrationInstru
           <Button
             onClick={onStart}
             size="lg"
-            className="w-full sm:w-auto px-8 bg-primary hover:bg-primary/90 text-white font-semibold shadow-lg hover:shadow-pink-500/25 hover:-translate-y-0.5 transition-all"
+            className="w-full sm:w-auto px-8 bg-primary hover:bg-primary/90 text-primary-foreground font-semibold shadow-lg hover:shadow-pink-500/25 hover:-translate-y-0.5 transition-all"
           >
             Comenzar
           </Button>

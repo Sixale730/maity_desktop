@@ -55,7 +55,7 @@ function MicrosoftIcon({ className }: { className?: string }) {
 }
 
 const inputClass =
-  'w-full h-11 px-3 rounded-lg border border-[#e7e7e9] dark:border-gray-700 bg-white dark:bg-gray-800 text-sm text-[#3a3a3c] dark:text-gray-200 focus:outline-none focus:ring-2 focus:ring-violet-500'
+  'w-full h-11 px-3 rounded-lg border border-border bg-card text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-violet-500'
 
 const primaryButtonClass =
   'w-full h-12 bg-violet-600 hover:bg-violet-500 text-white text-sm font-medium rounded-lg disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 transition-colors'
@@ -219,14 +219,14 @@ export function LoginScreen() {
       <div className="w-full max-w-md flex flex-col items-center px-6 py-8 space-y-8">
         {/* Logo / Brand */}
         <div className="flex flex-col items-center space-y-4">
-          <div className="w-20 h-20 rounded-2xl bg-gradient-to-br from-[#ff0050]/10 to-[#485df4]/10 dark:from-[#ff0050]/20 dark:to-[#485df4]/20 flex items-center justify-center shadow-lg">
+          <div className="w-20 h-20 rounded-2xl bg-gradient-to-br from-maity-pink/10 to-maity-blue/10 dark:from-maity-pink/20 dark:to-maity-blue/20 flex items-center justify-center shadow-lg">
             <img src="icon_128x128.png" alt="Maity" width={56} height={56} className="w-14 h-14" />
           </div>
           <div className="text-center space-y-2">
-            <h1 className="text-3xl font-semibold text-[#000000] dark:text-white">
+            <h1 className="text-3xl font-semibold text-foreground">
               Bienvenido a Maity
             </h1>
-            <p className="text-base text-[#4a4a4c] dark:text-gray-300 max-w-sm mx-auto">
+            <p className="text-base text-muted-foreground max-w-sm mx-auto">
               Tu asistente de reuniones con IA
             </p>
           </div>
@@ -235,18 +235,18 @@ export function LoginScreen() {
         {/* OAuth Spinner Mode (full-screen-ish) */}
         {isSigningIn ? (
           <div className="w-full max-w-xs flex flex-col items-center space-y-4">
-            <div className="w-full h-12 flex items-center justify-center gap-3 bg-white dark:bg-gray-800 border border-[#e7e7e9] dark:border-gray-700 rounded-lg">
-              <Loader2 className="w-5 h-5 text-[#4a4a4c] dark:text-gray-300 animate-spin" />
-              <span className="text-sm font-medium text-[#4a4a4c] dark:text-gray-300">
+            <div className="w-full h-12 flex items-center justify-center gap-3 bg-card border border-border rounded-lg">
+              <Loader2 className="w-5 h-5 text-muted-foreground animate-spin" />
+              <span className="text-sm font-medium text-muted-foreground">
                 Esperando autenticacion...
               </span>
             </div>
-            <p className="text-xs text-center text-[#6a6a6d] dark:text-gray-400">
+            <p className="text-xs text-center text-muted-foreground">
               Completa el inicio de sesion en tu navegador
             </p>
             <button
               onClick={handleCancel}
-              className="flex items-center gap-1.5 text-xs text-[#6a6a6d] dark:text-gray-400 hover:text-[#3a3a3c] dark:hover:text-gray-200 transition-colors"
+              className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
             >
               <X className="w-3.5 h-3.5" />
               <span>Cancelar</span>
@@ -258,12 +258,12 @@ export function LoginScreen() {
               <div className="space-y-4">
                 <div className={successBannerClass}>{successMessage}</div>
                 {awaitingConfirmation && (
-                  <div className="flex flex-col items-center gap-1 rounded-lg bg-[#f5f5f6] dark:bg-gray-800/60 py-3 px-4 text-center">
-                    <div className="flex items-center gap-2 text-sm text-[#4a4a4c] dark:text-gray-300">
+                  <div className="flex flex-col items-center gap-1 rounded-lg bg-muted py-3 px-4 text-center">
+                    <div className="flex items-center gap-2 text-sm text-muted-foreground">
                       <Loader2 className="w-4 h-4 animate-spin" />
                       Verificando automáticamente…
                     </div>
-                    <p className="text-xs text-[#6a6a6d] dark:text-gray-400">
+                    <p className="text-xs text-muted-foreground">
                       No cierres esta ventana: te llevaremos adentro en cuanto confirmes tu correo.
                     </p>
                   </div>
@@ -313,7 +313,7 @@ export function LoginScreen() {
                       <button
                         type="button"
                         onClick={() => setShowPassword((v) => !v)}
-                        className="absolute right-2 top-1/2 -translate-y-1/2 p-1.5 text-[#6a6a6d] dark:text-gray-400 hover:text-[#3a3a3c] dark:hover:text-gray-200"
+                        className="absolute right-2 top-1/2 -translate-y-1/2 p-1.5 text-muted-foreground hover:text-foreground"
                         tabIndex={-1}
                         aria-label={showPassword ? 'Ocultar contraseña' : 'Mostrar contraseña'}
                       >
@@ -396,7 +396,7 @@ export function LoginScreen() {
                       <button
                         type="button"
                         onClick={() => setShowPassword((v) => !v)}
-                        className="absolute right-2 top-1/2 -translate-y-1/2 p-1.5 text-[#6a6a6d] dark:text-gray-400 hover:text-[#3a3a3c] dark:hover:text-gray-200"
+                        className="absolute right-2 top-1/2 -translate-y-1/2 p-1.5 text-muted-foreground hover:text-foreground"
                         tabIndex={-1}
                         aria-label={showPassword ? 'Ocultar contraseña' : 'Mostrar contraseña'}
                       >
@@ -463,11 +463,11 @@ export function LoginScreen() {
 
                 {/* Divider */}
                 <div className="flex items-center gap-3 pt-1">
-                  <div className="flex-1 h-px bg-[#e7e7e9] dark:bg-gray-700" />
-                  <span className="text-xs text-[#6a6a6d] dark:text-gray-400">
+                  <div className="flex-1 h-px bg-border" />
+                  <span className="text-xs text-muted-foreground">
                     o continúa con
                   </span>
-                  <div className="flex-1 h-px bg-[#e7e7e9] dark:bg-gray-700" />
+                  <div className="flex-1 h-px bg-border" />
                 </div>
 
                 {/* OAuth buttons */}
@@ -477,10 +477,10 @@ export function LoginScreen() {
                     type="button"
                     onClick={handleGoogleSignIn}
                     disabled={isLoading || submitting}
-                    className="w-full h-12 flex items-center justify-center gap-3 bg-white dark:bg-gray-800 border border-[#e7e7e9] dark:border-gray-700 rounded-lg shadow-sm hover:shadow-md hover:bg-[#f5f5f6] dark:hover:bg-gray-700 transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
+                    className="w-full h-12 flex items-center justify-center gap-3 bg-card border border-border rounded-lg shadow-sm hover:shadow-md hover:bg-muted transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     <GoogleIcon className="w-5 h-5" />
-                    <span className="text-sm font-medium text-[#3a3a3c] dark:text-gray-200">
+                    <span className="text-sm font-medium text-foreground">
                       Continuar con Google
                     </span>
                   </button>
@@ -490,10 +490,10 @@ export function LoginScreen() {
                     type="button"
                     onClick={handleAppleSignIn}
                     disabled={isLoading || submitting}
-                    className="w-full h-12 flex items-center justify-center gap-3 bg-black dark:bg-white border border-black dark:border-white rounded-lg shadow-sm hover:shadow-md hover:bg-gray-900 dark:hover:bg-gray-100 transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
+                    className="w-full h-12 flex items-center justify-center gap-3 bg-foreground border border-foreground rounded-lg shadow-sm hover:shadow-md hover:bg-foreground/90 transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
                   >
-                    <AppleIcon className="w-5 h-5 text-white dark:text-black" />
-                    <span className="text-sm font-medium text-white dark:text-black">
+                    <AppleIcon className="w-5 h-5 text-background" />
+                    <span className="text-sm font-medium text-background">
                       Continuar con Apple
                     </span>
                   </button>
@@ -503,10 +503,10 @@ export function LoginScreen() {
                     type="button"
                     onClick={handleAzureSignIn}
                     disabled={isLoading || submitting}
-                    className="w-full h-12 flex items-center justify-center gap-3 bg-white dark:bg-gray-800 border border-[#e7e7e9] dark:border-gray-700 rounded-lg shadow-sm hover:shadow-md hover:bg-[#f5f5f6] dark:hover:bg-gray-700 transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
+                    className="w-full h-12 flex items-center justify-center gap-3 bg-card border border-border rounded-lg shadow-sm hover:shadow-md hover:bg-muted transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     <MicrosoftIcon className="w-5 h-5" />
-                    <span className="text-sm font-medium text-[#3a3a3c] dark:text-gray-200">
+                    <span className="text-sm font-medium text-foreground">
                       Continuar con Microsoft
                     </span>
                   </button>

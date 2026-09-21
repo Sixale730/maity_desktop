@@ -63,13 +63,13 @@ export function DownloadProgressStep() {
     {
       name: 'Deepgram',
       description: 'Transcripción en tiempo real',
-      icon: <Mic className="w-5 h-5 text-[#3a4ac3]" />,
+      icon: <Mic className="w-5 h-5 text-maity-blue" />,
       model: 'Nova-2',
     },
     {
       name: 'OpenAI',
       description: 'Resúmenes de reuniones',
-      icon: <Sparkles className="w-5 h-5 text-[#16bb7b]" />,
+      icon: <Sparkles className="w-5 h-5 text-emerald-600 dark:text-maity-green" />,
       model: 'GPT-4o',
     },
   ];
@@ -83,8 +83,8 @@ export function DownloadProgressStep() {
     >
       <div className="flex flex-col items-center space-y-8">
         {/* Cloud Icon */}
-        <div className="w-16 h-16 rounded-full bg-[#f0f2fe] flex items-center justify-center">
-          <Cloud className="w-8 h-8 text-[#3a4ac3]" />
+        <div className="w-16 h-16 rounded-full bg-maity-blue/10 flex items-center justify-center">
+          <Cloud className="w-8 h-8 text-maity-blue" />
         </div>
 
         {/* Provider Cards */}
@@ -92,23 +92,23 @@ export function DownloadProgressStep() {
           {cloudProviders.map((provider) => (
             <div
               key={provider.name}
-              className="bg-white dark:bg-gray-800 rounded-xl border border-[#e7e7e9] dark:border-gray-700 p-4 flex items-center justify-between"
+              className="bg-card rounded-xl border border-border p-4 flex items-center justify-between"
             >
               <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-full bg-[#f5f5f6] flex items-center justify-center">
+                <div className="w-10 h-10 rounded-full bg-muted flex items-center justify-center">
                   {provider.icon}
                 </div>
                 <div>
-                  <h3 className="font-medium text-[#000000]">{provider.name}</h3>
-                  <p className="text-sm text-[#6a6a6d]">{provider.description}</p>
+                  <h3 className="font-medium text-foreground">{provider.name}</h3>
+                  <p className="text-sm text-muted-foreground">{provider.description}</p>
                 </div>
               </div>
               <div className="flex items-center gap-2">
-                <span className="text-xs text-[#8a8a8d] bg-[#e7e7e9] px-2 py-1 rounded">
+                <span className="text-xs text-muted-foreground bg-muted px-2 py-1 rounded">
                   {provider.model}
                 </span>
-                <div className="w-6 h-6 rounded-full bg-[#c5fceb] flex items-center justify-center">
-                  <Check className="w-4 h-4 text-[#16bb7b]" />
+                <div className="w-6 h-6 rounded-full bg-maity-green/20 flex items-center justify-center">
+                  <Check className="w-4 h-4 text-emerald-600 dark:text-maity-green" />
                 </div>
               </div>
             </div>
@@ -116,15 +116,15 @@ export function DownloadProgressStep() {
         </div>
 
         {/* Benefits */}
-        <div className="w-full max-w-md bg-[#f5f5f6] rounded-lg p-4">
-          <p className="text-sm text-[#4a4a4c] text-center">
+        <div className="w-full max-w-md bg-muted rounded-lg p-4">
+          <p className="text-sm text-muted-foreground text-center">
             Sin descargas necesarias. Tus reuniones se procesan de forma segura en la nube
             con modelos de IA líderes en la industria.
           </p>
         </div>
 
         {/* API Key Note */}
-        <p className="text-xs text-[#6a6a6d] text-center max-w-md">
+        <p className="text-xs text-muted-foreground text-center max-w-md">
           Asegúrate de haber configurado tus claves API en el archivo .env o en Configuración.
         </p>
 
@@ -133,7 +133,7 @@ export function DownloadProgressStep() {
           <Button
             onClick={handleContinue}
             disabled={isCompleting}
-            className="w-full h-11 bg-[#000000] hover:bg-[#1a1a1a] text-white"
+            className="w-full h-11 bg-foreground hover:bg-foreground/90 text-background"
           >
             {isCompleting ? (
               <Loader2 className="w-4 h-4 mr-2 animate-spin" />

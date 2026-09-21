@@ -52,7 +52,7 @@ export function HealthGauge({ value, label = 'Salud', size = SIZE, className }: 
           cy={size / 2}
           r={radius}
           fill="none"
-          stroke="rgba(255,255,255,0.1)"
+          className="stroke-border"
           strokeWidth={STROKE}
         />
         {/* Progress (rotado -90deg para que arranque arriba) */}
@@ -79,7 +79,7 @@ export function HealthGauge({ value, label = 'Salud', size = SIZE, className }: 
           {v}
         </span>
         <span
-          className="text-zinc-400 leading-none mt-0.5 uppercase tracking-wide"
+          className="text-muted-foreground leading-none mt-0.5 uppercase tracking-wide"
           style={{ fontSize: size * 0.11 }}
         >
           {label}

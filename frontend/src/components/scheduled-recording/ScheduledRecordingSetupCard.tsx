@@ -136,7 +136,7 @@ export function ScheduledRecordingSetupCard({
         </div>
       </div>
       {draft.end_time <= draft.start_time && (
-        <p className="text-xs text-amber-500">
+        <p className="text-xs text-amber-600 dark:text-amber-500">
           La hora de fin es menor o igual a la de inicio: la jornada cruzará la medianoche.
         </p>
       )}
@@ -152,7 +152,7 @@ export function ScheduledRecordingSetupCard({
           Activar grabación por jornada
         </Button>
         {noDays && (
-          <p className="text-xs text-amber-500">Selecciona al menos un día.</p>
+          <p className="text-xs text-amber-600 dark:text-amber-500">Selecciona al menos un día.</p>
         )}
         <p className="text-xs text-muted-foreground text-center">
           Puedes cambiar el horario o desactivarlo en Configuración → Grabaciones.

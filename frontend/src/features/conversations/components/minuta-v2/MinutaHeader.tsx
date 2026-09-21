@@ -15,20 +15,20 @@ export function MinutaHeader({ meta }: MinutaHeaderProps) {
   return (
     <header className="space-y-3">
       <div className="flex items-start justify-between gap-4 flex-wrap">
-        <h1 className="text-2xl font-semibold text-white leading-tight">{meta.titulo}</h1>
+        <h1 className="text-2xl font-semibold text-foreground leading-tight">{meta.titulo}</h1>
         <div className="flex gap-2 flex-wrap">
-          <Badge variant="outline" className="border-cyan-500/30 text-cyan-300 bg-cyan-500/10">
+          <Badge variant="outline" className="border-cyan-500/30 text-cyan-700 dark:text-cyan-300 bg-cyan-500/10">
             {meta.tipo_reunion}
           </Badge>
           {meta.categoria_interlocutor && (
-            <Badge variant="outline" className="border-white/10 text-gray-400">
+            <Badge variant="outline" className="border-border text-muted-foreground">
               {meta.categoria_interlocutor}
             </Badge>
           )}
         </div>
       </div>
 
-      <div className="flex flex-wrap gap-x-5 gap-y-2 text-sm text-gray-400">
+      <div className="flex flex-wrap gap-x-5 gap-y-2 text-sm text-muted-foreground">
         {fechaDisplay && (
           <span className="flex items-center gap-1.5">
             <Calendar className="h-3.5 w-3.5" />
@@ -54,10 +54,10 @@ export function MinutaHeader({ meta }: MinutaHeaderProps) {
           {participantes.map((p, i) => (
             <li
               key={`${p.nombre}-${i}`}
-              className="text-xs px-2 py-1 rounded-full bg-white/5 border border-white/10 text-gray-300"
+              className="text-xs px-2 py-1 rounded-full bg-muted border border-border text-foreground/80"
             >
-              <span className="font-medium text-gray-200">{p.nombre}</span>
-              {p.rol && <span className="text-gray-500 ml-1">· {p.rol}</span>}
+              <span className="font-medium text-foreground">{p.nombre}</span>
+              {p.rol && <span className="text-muted-foreground ml-1">· {p.rol}</span>}
             </li>
           ))}
         </ul>

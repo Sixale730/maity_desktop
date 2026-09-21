@@ -51,7 +51,7 @@ export function MinutaToolbar({ minuta, onRegenerate, isRegenerating }: MinutaTo
         size="sm"
         onClick={handleDownload}
         disabled={downloading}
-        className="border-white/10 text-gray-300 hover:bg-white/5"
+        className="border-border text-foreground/80 hover:bg-muted"
       >
         {downloading ? (
           <Loader2 className="h-4 w-4 mr-2 animate-spin" />
@@ -66,7 +66,7 @@ export function MinutaToolbar({ minuta, onRegenerate, isRegenerating }: MinutaTo
           size="sm"
           onClick={onRegenerate}
           disabled={isRegenerating}
-          className="text-cyan-400 hover:text-cyan-300 hover:bg-cyan-500/10"
+          className="text-cyan-700 dark:text-cyan-400 hover:text-cyan-800 dark:hover:text-cyan-300 hover:bg-cyan-500/10"
         >
           <RefreshCw className={`h-4 w-4 mr-2 ${isRegenerating ? 'animate-spin' : ''}`} />
           Regenerar minuta

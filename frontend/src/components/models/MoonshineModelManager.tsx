@@ -342,7 +342,7 @@ export function MoonshineModelManager({
     return (
       <div className={`space-y-3 ${className}`}>
         <div className="animate-pulse space-y-3">
-          <div className="h-20 bg-[#e7e7e9] dark:bg-gray-700 rounded-lg"></div>
+          <div className="h-20 bg-card-hi rounded-lg"></div>
         </div>
       </div>
     );
@@ -350,9 +350,9 @@ export function MoonshineModelManager({
 
   if (error) {
     return (
-      <div className={`bg-[#fff0f5] border border-[#ffc0d6] rounded-lg p-4 ${className}`}>
-        <p className="text-sm text-red-800">Error al cargar modelos</p>
-        <p className="text-xs text-[#cc0040] mt-1">{error}</p>
+      <div className={`bg-destructive/10 border border-destructive/30 rounded-lg p-4 ${className}`}>
+        <p className="text-sm text-destructive">Error al cargar modelos</p>
+        <p className="text-xs text-destructive mt-1">{error}</p>
       </div>
     );
   }
@@ -379,7 +379,7 @@ export function MoonshineModelManager({
 
       {/* Helper text */}
       {selectedModel && (
-        <div className="text-xs text-[#6a6a6d] dark:text-gray-400 text-center pt-2 animate-fade-in">
+        <div className="text-xs text-muted-foreground text-center pt-2 animate-fade-in">
           Usando {getModelDisplayName(selectedModel)} para transcripción
         </div>
       )}
@@ -428,10 +428,10 @@ function ModelCard({
       className={`
         group relative rounded-lg border-2 transition-all cursor-pointer animate-rise-in
         ${isSelected && isAvailable
-          ? 'border-[#485df4] bg-[#f0f2fe] dark:bg-blue-900/30'
+          ? 'border-[#485df4] bg-maity-blue/10'
           : isAvailable
-            ? 'border-[#e7e7e9] dark:border-gray-700 hover:border-[#d0d0d3] dark:hover:border-gray-600 bg-white dark:bg-gray-900'
-            : 'border-[#e7e7e9] dark:border-gray-700 bg-[#f5f5f6] dark:bg-gray-800'
+            ? 'border-border hover:border-input bg-card'
+            : 'border-border bg-muted'
         }
         ${isAvailable ? '' : 'cursor-default'}
       `}
@@ -452,7 +452,7 @@ function ModelCard({
             {/* Model Name */}
             <div className="flex items-center gap-2 mb-1">
               <span className="text-2xl">{icon}</span>
-              <h3 className="font-semibold text-[#000000] dark:text-white">{displayName}</h3>
+              <h3 className="font-semibold text-foreground">{displayName}</h3>
               {isSelected && isAvailable && (
                 <span className="bg-[#3a4ac3] text-white px-2 py-0.5 rounded-full text-xs font-medium flex items-center gap-1 animate-scale-in">
                   ✓
@@ -461,14 +461,14 @@ function ModelCard({
             </div>
 
             {/* Tagline */}
-            <p className="text-sm text-[#4a4a4c] dark:text-gray-300 ml-9">{tagline}</p>
+            <p className="text-sm text-muted-foreground ml-9">{tagline}</p>
           </div>
 
           {/* Status/Action */}
           <div className="ml-4 flex items-center gap-2">
             {isAvailable && (
               <>
-                <div className="flex items-center gap-1.5 text-[#16bb7b]">
+                <div className="flex items-center gap-1.5 text-emerald-600 dark:text-emerald-400">
                   <div className="w-2 h-2 bg-[#1bea9a] rounded-full"></div>
                   <span className="text-xs font-medium">Listo</span>
                 </div>
@@ -479,7 +479,7 @@ function ModelCard({
                     e.stopPropagation();
                     onDelete();
                   }}
-                  className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 text-[#8a8a8d] dark:text-gray-500 hover:text-[#cc0040] dark:hover:text-red-400 transition-[opacity,color] duration-150 p-1"
+                  className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 text-muted-foreground hover:text-destructive transition-[opacity,color] duration-150 p-1"
                   title="Eliminar modelo para liberar espacio"
                 >
                   <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -540,30 +540,30 @@ function ModelCard({
 
         {/* Full-width Download Progress Bar */}
         {downloadProgress !== null && (
-          <div className="mt-3 pt-3 border-t border-[#e7e7e9] dark:border-gray-700 animate-fade-in">
+          <div className="mt-3 pt-3 border-t border-border animate-fade-in">
             <div className="flex items-center justify-between mb-2">
               <div className="flex items-center gap-2">
-                <span className="text-sm font-medium text-[#3a4ac3] dark:text-blue-400">Descargando...</span>
-                <span className="text-sm font-semibold text-[#3a4ac3] dark:text-blue-400">{Math.round(downloadProgress)}%</span>
+                <span className="text-sm font-medium text-maity-blue">Descargando...</span>
+                <span className="text-sm font-semibold text-maity-blue">{Math.round(downloadProgress)}%</span>
               </div>
               <button
                 onClick={(e) => {
                   e.stopPropagation();
                   onCancel();
                 }}
-                className="text-xs text-[#4a4a4c] dark:text-gray-300 hover:text-[#cc0040] dark:hover:text-red-400 font-medium transition-colors px-2 py-1 rounded hover:bg-[#fff0f5]"
+                className="text-xs text-muted-foreground hover:text-destructive font-medium transition-colors px-2 py-1 rounded hover:bg-destructive/10"
                 title="Cancelar descarga"
               >
                 Cancelar
               </button>
             </div>
-            <div className="w-full h-2 bg-[#d0d0d3] dark:bg-gray-600 rounded-full overflow-hidden">
+            <div className="w-full h-2 bg-border-strong rounded-full overflow-hidden">
               <div
                 className="h-full bg-gradient-to-r from-purple-500 to-purple-600 rounded-full transition-[width] duration-300 ease-out"
                 style={{ width: `${downloadProgress}%` }}
               />
             </div>
-            <p className="text-xs text-[#6a6a6d] dark:text-gray-400 mt-1">
+            <p className="text-xs text-muted-foreground mt-1">
               {model.size_mb ? (
                 <>
                   {formatFileSize(model.size_mb * downloadProgress / 100)} / {formatFileSize(model.size_mb)}

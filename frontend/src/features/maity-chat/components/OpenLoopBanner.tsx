@@ -1,3 +1,5 @@
+// Origen: web Sixale730/maity src/features/maity-chat/components (commit 3ef2914).
+// Adaptaciones desktop: comillas como &ldquo;/&rdquo; (regla eslint react/no-unescaped-entities).
 import { ArrowRight } from 'lucide-react';
 import { useLanguage } from '@/contexts/LanguageContext';
 import type { ChatThread } from '../types';
@@ -28,7 +30,7 @@ export function OpenLoopBanner({ thread, onContinue }: OpenLoopBannerProps) {
       }}
     >
       <div
-        className="grid place-items-center text-maity-amber font-geist flex-shrink-0"
+        className="grid place-items-center text-amber-700 dark:text-maity-amber font-geist flex-shrink-0"
         style={{
           width: 36,
           height: 36,
@@ -41,7 +43,7 @@ export function OpenLoopBanner({ thread, onContinue }: OpenLoopBannerProps) {
       </div>
       <div className="flex-1 min-w-0">
         <div
-          className="text-maity-amber font-semibold uppercase mb-px"
+          className="text-amber-700 dark:text-maity-amber font-semibold uppercase mb-px"
           style={{ fontSize: 12, letterSpacing: '0.4px' }}
         >
           {t('chat.open_loop_label', { n: 1 })}

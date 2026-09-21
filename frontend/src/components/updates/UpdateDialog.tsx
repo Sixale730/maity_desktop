@@ -249,22 +249,22 @@ export function UpdateDialog({ open, onOpenChange, updateInfo }: UpdateDialogPro
           <DialogTitle className="flex items-center gap-2">
             {isDownloading ? (
               <>
-                <Loader2 className="h-5 w-5 animate-spin text-[#3a4ac3]" />
+                <Loader2 className="h-5 w-5 animate-spin text-maity-blue" />
                 Descargando Actualización
               </>
             ) : error ? (
               <>
-                <AlertCircle className="h-5 w-5 text-[#cc0040]" />
+                <AlertCircle className="h-5 w-5 text-destructive" />
                 Error de Actualización
               </>
             ) : isStoreChannel ? (
               <>
-                <Store className="h-5 w-5 text-[#3a4ac3]" />
+                <Store className="h-5 w-5 text-maity-blue" />
                 Actualización disponible en la Microsoft Store
               </>
             ) : (
               <>
-                <Download className="h-5 w-5 text-[#3a4ac3]" />
+                <Download className="h-5 w-5 text-maity-blue" />
                 Actualización Disponible
               </>
             )}
@@ -290,7 +290,7 @@ export function UpdateDialog({ open, onOpenChange, updateInfo }: UpdateDialogPro
                 </div>
                 <div className="flex justify-between text-sm">
                   <span className="text-muted-foreground">Nueva Versión:</span>
-                  <span className="font-medium text-[#3a4ac3]">{updateInfo.version}</span>
+                  <span className="font-medium text-maity-blue">{updateInfo.version}</span>
                 </div>
                 {updateInfo.date && (
                   <div className="flex justify-between text-sm">
@@ -301,12 +301,12 @@ export function UpdateDialog({ open, onOpenChange, updateInfo }: UpdateDialogPro
               </div>
 
               {isStoreChannel && (
-                <div className="bg-[#f5f5f6] rounded-lg p-3 space-y-1">
-                  <p className="text-sm text-[#3a3a3c]">
+                <div className="bg-muted rounded-lg p-3 space-y-1">
+                  <p className="text-sm text-foreground">
                     La Microsoft Store descarga la actualización en segundo plano y la aplica
                     cuando Maity está cerrado.
                   </p>
-                  <p className="text-sm text-[#3a3a3c]">
+                  <p className="text-sm text-foreground">
                     Abre la Store y pulsa <span className="font-medium">«Obtener actualizaciones»</span>;
                     después cierra Maity para que se instale.
                   </p>
@@ -314,8 +314,8 @@ export function UpdateDialog({ open, onOpenChange, updateInfo }: UpdateDialogPro
               )}
 
               {updateInfo.body && (
-                <div className="bg-[#f5f5f6] rounded-lg p-3 max-h-40 overflow-y-auto">
-                  <p className="text-sm text-[#3a3a3c] whitespace-pre-wrap">
+                <div className="bg-muted rounded-lg p-3 max-h-40 overflow-y-auto">
+                  <p className="text-sm text-foreground whitespace-pre-wrap">
                     {updateInfo.body}
                   </p>
                 </div>
@@ -326,13 +326,13 @@ export function UpdateDialog({ open, onOpenChange, updateInfo }: UpdateDialogPro
           {isDownloading && progress && (
             <div className="space-y-2">
               <div className="relative">
-                <div className="w-full bg-[#d0d0d3] rounded-full h-3">
+                <div className="w-full bg-border-strong rounded-full h-3">
                   <div
                     className="bg-[#3a4ac3] h-3 rounded-full transition-all duration-300 ease-out"
                     style={{ width: `${Math.min(progress.percentage, 100)}%` }}
                   />
                 </div>
-                <div className="flex justify-between text-xs text-[#4a4a4c] mt-1">
+                <div className="flex justify-between text-xs text-muted-foreground mt-1">
                   <span>{Math.round(progress.percentage)}% completado</span>
                   {progress.total > 0 && (
                     <span>
@@ -348,8 +348,8 @@ export function UpdateDialog({ open, onOpenChange, updateInfo }: UpdateDialogPro
           )}
 
           {error && (
-            <div className="bg-[#fff0f5] border border-[#ffc0d6] rounded-lg p-3">
-              <p className="text-sm text-red-800">{error}</p>
+            <div className="bg-destructive/10 border border-destructive/30 rounded-lg p-3">
+              <p className="text-sm text-destructive">{error}</p>
             </div>
           )}
         </div>

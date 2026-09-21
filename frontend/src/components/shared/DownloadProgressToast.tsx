@@ -59,40 +59,40 @@ function DownloadToastContent({
   const isCancelled = download.status === 'cancelled';
 
   return (
-    <div className="flex items-center gap-3 w-full max-w-sm bg-zinc-900 rounded-lg shadow-lg border border-zinc-700 p-3 relative">
+    <div className="flex items-center gap-3 w-full max-w-sm bg-popover text-popover-foreground rounded-lg shadow-lg border border-border p-3 relative">
 
       {/* Icon */}
-      <div className={`flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center ${isComplete ? 'bg-emerald-900/30' : hasError ? 'bg-red-900/30' : 'bg-zinc-800'
+      <div className={`flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center ${isComplete ? 'bg-emerald-500/15' : hasError ? 'bg-red-500/15' : 'bg-muted'
         }`}>
         {isComplete ? (
-          <Check className="w-4 h-4 text-[#16bb7b]" />
+          <Check className="w-4 h-4 text-emerald-600 dark:text-maity-green" />
         ) : hasError ? (
-          <X className="w-4 h-4 text-[#cc0040]" />
+          <X className="w-4 h-4 text-red-600 dark:text-red-400" />
         ) : isCancelled ? (
-          <X className="w-4 h-4 text-zinc-400" />
+          <X className="w-4 h-4 text-muted-foreground" />
         ) : (
-          <ArrowBigDownDash className="size-5 text-zinc-400" />
+          <ArrowBigDownDash className="size-5 text-muted-foreground" />
         )}
       </div>
 
       {/* Content */}
       <div className="flex-1 min-w-0">
         <div className="flex items-center justify-between gap-2 mb-1">
-          <p className="text-sm font-medium text-white truncate">
+          <p className="text-sm font-medium text-foreground truncate">
             {download.displayName}
           </p>
         </div>
 
         {hasError ? (
-          <p className="text-xs text-[#cc0040]">{download.error || 'Download failed'}</p>
+          <p className="text-xs text-red-600 dark:text-red-400">{download.error || 'Download failed'}</p>
         ) : isComplete ? (
-          <p className="text-xs text-[#16bb7b]">Download complete</p>
+          <p className="text-xs text-emerald-600 dark:text-maity-green">Download complete</p>
         ) : isCancelled ? (
-          <p className="text-xs text-zinc-400">Download cancelled</p>
+          <p className="text-xs text-muted-foreground">Download cancelled</p>
         ) : (
           <>
             {/* Progress bar */}
-            <div className="w-full h-1.5 bg-zinc-700 rounded-full overflow-hidden mb-1.5">
+            <div className="w-full h-1.5 bg-muted rounded-full overflow-hidden mb-1.5">
               <div
                 className="h-full bg-violet-500 rounded-full transition-all duration-300"
                 style={{ width: `${download.progress}%` }}
@@ -100,7 +100,7 @@ function DownloadToastContent({
             </div>
 
             {/* Progress text */}
-            <div className="flex items-center justify-between text-xs text-zinc-400">
+            <div className="flex items-center justify-between text-xs text-muted-foreground">
               <span>
                 {download.downloadedMb.toFixed(1)} / {download.totalMb.toFixed(1)} MB
               </span>
@@ -108,7 +108,7 @@ function DownloadToastContent({
                 {download.speedMbps > 0 && (
                   <span>{download.speedMbps.toFixed(1)} MB/s</span>
                 )}
-                <span className="text-white font-medium">
+                <span className="text-foreground font-medium">
                   {Math.round(download.progress)}%
                 </span>
               </span>

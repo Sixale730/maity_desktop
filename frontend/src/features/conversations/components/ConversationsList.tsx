@@ -193,7 +193,7 @@ export function ConversationsList({ onSelect, selectedId }: ConversationsListPro
       return (
         <Badge
           variant="outline"
-          className="text-xs gap-1 text-amber-600 border-amber-300"
+          className="text-xs gap-1 text-amber-600 dark:text-amber-400 border-amber-300 dark:border-amber-500/40"
           title={QUOTA_TOOLTIP}
         >
           <AlertTriangle className="h-3 w-3" />
@@ -212,14 +212,14 @@ export function ConversationsList({ onSelect, selectedId }: ConversationsListPro
       // el análisis no vendrá — sin cambiar nada del flujo de sync.
       return (
         <div className="flex items-center gap-2">
-          <Badge variant="outline" className="text-xs gap-1 text-amber-600 border-amber-300">
+          <Badge variant="outline" className="text-xs gap-1 text-amber-600 dark:text-amber-400 border-amber-300 dark:border-amber-500/40">
             <RefreshCw className="h-3 w-3 animate-spin" />
             Sincronizando...
           </Badge>
           {analysisQuotaExhausted && (
             <Badge
               variant="outline"
-              className="text-[10px] gap-1 text-amber-600/80 border-amber-300/60"
+              className="text-[10px] gap-1 text-amber-600/80 dark:text-amber-400/80 border-amber-300/60 dark:border-amber-500/30"
               title={QUOTA_TOOLTIP}
             >
               Sin análisis (cuota)
@@ -239,7 +239,7 @@ export function ConversationsList({ onSelect, selectedId }: ConversationsListPro
       return (
         <Badge
           variant="outline"
-          className="text-xs gap-1 text-amber-600 border-amber-300"
+          className="text-xs gap-1 text-amber-600 dark:text-amber-400 border-amber-300 dark:border-amber-500/40"
           title={QUOTA_TOOLTIP}
         >
           <AlertTriangle className="h-3 w-3" />

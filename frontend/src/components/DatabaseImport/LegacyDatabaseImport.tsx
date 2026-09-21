@@ -134,7 +134,7 @@ export function LegacyDatabaseImport({ isOpen, onComplete }: LegacyDatabaseImpor
 
           {/* Browse Section */}
           <div className="space-y-3">
-            <p className="text-sm text-[#4a4a4c]">
+            <p className="text-sm text-muted-foreground">
               Selecciona tu carpeta anterior de Maity, directorio backend o archivo de base de datos:
             </p>
 
@@ -159,12 +159,12 @@ export function LegacyDatabaseImport({ isOpen, onComplete }: LegacyDatabaseImpor
 
           {/* Detection Result */}
           {detectedPath && (
-            <div className="p-3 bg-[#e8fef5] border border-[#8ef9d4] rounded-lg">
+            <div className="p-3 bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/30 rounded-lg">
               <div className="flex items-start gap-2">
-                <CheckCircle2 className="h-5 w-5 text-[#16bb7b] mt-0.5 flex-shrink-0" />
+                <CheckCircle2 className="h-5 w-5 text-emerald-600 dark:text-emerald-400 mt-0.5 flex-shrink-0" />
                 <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium text-[#0d6b4a]">¡Base de datos encontrada!</p>
-                  <p className="text-xs text-[#108c5c] mt-1 break-all">{detectedPath}</p>
+                  <p className="text-sm font-medium text-emerald-700 dark:text-emerald-300">¡Base de datos encontrada!</p>
+                  <p className="text-xs text-emerald-700 dark:text-emerald-300 mt-1 break-all">{detectedPath}</p>
                 </div>
               </div>
             </div>
@@ -172,11 +172,11 @@ export function LegacyDatabaseImport({ isOpen, onComplete }: LegacyDatabaseImpor
 
           {/* Error Message */}
           {importState === 'error' && errorMessage && (
-            <div className="p-3 bg-[#fff0f5] border border-[#ffc0d6] rounded-lg">
+            <div className="p-3 bg-destructive/10 border border-destructive/30 rounded-lg">
               <div className="flex items-start gap-2">
-                <XCircle className="h-5 w-5 text-[#cc0040] mt-0.5 flex-shrink-0" />
+                <XCircle className="h-5 w-5 text-destructive mt-0.5 flex-shrink-0" />
                 <div className="flex-1">
-                  <p className="text-sm text-red-800">{errorMessage}</p>
+                  <p className="text-sm text-destructive">{errorMessage}</p>
                 </div>
               </div>
             </div>
@@ -209,17 +209,17 @@ export function LegacyDatabaseImport({ isOpen, onComplete }: LegacyDatabaseImpor
 
             <div className="relative">
               <div className="absolute inset-0 flex items-center">
-                <div className="w-full border-t border-[#d0d0d3]"></div>
+                <div className="w-full border-t border-input"></div>
               </div>
               <div className="relative flex justify-center text-sm">
-                <span className="px-2 bg-white dark:bg-gray-900 text-[#6a6a6d] dark:text-gray-400">o</span>
+                <span className="px-2 bg-card text-muted-foreground">o</span>
               </div>
             </div>
 
             <button
               onClick={handleStartFresh}
               disabled={isLoading}
-              className="w-full px-4 py-3 border-2 border-[#d0d0d3] text-[#3a3a3c] rounded-lg hover:bg-[#f5f5f6] disabled:bg-[#e7e7e9] disabled:cursor-not-allowed transition-colors"
+              className="w-full px-4 py-3 border-2 border-input text-foreground rounded-lg hover:bg-muted disabled:bg-card-hi disabled:cursor-not-allowed transition-colors"
             >
               Comenzar Nuevo (Sin Importar)
             </button>

@@ -34,7 +34,7 @@ export function TalkSplitBar({
   if (empty) {
     return (
       <div
-        className={`flex h-7 items-center justify-center rounded-md bg-white/5 px-3 text-xs text-zinc-500 ${className ?? ''}`}
+        className={`flex h-7 items-center justify-center rounded-md bg-muted px-3 text-xs text-muted-foreground ${className ?? ''}`}
       >
         Esperando audio…
       </div>

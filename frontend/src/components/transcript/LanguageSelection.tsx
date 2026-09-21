@@ -182,8 +182,8 @@ export function LanguageSelection({
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <Globe className="h-4 w-4 text-[#4a4a4c] dark:text-gray-300" />
-          <h4 className="text-sm font-medium text-[#000000] dark:text-white">Idioma de Transcripción</h4>
+          <Globe className="h-4 w-4 text-muted-foreground" />
+          <h4 className="text-sm font-medium text-foreground">Idioma de Transcripción</h4>
         </div>
       </div>
 
@@ -192,7 +192,7 @@ export function LanguageSelection({
           value={selectedLanguage}
           onChange={(e) => handleLanguageChange(e.target.value)}
           disabled={disabled || saving}
-          className="w-full px-3 py-2 text-sm bg-white dark:bg-gray-800 border border-[#d0d0d3] dark:border-gray-600 rounded-md shadow-sm focus:outline-none focus:ring-1 focus:ring-[#485df4] focus:border-[#485df4] disabled:bg-[#f5f5f6] dark:disabled:bg-gray-700 disabled:text-[#6a6a6d] dark:disabled:text-gray-500 dark:text-white"
+          className="w-full px-3 py-2 text-sm bg-card border border-input rounded-md shadow-sm focus:outline-none focus:ring-1 focus:ring-[#485df4] focus:border-[#485df4] disabled:bg-muted disabled:text-muted-foreground"
         >
           {availableLanguages.map((language) => (
             <option key={language.code} value={language.code}>
@@ -220,23 +220,23 @@ export function LanguageSelection({
 
         {/* Texto informativo */}
         <div className="text-xs space-y-2 pt-2">
-          <p className="text-[#4a4a4c] dark:text-gray-300">
+          <p className="text-muted-foreground">
             <strong>Actual:</strong> {selectedLanguageName}
           </p>
           {selectedLanguage === 'auto' && (
-            <div className="p-2 bg-[#f0f2fe] dark:bg-blue-900/30 border border-[#c0cbfb] dark:border-blue-700 rounded text-[#2b3892] dark:text-blue-300">
+            <div className="p-2 bg-maity-blue/10 border border-maity-blue/30 rounded text-[#2b3892] dark:text-[#a0b0f9]">
               <p className="font-medium">⚠️ La Detección Automática puede producir resultados incorrectos</p>
               <p className="mt-1">Para mejor precisión, selecciona tu idioma específico (ej., Español, Inglés, etc.)</p>
             </div>
           )}
           {selectedLanguage === 'auto-translate' && (
-            <div className="p-2 bg-[#f0f2fe] dark:bg-blue-900/30 border border-[#c0cbfb] dark:border-blue-700 rounded text-[#1e2a6e] dark:text-blue-300">
+            <div className="p-2 bg-maity-blue/10 border border-maity-blue/30 rounded text-[#1e2a6e] dark:text-[#c0cbfb]">
               <p className="font-medium">🌐 Modo de Traducción Activo</p>
               <p className="mt-1">Todo el audio será traducido automáticamente al español. Ideal para reuniones multilingües donde necesitas salida en español.</p>
             </div>
           )}
           {selectedLanguage !== 'auto' && selectedLanguage !== 'auto-translate' && (
-            <p className="text-[#4a4a4c] dark:text-gray-300">
+            <p className="text-muted-foreground">
               La transcripción será optimizada para <strong>{selectedLanguageName}</strong>
             </p>
           )}

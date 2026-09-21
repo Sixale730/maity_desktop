@@ -1,3 +1,5 @@
+// Origen: web Sixale730/maity src/features/maity-chat/components (commit 3ef2914).
+// Adaptaciones desktop: ninguna (copia tal cual).
 import { useState } from 'react';
 import { Brain, Check, Pencil, Plus, Trash2, X } from 'lucide-react';
 import { Switch } from '@/ui/components/ui/switch';
@@ -100,7 +102,7 @@ export function MemoriesOverlay({
               {t('chat.memories_extraction_hint')}
             </p>
           </div>
-          <Switch
+          <Switch aria-label={t('chat.memories_extraction')}
             checked={!settings?.memory_extraction_paused}
             onCheckedChange={(checked) => onTogglePaused(!checked)}
           />
@@ -127,7 +129,7 @@ export function MemoriesOverlay({
                       <button
                         type="button"
                         onClick={() => onApprove(mem.id)}
-                        className="flex-1 flex items-center justify-center gap-1 text-xs px-2 py-1 rounded bg-maity-green/10 text-maity-green hover:bg-maity-green/20 transition-colors"
+                        className="flex-1 flex items-center justify-center gap-1 text-xs px-2 py-1 rounded bg-maity-green/10 text-emerald-700 dark:text-maity-green hover:bg-maity-green/20 transition-colors"
                       >
                         <Check className="w-3 h-3" />
                         {t('chat.approve')}
@@ -167,9 +169,10 @@ export function MemoriesOverlay({
                 <textarea
                   value={newMemory}
                   onChange={(e) => setNewMemory(e.target.value)}
+                  aria-label={t('chat.add_memory_placeholder')}
                   placeholder={t('chat.add_memory_placeholder')}
                   rows={3}
-                  className="w-full resize-none bg-transparent text-sm text-foreground placeholder:text-foreground/40 outline-none"
+                  className="w-full resize-none bg-transparent text-sm text-foreground placeholder:text-foreground/40 outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:rounded-md"
                   autoFocus
                 />
                 <div className="flex gap-2">
@@ -210,10 +213,11 @@ export function MemoriesOverlay({
                     {isEditing ? (
                       <>
                         <textarea
+                          aria-label="Editar memoria"
                           value={editingContent}
                           onChange={(e) => setEditingContent(e.target.value)}
                           rows={3}
-                          className="w-full resize-none bg-transparent text-sm text-foreground outline-none border border-border rounded p-1"
+                          className="w-full resize-none bg-transparent text-sm text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:rounded-md border border-border rounded p-1"
                           autoFocus
                         />
                         <div className="flex gap-2 mt-2">
@@ -245,7 +249,7 @@ export function MemoriesOverlay({
                                 language,
                               )}`}
                           </span>
-                          <div className="opacity-0 group-hover:opacity-100 flex gap-1">
+                          <div className="opacity-100 sm:opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 flex gap-1">
                             <button
                               type="button"
                               onClick={() => startEditing(mem)}

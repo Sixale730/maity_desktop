@@ -56,7 +56,7 @@ export function RecordingModeToggle() {
       role="radiogroup"
       aria-label="Modo de grabación"
       title="Presentación: hablas tú casi todo el tiempo; no te evaluamos por “hablar de más”."
-      className="inline-flex items-center gap-0.5 rounded-full border border-white/10 bg-white/5 p-0.5"
+      className="inline-flex items-center gap-0.5 rounded-full border border-border bg-muted p-0.5"
     >
       {MODES.map((mode) => {
         const active = recordingMode === mode.value;
@@ -71,8 +71,8 @@ export function RecordingModeToggle() {
             onClick={() => handleSelect(mode.value)}
             className={`flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-medium transition-colors ${
               active
-                ? 'bg-white text-gray-900 shadow-sm'
-                : 'text-muted-foreground hover:text-foreground hover:bg-white/10'
+                ? 'bg-card text-foreground shadow-sm'
+                : 'text-muted-foreground hover:text-foreground hover:bg-card/60'
             } disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-transparent`}
           >
             <span aria-hidden="true">{mode.icon}</span>

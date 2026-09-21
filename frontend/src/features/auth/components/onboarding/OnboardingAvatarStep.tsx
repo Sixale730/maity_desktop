@@ -215,7 +215,7 @@ export function OnboardingAvatarStep({ userId, onComplete, preview }: Onboarding
           onClick={handleContinue}
           disabled={isSaving}
           size="lg"
-          className="w-full sm:w-auto px-8 bg-accent hover:bg-accent/90 text-black font-semibold"
+          className="w-full sm:w-auto px-8 bg-accent hover:bg-accent/90 text-accent-foreground font-semibold"
         >
           {isSaving ? (
             <>

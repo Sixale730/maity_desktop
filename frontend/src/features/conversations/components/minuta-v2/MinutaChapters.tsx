@@ -14,18 +14,18 @@ export function MinutaChapters({ chapters, onJumpToSegment }: MinutaChaptersProp
 
   return (
     <section className="space-y-3">
-      <h2 className="text-xs uppercase tracking-wider text-gray-500 px-1">Capítulos</h2>
+      <h2 className="text-xs uppercase tracking-wider text-muted-foreground px-1">Capítulos</h2>
 
       <div className="space-y-2.5">
         {chapters.map((chapter) => {
           const canJumpChapter = chapter.start_segment != null && !!onJumpToSegment;
           const headingContent = (
             <>
-              <h3 className="text-base font-medium text-gray-100 group-hover:text-cyan-300 transition-colors">
+              <h3 className="text-base font-medium text-foreground group-hover:text-cyan-700 dark:group-hover:text-cyan-300 transition-colors">
                 {chapter.titulo}
               </h3>
               {chapter.start_time_sec != null && (
-                <span className="text-xs font-mono text-gray-500 group-hover:text-cyan-400/70 shrink-0 transition-colors">
+                <span className="text-xs font-mono text-muted-foreground group-hover:text-cyan-600 dark:group-hover:text-cyan-400/70 shrink-0 transition-colors">
                   {formatTimestamp(chapter.start_time_sec)}
                 </span>
               )}
@@ -33,12 +33,12 @@ export function MinutaChapters({ chapters, onJumpToSegment }: MinutaChaptersProp
           );
 
           return (
-          <Card key={chapter.id} className="bg-card border border-white/10 p-4">
+          <Card key={chapter.id} className="bg-card border border-border p-4">
             {canJumpChapter ? (
               <button
                 type="button"
                 onClick={() => onJumpToSegment!(chapter.start_segment!)}
-                className="group w-full flex items-baseline justify-between gap-3 mb-3 -mx-1 px-1 py-0.5 rounded text-left hover:bg-white/5 transition-colors"
+                className="group w-full flex items-baseline justify-between gap-3 mb-3 -mx-1 px-1 py-0.5 rounded text-left hover:bg-muted transition-colors"
               >
                 {headingContent}
               </button>
@@ -53,12 +53,12 @@ export function MinutaChapters({ chapters, onJumpToSegment }: MinutaChaptersProp
                 const canJump = bullet.segment_ref != null && !!onJumpToSegment;
                 const content = (
                   <>
-                    <span className="text-cyan-400/60 mt-1 shrink-0">•</span>
-                    <span className="flex-1 text-sm text-gray-300 leading-relaxed">
+                    <span className="text-cyan-600/70 dark:text-cyan-400/60 mt-1 shrink-0">•</span>
+                    <span className="flex-1 text-sm text-foreground/80 leading-relaxed">
                       {bullet.texto}
                     </span>
                     {canJump && (
-                      <ChevronRight className="h-3.5 w-3.5 text-gray-600 group-hover:text-cyan-400 shrink-0 mt-1 transition-colors" />
+                      <ChevronRight className="h-3.5 w-3.5 text-muted-foreground/70 group-hover:text-cyan-600 dark:group-hover:text-cyan-400 shrink-0 mt-1 transition-colors" />
                     )}
                   </>
                 );
@@ -68,7 +68,7 @@ export function MinutaChapters({ chapters, onJumpToSegment }: MinutaChaptersProp
                     <button
                       type="button"
                       onClick={() => onJumpToSegment(bullet.segment_ref!)}
-                      className="group w-full flex items-start gap-2 text-left rounded -mx-1 px-1 py-0.5 hover:bg-white/5 transition-colors"
+                      className="group w-full flex items-start gap-2 text-left rounded -mx-1 px-1 py-0.5 hover:bg-muted transition-colors"
                     >
                       {content}
                     </button>

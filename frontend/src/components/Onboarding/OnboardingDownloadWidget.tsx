@@ -78,10 +78,10 @@ export function OnboardingDownloadWidget() {
         onClick={() => setExpanded(true)}
         aria-label="Ver progreso de descarga de modelos"
         title={`Descargando modelos · ${combinedPercent}%`}
-        className="fixed bottom-4 right-4 z-50 h-14 w-14 rounded-full bg-zinc-900 border border-zinc-700 shadow-xl flex items-center justify-center hover:scale-105 transition-transform"
+        className="fixed bottom-4 right-4 z-50 h-14 w-14 rounded-full bg-card border border-border shadow-xl flex items-center justify-center hover:scale-105 transition-transform"
       >
         <svg className="absolute inset-0 h-14 w-14 -rotate-90" viewBox="0 0 56 56">
-          <circle cx="28" cy="28" r={R} fill="none" stroke="rgb(39 39 42)" strokeWidth="4" />
+          <circle cx="28" cy="28" r={R} fill="none" stroke="hsl(var(--border))" strokeWidth="4" />
           <circle
             cx="28"
             cy="28"
@@ -95,11 +95,11 @@ export function OnboardingDownloadWidget() {
           />
         </svg>
         {parakeetError ? (
-          <AlertCircle className="h-5 w-5 text-red-400" />
+          <AlertCircle className="h-5 w-5 text-red-600 dark:text-red-400" />
         ) : (
           <span className="relative flex flex-col items-center leading-none">
-            <Download className="h-3.5 w-3.5 text-violet-400" />
-            <span className="mt-0.5 text-[10px] font-semibold text-white tabular-nums">
+            <Download className="h-3.5 w-3.5 text-violet-600 dark:text-violet-400" />
+            <span className="mt-0.5 text-[10px] font-semibold text-foreground tabular-nums">
               {combinedPercent}%
             </span>
           </span>
@@ -139,7 +139,7 @@ export function OnboardingDownloadWidget() {
           ) : hasError ? (
             <button
               onClick={onRetry}
-              className="flex items-center gap-1 text-xs text-red-400 hover:text-red-300"
+              className="flex items-center gap-1 text-xs text-red-600 hover:text-red-500 dark:text-red-400 dark:hover:text-red-300"
             >
               <AlertCircle className="h-3 w-3" />
               Reintentar
@@ -155,7 +155,7 @@ export function OnboardingDownloadWidget() {
         </span>
       </div>
       {!done && !hasError && !isPreparing && (
-        <div className="h-1.5 w-full overflow-hidden rounded-full bg-zinc-800">
+        <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
           <div
             className="h-full rounded-full bg-violet-500 transition-all duration-300"
             style={{ width: `${Math.min(percent, 100)}%` }}
@@ -171,14 +171,14 @@ export function OnboardingDownloadWidget() {
   )
 
   return (
-    <div className="fixed bottom-4 right-4 z-50 w-72 rounded-xl border border-zinc-700 bg-zinc-900 p-4 shadow-xl">
-      <div className="flex w-full items-center justify-between text-sm font-medium text-white">
+    <div className="fixed bottom-4 right-4 z-50 w-72 rounded-xl border border-border bg-card p-4 shadow-xl">
+      <div className="flex w-full items-center justify-between text-sm font-medium text-foreground">
         <span>Descargando modelos</span>
         <button
           onClick={() => setExpanded(false)}
           aria-label="Minimizar"
           title="Minimizar"
-          className="text-muted-foreground hover:text-white"
+          className="text-muted-foreground hover:text-foreground"
         >
           <X className="h-4 w-4" />
         </button>

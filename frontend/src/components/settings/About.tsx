@@ -82,7 +82,7 @@ export function About() {
                         className="mx-auto"
                     />
                 </div>
-                {/* <h1 className="text-xl font-bold text-[#000000] dark:text-white">Maity</h1> */}
+                {/* <h1 className="text-xl font-bold text-foreground">Maity</h1> */}
                 <span className="text-sm text-muted-foreground"> v{currentVersion}</span>
                 <p className="text-medium text-muted-foreground mt-1">
                     Maity, tu coach de comunicación.

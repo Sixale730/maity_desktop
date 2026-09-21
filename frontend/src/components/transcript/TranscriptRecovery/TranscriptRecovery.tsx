@@ -163,11 +163,11 @@ export function TranscriptRecovery({
                       </div>
                       {meeting.folderPath ? (
                         <span title="Audio disponible">
-                          <CheckCircle2 className="w-4 h-4 text-[#1bea9a] flex-shrink-0" />
+                          <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400 flex-shrink-0" />
                         </span>
                       ) : (
                         <span title="Sin audio">
-                          <AlertCircle className="w-4 h-4 text-yellow-500 flex-shrink-0" />
+                          <AlertCircle className="w-4 h-4 text-yellow-600 dark:text-yellow-400 flex-shrink-0" />
                         </span>
                       )}
                     </div>
@@ -195,12 +195,12 @@ export function TranscriptRecovery({
                         {selectedMeeting.transcriptCount} transcripciones
                       </span>
                       {selectedMeeting.folderPath ? (
-                        <span className="flex items-center gap-1 text-[#16bb7b]">
+                        <span className="flex items-center gap-1 text-emerald-600 dark:text-emerald-400">
                           <CheckCircle2 className="w-4 h-4" />
                           Audio disponible
                         </span>
                       ) : (
-                        <span className="flex items-center gap-1 text-[#3a4ac3]">
+                        <span className="flex items-center gap-1 text-maity-blue">
                           <AlertCircle className="w-4 h-4" />
                           Sin audio
                         </span>

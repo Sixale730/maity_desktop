@@ -31,14 +31,14 @@ export function ErrorView({
         <Button
           onClick={onRetry}
           disabled={isRetrying}
-          className="w-full h-11 bg-[#1bea9a] hover:bg-[#17d48b] text-gray-900 font-medium disabled:opacity-50"
+          className="w-full h-11 bg-maity-green hover:bg-maity-green/90 text-gray-900 font-medium disabled:opacity-50"
         >
           <RotateCw className={`w-4 h-4 mr-2 ${isRetrying ? 'animate-spin' : ''}`} />
           {isRetrying ? 'Reintentando…' : 'Reintentar'}
         </Button>
       </div>
 
-      <p className="text-xs text-[#8a8a8d] dark:text-gray-500 text-center max-w-xs">
+      <p className="text-xs text-muted-foreground text-center max-w-xs">
         Verifica tu conexión a internet y vuelve a intentar.
       </p>
     </div>

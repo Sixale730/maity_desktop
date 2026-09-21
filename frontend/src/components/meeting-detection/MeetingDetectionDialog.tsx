@@ -265,7 +265,7 @@ export function MeetingDetectionDialog() {
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
-            <Video className="h-5 w-5 text-blue-500" />
+            <Video className="h-5 w-5 text-maity-blue" />
             Reunión detectada
           </DialogTitle>
           <DialogDescription>
@@ -293,7 +293,7 @@ export function MeetingDetectionDialog() {
           <div className="flex items-center justify-between">
             <label
               htmlFor="remember-choice"
-              className="text-sm text-gray-600 dark:text-gray-400 cursor-pointer"
+              className="text-sm text-muted-foreground cursor-pointer"
             >
               Recordar mi elección para {appName}
             </label>
@@ -307,9 +307,9 @@ export function MeetingDetectionDialog() {
 
           {/* Auto-record countdown */}
           {autoRecordCountdown !== null && (
-            <div className="flex items-center gap-2 p-3 bg-blue-50 dark:bg-blue-900/30 rounded-lg">
-              <Clock className="h-4 w-4 text-blue-500" />
-              <span className="text-sm text-blue-700 dark:text-blue-300">
+            <div className="flex items-center gap-2 p-3 bg-maity-blue/10 rounded-lg">
+              <Clock className="h-4 w-4 text-maity-blue" />
+              <span className="text-sm text-[#2b3892] dark:text-[#a0b0f9]">
                 Grabación automática en {autoRecordCountdown} segundos...
               </span>
               <Button

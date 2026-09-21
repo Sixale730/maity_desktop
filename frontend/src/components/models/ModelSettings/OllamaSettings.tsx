@@ -95,10 +95,10 @@ export function OllamaSettings({
                   )}
                 />
                 {endpointValidationState === 'valid' && (
-                  <CheckCircle2 className="absolute right-3 top-1/2 -translate-y-1/2 h-5 w-5 text-[#1bea9a]" />
+                  <CheckCircle2 className="absolute right-3 top-1/2 -translate-y-1/2 h-5 w-5 text-emerald-600 dark:text-emerald-400" />
                 )}
                 {endpointValidationState === 'invalid' && (
-                  <XCircle className="absolute right-3 top-1/2 -translate-y-1/2 h-5 w-5 text-[#ff0050]" />
+                  <XCircle className="absolute right-3 top-1/2 -translate-y-1/2 h-5 w-5 text-destructive" />
                 )}
               </div>
               <Button
@@ -123,8 +123,8 @@ export function OllamaSettings({
               </Button>
             </div>
             {ollamaEndpointChanged && !error && (
-              <Alert className="mt-3 border-[#485df4] dark:border-blue-600 bg-[#f0f2fe] dark:bg-blue-900/30">
-                <AlertDescription className="text-[#2b3892] dark:text-blue-300">
+              <Alert className="mt-3 border-maity-blue/50 bg-maity-blue/10">
+                <AlertDescription className="text-[#2b3892] dark:text-[#a0b0f9]">
                   Endpoint cambiado. Por favor haz clic en &quot;Obtener Modelos&quot; para cargar modelos del nuevo endpoint antes de guardar.
                 </AlertDescription>
               </Alert>
@@ -165,8 +165,8 @@ export function OllamaSettings({
           <div className="space-y-3">
             {ollamaNotInstalled ? (
               <div className="space-y-4">
-                <Alert className="border-[#ff4080] dark:border-red-700 bg-[#fff0f5] dark:bg-red-900/30">
-                  <AlertDescription className="text-[#660020] dark:text-red-300">
+                <Alert className="border-destructive/50 bg-destructive/10">
+                  <AlertDescription className="text-destructive">
                     Ollama no está instalado o no está ejecutándose. Por favor descarga e instala Ollama para usar modelos locales.
                   </AlertDescription>
                 </Alert>
@@ -215,14 +215,14 @@ export function OllamaSettings({
                     </Button>
 
                     {isDownloading('gemma3:4b') && getProgress('gemma3:4b') !== undefined && (
-                      <div className="bg-white dark:bg-gray-800 rounded-md border dark:border-gray-700 p-3">
+                      <div className="bg-card rounded-md border p-3">
                         <div className="flex items-center justify-between mb-2">
-                          <span className="text-sm font-medium text-[#3a4ac3] dark:text-blue-400">Descargando gemma3:4b</span>
-                          <span className="text-sm font-semibold text-[#3a4ac3] dark:text-blue-400">
+                          <span className="text-sm font-medium text-maity-blue">Descargando gemma3:4b</span>
+                          <span className="text-sm font-semibold text-maity-blue">
                             {Math.round(getProgress('gemma3:4b')!)}%
                           </span>
                         </div>
-                        <div className="w-full h-2 bg-[#d0d0d3] dark:bg-gray-600 rounded-full overflow-hidden">
+                        <div className="w-full h-2 bg-border-strong rounded-full overflow-hidden">
                           <div
                             className="h-full bg-gradient-to-r from-blue-500 to-blue-600 rounded-full transition-all duration-300"
                             style={{ width: `${getProgress('gemma3:4b')}%` }}
@@ -255,7 +255,7 @@ export function OllamaSettings({
                       className={cn(
                         'bg-card p-2 m-0 rounded-md border transition-colors',
                         selectedModel === model.name
-                          ? 'ring-1 ring-[#485df4] border-[#485df4] background-blue-100'
+                          ? 'ring-1 ring-[#485df4] border-[#485df4] bg-maity-blue/10'
                           : 'hover:bg-muted/50',
                         !modelIsDownloading && 'cursor-pointer'
                       )}
@@ -272,12 +272,12 @@ export function OllamaSettings({
                       </div>
 
                       {modelIsDownloading && progress !== undefined && (
-                        <div className="mt-3 pt-3 border-t border-[#e7e7e9] dark:border-gray-700">
+                        <div className="mt-3 pt-3 border-t border-border">
                           <div className="flex items-center justify-between mb-2">
-                            <span className="text-sm font-medium text-[#3a4ac3] dark:text-blue-400">Descargando...</span>
-                            <span className="text-sm font-semibold text-[#3a4ac3] dark:text-blue-400">{Math.round(progress)}%</span>
+                            <span className="text-sm font-medium text-maity-blue">Descargando...</span>
+                            <span className="text-sm font-semibold text-maity-blue">{Math.round(progress)}%</span>
                           </div>
-                          <div className="w-full h-2 bg-[#d0d0d3] dark:bg-gray-600 rounded-full overflow-hidden">
+                          <div className="w-full h-2 bg-border-strong rounded-full overflow-hidden">
                             <div
                               className="h-full bg-gradient-to-r from-blue-500 to-blue-600 rounded-full transition-all duration-300"
                               style={{ width: `${progress}%` }}

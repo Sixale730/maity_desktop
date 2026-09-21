@@ -71,18 +71,18 @@ export const ComplianceNotification: React.FC<ComplianceNotificationProps> = ({
         width: `${position.width}px`,
       }}
     >
-      <div className="bg-white dark:bg-gray-800 border border-[#e7e7e9] dark:border-gray-700 rounded-lg shadow-lg p-3">
+      <div className="bg-card text-card-foreground border border-border rounded-lg shadow-lg p-3">
         {/* Header with close button */}
         <div className="flex items-start justify-between mb-2">
           <div className="flex items-center gap-1">
             <AlertTriangle className="h-3 w-3 text-amber-500 flex-shrink-0" />
-            <h3 className="text-xs font-semibold text-[#000000] dark:text-white">
+            <h3 className="text-xs font-semibold text-foreground">
               Aviso de Grabación
             </h3>
           </div>
           <button
             onClick={handleClose}
-            className="text-[#8a8a8d] dark:text-gray-500 hover:text-[#4a4a4c] dark:hover:text-gray-300 transition-colors p-0.5 rounded hover:bg-[#e7e7e9] dark:hover:bg-gray-700"
+            className="text-muted-foreground hover:text-foreground transition-colors p-0.5 rounded hover:bg-muted"
           >
             <X className="h-3 w-3" />
           </button>
@@ -90,7 +90,7 @@ export const ComplianceNotification: React.FC<ComplianceNotificationProps> = ({
 
         {/* Content */}
         <div className="mb-2">
-          <p className="text-xs text-[#4a4a4c] dark:text-gray-300 mb-1">
+          <p className="text-xs text-muted-foreground mb-1">
             Informa a los participantes sobre la grabación.
           </p>
           <div className="bg-amber-50 border border-amber-200 rounded p-1">

@@ -99,7 +99,7 @@ export function TasksList({ conversations }: TasksListProps) {
                         completed: !item.completed,
                       })
                     }
-                    className="mt-0.5 h-5 w-5 rounded border-gray-300 text-orange-500 focus:ring-orange-500 accent-orange-500 flex-shrink-0 cursor-pointer hover:scale-110 transition-transform"
+                    className="mt-0.5 h-5 w-5 rounded border-input text-orange-500 focus:ring-orange-500 accent-orange-500 flex-shrink-0 cursor-pointer hover:scale-110 transition-transform"
                   />
                   <div className="flex-1 min-w-0">
                     <span

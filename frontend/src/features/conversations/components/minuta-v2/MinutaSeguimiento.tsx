@@ -22,9 +22,9 @@ export function MinutaSeguimientoSection({ seguimiento }: MinutaSeguimientoProps
 
   return (
     <section className="space-y-3">
-      <h2 className="text-xs uppercase tracking-wider text-gray-500 px-1">Seguimiento</h2>
+      <h2 className="text-xs uppercase tracking-wider text-muted-foreground px-1">Seguimiento</h2>
 
-      <Card className="bg-card border border-white/10 p-4 space-y-3">
+      <Card className="bg-card border border-border p-4 space-y-3">
         {proximaText && (
           <FollowupRow icon={<CalendarClock className="h-4 w-4" />} label="Próxima reunión">
             {proximaText}
@@ -44,8 +44,8 @@ export function MinutaSeguimientoSection({ seguimiento }: MinutaSeguimientoProps
             <ul className="space-y-0.5">
               {preparacion_requerida.map((p, i) => (
                 <li key={i}>
-                  <span className="text-gray-300">{p.participante}:</span>{' '}
-                  <span className="text-gray-400">{p.preparacion}</span>
+                  <span className="text-foreground/80">{p.participante}:</span>{' '}
+                  <span className="text-muted-foreground">{p.preparacion}</span>
                 </li>
               ))}
             </ul>
@@ -72,10 +72,10 @@ function FollowupRow({
 }) {
   return (
     <div className="flex gap-3 text-sm">
-      <span className="text-gray-500 mt-0.5 shrink-0">{icon}</span>
+      <span className="text-muted-foreground mt-0.5 shrink-0">{icon}</span>
       <div className="flex-1 min-w-0">
-        <div className="text-xs uppercase tracking-wide text-gray-500 mb-0.5">{label}</div>
-        <div className="text-gray-300 text-sm">{children}</div>
+        <div className="text-xs uppercase tracking-wide text-muted-foreground mb-0.5">{label}</div>
+        <div className="text-foreground/80 text-sm">{children}</div>
       </div>
     </div>
   );

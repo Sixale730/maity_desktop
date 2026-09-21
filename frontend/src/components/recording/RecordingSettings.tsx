@@ -250,8 +250,8 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
   if (loading) {
     return (
       <div className="animate-pulse">
-        <div className="h-4 bg-[#d0d0d3] dark:bg-gray-600 rounded w-1/4 mb-4"></div>
-        <div className="h-8 bg-[#d0d0d3] dark:bg-gray-600 rounded mb-4"></div>
+        <div className="h-4 bg-muted-foreground/20 rounded w-1/4 mb-4"></div>
+        <div className="h-8 bg-muted-foreground/20 rounded mb-4"></div>
       </div>
     );
   }
@@ -264,14 +264,14 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
     <div className="space-y-6">
       <div>
         <h3 className="text-lg font-semibold mb-4">Configuración de Grabación</h3>
-        <p className="text-sm text-[#4a4a4c] dark:text-gray-300 mb-6">
+        <p className="text-sm text-muted-foreground mb-6">
           Configura cómo se guardan tus grabaciones de audio durante las reuniones.
         </p>
       </div>
 
       {!loaded && (
         <div
-          className="p-4 border border-amber-300 rounded-lg bg-amber-50 dark:bg-amber-900/20 text-sm text-amber-800 dark:text-amber-300"
+          className="p-4 border border-amber-300 dark:border-amber-800 rounded-lg bg-amber-50 dark:bg-amber-900/20 text-sm text-amber-800 dark:text-amber-300"
           data-testid="recording-preferences-load-failed"
         >
           No se pudieron cargar las preferencias de grabación. Recarga la página para
@@ -283,7 +283,7 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
       <div className="flex items-center justify-between p-4 border rounded-lg">
         <div className="flex-1">
           <div className="font-medium">Guardar Grabaciones de Audio</div>
-          <div className="text-sm text-[#4a4a4c] dark:text-gray-300">
+          <div className="text-sm text-muted-foreground">
             Guardar automáticamente archivos de audio al detener la grabación
           </div>
         </div>
@@ -297,25 +297,25 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
       {/* Folder Location - Only shown when auto_save is enabled */}
       {preferences.auto_save && (
         <div className="space-y-4">
-          <div className="p-4 border rounded-lg bg-[#f5f5f6] dark:bg-gray-800">
+          <div className="p-4 border border-border rounded-lg bg-muted">
             <div className="font-medium mb-2">Ubicación de Guardado</div>
-            <div className="text-sm text-[#4a4a4c] dark:text-gray-300 mb-3 break-all">
+            <div className="text-sm text-muted-foreground mb-3 break-all">
               {preferences.save_folder || 'Carpeta predeterminada'}
             </div>
             <button
               onClick={handleOpenFolder}
-              className="flex items-center gap-2 px-3 py-2 text-sm border border-[#d0d0d3] dark:border-gray-600 rounded-md hover:bg-[#f5f5f6] dark:hover:bg-gray-700 transition-colors"
+              className="flex items-center gap-2 px-3 py-2 text-sm border border-border rounded-md hover:bg-muted transition-colors"
             >
               <FolderOpen className="w-4 h-4" />
               Abrir Carpeta
             </button>
           </div>
 
-          <div className="p-4 border rounded-lg bg-[#f0f2fe] dark:bg-blue-900/30">
-            <div className="text-sm text-[#1e2a6e] dark:text-blue-300">
+          <div className="p-4 border border-border rounded-lg bg-[#485df4]/10">
+            <div className="text-sm text-foreground">
               <strong>Formato de Archivo:</strong> Archivos {preferences.file_format.toUpperCase()}
             </div>
-            <div className="text-xs text-[#3a4ac3] dark:text-blue-400 mt-1">
+            <div className="text-xs text-muted-foreground mt-1">
               Las grabaciones se guardan con marca de tiempo: grabacion_YYYYMMDD_HHMMSS.{preferences.file_format}
             </div>
           </div>
@@ -324,8 +324,8 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
 
       {/* Info when auto_save is disabled */}
       {!preferences.auto_save && (
-        <div className="p-4 border rounded-lg bg-[#f0f2fe] dark:bg-blue-900/30">
-          <div className="text-sm text-[#2b3892] dark:text-blue-300">
+        <div className="p-4 border border-border rounded-lg bg-[#485df4]/10">
+          <div className="text-sm text-foreground">
             La grabación de audio está deshabilitada. Habilita &quot;Guardar Grabaciones de Audio&quot; para guardar automáticamente el audio de tus reuniones.
           </div>
         </div>
@@ -335,7 +335,7 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
       <div className="flex items-center justify-between p-4 border rounded-lg">
         <div className="flex-1">
           <div className="font-medium">Notificación de Inicio de Grabación</div>
-          <div className="text-sm text-[#4a4a4c] dark:text-gray-300">
+          <div className="text-sm text-muted-foreground">
             Mostrar recordatorio de aviso legal para informar a los participantes cuando inicia la grabación (cumplimiento legal)
           </div>
         </div>
@@ -350,7 +350,7 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
         <div className="flex items-center justify-between mb-2">
           <div>
             <div className="font-medium">Volumen de Audio del Sistema</div>
-            <div className="text-sm text-[#4a4a4c] dark:text-gray-300">
+            <div className="text-sm text-muted-foreground">
               Amplifica el audio capturado del sistema (bocinas/audífonos) sin cambiar el volumen del OS
             </div>
           </div>
@@ -371,9 +371,9 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
             setPreferences(newPreferences);
             await savePreferences(newPreferences);
           }}
-          className="w-full h-2 bg-[#1a1a2e] rounded-lg appearance-none cursor-pointer accent-[#485df4]"
+          className="w-full h-2 bg-muted rounded-lg appearance-none cursor-pointer accent-[#485df4]"
         />
-        <div className="flex justify-between text-xs text-[#8a8a8d] mt-1">
+        <div className="flex justify-between text-xs text-muted-foreground mt-1">
           <span>50%</span>
           <span>150% (predeterminado)</span>
           <span>300%</span>
@@ -383,7 +383,7 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
       {/* Retención de Audio */}
       <div className="p-4 border rounded-lg">
         <div className="font-medium mb-1">Conservar el Audio de las Reuniones</div>
-        <div className="text-sm text-[#4a4a4c] dark:text-gray-300 mb-3">
+        <div className="text-sm text-muted-foreground mb-3">
           Después de este tiempo se libera el archivo de audio de las reuniones que
           ya se sincronizaron y analizaron. La transcripción y los datos de la
           reunión se conservan siempre: sólo se borra el audio.
@@ -392,7 +392,7 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
           value={preferences.audio_retention_days ?? 30}
           onChange={(e) => handleRetentionChange(parseInt(e.target.value, 10))}
           disabled={prefsLocked}
-          className="w-full px-3 py-2 text-sm border border-[#d0d0d3] dark:border-gray-600 rounded-md bg-transparent disabled:opacity-50"
+          className="w-full px-3 py-2 text-sm border border-border rounded-md bg-transparent disabled:opacity-50"
         >
           {/*
             El texto dice "de las reuniones guardadas" y no "Nunca borrar el audio"
@@ -407,7 +407,7 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
           <option value={30}>30 días (recomendado)</option>
           <option value={90}>90 días</option>
         </select>
-        <div className="text-xs text-[#8a8a8d] mt-2">
+        <div className="text-xs text-muted-foreground mt-2">
           Una hora de reunión ocupa alrededor de 29 MB. Con &quot;Nunca borrar&quot; el
           espacio en disco crece sin límite. Los segmentos de jornada que se
           descartan por no tener suficiente conversación liberan su audio de
@@ -419,7 +419,7 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
       {isAdmin && roleKnown && (
         <div className="p-4 border rounded-lg" data-testid="transcription-mode-setting">
           <div className="font-medium mb-1">Modo de Transcripción</div>
-          <div className="text-sm text-[#4a4a4c] dark:text-gray-300 mb-3">
+          <div className="text-sm text-muted-foreground mb-3">
             Elige cuándo se convierte el audio en texto. Transcribir al terminar usa
             menos memoria mientras grabas; a cambio, la transcripción y el coach con
             IA llegan cuando la grabación se cierra.
@@ -430,18 +430,18 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
               handleTranscriptionModeChange(e.target.value === 'batch' ? 'batch' : 'streaming')
             }
             disabled={prefsLocked}
-            className="w-full px-3 py-2 text-sm border border-[#d0d0d3] dark:border-gray-600 rounded-md bg-transparent disabled:opacity-50"
+            className="w-full px-3 py-2 text-sm border border-border rounded-md bg-transparent disabled:opacity-50"
           >
             <option value="streaming">Streaming en vivo (transcribe mientras grabas)</option>
             <option value="batch">Por lote al terminar (menos memoria durante la grabación)</option>
           </select>
-          <div className="text-xs text-[#8a8a8d] mt-2">
+          <div className="text-xs text-muted-foreground mt-2">
             Aplica a la siguiente grabación; la que esté en curso conserva su modo.
             En modo por lote el coach en vivo mide tiempo de palabra y monólogos por
             audio, sin tips de IA.
           </div>
           {!preferences.auto_save && (preferences.transcription_mode ?? 'streaming') === 'batch' && (
-            <div className="mt-3 p-3 rounded-md border border-amber-300 bg-amber-50 dark:bg-amber-900/20 text-xs text-amber-800 dark:text-amber-300">
+            <div className="mt-3 p-3 rounded-md border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 text-xs text-amber-800 dark:text-amber-300">
               Sin &quot;Guardar Grabaciones de Audio&quot; no hay qué transcribir después:
               las grabaciones se transcribirán en vivo aunque este modo diga &quot;por lote&quot;.
             </div>
@@ -452,12 +452,12 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
       {/* Device Preferences */}
       <div className="space-y-4">
         <div className="border-t pt-6">
-          <h4 className="text-base font-medium text-[#000000] dark:text-white mb-4">Dispositivos de Audio Predeterminados</h4>
-          <p className="text-sm text-[#4a4a4c] dark:text-gray-300 mb-4">
+          <h4 className="text-base font-medium text-foreground mb-4">Dispositivos de Audio Predeterminados</h4>
+          <p className="text-sm text-muted-foreground mb-4">
             Configura tus dispositivos de micrófono y audio del sistema preferidos para grabar. Estos se seleccionarán automáticamente al iniciar nuevas grabaciones.
           </p>
 
-          <div className="border rounded-lg p-4 bg-[#f5f5f6] dark:bg-gray-800">
+          <div className="border border-border rounded-lg p-4 bg-muted">
             <DeviceSelection
               selectedDevices={{
                 micDevice: preferences.preferred_mic_device,

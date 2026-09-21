@@ -132,17 +132,17 @@ export function DbInitErrorGate({ children }: { children: React.ReactNode }) {
   }
 
   return (
-    <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black p-6">
-      <div className="max-w-xl w-full bg-zinc-900 border border-red-500/30 rounded-2xl p-8 shadow-2xl">
+    <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-background p-6">
+      <div className="max-w-xl w-full bg-card border border-red-500/30 rounded-2xl p-8 shadow-2xl">
         <div className="flex items-start gap-4 mb-5">
           <div className="shrink-0 w-12 h-12 rounded-full bg-red-500/15 flex items-center justify-center">
-            <AlertTriangle className="w-6 h-6 text-red-400" />
+            <AlertTriangle className="w-6 h-6 text-red-600 dark:text-red-400" />
           </div>
           <div className="flex-1">
-            <h2 className="text-xl font-semibold text-white mb-1">
+            <h2 className="text-xl font-semibold text-foreground mb-1">
               No se pudo iniciar la base de datos local
             </h2>
-            <p className="text-sm text-zinc-400">
+            <p className="text-sm text-muted-foreground">
               Maity no puede arrancar correctamente. Esto suele pasar tras una actualización
               que modificó migraciones, una corrupción del archivo (apagón / antivirus), o
               porque otro proceso lo dejó bloqueado.
@@ -150,11 +150,11 @@ export function DbInitErrorGate({ children }: { children: React.ReactNode }) {
           </div>
         </div>
 
-        <details className="mb-5 text-xs text-zinc-500">
-          <summary className="cursor-pointer hover:text-zinc-300 transition-colors">
+        <details className="mb-5 text-xs text-muted-foreground">
+          <summary className="cursor-pointer hover:text-foreground transition-colors">
             Detalle técnico
           </summary>
-          <pre className="mt-2 p-3 bg-black/40 rounded-lg overflow-auto whitespace-pre-wrap break-words text-zinc-400">
+          <pre className="mt-2 p-3 bg-muted rounded-lg overflow-auto whitespace-pre-wrap break-words text-muted-foreground">
             {errorPayload.error}
             {errorPayload.sqlitePath && `\n\nArchivo: ${errorPayload.sqlitePath}`}
           </pre>
@@ -162,8 +162,8 @@ export function DbInitErrorGate({ children }: { children: React.ReactNode }) {
 
         {resetState === 'done' && (
           <div className="mb-5 p-3 bg-green-500/10 border border-green-500/20 rounded-lg flex items-start gap-2">
-            <CheckCircle2 className="w-4 h-4 text-green-400 shrink-0 mt-0.5" />
-            <pre className="text-xs text-zinc-300 whitespace-pre-wrap break-words flex-1">
+            <CheckCircle2 className="w-4 h-4 text-green-600 dark:text-green-400 shrink-0 mt-0.5" />
+            <pre className="text-xs text-foreground/80 whitespace-pre-wrap break-words flex-1">
               {resetMessage}
             </pre>
           </div>
@@ -171,15 +171,15 @@ export function DbInitErrorGate({ children }: { children: React.ReactNode }) {
 
         {resetState === 'failed' && (
           <div className="mb-5 p-3 bg-red-500/10 border border-red-500/20 rounded-lg">
-            <p className="text-xs text-red-300 mb-1 font-medium">No se pudo restablecer:</p>
-            <pre className="text-xs text-zinc-300 whitespace-pre-wrap break-words">{resetMessage}</pre>
+            <p className="text-xs text-red-700 dark:text-red-300 mb-1 font-medium">No se pudo restablecer:</p>
+            <pre className="text-xs text-foreground/80 whitespace-pre-wrap break-words">{resetMessage}</pre>
           </div>
         )}
 
         {restoreState === 'done' && (
           <div className="mb-5 p-3 bg-green-500/10 border border-green-500/20 rounded-lg flex items-start gap-2">
-            <CheckCircle2 className="w-4 h-4 text-green-400 shrink-0 mt-0.5" />
-            <pre className="text-xs text-zinc-300 whitespace-pre-wrap break-words flex-1">
+            <CheckCircle2 className="w-4 h-4 text-green-600 dark:text-green-400 shrink-0 mt-0.5" />
+            <pre className="text-xs text-foreground/80 whitespace-pre-wrap break-words flex-1">
               {restoreMessage}
             </pre>
           </div>
@@ -187,15 +187,15 @@ export function DbInitErrorGate({ children }: { children: React.ReactNode }) {
 
         {restoreState === 'failed' && (
           <div className="mb-5 p-3 bg-red-500/10 border border-red-500/20 rounded-lg">
-            <p className="text-xs text-red-300 mb-1 font-medium">No se pudo restaurar:</p>
-            <pre className="text-xs text-zinc-300 whitespace-pre-wrap break-words">{restoreMessage}</pre>
+            <p className="text-xs text-red-700 dark:text-red-300 mb-1 font-medium">No se pudo restaurar:</p>
+            <pre className="text-xs text-foreground/80 whitespace-pre-wrap break-words">{restoreMessage}</pre>
           </div>
         )}
 
         {exportPath && (
           <div className="mb-5 p-3 bg-blue-500/10 border border-blue-500/20 rounded-lg flex items-start gap-2">
-            <FileArchive className="w-4 h-4 text-blue-400 shrink-0 mt-0.5" />
-            <p className="text-xs text-zinc-300 break-all flex-1">
+            <FileArchive className="w-4 h-4 text-blue-600 dark:text-blue-400 shrink-0 mt-0.5" />
+            <p className="text-xs text-foreground/80 break-all flex-1">
               Logs exportados a: <span className="font-mono">{exportPath}</span>
             </p>
           </div>
@@ -210,7 +210,7 @@ export function DbInitErrorGate({ children }: { children: React.ReactNode }) {
                 restoreState === 'done' ||
                 resetState !== 'idle'
               }
-              className="w-full px-4 py-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:bg-zinc-700 disabled:cursor-not-allowed text-white text-sm font-medium transition-colors flex items-center justify-center gap-2"
+              className="w-full px-4 py-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:bg-muted disabled:text-muted-foreground disabled:cursor-not-allowed text-white text-sm font-medium transition-colors flex items-center justify-center gap-2"
             >
               <ArchiveRestore
                 className={`w-4 h-4 ${restoreState === 'resetting' ? 'animate-pulse' : ''}`}
@@ -230,7 +230,7 @@ export function DbInitErrorGate({ children }: { children: React.ReactNode }) {
               resetState === 'done' ||
               restoreState !== 'idle'
             }
-            className="w-full px-4 py-2.5 rounded-lg bg-red-600 hover:bg-red-500 disabled:bg-zinc-700 disabled:cursor-not-allowed text-white text-sm font-medium transition-colors flex items-center justify-center gap-2"
+            className="w-full px-4 py-2.5 rounded-lg bg-red-600 hover:bg-red-500 disabled:bg-muted disabled:text-muted-foreground disabled:cursor-not-allowed text-white text-sm font-medium transition-colors flex items-center justify-center gap-2"
           >
             <RefreshCw className={`w-4 h-4 ${resetState === 'resetting' ? 'animate-spin' : ''}`} />
             {resetState === 'resetting'
@@ -243,7 +243,7 @@ export function DbInitErrorGate({ children }: { children: React.ReactNode }) {
           <button
             onClick={handleExportLogs}
             disabled={isExporting}
-            className="w-full px-4 py-2.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 disabled:bg-zinc-800 text-zinc-200 text-sm font-medium transition-colors flex items-center justify-center gap-2"
+            className="w-full px-4 py-2.5 rounded-lg bg-muted hover:bg-muted/70 disabled:bg-muted text-foreground border border-border text-sm font-medium transition-colors flex items-center justify-center gap-2"
           >
             <FileArchive className={`w-4 h-4 ${isExporting ? 'animate-pulse' : ''}`} />
             {isExporting ? 'Exportando...' : 'Exportar logs'}
@@ -251,14 +251,14 @@ export function DbInitErrorGate({ children }: { children: React.ReactNode }) {
 
           <button
             onClick={handleClose}
-            className="w-full px-4 py-2.5 rounded-lg bg-transparent hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200 text-sm font-medium transition-colors flex items-center justify-center gap-2"
+            className="w-full px-4 py-2.5 rounded-lg bg-transparent hover:bg-muted text-muted-foreground hover:text-foreground text-sm font-medium transition-colors flex items-center justify-center gap-2"
           >
             <X className="w-4 h-4" />
             Cerrar Maity
           </button>
         </div>
 
-        <p className="mt-5 text-xs text-zinc-600 text-center">
+        <p className="mt-5 text-xs text-muted-foreground text-center">
           Si el problema persiste tras restablecer, exporta los logs y compártelos con soporte.
         </p>
       </div>

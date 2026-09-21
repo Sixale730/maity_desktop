@@ -1,5 +1,9 @@
 'use client';
+// Origen: web Sixale730/maity@3ef2914 src/features/omi/components/analysis/dashboard-v1/GaugeChart.tsx
+// Adaptaciones desktop: 'use client'. Resto copia tal cual (el color de la pista sigue el tema vía
+// useDashboardTheme).
 import { useEffect, useRef } from 'react';
+import { useDashboardTheme } from '@/features/dashboard/components/gamified-v2/dashboard-theme-context';
 import {
   Chart as ChartJS,
   ArcElement,
@@ -18,6 +22,7 @@ interface GaugeChartProps {
 }
 
 export function GaugeChart({ score, maxScore = 100, size = 200 }: GaugeChartProps) {
+  const theme = useDashboardTheme();
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const chartRef = useRef<ChartJS | null>(null);
 
@@ -36,7 +41,7 @@ export function GaugeChart({ score, maxScore = 100, size = 200 }: GaugeChartProp
         datasets: [
           {
             data: [pct, 100 - pct],
-            backgroundColor: [color, 'rgba(255,255,255,0.1)'],
+            backgroundColor: [color, theme === 'light' ? '#cbd5e1' : 'rgba(255,255,255,0.1)'],
             borderWidth: 0,
             circumference: 180,
             rotation: 270,
@@ -59,10 +64,12 @@ export function GaugeChart({ score, maxScore = 100, size = 200 }: GaugeChartProp
       chartRef.current?.destroy();
       chartRef.current = null;
     };
-  }, [score, maxScore]);
+  }, [score, maxScore, theme]);
 
   return (
     <canvas
+      role="img"
+      aria-label={`Puntuación: ${score} de ${maxScore}`}
       ref={canvasRef}
       width={size}
       height={size * 0.6}

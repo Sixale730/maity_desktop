@@ -751,7 +751,7 @@ export function ConversationDetail({ conversation: initialConversation, onClose,
                   <div className="space-y-4">
                     <Card className="bg-cyan-500/5 border-cyan-500/20">
                       <CardContent className="p-4 flex items-start gap-3">
-                        <Sparkles className="h-5 w-5 text-cyan-400 mt-0.5 shrink-0" />
+                        <Sparkles className="h-5 w-5 text-cyan-600 dark:text-cyan-400 mt-0.5 shrink-0" />
                         <div className="flex-1 min-w-0">
                           <p className="text-sm text-muted-foreground">
                             Esta minuta está en el formato anterior. Regenérala para verla con el

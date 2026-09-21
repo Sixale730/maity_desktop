@@ -1,3 +1,5 @@
+// Origen: web Sixale730/maity src/features/maity-chat/components (commit 3ef2914).
+// Adaptaciones desktop: Dot desde shell-v5 (la web usa shell-v6); fondo del lente activo "abierto" con token --muted en vez de rgba blanco (invisible en claro).
 import { useEffect, useRef } from 'react';
 import { Dot } from '@/shared/components/shell-v5';
 import { useLanguage } from '@/contexts/LanguageContext';
@@ -51,8 +53,6 @@ export function LensPicker({ current, open, onChange, onClose }: LensPickerProps
         left: 14,
         boxShadow: '0 12px 36px rgba(0,0,0,0.5)',
       }}
-      role="listbox"
-      aria-label={t('chat.lens_header')}
     >
       <div
         className="text-foreground/40 uppercase font-semibold px-1.5 pt-1.5 pb-2"
@@ -60,25 +60,28 @@ export function LensPicker({ current, open, onChange, onClose }: LensPickerProps
       >
         {t('chat.lens_header')}
       </div>
+      <ul
+        role="listbox"
+        aria-label={t('chat.lens_header')}
+        className="m-0 p-0 list-none"
+      >
       {LENSES.map((l) => {
         const active = l.id === current;
         const isOpen = l.color === null;
         const dotColor = isOpen ? '#777' : (l.color as string);
         return (
+          <li key={l.id} role="option" aria-selected={active}>
           <button
-            key={l.id}
             type="button"
             onClick={() => {
               onChange(l.id);
               onClose();
             }}
-            role="option"
-            aria-selected={active}
             className="w-full text-left flex items-start gap-2.5 px-2.5 py-2 rounded-lg mb-0.5 transition-colors"
             style={{
               background: active
                 ? isOpen
-                  ? 'rgba(255,255,255,0.04)'
+                  ? 'hsl(var(--muted))'
                   : `${l.color}14`
                 : 'transparent',
               border: `1px solid ${
@@ -108,8 +111,10 @@ export function LensPicker({ current, open, onChange, onClose }: LensPickerProps
               </div>
             </div>
           </button>
+          </li>
         );
       })}
+      </ul>
     </div>
   );
 }

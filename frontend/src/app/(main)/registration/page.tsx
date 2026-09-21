@@ -18,7 +18,7 @@ export default function RegistrationPage() {
     // El wrapper inner min-h-full centra cuando cabe, scrollea cuando no.
     <div className="h-screen overflow-y-auto bg-background">
       <div className="min-h-full flex items-center justify-center p-4">
-        <Suspense fallback={<div className="flex h-screen items-center justify-center bg-black" />}>
+        <Suspense fallback={<div className="flex h-screen items-center justify-center bg-background" />}>
           <Registration />
         </Suspense>
       </div>

@@ -168,14 +168,14 @@ export function MeetingDetectorSettings() {
   if (isLoading) {
     return (
       <div className="flex items-center justify-center p-8">
-        <Loader2 className="h-6 w-6 animate-spin text-gray-400" />
+        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
       </div>
     )
   }
 
   if (!settings) {
     return (
-      <div className="p-4 text-center text-gray-500">
+      <div className="p-4 text-center text-muted-foreground">
         No se pudo cargar la configuración
       </div>
     )
@@ -186,7 +186,7 @@ export function MeetingDetectorSettings() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <Video className="h-5 w-5 text-blue-500" />
+          <Video className="h-5 w-5 text-maity-blue" />
           <h3 className="text-lg font-semibold">Detección de Reuniones</h3>
         </div>
         <Button
@@ -201,10 +201,10 @@ export function MeetingDetectorSettings() {
       </div>
 
       {/* Main toggle */}
-      <div className="flex items-center justify-between p-4 bg-gray-50 rounded-lg">
+      <div className="flex items-center justify-between p-4 bg-muted rounded-lg">
         <div>
           <p className="font-medium">Detección automática</p>
-          <p className="text-sm text-gray-500">
+          <p className="text-sm text-muted-foreground">
             Detectar cuando se abren aplicaciones de reuniones
           </p>
         </div>
@@ -221,7 +221,7 @@ export function MeetingDetectorSettings() {
           <div className="flex items-center justify-between p-4 border rounded-lg">
             <div>
               <p className="font-medium">Grabación automática</p>
-              <p className="text-sm text-gray-500">
+              <p className="text-sm text-muted-foreground">
                 Iniciar grabación automáticamente (con cuenta regresiva de 5 segundos)
               </p>
             </div>
@@ -234,7 +234,7 @@ export function MeetingDetectorSettings() {
 
           {/* Apps list */}
           <div className="space-y-3">
-            <h4 className="font-medium text-gray-700">Aplicaciones monitoreadas</h4>
+            <h4 className="font-medium text-foreground">Aplicaciones monitoreadas</h4>
             <div className="space-y-2">
               {apps.map((app) => (
                 <div
@@ -247,7 +247,7 @@ export function MeetingDetectorSettings() {
                       onCheckedChange={(enabled) => handleToggleApp(app.id, enabled)}
                       disabled={isSaving}
                     />
-                    <span className={app.enabled ? 'text-gray-900' : 'text-gray-400'}>
+                    <span className={app.enabled ? 'text-foreground' : 'text-muted-foreground'}>
                       {app.name}
                     </span>
                   </div>
@@ -274,13 +274,13 @@ export function MeetingDetectorSettings() {
           </div>
 
           {/* Status indicator */}
-          <div className="flex items-center gap-2 p-3 bg-gray-50 rounded-lg">
+          <div className="flex items-center gap-2 p-3 bg-muted rounded-lg">
             <div
               className={`w-2 h-2 rounded-full ${
-                isDetectorRunning ? 'bg-green-500' : 'bg-gray-300'
+                isDetectorRunning ? 'bg-green-500' : 'bg-border-strong'
               }`}
             />
-            <span className="text-sm text-gray-600">
+            <span className="text-sm text-muted-foreground">
               {isDetectorRunning
                 ? 'Detector activo - verificando cada 5 segundos'
                 : 'Detector inactivo'}

@@ -1,4 +1,7 @@
+// Origen: web Sixale730/maity src/features/maity-chat/components (commit 3ef2914).
+// Adaptaciones desktop: se mantiene shell-v5 (la web importa shell-v6, fuera de alcance).
 import { Brain } from 'lucide-react';
+import { DashboardThemeToggle } from '@/features/dashboard/components/gamified-v2/DashboardTheme';
 import { TopBar, URGENCY_COLOR } from '@/shared/components/shell-v5';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { BugReportDialog } from './BugReportDialog';
@@ -99,6 +102,7 @@ export function ChatTopBar({
               <span className="text-foreground/60">· {memoriesCount}</span>
             )}
           </button>
+          <DashboardThemeToggle />
           <BugReportDialog threadId={thread?.id ?? null} />
         </div>
       }

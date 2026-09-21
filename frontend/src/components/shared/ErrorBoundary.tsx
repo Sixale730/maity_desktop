@@ -130,39 +130,39 @@ ${errorInfo?.componentStack || 'No component stack'}
 
       // Default error UI
       return (
-        <div className="min-h-screen flex items-center justify-center bg-gray-50 dark:bg-gray-900 p-4">
-          <div className="max-w-lg w-full bg-white dark:bg-gray-800 rounded-lg shadow-lg p-6 space-y-4">
+        <div className="min-h-screen flex items-center justify-center bg-background p-4">
+          <div className="max-w-lg w-full bg-card text-card-foreground border border-border rounded-lg shadow-lg p-6 space-y-4">
             {/* Header */}
-            <div className="flex items-center gap-3 text-red-600">
+            <div className="flex items-center gap-3 text-red-600 dark:text-red-400">
               <AlertTriangle className="h-8 w-8" />
               <h1 className="text-xl font-semibold">Algo salió mal</h1>
             </div>
 
             {/* Description */}
-            <p className="text-gray-600">
+            <p className="text-muted-foreground">
               Ha ocurrido un error inesperado. Puedes intentar recargar la aplicación
               o copiar los detalles del error para reportarlo.
             </p>
 
             {/* Error details (collapsible) */}
-            <details className="bg-gray-50 rounded-md p-3 text-sm">
-              <summary className="cursor-pointer text-gray-700 font-medium flex items-center gap-2">
+            <details className="bg-muted rounded-md p-3 text-sm">
+              <summary className="cursor-pointer text-foreground font-medium flex items-center gap-2">
                 <Bug className="h-4 w-4" />
                 Detalles del error
               </summary>
               <div className="mt-2 space-y-2">
                 <div>
-                  <span className="font-medium text-gray-700">Error: </span>
-                  <span className="text-red-600">{error?.name || 'Unknown'}</span>
+                  <span className="font-medium text-foreground">Error: </span>
+                  <span className="text-red-600 dark:text-red-400">{error?.name || 'Unknown'}</span>
                 </div>
                 <div>
-                  <span className="font-medium text-gray-700">Mensaje: </span>
-                  <span className="text-gray-600">{error?.message || 'Sin mensaje'}</span>
+                  <span className="font-medium text-foreground">Mensaje: </span>
+                  <span className="text-muted-foreground">{error?.message || 'Sin mensaje'}</span>
                 </div>
                 {errorInfo?.componentStack && (
                   <div>
-                    <span className="font-medium text-gray-700">Componente: </span>
-                    <pre className="mt-1 text-xs bg-gray-100 p-2 rounded overflow-x-auto max-h-32">
+                    <span className="font-medium text-foreground">Componente: </span>
+                    <pre className="mt-1 text-xs bg-background p-2 rounded overflow-x-auto max-h-32">
                       {errorInfo.componentStack.split('\n').slice(0, 5).join('\n')}
                     </pre>
                   </div>
@@ -196,7 +196,7 @@ ${errorInfo?.componentStack || 'No component stack'}
               >
                 {copied ? (
                   <>
-                    <Check className="h-4 w-4 text-green-600" />
+                    <Check className="h-4 w-4 text-green-600 dark:text-green-400" />
                     Copiado
                   </>
                 ) : (
@@ -215,7 +215,7 @@ ${errorInfo?.componentStack || 'No component stack'}
               >
                 {exported ? (
                   <>
-                    <Check className="h-4 w-4 text-green-600" />
+                    <Check className="h-4 w-4 text-green-600 dark:text-green-400" />
                     Reporte exportado
                   </>
                 ) : (
@@ -228,7 +228,7 @@ ${errorInfo?.componentStack || 'No component stack'}
             </div>
 
             {/* Help text */}
-            <p className="text-xs text-gray-400 pt-2">
+            <p className="text-xs text-muted-foreground pt-2">
               Si el problema persiste, por favor contacta al equipo de soporte
               con los detalles del error.
             </p>

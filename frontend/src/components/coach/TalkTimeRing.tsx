@@ -75,7 +75,7 @@ export function TalkTimeRing({
             cy={SIZE / 2}
             r={radius}
             fill="none"
-            stroke="rgba(255,255,255,0.1)"
+            className="stroke-border"
             strokeWidth={STROKE}
           />
           <circle
@@ -106,14 +106,14 @@ export function TalkTimeRing({
           <span className="text-[15px] font-semibold leading-none tabular-nums text-foreground">
             {empty ? '–' : `${u} %`}
           </span>
-          <span className="mt-[3px] text-[9px] uppercase leading-none tracking-wide text-zinc-400">
+          <span className="mt-[3px] text-[9px] uppercase leading-none tracking-wide text-muted-foreground">
             {userLabel.toLowerCase()}
           </span>
         </div>
       </div>
 
       {empty ? (
-        <span className="text-xs text-zinc-500">Esperando audio…</span>
+        <span className="text-xs text-muted-foreground">Esperando audio…</span>
       ) : (
         <div className="flex flex-1 flex-col gap-2">
           <div className="flex items-center justify-between">

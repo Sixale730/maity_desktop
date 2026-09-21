@@ -182,7 +182,7 @@ export function LogExporter() {
           disabled={isClearing || (logInfo?.file_count ?? 0) <= 2}
           variant="outline"
           size="sm"
-          className="text-xs text-red-600 hover:text-red-700 hover:bg-red-50"
+          className="text-xs text-destructive hover:text-destructive hover:bg-destructive/10"
         >
           {isClearing ? (
             <>
@@ -206,9 +206,9 @@ export function LogExporter() {
 
       {lastExportPath && (
         <div className="bg-green-500/10 border border-green-500/20 rounded-md p-2.5 flex items-start gap-2">
-          <CheckCircle2 className="h-4 w-4 text-green-500 shrink-0 mt-0.5" />
+          <CheckCircle2 className="h-4 w-4 text-green-600 dark:text-green-500 shrink-0 mt-0.5" />
           <div className="flex-1 min-w-0">
-            <p className="text-xs font-medium text-green-400">
+            <p className="text-xs font-medium text-green-700 dark:text-green-400">
               Logs exportados
             </p>
             <p className="text-xs text-muted-foreground truncate" title={lastExportPath}>

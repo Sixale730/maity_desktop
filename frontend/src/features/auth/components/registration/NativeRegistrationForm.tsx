@@ -371,7 +371,7 @@ export function NativeRegistrationForm({
         className="space-y-6"
       >
         {/* Scrollable Privacy Policy */}
-        <div className="bg-black/40 backdrop-blur-xl border border-white/10 rounded-lg p-4">
+        <div className="bg-muted/80 backdrop-blur-xl border border-border rounded-lg p-4">
           <h4 className="text-sm font-semibold text-foreground mb-3">
             Aviso de Privacidad
           </h4>
@@ -419,7 +419,7 @@ export function NativeRegistrationForm({
         </div>
 
         {/* Consent checkbox */}
-        <div className="bg-black/40 backdrop-blur-xl border border-white/10 rounded-lg p-6">
+        <div className="bg-muted/80 backdrop-blur-xl border border-border rounded-lg p-6">
           <div className="flex items-start gap-4">
             <Checkbox
               id={questionId}

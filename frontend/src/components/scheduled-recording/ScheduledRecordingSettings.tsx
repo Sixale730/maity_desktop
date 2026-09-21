@@ -213,7 +213,7 @@ export function ScheduledRecordingSettings() {
 
       {settings.enabled && micIssue && (
         <div className="flex items-start gap-3 p-4 rounded-lg border border-amber-500/40 bg-amber-500/10">
-          <MicOff className="h-5 w-5 mt-0.5 shrink-0 text-amber-500" />
+          <MicOff className="h-5 w-5 mt-0.5 shrink-0 text-amber-600 dark:text-amber-500" />
           <div className="flex-1 space-y-2">
             <p className="text-sm font-medium text-foreground">{micIssue.userMessage}</p>
             <p className="text-sm text-muted-foreground">
@@ -294,7 +294,7 @@ export function ScheduledRecordingSettings() {
             </div>
           </div>
           {draft.end_time <= draft.start_time && (
-            <p className="text-xs text-amber-500">
+            <p className="text-xs text-amber-600 dark:text-amber-500">
               La hora de fin es menor o igual a la de inicio: la jornada cruzará la medianoche.
             </p>
           )}

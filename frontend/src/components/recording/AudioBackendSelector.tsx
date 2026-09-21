@@ -75,8 +75,8 @@ export function AudioBackendSelector({
   if (loading) {
     return (
       <div className="animate-pulse">
-        <div className="h-4 bg-[#d0d0d3] dark:bg-gray-600 rounded w-32 mb-2"></div>
-        <div className="h-10 bg-[#d0d0d3] dark:bg-gray-600 rounded"></div>
+        <div className="h-4 bg-muted-foreground/20 rounded w-32 mb-2"></div>
+        <div className="h-10 bg-muted-foreground/20 rounded"></div>
       </div>
     );
   }
@@ -89,7 +89,7 @@ export function AudioBackendSelector({
   return (
     <div className="space-y-2">
       <div className="flex items-center gap-2">
-        <label className="text-sm font-medium text-[#3a3a3c] dark:text-gray-200">
+        <label className="text-sm font-medium text-foreground">
           System Audio Backend
         </label>
         <div className="relative">
@@ -97,12 +97,12 @@ export function AudioBackendSelector({
             type="button"
             onMouseEnter={() => setShowTooltip(true)}
             onMouseLeave={() => setShowTooltip(false)}
-            className="text-[#8a8a8d] dark:text-gray-500 hover:text-[#4a4a4c] dark:hover:text-gray-300 transition-colors"
+            className="text-muted-foreground hover:text-foreground transition-colors"
           >
             <Info className="h-4 w-4" />
           </button>
           {showTooltip && (
-            <div className="absolute z-10 left-6 top-0 w-64 p-3 text-xs bg-[#000000] text-white rounded-lg shadow-lg">
+            <div className="absolute z-10 left-6 top-0 w-64 p-3 text-xs bg-foreground text-background rounded-lg shadow-lg">
               <p className="font-semibold mb-1">Audio Capture Methods:</p>
               <ul className="space-y-1">
                 {backends.map((backend) => (
@@ -111,7 +111,7 @@ export function AudioBackendSelector({
                   </li>
                 ))}
               </ul>
-              <p className="mt-2 text-gray-300">
+              <p className="mt-2 text-background/80">
                 Try different backends to find which works best for your system.
               </p>
             </div>
@@ -120,7 +120,7 @@ export function AudioBackendSelector({
       </div>
 
       {error && (
-        <div className="p-2 text-xs text-[#990030] bg-[#fff0f5] border border-[#ffc0d6] rounded-md">
+        <div className="p-2 text-xs text-destructive bg-destructive/10 border border-destructive/30 rounded-md">
           {error}
         </div>
       )}
@@ -136,8 +136,8 @@ export function AudioBackendSelector({
               key={backend.id}
               className={`flex items-start p-3 border rounded-lg transition-all ${
                 currentBackend === backend.id
-                  ? 'border-[#485df4] bg-[#f0f2fe] dark:bg-blue-900/30'
-                  : 'border-[#d0d0d3] dark:border-gray-600 hover:border-gray-400 bg-white dark:bg-gray-800'
+                  ? 'border-[#485df4] bg-[#485df4]/10'
+                  : 'border-border hover:border-muted-foreground/50 bg-card'
               } ${isDisabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
             >
               <input
@@ -147,32 +147,32 @@ export function AudioBackendSelector({
                 checked={currentBackend === backend.id}
                 onChange={() => handleBackendChange(backend.id)}
                 disabled={isDisabled}
-                className="mt-1 h-4 w-4 text-[#3a4ac3] focus:ring-[#485df4] border-[#d0d0d3]"
+                className="mt-1 h-4 w-4 text-[#3a4ac3] focus:ring-[#485df4] border-border"
               />
               <div className="ml-3 flex-1">
                 <div className="flex items-center justify-between">
-                  <span className="text-sm font-medium text-[#000000] dark:text-white">
+                  <span className="text-sm font-medium text-foreground">
                     {backend.name}
                   </span>
                   {currentBackend === backend.id && (
-                    <span className="text-xs font-medium text-[#3a4ac3] bg-[#e0e5fd] px-2 py-0.5 rounded">
+                    <span className="text-xs font-medium text-[#3a4ac3] dark:text-[#8b9bf8] bg-[#485df4]/15 px-2 py-0.5 rounded">
                       Active
                     </span>
                   )}
                   {isCoreAudio && (
-                    <span className="text-xs font-medium text-[#6a6a6d] dark:text-gray-400 bg-[#e7e7e9] dark:bg-gray-700 px-2 py-0.5 rounded">
+                    <span className="text-xs font-medium text-muted-foreground bg-muted px-2 py-0.5 rounded">
                       Disabled
                     </span>
                   )}
                 </div>
-                <p className="mt-1 text-xs text-[#4a4a4c] dark:text-gray-300">{backend.description}</p>
+                <p className="mt-1 text-xs text-muted-foreground">{backend.description}</p>
               </div>
             </label>
           );
         })}
       </div>
 
-      <div className="text-xs text-[#6a6a6d] dark:text-gray-400 space-y-1">
+      <div className="text-xs text-muted-foreground space-y-1">
         <p>• Backend selection only affects system audio capture</p>
         <p>• Microphone always uses the default method</p>
         <p>• Changes apply to new recording sessions</p>

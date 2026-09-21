@@ -46,7 +46,7 @@ export default function BillingPlansPage() {
         </Button>
       )}
       <div className="min-h-full flex items-center justify-center p-4">
-        <Suspense fallback={<div className="flex h-screen items-center justify-center bg-black" />}>
+        <Suspense fallback={<div className="flex h-screen items-center justify-center bg-background" />}>
           <div className="w-full max-w-5xl py-8">
             <h1 className="mb-2 text-center text-3xl font-bold">Elige tu plan</h1>
             <p className="mb-8 text-center text-muted-foreground">

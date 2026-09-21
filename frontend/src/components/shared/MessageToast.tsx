@@ -19,7 +19,7 @@ export function MessageToast({ message, type, show, setShow }: MessageToastProps
     
     return (
         show && (
-            <span className={`${type === 'success' ? 'text-[#1bea9a]' : 'text-[#ff0050]'}`}>{message}</span>
+            <span className={`${type === 'success' ? 'text-emerald-600 dark:text-maity-green' : 'text-maity-pink'}`}>{message}</span>
         )
     );
 }

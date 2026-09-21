@@ -23,13 +23,13 @@ export function PasswordStrengthIndicator({ password }: PasswordStrengthIndicato
           {rule.met ? (
             <Check className="w-3.5 h-3.5 text-green-600 dark:text-green-400 shrink-0" />
           ) : (
-            <X className="w-3.5 h-3.5 text-[#9a9a9d] dark:text-gray-500 shrink-0" />
+            <X className="w-3.5 h-3.5 text-muted-foreground/70 shrink-0" />
           )}
           <span
             className={
               rule.met
                 ? 'text-green-700 dark:text-green-400'
-                : 'text-[#6a6a6d] dark:text-gray-400'
+                : 'text-muted-foreground'
             }
           >
             {rule.label}

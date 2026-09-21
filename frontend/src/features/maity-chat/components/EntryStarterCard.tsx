@@ -1,3 +1,5 @@
+// Origen: web Sixale730/maity src/features/maity-chat/components (commit 3ef2914).
+// Adaptaciones desktop: se conserva el contenedor <div role="button"> (la web usa <button> con chips <button> anidados: HTML invalido, React avisa validateDOMNesting); resto tal cual.
 import { KeyboardEvent } from 'react';
 
 interface EntryStarterCardProps {
@@ -52,7 +54,7 @@ export function EntryStarterCard({
       tabIndex={0}
       onClick={() => onSelect()}
       onKeyDown={handleKey}
-      className="text-left rounded-[14px] bg-card border border-border text-foreground flex flex-col gap-2 hover:bg-card-hi/40 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 transition-colors cursor-pointer"
+      className="w-full text-left rounded-[14px] bg-card border border-border text-foreground flex flex-col gap-2 hover:bg-card-hi/40 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 transition-colors cursor-pointer"
       style={{ padding: '18px 18px 14px' }}
     >
       <div className="flex items-center gap-2.5">

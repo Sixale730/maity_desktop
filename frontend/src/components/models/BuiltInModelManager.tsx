@@ -289,11 +289,11 @@ export function BuiltInModelManager({ selectedModel, onModelSelect }: BuiltInMod
               className={cn(
                 'p-4 rounded-lg border transition-colors',
                 modelIsDownloading
-                  ? 'bg-white border-[#e7e7e9] dark:border-gray-700'
+                  ? 'bg-card border-border'
                   : 'bg-card',
                 selectedModel === model.name
-                  ? 'ring-2 ring-gray-800 border-gray-800'
-                  : 'border-[#e7e7e9] dark:border-gray-700 hover:border-[#d0d0d3]',
+                  ? 'ring-2 ring-foreground border-foreground'
+                  : 'border-border hover:border-input',
                 isAvailable && !modelIsDownloading && 'cursor-pointer'
               )}
               onClick={() => {
@@ -305,43 +305,43 @@ export function BuiltInModelManager({ selectedModel, onModelSelect }: BuiltInMod
               <div className="flex items-start justify-between">
                 <div className="flex-1">
                   <div className="flex items-center gap-2 mb-1">
-                    <span className="text-base font-bold text-[#000000] dark:text-white">{model.display_name || model.name}</span>
+                    <span className="text-base font-bold text-foreground">{model.display_name || model.name}</span>
                     {isAvailable && (
                       <>
-                        <span className="text-xs text-[#16bb7b] font-medium flex items-center gap-1">
+                        <span className="text-xs text-emerald-600 dark:text-emerald-400 font-medium flex items-center gap-1">
                           <span className="w-2 h-2 rounded-full bg-[#16bb7b]"></span>
                           Listo
                         </span>
                         {selectedModel === model.name && (
-                          <span className="px-2 py-0.5 text-xs font-medium bg-[#e0e5fd] text-[#2b3892] rounded">
+                          <span className="px-2 py-0.5 text-xs font-medium bg-maity-blue/15 text-[#2b3892] dark:text-[#a0b0f9] rounded">
                             Seleccionado
                           </span>
                         )}
                       </>
                     )}
                     {isCorrupted && (
-                      <span className="px-2 py-0.5 text-xs font-medium bg-[#ffe0eb] text-[#990030] rounded flex items-center gap-1">
+                      <span className="px-2 py-0.5 text-xs font-medium bg-destructive/15 text-destructive rounded flex items-center gap-1">
                         <BadgeAlert className="w-3 h-3" />
                         Corrupto
                       </span>
                     )}
                     {isError && (
-                      <span className="px-2 py-0.5 text-xs font-medium bg-[#ffe0eb] text-[#990030] rounded">
+                      <span className="px-2 py-0.5 text-xs font-medium bg-destructive/15 text-destructive rounded">
                         Error
                       </span>
                     )}
                     {isNotDownloaded && !modelIsDownloading && (
-                      <span className="text-xs text-[#4a4a4c] dark:text-gray-300 font-medium">
+                      <span className="text-xs text-muted-foreground font-medium">
                         No Descargado
                       </span>
                     )}
                   </div>
-                  <div className="text-sm text-[#4a4a4c] dark:text-gray-300">
+                  <div className="text-sm text-muted-foreground">
                     {model.description && (
                       <p className="mb-1">{model.description}</p>
                     )}
                     {(isError || isCorrupted) && (
-                      <p className="mb-1 text-xs text-[#cc0040]">
+                      <p className="mb-1 text-xs text-destructive">
                         {isError && typeof model.status === 'object' && 'Error' in model.status
                           ? (model.status as { type: string; Error?: string }).Error
                           : isCorrupted
@@ -349,7 +349,7 @@ export function BuiltInModelManager({ selectedModel, onModelSelect }: BuiltInMod
                           : 'Ocurrió un error'}
                       </p>
                     )}
-                    <div className="text-xs text-[#6a6a6d] dark:text-gray-400">
+                    <div className="text-xs text-muted-foreground">
                       <span>{model.size_mb}MB • {model.context_size} tokens</span>
                     </div>
                   </div>
@@ -434,7 +434,7 @@ export function BuiltInModelManager({ selectedModel, onModelSelect }: BuiltInMod
                   {/* Available - Show small trash icon (only if not currently selected) */}
                   {isAvailable && !modelIsDownloading && selectedModel !== model.name && (
                     <button
-                      className="p-2 rounded hover:bg-[#e7e7e9] dark:hover:bg-gray-700 transition-colors text-[#6a6a6d] dark:text-gray-400 hover:text-[#cc0040] dark:hover:text-red-400"
+                      className="p-2 rounded hover:bg-card-hi transition-colors text-muted-foreground hover:text-destructive"
                       onClick={(e) => {
                         e.stopPropagation();
                         deleteModel(model.name);
@@ -449,19 +449,19 @@ export function BuiltInModelManager({ selectedModel, onModelSelect }: BuiltInMod
 
               {/* Download progress bar */}
               {modelIsDownloading && progress !== undefined && (
-                <div className="mt-3 pt-3 border-t border-[#e7e7e9] dark:border-gray-700">
+                <div className="mt-3 pt-3 border-t border-border">
                   <div className="flex items-center justify-between mb-1">
-                    <span className="text-sm font-medium text-[#000000] dark:text-white">Descargando...</span>
-                    <span className="text-sm font-semibold text-[#000000] dark:text-white">
+                    <span className="text-sm font-medium text-foreground">Descargando...</span>
+                    <span className="text-sm font-semibold text-foreground">
                       {Math.round(progress)}%
                     </span>
                   </div>
-                  <div className="text-sm text-[#4a4a4c] dark:text-gray-300 mb-2">
+                  <div className="text-sm text-muted-foreground mb-2">
                     {progressInfo?.totalMb > 0 ? (
                       <>
                         {progressInfo.downloadedMb.toFixed(1)} MB / {progressInfo.totalMb.toFixed(1)} MB
                         {progressInfo.speedMbps > 0 && (
-                          <span className="ml-2 text-[#6a6a6d] dark:text-gray-400">
+                          <span className="ml-2 text-muted-foreground">
                             ({progressInfo.speedMbps.toFixed(1)} MB/s)
                           </span>
                         )}
@@ -470,9 +470,9 @@ export function BuiltInModelManager({ selectedModel, onModelSelect }: BuiltInMod
                       <span>{model.size_mb} MB</span>
                     )}
                   </div>
-                  <div className="w-full h-2.5 bg-[#d0d0d3] dark:bg-gray-600 rounded-full overflow-hidden">
+                  <div className="w-full h-2.5 bg-border-strong rounded-full overflow-hidden">
                     <div
-                      className="h-full bg-gradient-to-r from-gray-800 to-gray-900 rounded-full transition-all duration-300"
+                      className="h-full bg-gradient-to-r from-foreground/80 to-foreground rounded-full transition-all duration-300"
                       style={{ width: `${progress}%` }}
                     />
                   </div>

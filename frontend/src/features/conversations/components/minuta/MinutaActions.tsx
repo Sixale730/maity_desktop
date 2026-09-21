@@ -22,7 +22,7 @@ interface MinutaIncompleteActionsProps {
 const PRIORITY_STYLES: Record<string, string> = {
   ALTA: 'bg-red-500/15 text-red-400 border-red-500/30',
   MEDIA: 'bg-amber-500/15 text-amber-400 border-amber-500/30',
-  BAJA: 'bg-gray-500/15 text-gray-400 border-gray-500/30',
+  BAJA: 'bg-muted text-muted-foreground border-border',
 };
 
 const STATUS_STYLES: Record<string, string> = {
@@ -36,7 +36,7 @@ const FALTA_STYLES: Record<string, string> = {
   'fecha límite': 'bg-amber-500/15 text-amber-400 border-amber-500/30',
   'fecha': 'bg-amber-500/15 text-amber-400 border-amber-500/30',
   'aprobación formal': 'bg-blue-500/15 text-blue-400 border-blue-500/30',
-  'detalle': 'bg-gray-500/15 text-gray-400 border-gray-500/30',
+  'detalle': 'bg-muted text-muted-foreground border-border',
 };
 
 const FALTA_LABELS: Record<string, string> = {
@@ -202,7 +202,7 @@ export function MinutaIncompleteActions({ acciones }: MinutaIncompleteActionsPro
                       <Badge
                         key={i}
                         variant="outline"
-                        className={`text-xs ${FALTA_STYLES[getFaltaLabel(item).toLowerCase()] || FALTA_STYLES[item.toLowerCase()] || 'bg-gray-500/15 text-gray-400 border-gray-500/30'}`}
+                        className={`text-xs ${FALTA_STYLES[getFaltaLabel(item).toLowerCase()] || FALTA_STYLES[item.toLowerCase()] || 'bg-muted text-muted-foreground border-border'}`}
                       >
                         {getFaltaLabel(item)}
                       </Badge>

@@ -1,4 +1,7 @@
 'use client';
+// Origen: web Sixale730/maity@3ef2914 src/features/omi/components/analysis/dashboard-v1/RadarCalidad.tsx
+// Adaptaciones desktop: 'use client'; `DIMENSIONES` se exporta como `RADAR_DIMENSIONES` (la nota de
+// `TuRadarCard` la consume) y se conserva el comentario #74.
 import { useEffect, useRef } from 'react';
 import {
   Chart as ChartJS,
@@ -12,6 +15,7 @@ import {
   type ChartConfiguration,
 } from 'chart.js';
 import type { CalidadGlobalV4 } from './types';
+import { useDashboardTheme } from '@/features/dashboard/components/gamified-v2/dashboard-theme-context';
 
 ChartJS.register(
   RadarController,
@@ -36,6 +40,7 @@ export const RADAR_DIMENSIONES: { key: keyof CalidadGlobalV4['componentes']; lab
 ];
 
 export function RadarCalidad({ calidad }: { calidad: CalidadGlobalV4 }) {
+  const theme = useDashboardTheme();
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const chartRef = useRef<ChartJS | null>(null);
 
@@ -82,15 +87,15 @@ export function RadarCalidad({ calidad }: { calidad: CalidadGlobalV4 }) {
             ticks: { display: false, stepSize: 25 },
             pointLabels: {
               display: true,
-              color: (ctx) => RADAR_COLORS[ctx.index % RADAR_COLORS.length],
+              color: (ctx) => theme === 'light' ? '#334155' : RADAR_COLORS[ctx.index % RADAR_COLORS.length],
               font: { size: 14, weight: 700 },
               callback: function (label: string, index: number) {
                 const v = values[index];
                 return [label, v != null ? v.toString() : ''] as unknown as string;
               },
             },
-            grid: { color: 'rgba(255,255,255,0.08)' },
-            angleLines: { color: 'rgba(255,255,255,0.08)' },
+            grid: { color: theme === 'light' ? 'rgba(51,65,85,0.18)' : 'rgba(255,255,255,0.08)' },
+            angleLines: { color: theme === 'light' ? 'rgba(51,65,85,0.18)' : 'rgba(255,255,255,0.08)' },
           },
         },
         plugins: { legend: { display: false } },
@@ -102,7 +107,7 @@ export function RadarCalidad({ calidad }: { calidad: CalidadGlobalV4 }) {
       chartRef.current?.destroy();
       chartRef.current = null;
     };
-  }, [calidad]);
+  }, [calidad, theme]);
 
   return (
     <div className="relative w-full max-w-[420px] mx-auto" style={{ aspectRatio: '1 / 1' }}>

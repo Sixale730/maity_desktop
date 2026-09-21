@@ -11,10 +11,10 @@ export function StatusIndicator({ status, size = 'md' }: StatusIndicatorProps) {
 
   // MAITY palette colors
   const statusColors = {
-    idle: 'bg-[#d0d0d3] dark:bg-gray-600',
-    checking: 'bg-[#485df4] animate-pulse',
-    success: 'bg-[#1bea9a]',
-    error: 'bg-[#ff0050]',
+    idle: 'bg-muted-foreground/30',
+    checking: 'bg-maity-blue animate-pulse',
+    success: 'bg-maity-green',
+    error: 'bg-maity-pink',
   };
 
   return <span className={cn('rounded-full inline-block', sizeClasses[size], statusColors[status])} />;

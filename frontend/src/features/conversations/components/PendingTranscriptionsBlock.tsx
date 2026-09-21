@@ -194,7 +194,7 @@ export function PendingTranscriptionsBlock() {
     }
     // pending (incluye el `processing → pending` de un reintento)
     return (
-      <Badge variant="outline" className="text-xs gap-1 text-amber-600 border-amber-300">
+      <Badge variant="outline" className="text-xs gap-1 text-amber-600 dark:text-amber-400 border-amber-300 dark:border-amber-500/40">
         <Clock className="h-3 w-3" />
         Pendiente de transcribir
         {row.attempts > 0 ? ` · reintento ${row.attempts}` : ''}

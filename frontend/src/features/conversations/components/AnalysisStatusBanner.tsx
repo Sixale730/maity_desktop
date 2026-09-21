@@ -26,8 +26,8 @@ export function AnalysisStatusBanner({ phase, onRetry }: AnalysisStatusBannerPro
 
   if (phase === 'stalled') {
     return (
-      <div className="flex items-center gap-3 rounded-lg border border-amber-300/40 bg-amber-50/50 dark:bg-amber-900/10 px-4 py-3 mb-4">
-        <Clock className="h-4 w-4 text-amber-600 shrink-0" />
+      <div className="flex items-center gap-3 rounded-lg border border-amber-300/40 dark:border-amber-500/30 bg-amber-50/50 dark:bg-amber-900/10 px-4 py-3 mb-4">
+        <Clock className="h-4 w-4 text-amber-600 dark:text-amber-400 shrink-0" />
         <div className="flex-1 min-w-0">
           <span className="text-sm text-foreground">Tarda más de lo normal…</span>
           <p className="text-xs text-muted-foreground mt-0.5">El servidor todavía no devuelve resultado. Puedes esperar o reintentar.</p>

@@ -30,9 +30,9 @@ export const RecordingStatusBar: React.FC<RecordingStatusBarProps> = ({ isPaused
   };
 
   return (
-    <div className="flex items-center gap-2 px-3 py-2 bg-[#f5f5f6] dark:bg-gray-800 rounded-lg mb-2 animate-fade-in-down">
+    <div className="flex items-center gap-2 px-3 py-2 bg-muted rounded-lg mb-2 animate-fade-in-down">
       <div className={`w-2 h-2 rounded-full ${isPaused ? 'bg-[#ff4080]' : 'bg-[#ff0050] animate-pulse'}`} />
-      <span className={`text-sm ${isPaused ? 'text-[#990030] dark:text-red-400' : 'text-[#3a3a3c] dark:text-gray-200'}`}>
+      <span className={`text-sm ${isPaused ? 'text-red-700 dark:text-red-400' : 'text-foreground'}`}>
         {isPaused ? 'Pausado' : 'Grabando'} • {formatDuration(displaySeconds)}
       </span>
     </div>

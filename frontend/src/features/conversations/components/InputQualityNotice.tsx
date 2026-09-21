@@ -39,8 +39,8 @@ export function InputQualityNotice({ calidad }: { calidad: CalidadInsumo }) {
   if (!partial && !discarded && !lowConfidence) return null;
 
   const tone = lowConfidence
-    ? 'border-amber-500/30 bg-amber-500/5 text-amber-200'
-    : 'border-sky-500/20 bg-sky-500/5 text-sky-100';
+    ? 'border-amber-500/30 bg-amber-500/5 text-amber-800 dark:text-amber-200'
+    : 'border-sky-500/20 bg-sky-500/5 text-sky-900 dark:text-sky-100';
 
   return (
     <div

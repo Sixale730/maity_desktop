@@ -29,9 +29,9 @@ function StatusOverlay({ show, message, sidebarCollapsed }: StatusOverlayProps) 
         }}
       >
         <div className="w-2/3 max-w-[750px] flex justify-center">
-          <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg px-4 py-2 flex items-center space-x-2">
-            <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-[#000000] dark:border-white"></div>
-            <span className="text-sm text-[#3a3a3c] dark:text-gray-200">{message}</span>
+          <div className="bg-card text-card-foreground border border-border rounded-lg shadow-lg px-4 py-2 flex items-center space-x-2">
+            <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-foreground"></div>
+            <span className="text-sm text-foreground">{message}</span>
           </div>
         </div>
       </div>

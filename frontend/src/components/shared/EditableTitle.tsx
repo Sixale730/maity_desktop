@@ -49,7 +49,7 @@ export const EditableTitle: React.FC<EditableTitleProps> = ({
             onFinishEditing();
           }
         }}
-        className="text-2xl font-bold bg-[#f5f5f6] dark:bg-gray-800 border border-[#e7e7e9] dark:border-gray-700 focus:outline-none focus:ring-2 focus:ring-[#485df4] rounded px-3 py-1 w-full resize-none overflow-hidden"
+        className="text-2xl font-bold bg-muted border border-border focus:outline-none focus:ring-2 focus:ring-maity-blue rounded px-3 py-1 w-full resize-none overflow-hidden"
         style={{ minWidth: '300px', minHeight: '40px' }}
         autoFocus
         rows={1}
@@ -58,7 +58,7 @@ export const EditableTitle: React.FC<EditableTitleProps> = ({
   ) : (
     <div className="group flex items-center space-x-2 flex-1">
       <h1
-        className="text-2xl font-bold cursor-pointer hover:bg-[#f5f5f6] dark:hover:bg-gray-800 rounded px-1 flex-1 whitespace-pre-wrap"
+        className="text-2xl font-bold cursor-pointer hover:bg-muted rounded px-1 flex-1 whitespace-pre-wrap"
         onClick={onStartEditing}
       >
         {title}
@@ -66,7 +66,7 @@ export const EditableTitle: React.FC<EditableTitleProps> = ({
       <div className="flex space-x-1">
         <button
           onClick={onStartEditing}
-          className="opacity-0 group-hover:opacity-100 transition-opacity duration-200 p-1 hover:bg-[#e7e7e9] rounded"
+          className="opacity-0 group-hover:opacity-100 transition-opacity duration-200 p-1 hover:bg-muted rounded"
           title="Editar título de sección"
           aria-label="Editar título de sección"
         >
@@ -87,7 +87,7 @@ export const EditableTitle: React.FC<EditableTitleProps> = ({
         {onDelete && (
           <button
             onClick={onDelete}
-            className="opacity-0 group-hover:opacity-100 transition-opacity duration-200 p-1 hover:bg-[#e7e7e9] rounded text-[#cc0040]"
+            className="opacity-0 group-hover:opacity-100 transition-opacity duration-200 p-1 hover:bg-muted rounded text-red-600 dark:text-red-400"
             title="Eliminar sección"
             aria-label="Eliminar sección"
           >

@@ -182,3 +182,23 @@
 .dashboard-v1-scope .minuta-info-section strong { color: var(--card-fg); font-weight: 600; }
 .dashboard-v1-scope .minuta-info-section ul { margin: 6px 0 0 0; padding-left: 22px; list-style: disc outside; }
 .dashboard-v1-scope .minuta-info-section ul li { font-size: .88rem; line-height: 1.5; opacity: .92; margin-bottom: 3px; display: list-item; }
+
+/* --- TEMA CLARO ---
+   Origen: web Sixale730/maity@3ef2914 src/layouts/portal-practice.css (overrides de
+   `.dashboard-v1-scope` bajo `html[data-portal-theme='light']`), copiados aquí porque el desktop
+   no tiene ese layout. Adaptación: `.tu-radar-nota` se suma al override de color (el desktop
+   conserva su regla con `color: #fff`). */
+html[data-portal-theme='light'] .dashboard-v1-scope {
+  --gray: #64748b; --gray-light: #e8edf5; --dark: #1e293b;
+  --green: #15803d; --yellow: #a16207; --red: #b91c1c;
+  --shadow: 0 4px 18px rgb(30 41 59 / .05);
+  --shadow-lg: 0 8px 24px rgb(30 41 59 / .08);
+}
+html[data-portal-theme='light'] .dashboard-v1-scope :is(.resumen-hero, .tu-radar-card) {
+  background: linear-gradient(135deg, #edf4ff, #f3edff);
+  color: hsl(var(--foreground));
+}
+html[data-portal-theme='light'] .dashboard-v1-scope :is(.badge-hint, .patron-cambio strong, .tu-radar-nota) { color: hsl(var(--foreground)); }
+html[data-portal-theme='light'] .dashboard-v1-scope :is(.badge-green, .mejorado) { color: #15803d; }
+html[data-portal-theme='light'] .dashboard-v1-scope .badge-yellow { color: #a16207; }
+html[data-portal-theme='light'] .dashboard-v1-scope :is(.badge-red, .original) { color: #b91c1c; }

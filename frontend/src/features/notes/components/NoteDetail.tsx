@@ -128,7 +128,7 @@ export function NoteDetail({ conversation, onClose }: NoteDetailProps) {
           <Card>
             <CardHeader>
               <CardTitle className="flex items-center gap-2 text-lg">
-                <FileText className="h-5 w-5 text-[#a78bfa]" />
+                <FileText className="h-5 w-5 text-violet-600 dark:text-violet-400" />
                 Minuta de Reunión
               </CardTitle>
             </CardHeader>
@@ -165,7 +165,7 @@ export function NoteDetail({ conversation, onClose }: NoteDetailProps) {
           <Card>
             <CardHeader>
               <CardTitle className="flex items-center gap-2 text-lg">
-                <FileText className="h-5 w-5 text-[#a78bfa]" />
+                <FileText className="h-5 w-5 text-violet-600 dark:text-violet-400" />
                 Minuta de Reunión
               </CardTitle>
             </CardHeader>
@@ -194,7 +194,7 @@ export function NoteDetail({ conversation, onClose }: NoteDetailProps) {
           <Card>
             <CardHeader>
               <CardTitle className="flex items-center gap-2 text-lg">
-                <BookOpen className="h-5 w-5 text-[#a78bfa]" />
+                <BookOpen className="h-5 w-5 text-violet-600 dark:text-violet-400" />
                 Temas
               </CardTitle>
             </CardHeader>
@@ -224,7 +224,7 @@ export function NoteDetail({ conversation, onClose }: NoteDetailProps) {
               )}
               {feedbackV1.temas.temas_sin_cerrar && feedbackV1.temas.temas_sin_cerrar.length > 0 && (
                 <div>
-                  <h5 className="text-sm font-medium text-amber-600 mb-2">Temas sin cerrar</h5>
+                  <h5 className="text-sm font-medium text-amber-600 dark:text-amber-400 mb-2">Temas sin cerrar</h5>
                   <ul className="space-y-1">
                     {feedbackV1.temas.temas_sin_cerrar.map((tema, i) => (
                       <li key={i} className="text-sm text-muted-foreground">{extractText(tema)}</li>
@@ -240,7 +240,7 @@ export function NoteDetail({ conversation, onClose }: NoteDetailProps) {
         {minutaData?.acciones_incompletas && minutaData.acciones_incompletas.length > 0 && (
           <Card>
             <CardHeader>
-              <CardTitle className="flex items-center gap-2 text-lg text-amber-600">
+              <CardTitle className="flex items-center gap-2 text-lg text-amber-600 dark:text-amber-400">
                 <BookOpen className="h-5 w-5" />
                 Temas sin cerrar
               </CardTitle>
@@ -250,7 +250,7 @@ export function NoteDetail({ conversation, onClose }: NoteDetailProps) {
                 {minutaData.acciones_incompletas.map((item, i) => (
                   <li key={i} className="text-sm text-muted-foreground">
                     {item.descripcion || item.compromiso || item.cita}
-                    {item.que_falta && <span className="text-amber-600"> — {item.que_falta}</span>}
+                    {item.que_falta && <span className="text-amber-600 dark:text-amber-400"> — {item.que_falta}</span>}
                   </li>
                 ))}
               </ul>
@@ -263,7 +263,7 @@ export function NoteDetail({ conversation, onClose }: NoteDetailProps) {
           <Card>
             <CardHeader>
               <CardTitle className="flex items-center gap-2 text-lg">
-                <ListChecks className="h-5 w-5 text-[#a78bfa]" />
+                <ListChecks className="h-5 w-5 text-violet-600 dark:text-violet-400" />
                 Tareas
               </CardTitle>
             </CardHeader>

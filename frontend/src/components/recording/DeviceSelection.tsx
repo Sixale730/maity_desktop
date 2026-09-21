@@ -214,9 +214,9 @@ export function DeviceSelection({ selectedDevices, onDeviceChange, disabled = fa
     return (
       <div className="p-4 space-y-4">
         <div className="animate-pulse">
-          <div className="h-4 bg-[#d0d0d3] dark:bg-gray-600 rounded w-1/3 mb-4"></div>
-          <div className="h-10 bg-[#d0d0d3] dark:bg-gray-600 rounded mb-3"></div>
-          <div className="h-10 bg-[#d0d0d3] dark:bg-gray-600 rounded"></div>
+          <div className="h-4 bg-muted-foreground/20 rounded w-1/3 mb-4"></div>
+          <div className="h-10 bg-muted-foreground/20 rounded mb-3"></div>
+          <div className="h-10 bg-muted-foreground/20 rounded"></div>
         </div>
       </div>
     );
@@ -225,7 +225,7 @@ export function DeviceSelection({ selectedDevices, onDeviceChange, disabled = fa
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <h4 className="text-sm font-medium text-[#000000] dark:text-white">Dispositivos de Audio</h4>
+        <h4 className="text-sm font-medium text-foreground">Dispositivos de Audio</h4>
         <div className="flex items-center space-x-2">
           {/* TODO: Monitoring */}
           {/* <button */}
@@ -243,7 +243,7 @@ export function DeviceSelection({ selectedDevices, onDeviceChange, disabled = fa
           <button
             onClick={handleRefresh}
             disabled={refreshing || disabled}
-            className="h-8 w-8 p-0 inline-flex items-center justify-center rounded-md text-sm font-medium transition-colors hover:bg-[#e7e7e9] dark:hover:bg-gray-700 disabled:pointer-events-none disabled:opacity-50 dark:text-gray-300"
+            className="h-8 w-8 p-0 inline-flex items-center justify-center rounded-md text-sm font-medium transition-colors text-muted-foreground hover:text-foreground hover:bg-muted disabled:pointer-events-none disabled:opacity-50"
             aria-label="Actualizar dispositivos de audio"
           >
             <RefreshCw className={`h-4 w-4 ${refreshing ? 'animate-spin' : ''}`} />
@@ -252,7 +252,7 @@ export function DeviceSelection({ selectedDevices, onDeviceChange, disabled = fa
       </div>
 
       {error && (
-        <div className="p-3 text-sm text-[#990030] dark:text-red-400 bg-[#fff0f5] dark:bg-red-900/30 border border-[#ffc0d6] dark:border-red-700 rounded-md">
+        <div className="p-3 text-sm text-destructive bg-destructive/10 border border-destructive/30 rounded-md">
           {error}
         </div>
       )}
@@ -261,8 +261,8 @@ export function DeviceSelection({ selectedDevices, onDeviceChange, disabled = fa
         {/* Microphone Selection */}
         <div className="space-y-2">
           <div className="flex items-center gap-2">
-            <Mic className="h-4 w-4 text-[#4a4a4c] dark:text-gray-300" />
-            <Label htmlFor="mic-selection" className="text-sm font-medium text-[#3a3a3c] dark:text-gray-200">
+            <Mic className="h-4 w-4 text-muted-foreground" />
+            <Label htmlFor="mic-selection" className="text-sm font-medium text-foreground">
               Micrófono
             </Label>
           </div>
@@ -290,19 +290,19 @@ export function DeviceSelection({ selectedDevices, onDeviceChange, disabled = fa
             </SelectContent>
           </Select>
           {inputDevices.length === 0 && (
-            <p className="text-xs text-[#6a6a6d] dark:text-gray-400">No se encontraron dispositivos de micrófono</p>
+            <p className="text-xs text-muted-foreground">No se encontraron dispositivos de micrófono</p>
           )}
 
           {/* Audio Level Meters for Input Devices */}
           {showLevels && inputDevices.length > 0 && (
-            <div className="space-y-2 pt-2 border-t border-gray-100">
-              <p className="text-xs text-[#4a4a4c] dark:text-gray-300 font-medium">Niveles del Micrófono:</p>
+            <div className="space-y-2 pt-2 border-t border-border">
+              <p className="text-xs text-muted-foreground font-medium">Niveles del Micrófono:</p>
               {inputDevices.map((device) => {
                 const levelData = audioLevels.get(device.name);
                 return (
                   <div key={`level-${device.name}`} className="space-y-1">
                     <div className="flex items-center justify-between">
-                      <span className="text-xs text-[#4a4a4c] dark:text-gray-300 truncate max-w-[200px]">
+                      <span className="text-xs text-muted-foreground truncate max-w-[200px]">
                         {device.name}
                       </span>
                       {levelData && (
@@ -332,8 +332,8 @@ export function DeviceSelection({ selectedDevices, onDeviceChange, disabled = fa
         {/* System Audio Selection */}
         <div className="space-y-2">
           <div className="flex items-center gap-2">
-            <Speaker className="h-4 w-4 text-[#4a4a4c] dark:text-gray-300" />
-            <Label htmlFor="system-selection" className="text-sm font-medium text-[#3a3a3c] dark:text-gray-200">
+            <Speaker className="h-4 w-4 text-muted-foreground" />
+            <Label htmlFor="system-selection" className="text-sm font-medium text-foreground">
               Audio del Sistema
             </Label>
           </div>
@@ -360,12 +360,12 @@ export function DeviceSelection({ selectedDevices, onDeviceChange, disabled = fa
           </Select>
 
           {outputDevices.length === 0 && (
-            <p className="text-xs text-[#6a6a6d] dark:text-gray-400">No se encontraron dispositivos de audio del sistema</p>
+            <p className="text-xs text-muted-foreground">No se encontraron dispositivos de audio del sistema</p>
           )}
 
           {/* Backend Selection - available on all platforms */}
           {!disabled && (
-            <div className="pt-3 border-t border-gray-100">
+            <div className="pt-3 border-t border-border">
               <AudioBackendSelector disabled={disabled} />
             </div>
           )}
@@ -373,7 +373,7 @@ export function DeviceSelection({ selectedDevices, onDeviceChange, disabled = fa
       </div>
 
       {/* Info text */}
-      <div className="text-xs text-[#6a6a6d] dark:text-gray-400 space-y-1">
+      <div className="text-xs text-muted-foreground space-y-1">
         <p>• <strong>Micrófono:</strong> Graba tu voz y sonido ambiente</p>
         <p>• <strong>Audio del Sistema:</strong> Graba audio de la computadora (música, llamadas, etc.)</p>
         {isMonitoring && (

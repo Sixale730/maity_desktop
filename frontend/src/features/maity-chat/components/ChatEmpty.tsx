@@ -1,4 +1,8 @@
+// Origen: web Sixale730/maity src/features/maity-chat/components (commit 3ef2914).
+// Adaptaciones desktop: MaityLogo es el shim de src/shared/components/MaityLogo.tsx
+// (variant "symbol" -> /logo-collapsed.png, size md = 28px); resto tal cual.
 import { useLanguage } from '@/contexts/LanguageContext';
+import { MaityLogo } from '@/shared/components/MaityLogo';
 import { EntryStarterCard } from './EntryStarterCard';
 import { OpenLoopBanner } from './OpenLoopBanner';
 import type { ChatThread, EntryType } from '../types';
@@ -82,34 +86,39 @@ export function ChatEmpty({ onPickStarter, openThreads, onContinueOpen }: ChatEm
   ];
 
   return (
-    <div
-      className="flex-1 min-h-0 overflow-y-auto flex justify-center"
-      style={{ padding: '24px 56px 0' }}
-    >
-      <div className="w-full" style={{ maxWidth: 760 }}>
-        {/* Hero */}
-        <h1
-          className="font-geist font-semibold text-foreground"
-          style={{
-            margin: 0,
-            fontSize: 38,
-            lineHeight: 1.05,
-            letterSpacing: '-1.4px',
-            marginBottom: 10,
-          }}
-        >
-          {t('chat.empty_hero_l1')}
-          <br />
-          <span
-            className="text-foreground/60"
-            style={{ fontStyle: 'italic', fontWeight: 500 }}
+    <div className="flex-1 min-h-0 overflow-y-auto px-10 pt-8 pb-4">
+      <div className="max-w-[760px] w-full mx-auto">
+        {/* Marca de Maity en la misma fila que el hero (no encima): así hero +
+            4 tarjetas caben sobre el composer sin scroll. En móvil se oculta
+            para no robarle ancho al título. */}
+        <div className="flex items-center gap-4">
+          <div className="hidden sm:flex items-center justify-center w-14 h-14 rounded-2xl bg-[rgba(72,93,244,0.10)] flex-shrink-0">
+            <MaityLogo variant="symbol" size="md" className="!min-w-0" />
+          </div>
+          {/* Hero */}
+          <h1
+            className="font-geist font-semibold text-foreground min-w-0"
+            style={{
+              margin: 0,
+              fontSize: 38,
+              lineHeight: 1.05,
+              letterSpacing: '-1.4px',
+            }}
           >
-            {t('chat.empty_hero_l2')}
-          </span>
-        </h1>
+            {t('chat.empty_hero_l1')}
+            <br />
+            <span
+              className="text-foreground/60"
+              style={{ fontStyle: 'italic', fontWeight: 500 }}
+            >
+              {t('chat.empty_hero_l2')}
+            </span>
+          </h1>
+        </div>
+        {/* Alineado con el texto del título (56px de logo + 16px de gap). */}
         <p
-          className="text-foreground/60"
-          style={{ fontSize: 15.5, lineHeight: 1.6, maxWidth: 540, margin: 0 }}
+          className="text-foreground/60 sm:pl-[72px]"
+          style={{ fontSize: 15.5, lineHeight: 1.6, maxWidth: 612, margin: 0, marginTop: 10 }}
         >
           {t('chat.empty_hero_sub')}
         </p>

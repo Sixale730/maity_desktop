@@ -255,7 +255,7 @@ export function PipelineSelector() {
               className={`w-full text-left rounded-xl border p-4 transition-all duration-150 ${
                 isActive
                   ? 'border-primary bg-primary/5 ring-1 ring-primary'
-                  : 'border-border bg-card hover:border-muted-foreground/40 hover:bg-accent/30'
+                  : 'border-border bg-card hover:border-muted-foreground/40 hover:bg-muted/60'
               } ${saving ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer'}`}
             >
               <div className="flex items-start gap-3">
@@ -330,7 +330,7 @@ export function PipelineSelector() {
         {/* Error */}
         {setupStep === 'error' && (
           <div className="space-y-2">
-            <p className="text-xs text-red-400">{setupMessage}</p>
+            <p className="text-xs text-red-600 dark:text-red-400">{setupMessage}</p>
             <button
               onClick={() => setSetupStep('idle')}
               className="text-xs text-primary hover:text-primary/80 transition-colors"

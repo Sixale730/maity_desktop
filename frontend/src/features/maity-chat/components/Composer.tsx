@@ -179,7 +179,7 @@ export const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function 
                 fontSize: 11.5,
                 background: isOpenLens ? 'transparent' : `${accent}14`,
                 border: `1px solid ${isOpenLens ? 'hsl(var(--border))' : `${accent}44`}`,
-                color: isOpenLens ? 'rgba(241,241,245,0.62)' : accent,
+                color: isOpenLens ? 'hsl(var(--foreground) / 0.62)' : accent,
               }}
               title={t('chat.lens_header')}
             >

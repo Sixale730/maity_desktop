@@ -90,7 +90,7 @@ export function ChatDropZone({ onFiles, children }: ChatDropZoneProps) {
             className="flex flex-col items-center gap-3 rounded-2xl px-8 py-7"
             style={{
               border: '2px dashed rgba(72,93,244,0.6)',
-              background: 'rgba(20,20,28,0.7)',
+              background: 'hsl(var(--card) / 0.85)',
             }}
           >
             <FilePlus2 size={28} strokeWidth={1.7} className="text-maity-blue" />
