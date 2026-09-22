@@ -82,14 +82,34 @@ impl BatchQueueRepository {
         pool: &SqlitePool,
         user_id: &str,
     ) -> Result<Option<BatchQueueJob>, SqlxError> {
-        sqlx::query_as::<_, BatchQueueJob>(
+        Self::next_pending_excluding(pool, user_id, &[]).await
+    }
+
+    /// Igual que `next_pending`, saltando `exclude`: los jobs que ya fallaron en
+    /// la pasada actual del planner. Sin esto, `fail` los devolvía a `pending` y
+    /// el siguiente `next_pending` los tomaba en el acto — los 5 intentos se
+    /// quemaban en ~1 s. Así el reintento espera a la siguiente pasada (tick).
+    pub async fn next_pending_excluding(
+        pool: &SqlitePool,
+        user_id: &str,
+        exclude: &[i64],
+    ) -> Result<Option<BatchQueueJob>, SqlxError> {
+        let not_in = if exclude.is_empty() {
+            String::new()
+        } else {
+            format!(" AND id NOT IN ({})", vec!["?"; exclude.len()].join(", "))
+        };
+        let sql = format!(
             "SELECT * FROM batch_transcription_queue
-             WHERE status = 'pending' AND user_id = ?
+             WHERE status = 'pending' AND user_id = ?{}
              ORDER BY id ASC LIMIT 1",
-        )
-        .bind(user_id)
-        .fetch_optional(pool)
-        .await
+            not_in
+        );
+        let mut q = sqlx::query_as::<_, BatchQueueJob>(&sql).bind(user_id);
+        for id in exclude {
+            q = q.bind(id);
+        }
+        q.fetch_optional(pool).await
     }
 
     /// Claim del job. `AND status = 'pending'` es el MUTEX — nunca relajarlo.
@@ -544,6 +564,22 @@ mod tests {
         let next = BatchQueueRepository::next_pending(&pool, TEST_USER).await.unwrap().unwrap();
         assert_eq!(next.id, a, "FIFO: el más viejo primero");
         assert_eq!(BatchQueueRepository::pending_count(&pool, TEST_USER).await.unwrap(), 2);
+    }
+
+    #[tokio::test]
+    async fn next_pending_excluding_salta_los_ya_fallidos_en_la_pasada() {
+        let pool = setup_pool().await;
+        let a = insert_recording(&pool, "C:/rec/seg1").await;
+        let b = insert_recording(&pool, "C:/rec/seg2").await;
+        BatchQueueRepository::mark_pending(&pool, "C:/rec/seg1").await.unwrap();
+        BatchQueueRepository::mark_pending(&pool, "C:/rec/seg2").await.unwrap();
+
+        let next = BatchQueueRepository::next_pending_excluding(&pool, TEST_USER, &[a]).await.unwrap().unwrap();
+        assert_eq!(next.id, b, "el excluido se salta aunque sea el más viejo");
+        assert!(BatchQueueRepository::next_pending_excluding(&pool, TEST_USER, &[a, b])
+            .await
+            .unwrap()
+            .is_none());
     }
 
     // ── F4: list_active / retry_failed ──────────────────────────────────

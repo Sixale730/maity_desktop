@@ -405,8 +405,12 @@ async fn process_queue<R: Runtime>(app: &AppHandle<R>) {
     };
 
     let mut processed_any = false;
+    // Jobs que fallaron en ESTA pasada: su reintento espera a la siguiente
+    // (tick/arranque) en vez de re-tomarse en el acto y quemar los 5 intentos
+    // en un segundo contra el mismo fallo.
+    let mut failed_this_pass: Vec<i64> = Vec::new();
     loop {
-        let job = match BatchQueueRepository::next_pending(&pool, &user).await {
+        let job = match BatchQueueRepository::next_pending_excluding(&pool, &user, &failed_this_pass).await {
             Ok(Some(j)) => j,
             Ok(None) => break,
             Err(e) => {
@@ -465,6 +469,7 @@ async fn process_queue<R: Runtime>(app: &AppHandle<R>) {
                     }
                     SegmentOutcome::Failed => {
                         let _ = BatchQueueRepository::fail(&pool, job.id, "finalize_failed", MAX_ATTEMPTS).await;
+                        failed_this_pass.push(job.id);
                         let terminal = job.attempts + 1 >= MAX_ATTEMPTS;
                         emit_status(app, &job.folder_path, None, if terminal { "failed" } else { "pending" }, Some(&job.trigger_kind));
                         emit_batch_job(app, &job.trigger_kind, recovered, TelemetryStatus::Error, job.attempts + 1, None, "finalize_failed").await;
@@ -474,6 +479,7 @@ async fn process_queue<R: Runtime>(app: &AppHandle<R>) {
             Err(e) => {
                 warn!("[batch-planner] job {} falló: {}", job.id, e);
                 let _ = BatchQueueRepository::fail(&pool, job.id, &e, MAX_ATTEMPTS).await;
+                failed_this_pass.push(job.id);
                 let terminal = job.attempts + 1 >= MAX_ATTEMPTS;
                 emit_status(app, &job.folder_path, None, if terminal { "failed" } else { "pending" }, Some(&job.trigger_kind));
                 emit_batch_job(app, &job.trigger_kind, recovered, TelemetryStatus::Error, job.attempts + 1, None, "transcribe_failed").await;
@@ -519,6 +525,8 @@ async fn finalize_job<R: Runtime>(
         started_at,
         trigger,
         enforce,
+        // Lote: 0 segmentos = audio sin voz, no un fallo (lo escribió el transcriptor).
+        true,
     )
     .await
 }

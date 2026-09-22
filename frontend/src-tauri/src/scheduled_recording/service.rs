@@ -844,7 +844,7 @@ async fn close_scheduled<R: Runtime>(
 
     // 3. Guardado LOCAL headless + outbox cloud (mismo camino que la rotación).
     let outcome = match folder.as_deref() {
-        Some(f) => finalize_segment_native(app, f, &closing_name, owned_since, "close", true).await,
+        Some(f) => finalize_segment_native(app, f, &closing_name, owned_since, "close", true, false).await,
         None => {
             warn!("[scheduled] cierre: sin folder del segmento; no se guarda a DB");
             SegmentOutcome::Failed
@@ -966,7 +966,7 @@ async fn rotate_scheduled<R: Runtime>(
     } else {
     // 3. Guardado LOCAL headless del segmento cerrado (no depende del buffer del frontend).
     let outcome = match folder.as_deref() {
-        Some(f) => finalize_segment_native(app, f, &closing_name, owned_since, "rotation", true).await,
+        Some(f) => finalize_segment_native(app, f, &closing_name, owned_since, "rotation", true, false).await,
         None => {
             warn!("[scheduled] rotación: sin folder del segmento; no se guarda a DB");
             SegmentOutcome::Failed
@@ -1126,6 +1126,7 @@ pub(crate) enum SegmentOutcome {
 /// `MIN_SEGMENT_WORDS`; las grabaciones MANUALES nunca descartan por contenido
 /// (paridad con el flujo streaming, donde el guardado manual no tiene umbral).
 /// El planner de lote invoca esta función con el flag según `trigger_kind`.
+/// `empty_is_discard`: SOLO el planner de lote lo pasa en `true` (ver el chequeo de 0 segmentos).
 pub(crate) async fn finalize_segment_native<R: Runtime>(
     app: &AppHandle<R>,
     folder_path: &str,
@@ -1133,6 +1134,7 @@ pub(crate) async fn finalize_segment_native<R: Runtime>(
     segment_started_at: NaiveDateTime,
     trigger: &'static str,
     enforce_min_words: bool,
+    empty_is_discard: bool,
 ) -> SegmentOutcome {
     let json_path = std::path::Path::new(folder_path).join("transcripts.json");
     let content = match tokio::fs::read_to_string(&json_path).await {
@@ -1158,7 +1160,15 @@ pub(crate) async fn finalize_segment_native<R: Runtime>(
     // vacío porque falló la escritura a disco mientras el buffer de React sí tiene contenido, y
     // el fallback legacy del webview es justo la red de seguridad para ese caso. El descarte
     // deliberado es SOLO el del umbral de palabras, más abajo.
-    if raw_segments.is_empty() {
+    //
+    // Excepción: el modo LOTE (`empty_is_discard`). Ahí `transcripts.json` lo escribe el propio
+    // transcriptor tras leer el audio, no hay buffer de React detrás, así que 0 segmentos = el
+    // audio no tenía voz. Tratarlo como `Failed` quemaba los 5 intentos del planner y dejaba el
+    // corte en "No se pudo transcribir" para siempre (cortes de 8-12 s, sep-2026). Con el flag,
+    // cae al umbral de palabras de abajo (0 < MIN_SEGMENT_WORDS) y se descarta como cualquier
+    // segmento pobre. Solo aplica si además `enforce_min_words` (jornada; manual nunca descarta).
+    let empty_is_discard = empty_is_discard && enforce_min_words;
+    if raw_segments.is_empty() && !empty_is_discard {
         info!("[scheduled] segmento sin transcripts; no se guarda a DB");
         return SegmentOutcome::Failed;
     }
@@ -1185,7 +1195,7 @@ pub(crate) async fn finalize_segment_native<R: Runtime>(
         );
     }
 
-    if raws.is_empty() {
+    if raws.is_empty() && total_raw > 0 {
         warn!("[scheduled] segmento con transcripts inválidos; no se guarda a DB");
         return SegmentOutcome::Failed;
     }
