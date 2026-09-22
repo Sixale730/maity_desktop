@@ -7,11 +7,12 @@
  * Dos canales (ver `UpdateInfo.channel`):
  * - `github`: instalación NSIS → `tauri-plugin-updater` contra `latest.json` de
  *   GitHub Releases; descarga + instala + relaunch.
- * - `store`: instalación MSIX (Microsoft Store) → SOLO avisa. Compara
- *   `getVersion()` contra `maity.system_config['desktop_store_latest_version']`
- *   y, si hay versión nueva, el `UpdateDialog` manda al usuario a la Store
- *   (deep link) y le ofrece cerrar Maity para que la Store aplique el paquete.
- *   Nunca descarga nada: el updater de GitHub dentro del MSIX instalaría el
+ * - `store`: instalación MSIX (Microsoft Store) → pregunta a la Store vía
+ *   StoreContext (`store_check_updates`, Rust) y el `UpdateDialog` instala con el
+ *   diálogo de la propia Store (`store_install_updates`). Si la API falla, respaldo:
+ *   `getVersion()` contra `maity.system_config['desktop_store_latest_version']` y
+ *   el diálogo manda a la Store (deep link) / ofrece cerrar Maity.
+ *   El updater de GitHub nunca corre aquí: dentro del MSIX instalaría el
  *   setup.exe NSIS como segunda copia Win32 (issue #71).
  */
 
@@ -21,7 +22,7 @@ import { logger } from '@/lib/logger';
 import { fileLogger } from '@/lib/fileLogger';
 import { relaunch } from '@tauri-apps/plugin-process';
 import { getVersion } from '@tauri-apps/api/app';
-import { fetchStoreLatestVersion } from '@/lib/storeChannel';
+import { fetchStoreLatestVersion, type StoreUpdateCheck } from '@/lib/storeChannel';
 import { isNewerVersion, parseVersion } from '@/lib/versionCompare';
 
 export type UpdateChannel = 'github' | 'store';
@@ -29,8 +30,14 @@ export type UpdateChannel = 'github' | 'store';
 export interface UpdateInfo {
   available: boolean;
   currentVersion: string;
-  /** Canal por el que llegaría la actualización. `store` = solo aviso, sin descarga. */
+  /** Canal por el que llegaría la actualización. `store` = la instala la Microsoft Store. */
   channel?: UpdateChannel;
+  /**
+   * Solo canal `store`: de dónde salió el aviso. `api` = StoreContext (la Store confirmó
+   * el update → se puede instalar desde el diálogo); `config` = respaldo por la fila de
+   * `system_config` (la API falló → solo "Abrir la Store" / "Cerrar Maity").
+   */
+  storeSource?: 'api' | 'config';
   version?: string;
   date?: string;
   body?: string;
@@ -198,11 +205,35 @@ export class UpdateService {
   }
 
   /**
-   * Canal Store: compara la versión instalada contra la última publicada en la
-   * Store (`system_config`). No descarga nada. Lanza en errores de red/RLS
-   * (los maneja el catch de `checkForUpdates`, igual que la rama GitHub).
+   * Canal Store: primero le pregunta a la propia Store (StoreContext vía
+   * `store_check_updates`). Si ese comando falla, cae a comparar contra la
+   * última versión registrada en `system_config` (bumpeo manual al publicar;
+   * se olvidó de 0.2.58 a 0.2.61 — por eso ya no es la fuente primaria).
+   * Lanza en errores de red/RLS del respaldo (los maneja el catch de
+   * `checkForUpdates`, igual que la rama GitHub).
    */
   private async checkStoreChannel(currentVersion: string, force: boolean): Promise<UpdateInfo> {
+    try {
+      const api = await invoke<StoreUpdateCheck>('store_check_updates');
+      this.lastCheckTime = Date.now();
+      void fileLogger.info('updater_service', 'store-api-result', { currentVersion, ...api, force });
+      if (api.available) {
+        logger.info(`[updateService] Store (API): update disponible ${api.version ?? '?'} (current: ${currentVersion})`);
+        return {
+          available: true,
+          currentVersion,
+          channel: 'store',
+          storeSource: 'api',
+          version: api.version ?? undefined,
+        };
+      }
+      return { available: false, currentVersion, channel: 'store' };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      logger.warn(`[updateService] Store (API) falló, uso system_config: ${message}`);
+      void fileLogger.warn('updater_service', 'store-api-failed', { message, force });
+    }
+
     logger.info(`[updateService] Canal Store (MSIX): comparando ${currentVersion} contra system_config (force: ${force})`);
     const lookup = await fetchStoreLatestVersion();
 
@@ -232,7 +263,7 @@ export class UpdateService {
     if (isNewerVersion(lookup.version, currentVersion)) {
       logger.info(`[updateService] Store update available: ${lookup.version} (current: ${currentVersion})`);
       void fileLogger.info('updater_service', 'store-update-available', { currentVersion, remote: lookup.version, force });
-      return { available: true, currentVersion, channel: 'store', version: lookup.version };
+      return { available: true, currentVersion, channel: 'store', storeSource: 'config', version: lookup.version };
     }
 
     logger.info(`[updateService] Store: ${currentVersion} ya es la última publicada (remota: ${lookup.version})`);

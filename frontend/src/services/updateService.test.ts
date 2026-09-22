@@ -157,8 +157,13 @@ describe('UpdateService — logging visible y resultados', () => {
       // TAMBIEN `is_mac_app_store_build` respondiera true, y el gate de macOS
       // (que sale antes de resolver canal) se comeria estos casos. Un mock que
       // responde true a todo no puede distinguir que gate se disparo.
+      // Estos casos cubren el RESPALDO por system_config: `store_check_updates`
+      // (StoreContext) falla, como en un MSIX de prueba `Developer`. La ruta
+      // primaria (API) tiene su propio describe abajo.
       invokeMock.mockImplementation((cmd: string) =>
-        Promise.resolve(cmd === 'is_running_under_package_identity'),
+        cmd === 'store_check_updates'
+          ? Promise.reject('StoreContext no disponible')
+          : Promise.resolve(cmd === 'is_running_under_package_identity'),
       );
     });
 
@@ -173,6 +178,7 @@ describe('UpdateService — logging visible y resultados', () => {
         available: true,
         currentVersion: '0.2.35',
         channel: 'store',
+        storeSource: 'config',
         version: '0.2.36',
       });
       expect(fileLoggerMock.info).toHaveBeenCalledWith(
@@ -247,6 +253,62 @@ describe('UpdateService — logging visible y resultados', () => {
       );
       // Un fallo no envenena el cooldown: el siguiente intento puede reintentar.
       expect(service.wasCheckedRecently()).toBe(false);
+    });
+  });
+
+  describe('instalación desde la Microsoft Store — API StoreContext (store_check_updates)', () => {
+    // Ruta primaria desde 2026-09-22: la Store misma dice si hay update. La fila
+    // de system_config se bumpeaba a mano y se olvidó de 0.2.58 a 0.2.61.
+    const mockStoreApi = (result: unknown) => {
+      invokeMock.mockImplementation((cmd: string) => {
+        if (cmd === 'store_check_updates') return Promise.resolve(result);
+        return Promise.resolve(cmd === 'is_running_under_package_identity');
+      });
+    };
+
+    it('con update confirmado por la Store: avisa con storeSource api y NO consulta system_config', async () => {
+      mockStoreApi({ available: true, version: '0.2.36', mandatory: false });
+
+      const result = await service.checkForUpdates(true);
+
+      expect(result).toEqual({
+        available: true,
+        currentVersion: '0.2.35',
+        channel: 'store',
+        storeSource: 'api',
+        version: '0.2.36',
+      });
+      expect(fetchStoreMock).not.toHaveBeenCalled();
+      expect(checkMock).not.toHaveBeenCalled();
+      expect(service.wasCheckedRecently()).toBe(true);
+    });
+
+    it('la Store dice que no hay update: no avisa aunque system_config tenga una versión mayor', async () => {
+      mockStoreApi({ available: false, version: null, mandatory: false });
+      fetchStoreMock.mockResolvedValue({ status: 'ok', version: '9.9.9' });
+
+      const result = await service.checkForUpdates(true);
+
+      expect(result).toEqual({ available: false, currentVersion: '0.2.35', channel: 'store' });
+      expect(fetchStoreMock).not.toHaveBeenCalled();
+    });
+
+    it('si el comando falla, cae a system_config y loguea store-api-failed', async () => {
+      invokeMock.mockImplementation((cmd: string) =>
+        cmd === 'store_check_updates'
+          ? Promise.reject('GetAppAndOptionalStorePackageUpdatesAsync falló')
+          : Promise.resolve(cmd === 'is_running_under_package_identity'),
+      );
+      fetchStoreMock.mockResolvedValue({ status: 'ok', version: '0.2.36' });
+
+      const result = await service.checkForUpdates(true);
+
+      expect(result).toMatchObject({ available: true, storeSource: 'config', version: '0.2.36' });
+      expect(fileLoggerMock.warn).toHaveBeenCalledWith(
+        'updater_service',
+        'store-api-failed',
+        expect.objectContaining({ message: 'GetAppAndOptionalStorePackageUpdatesAsync falló' }),
+      );
     });
   });
 

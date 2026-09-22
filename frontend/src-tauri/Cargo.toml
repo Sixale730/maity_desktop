@@ -290,6 +290,9 @@ windows = { version = "0.58", features = [
     "ApplicationModel_Activation",  # IActivatedEventArgs, ActivationKind
     "Foundation",                   # IAsyncOperation<T>::get()
     "Foundation_Collections",       # gating de métodos de AppInstance (IVectorView)
+    # Updates del canal Store vía StoreContext (store_update.rs). IInitializeWithWindow
+    # ya llega por Win32_UI_Shell (implícito en Win32_UI_Shell_PropertiesSystem).
+    "Services_Store",
 ] }
 # Lectura/escritura del registro de Windows para detectar y limpiar la instalación
 # rival (NSIS de descarga directa) cuando Maity corre bajo MSIX/Store. Ver rival_install.rs.

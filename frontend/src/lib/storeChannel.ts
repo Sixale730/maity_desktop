@@ -33,6 +33,25 @@ export const STORE_UPDATES_DEEP_LINK = 'ms-windows-store://downloadsandupdates';
 /** Clave en `maity.system_config` con la última versión publicada en la Store. */
 export const STORE_LATEST_VERSION_KEY = 'desktop_store_latest_version';
 
+/**
+ * Respuesta de `store_check_updates` (Rust, `store_update.rs`): la Store misma dice
+ * si hay versión nueva para ESTA instalación (StoreContext). Es la fuente primaria;
+ * la fila de `system_config` queda como respaldo si el comando falla.
+ */
+export interface StoreUpdateCheck {
+  available: boolean;
+  version: string | null;
+  mandatory: boolean;
+}
+
+/** Respuesta de `store_install_updates` (Rust). `completed` casi nunca llega: Windows cierra Maity. */
+export type StoreInstallOutcome =
+  | { kind: 'completed' }
+  | { kind: 'canceled' }
+  | { kind: 'noUpdates' }
+  | { kind: 'recordingActive' }
+  | { kind: 'error'; detail: string };
+
 export type StoreVersionLookup =
   /** Sin sesión Supabase: la tabla exige `authenticated`. No es error — reintentar tras login. */
   | { status: 'no-session' }

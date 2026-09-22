@@ -227,7 +227,7 @@ Completar TODAS las secciones (todas en verde para poder Submit):
 
 Cuando Partner Center marque la submission como **publicada** ("En la Store"), no al enviarla:
 
-1. **Bumpear `desktop_store_latest_version`** con el SQL de "Go-live" (abajo). Sin este paso la app NUNCA avisa: el aviso y el botón "Buscar" de Configuración → Acerca de comparan contra esa fila, no contra la Store. Incidente 2026-09-22: la fila quedó en 0.2.57 desde el seed y 0.2.58-0.2.61 salieron sin aviso (log: `store-up-to-date {"remote":"0.2.57"}`).
+1. **Bumpear `desktop_store_latest_version`** con el SQL de "Go-live" (abajo). Desde la versión que trae `store_update.rs` (StoreContext), la app le pregunta a la Store directamente y esta fila es el **respaldo** si la API falla. Pero las versiones ≤0.2.61 SOLO miran la fila: sin este paso esas instalaciones nunca avisan. Incidente 2026-09-22: la fila quedó en 0.2.57 desde el seed y 0.2.58-0.2.61 salieron sin aviso (log: `store-up-to-date {"remote":"0.2.57"}`).
 2. Verificar: `select value from maity.system_config where key='desktop_store_latest_version'`.
 
 ⚠️ **En la PC de desarrollo, el MSIX de prueba del paso 6.5 queda `SignatureKind: Developer`** (`Get-AppxPackage Sixale.Maity | Select Version, SignatureKind`). La Store solo actualiza paquetes que ella instaló (`SignatureKind: Store`): con un paquete Developer instalado, "Obtener actualizaciones" nunca ofrece la versión nueva. Tras probar, quitarlo e instalar desde la Store (`ms-windows-store://pdp/?ProductId=9NTKJ5X6230F`).

@@ -49,7 +49,7 @@ Los post-mortems y reglas detalladas viven en `docs/`. **Antes de modificar cód
 - **Las migraciones de DB deben ser ADITIVAS** (version-skew dentro de cada canal; la Store va días atrás por certificación). Un `DROP`/`RENAME` rompe versiones viejas y el build compila verde igual.
 - **Todo `.dll` nuevo del que dependa un binario debe viajar dentro del paquete** (vcredist app-local vía `stage-vcredist.js`; excepción: `api-ms-win-crt-*.dll`, UCRT).
 - Store y descarga directa **NO comparten DB ni modelos** (el MSIX instalado redirige AppData). La doble instalación se mitiga con `rival_install.rs` (diálogo forzado; orquestador `.cmd` con `CREATE_BREAKAWAY_FROM_JOB`, **nunca** `DETACHED_PROCESS`).
-- **Nunca usar el `latest.json` de GitHub como referencia del canal Store**; el aviso de actualización bajo MSIX compara contra `maity.system_config['desktop_store_latest_version']`.
+- **Nunca usar el `latest.json` de GitHub como referencia del canal Store**. El aviso y la instalación de updates bajo MSIX usan la API de la Store (`StoreContext`, `store_update.rs`). La fila `maity.system_config['desktop_store_latest_version']` es solo el respaldo si la API falla, y se sigue bumpeando al publicar.
 
 ## Comandos Esenciales de Desarrollo
 

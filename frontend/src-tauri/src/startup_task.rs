@@ -42,8 +42,9 @@ pub fn launched_by_startup_task() -> bool {
 
 /// Ejecuta `f` en un hilo bloqueante con COM MTA inicializado. Los `.get()` de
 /// `IAsyncOperation` bloquean (y no deben esperarse en STA), de ahí el spawn_blocking.
+/// También lo usa `store_update.rs` (StoreContext).
 #[cfg(target_os = "windows")]
-async fn with_mta<T, F>(f: F) -> Result<T, String>
+pub(crate) async fn with_mta<T, F>(f: F) -> Result<T, String>
 where
     T: Send + 'static,
     F: FnOnce() -> Result<T, String> + Send + 'static,

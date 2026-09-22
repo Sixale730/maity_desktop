@@ -18,7 +18,7 @@ import { toast } from 'sonner';
 import { logger } from '@/lib/logger';
 import { fileLogger } from '@/lib/fileLogger';
 import { openExternalUrl } from '@/lib/planLinks';
-import { STORE_UPDATES_DEEP_LINK } from '@/lib/storeChannel';
+import { STORE_UPDATES_DEEP_LINK, type StoreInstallOutcome } from '@/lib/storeChannel';
 
 interface UpdateDialogProps {
   open: boolean;
@@ -32,11 +32,17 @@ export function UpdateDialog({ open, onOpenChange, updateInfo }: UpdateDialogPro
   const [error, setError] = useState<string | null>(null);
   const [update, setUpdate] = useState<Update | null>(null);
   const [isClosingToUpdate, setIsClosingToUpdate] = useState(false);
+  const [isInstallingFromStore, setIsInstallingFromStore] = useState(false);
+  const [storeInstallFailed, setStoreInstallFailed] = useState(false);
 
-  // Canal Store (MSIX): la app SOLO avisa. No hay objeto `Update` del plugin
-  // (bajo identidad de paquete check() no aplica) y nunca se descarga nada:
-  // el updater de GitHub instalaría el setup.exe NSIS como segunda copia (#71).
+  // Canal Store (MSIX): no hay objeto `Update` del plugin (bajo identidad de
+  // paquete check() no aplica) y el updater de GitHub nunca corre: instalaría el
+  // setup.exe NSIS como segunda copia (#71). Si la Store confirmó el update
+  // (StoreContext, `storeSource: 'api'`) se instala con el diálogo de la Store;
+  // si no, o si eso falla, quedan "Abrir la Store" / "Cerrar Maity".
   const isStoreChannel = updateInfo?.channel === 'store';
+  const canInstallFromStore = isStoreChannel && updateInfo?.storeSource === 'api' && !storeInstallFailed;
+  const storeBusy = isClosingToUpdate || isInstallingFromStore;
 
   useEffect(() => {
     if (open && updateInfo?.available) {
@@ -45,6 +51,8 @@ export function UpdateDialog({ open, onOpenChange, updateInfo }: UpdateDialogPro
       setProgress(null);
       setError(null);
       setIsClosingToUpdate(false);
+      setIsInstallingFromStore(false);
+      setStoreInstallFailed(false);
 
       if (updateInfo.channel === 'store') {
         setUpdate(null);
@@ -69,6 +77,8 @@ export function UpdateDialog({ open, onOpenChange, updateInfo }: UpdateDialogPro
       setError(null);
       setUpdate(null);
       setIsClosingToUpdate(false);
+      setIsInstallingFromStore(false);
+      setStoreInstallFailed(false);
     }
   }, [open, updateInfo]);
 
@@ -201,6 +211,53 @@ export function UpdateDialog({ open, onOpenChange, updateInfo }: UpdateDialogPro
     }
   };
 
+  /**
+   * Canal Store con update confirmado por StoreContext: Windows muestra su propio
+   * diálogo de permiso, descarga e instala; al completar cierra Maity para aplicar
+   * el paquete. Rust también se niega con grabación viva (`recordingActive`), pero
+   * se chequea aquí primero para no abrir el diálogo de la Store en balde.
+   */
+  const handleInstallFromStore = async () => {
+    setIsInstallingFromStore(true);
+    try {
+      const state = await invoke<RecordingState>('get_recording_state');
+      if (state?.is_recording) {
+        void fileLogger.info('updater_dialog', 'store-install-refused-recording', { phase: state.phase });
+        toast.warning('Hay una grabación en curso. Detenla antes de actualizar Maity.');
+        return;
+      }
+      void fileLogger.info('updater_dialog', 'store-install-start', { version: updateInfo?.version });
+      const outcome = await invoke<StoreInstallOutcome>('store_install_updates');
+      void fileLogger.info('updater_dialog', 'store-install-result', { ...outcome });
+      switch (outcome.kind) {
+        case 'completed':
+          toast.success('Actualización instalada. Maity se cerrará para aplicarla.');
+          break;
+        case 'canceled':
+          onOpenChange(false);
+          break;
+        case 'recordingActive':
+          toast.warning('Hay una grabación en curso. Detenla antes de actualizar Maity.');
+          break;
+        case 'noUpdates':
+          setStoreInstallFailed(true);
+          toast.info('La Store ya no reporta la actualización. Revisa «Descargas y actualizaciones».');
+          break;
+        case 'error':
+          setStoreInstallFailed(true);
+          toast.error('La Store no pudo instalar la actualización: ' + outcome.detail);
+          break;
+      }
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      void fileLogger.error('updater_dialog', 'store-install-failed', { message });
+      setStoreInstallFailed(true);
+      toast.error('No se pudo actualizar desde la Store: ' + message);
+    } finally {
+      setIsInstallingFromStore(false);
+    }
+  };
+
   const formatDate = (dateString?: string) => {
     if (!dateString) return '';
     try {
@@ -213,7 +270,7 @@ export function UpdateDialog({ open, onOpenChange, updateInfo }: UpdateDialogPro
   // Prevent closing the dialog when downloading
   const handleOpenChange = (newOpen: boolean) => {
     // If trying to close while downloading, prevent it
-    if (!newOpen && isDownloading) {
+    if (!newOpen && (isDownloading || isInstallingFromStore)) {
       return;
     }
     // Otherwise, allow normal close behavior
@@ -222,14 +279,14 @@ export function UpdateDialog({ open, onOpenChange, updateInfo }: UpdateDialogPro
 
   // Prevent ESC key from closing dialog during download
   const handleEscapeKeyDown = (event: KeyboardEvent) => {
-    if (isDownloading) {
+    if (isDownloading || isInstallingFromStore) {
       event.preventDefault();
     }
   };
 
   // Prevent outside clicks from closing dialog during download
   const handleInteractOutside = (event: Event) => {
-    if (isDownloading) {
+    if (isDownloading || isInstallingFromStore) {
       event.preventDefault();
     }
   };
@@ -300,7 +357,20 @@ export function UpdateDialog({ open, onOpenChange, updateInfo }: UpdateDialogPro
                 )}
               </div>
 
-              {isStoreChannel && (
+              {isStoreChannel && canInstallFromStore && (
+                <div className="bg-muted rounded-lg p-3 space-y-1">
+                  <p className="text-sm text-foreground">
+                    {isInstallingFromStore
+                      ? 'Descargando desde la Microsoft Store… Acepta el aviso de Windows si aparece.'
+                      : 'Pulsa «Actualizar ahora»: Windows descarga la versión nueva desde la Microsoft Store.'}
+                  </p>
+                  <p className="text-sm text-foreground">
+                    Al terminar, Maity se cierra para aplicar la actualización.
+                  </p>
+                </div>
+              )}
+
+              {isStoreChannel && !canInstallFromStore && (
                 <div className="bg-muted rounded-lg p-3 space-y-1">
                   <p className="text-sm text-foreground">
                     La Microsoft Store descarga la actualización en segundo plano y la aplica
@@ -355,18 +425,41 @@ export function UpdateDialog({ open, onOpenChange, updateInfo }: UpdateDialogPro
         </div>
 
         <DialogFooter>
-          {!isDownloading && !error && isStoreChannel && (
+          {!isDownloading && !error && canInstallFromStore && (
             <>
-              <Button variant="outline" onClick={() => handleOpenChange(false)} disabled={isClosingToUpdate}>
+              <Button variant="outline" onClick={() => handleOpenChange(false)} disabled={storeBusy}>
                 Más Tarde
               </Button>
-              <Button variant="outline" onClick={handleOpenStore} disabled={isClosingToUpdate}>
+              <Button variant="outline" onClick={handleOpenStore} disabled={storeBusy}>
+                <ExternalLink className="h-4 w-4 mr-2" />
+                Abrir la Store
+              </Button>
+              <Button
+                onClick={handleInstallFromStore}
+                disabled={storeBusy}
+                className="bg-[#3a4ac3] hover:bg-[#2b3892]"
+              >
+                {isInstallingFromStore ? (
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                ) : (
+                  <Download className="h-4 w-4 mr-2" />
+                )}
+                Actualizar ahora
+              </Button>
+            </>
+          )}
+          {!isDownloading && !error && isStoreChannel && !canInstallFromStore && (
+            <>
+              <Button variant="outline" onClick={() => handleOpenChange(false)} disabled={storeBusy}>
+                Más Tarde
+              </Button>
+              <Button variant="outline" onClick={handleOpenStore} disabled={storeBusy}>
                 <ExternalLink className="h-4 w-4 mr-2" />
                 Abrir la Store
               </Button>
               <Button
                 onClick={handleCloseToUpdate}
-                disabled={isClosingToUpdate}
+                disabled={storeBusy}
                 className="bg-[#3a4ac3] hover:bg-[#2b3892]"
               >
                 {isClosingToUpdate ? (

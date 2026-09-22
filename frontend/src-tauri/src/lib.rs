@@ -62,6 +62,7 @@ pub mod registration_status;
 pub mod rival_install;
 pub mod startup_task;
 pub mod state;
+pub mod store_update;
 pub mod summary;
 pub mod tray;
 pub mod utils;
@@ -1763,6 +1764,9 @@ pub fn run() {
             utils::open_system_settings,
             // Deteccion de instalacion Microsoft Store (MSIX) — gatea el auto-updater
             utils::is_running_under_package_identity,
+            // Updates del canal Store vía StoreContext (aviso + instalación con el diálogo de la Store)
+            store_update::store_check_updates,
+            store_update::store_install_updates,
             // Equivalente macOS: build de Mac App Store — gatea el auto-updater
             // (Apple prohibe la auto-actualizacion, guideline 2.4.5)
             utils::is_mac_app_store_build,
