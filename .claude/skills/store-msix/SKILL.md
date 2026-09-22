@@ -223,6 +223,15 @@ Completar TODAS las secciones (todas en verde para poder Submit):
 
 ✅ **PUBLICADO** — Maity está live en la Store desde jul-2026.
 
+### 8. Cierre de CADA submission (OBLIGATORIO — se saltó de 0.2.58 a 0.2.61)
+
+Cuando Partner Center marque la submission como **publicada** ("En la Store"), no al enviarla:
+
+1. **Bumpear `desktop_store_latest_version`** con el SQL de "Go-live" (abajo). Sin este paso la app NUNCA avisa: el aviso y el botón "Buscar" de Configuración → Acerca de comparan contra esa fila, no contra la Store. Incidente 2026-09-22: la fila quedó en 0.2.57 desde el seed y 0.2.58-0.2.61 salieron sin aviso (log: `store-up-to-date {"remote":"0.2.57"}`).
+2. Verificar: `select value from maity.system_config where key='desktop_store_latest_version'`.
+
+⚠️ **En la PC de desarrollo, el MSIX de prueba del paso 6.5 queda `SignatureKind: Developer`** (`Get-AppxPackage Sixale.Maity | Select Version, SignatureKind`). La Store solo actualiza paquetes que ella instaló (`SignatureKind: Store`): con un paquete Developer instalado, "Obtener actualizaciones" nunca ofrece la versión nueva. Tras probar, quitarlo e instalar desde la Store (`ms-windows-store://pdp/?ProductId=9NTKJ5X6230F`).
+
 ## Después de publicar: convivencia de los dos canales
 
 Maity se distribuye por **dos canales en paralelo** desde un mismo código fuente:
@@ -261,6 +270,7 @@ values ('desktop_store_latest_version', '0.2.58',
 on conflict (key) do update set value = excluded.value, updated_at = now();
 ```
 
+- **Historial:** 2026-09-22 → `0.2.61` (estaba congelada en 0.2.57: los bumps de 0.2.58-0.2.60 nunca se hicieron; ver paso 8).
 - **Seed inicial hecho el 2026-08-26 con `0.2.57` (#80).** Hasta ese día la fila NO existía (el aviso de #71 nunca se mostró en producción: `checkStoreChannel` devolvía "sin novedades" con `store-check-skipped reason=missing-key` en el log local). A partir de aquí el SQL de arriba solo **bumpea**; no hay que volver a hacer seed. La tabla ya tiene policy `system_config_select_public` (SELECT para `authenticated`, `qual = true`) — verificado con `set local role authenticated`.
 - Verificación post-go-live (criterio del issue): `select app_version, event_data->>'build_channel' as ch, count(distinct user_id) from maity.platform_logs where event_type = 'device.profile' and created_at > now() - interval '2 days' group by 1,2;` — los usuarios con `ch = 'store'` deben converger a la nueva versión en ≤1 día hábil. (`device.profile` distingue canal; `app.open` no.)
 - **NO probar el aviso poniendo una versión mayor a la publicada**: la fila es global — dispararía el diálogo a todos los usuarios Store reales y los mandaría a una Store que no tiene esa versión. La prueba local se hace con un MSIX de versión MENOR instalado.
