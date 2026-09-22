@@ -40,7 +40,6 @@ import { ExpeditionPilot } from './ExpeditionPilot';
 import { LazyProgressChartsSection } from './LazyProgressChartsSection';
 import { GENERIC_TIPS } from './dashboard-tips';
 import { ProgressBar, PillStat } from './DashboardStats';
-import { DashboardThemeToggle } from './DashboardTheme';
 import './dashboard-fit.css';
 import './dashboard-unified.css';
 import './dashboard-desktop.css';
@@ -142,7 +141,6 @@ export function GamifiedDashboardV2() {
           </div>
         </div>
         <div className="dashboard-header-actions flex items-center gap-2">
-          <DashboardThemeToggle />
           <PillStat icon="🔥" value={data.streak} label="Días racha" color="hsl(var(--maity-pink))" />
         </div>
       </div>

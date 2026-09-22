@@ -3,20 +3,21 @@
 import { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { Mic, Volume2 } from 'lucide-react';
+import { useAuxThemeSync } from '@/lib/auxTheme';
 
 interface AudioDevice {
   name: string;
   device_type: 'Input' | 'Output' | string;
 }
 
-const GLASS_STYLE: React.CSSProperties = {
-  background: 'rgba(15, 16, 24, 0.92)',
-  backdropFilter: 'blur(22px) saturate(180%)',
-  WebkitBackdropFilter: 'blur(22px) saturate(180%)',
-  // Match coach-float compact bar: spread negativo (-4px) mantiene la sombra
-  // dentro de las esquinas redondeadas en lugar de proyectarla como halo
-  // rectangular fuera del clip del WebView2.
-  boxShadow: '0 8px 24px -4px rgba(0,0,0,0.65)',
+// Tema (sep-2026): fondo por clases `bg-white dark:bg-[#0F1018]` (sigue el
+// tema de la barra lateral vía useAuxThemeSync). Opaco y sin backdrop-filter,
+// como coach-float desde el #07 — este picker se había quedado con el blur.
+// Sombra: match coach-float compact bar; spread negativo (-4px) la mantiene
+// dentro de las esquinas redondeadas en lugar de proyectarla como halo
+// rectangular fuera del clip del WebView2.
+const PICKER_STYLE: React.CSSProperties = {
+  boxShadow: '0 8px 24px -4px rgba(0,0,0,0.35)',
 };
 
 /**
@@ -28,6 +29,7 @@ const GLASS_STYLE: React.CSSProperties = {
  * vía on_window_event Focused(false)).
  */
 export default function DevicePickerPage() {
+  useAuxThemeSync();
   const [devices, setDevices] = useState<AudioDevice[]>([]);
   const [loading, setLoading] = useState(true);
   // type: 'mic' (filtrar Input) | 'sys' (filtrar Output)
@@ -76,30 +78,30 @@ export default function DevicePickerPage() {
 
   return (
     <div
-      className="h-screen w-screen flex flex-col rounded-lg overflow-hidden text-white"
-      style={GLASS_STYLE}
+      className="h-screen w-screen flex flex-col rounded-lg overflow-hidden bg-white text-slate-900 border border-slate-200 dark:bg-[#0F1018] dark:text-white dark:border-transparent"
+      style={PICKER_STYLE}
     >
-      <div className="px-3 py-2.5 text-[11px] uppercase tracking-wider text-white/65 border-b border-white/[0.06] font-semibold">
+      <div className="px-3 py-2.5 text-[11px] uppercase tracking-wider text-slate-500 dark:text-white/65 border-b border-slate-200 dark:border-white/[0.06] font-semibold">
         {title}
       </div>
       <div className="flex-1 overflow-y-auto py-1">
         {loading && (
-          <div className="px-3 py-3 text-[11px] text-white/50">Cargando...</div>
+          <div className="px-3 py-3 text-[11px] text-slate-500 dark:text-white/50">Cargando...</div>
         )}
         {!loading && filtered.length === 0 && (
-          <div className="px-3 py-3 text-[11px] text-white/50">Sin dispositivos</div>
+          <div className="px-3 py-3 text-[11px] text-slate-500 dark:text-white/50">Sin dispositivos</div>
         )}
         {!loading && filtered.map((d) => (
           <button
             key={d.name}
             onClick={() => handleSelect(d.name)}
-            className="group flex items-center gap-2.5 w-full text-left px-3 py-2.5 text-[12px] text-white/90 hover:bg-white/[0.08] active:bg-white/[0.14] transition-colors duration-150 border-b border-white/[0.04] last:border-b-0"
+            className="group flex items-center gap-2.5 w-full text-left px-3 py-2.5 text-[12px] text-slate-800 dark:text-white/90 hover:bg-slate-100 active:bg-slate-200 dark:hover:bg-white/[0.08] dark:active:bg-white/[0.14] transition-colors duration-150 border-b border-slate-100 dark:border-white/[0.04] last:border-b-0"
             title={d.name}
           >
             {pickerType === 'mic' ? (
-              <Mic className="w-3.5 h-3.5 text-white/40 group-hover:text-white/70 transition-colors shrink-0" />
+              <Mic className="w-3.5 h-3.5 text-slate-400 group-hover:text-slate-600 dark:text-white/40 dark:group-hover:text-white/70 transition-colors shrink-0" />
             ) : (
-              <Volume2 className="w-3.5 h-3.5 text-white/40 group-hover:text-white/70 transition-colors shrink-0" />
+              <Volume2 className="w-3.5 h-3.5 text-slate-400 group-hover:text-slate-600 dark:text-white/40 dark:group-hover:text-white/70 transition-colors shrink-0" />
             )}
             <span className="truncate flex-1">{d.name}</span>
           </button>

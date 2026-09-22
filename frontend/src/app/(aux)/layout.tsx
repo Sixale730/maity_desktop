@@ -23,7 +23,13 @@ import '../globals.css'
  *   (ver el comentario de SplashScreen en (main)/layout.tsx). `bg-transparent`
  *   es utility y le gana al `body { @apply bg-background }` de @layer base;
  *   sin él el body negro tapa el blur de la ventana `transparent: true`.
- * - `dark` se conserva: globals.css define las vars de color bajo `.dark`.
+ * - Tema (sep-2026): las aux siguen el tema claro/oscuro de la barra lateral.
+ *   El HTML estático sale claro (sin `.dark`); `/aux-theme-boot.js` (script
+ *   externo bloqueante: la CSP no admite inline) agrega `.dark` antes del
+ *   primer pintado si el usuario eligió oscuro y `lib/auxTheme.ts::useAuxThemeSync` lo mantiene en vivo.
+ *   NUNCA el script de tema de la main ni su atributo de tema del portal aquí:
+ *   pintan el lienzo de la main en el <html> y matan la transparencia de la
+ *   ventana (lo vigila layout.test.ts).
  * - Nada de providers, Toaster ni supabase aquí: si una ventana aux necesita
  *   telemetría, va por `lib/auxAnalytics.ts` (comando nativo → outbox), no
  *   por platformLogger.
@@ -41,7 +47,12 @@ export default function AuxRootLayout({
   children: React.ReactNode
 }) {
   return (
-    <html lang="es" className="dark bg-transparent">
+    // suppressHydrationWarning: aux-theme-boot.js agrega `.dark` al <html> antes de hidratar.
+    <html lang="es" className="bg-transparent" suppressHydrationWarning>
+      <head>
+        {/* eslint-disable-next-line @next/next/no-sync-scripts -- debe correr antes del primer pintado (sin destello de tema) */}
+        <script src="/aux-theme-boot.js" />
+      </head>
       <body className="bg-transparent overflow-hidden antialiased">{children}</body>
     </html>
   )

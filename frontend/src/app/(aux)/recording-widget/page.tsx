@@ -9,17 +9,21 @@ import {
 import { TauriEvent } from '@/lib/tauri-events';
 import { AudioLevelBars } from '@/components/audio/AudioLevelBars';
 import { resetAudioLevels } from '@/lib/audioLevelsStore';
+import { useAuxThemeSync } from '@/lib/auxTheme';
 
 // Patrón glass copiado de coach-float — issue #07 (auditoría de recursos,
 // decisión explícita del usuario): SIN backdrop-filter. Fondo opaco #0F1018
 // (equivalente sin alpha de rgba(15,16,24,*)) en vez de blur — forzaba
 // recomposición por CPU en equipos sin GPU dedicada cada vez que las barras
 // de nivel cambiaban de altura.
+//
+// Tema (sep-2026): el fondo va por clases (`PANEL_CLASS`, claro con `dark:`)
+// porque sigue el tema de la barra lateral vía useAuxThemeSync.
 const GLASS_STYLE: React.CSSProperties = {
-  background: '#0F1018',
-  border: '1px solid rgba(255,255,255,0.14)',
-  boxShadow: '0 12px 40px rgba(0,0,0,0.5)',
+  boxShadow: '0 12px 40px rgba(0,0,0,0.25)',
 };
+const PANEL_CLASS =
+  'bg-white text-slate-900 border border-slate-200 dark:bg-[#0F1018] dark:text-white dark:border-white/[0.14]';
 
 // Barras pequeñas para el panel idle (poca info visual).
 const MIC_SCALES_SMALL = [0.7, 1.0, 0.85, 0.6];
@@ -44,6 +48,7 @@ function formatDuration(secs: number): string {
 }
 
 export default function RecordingWidgetPage() {
+  useAuxThemeSync();
   const [isExpanded, setIsExpanded] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
@@ -329,7 +334,7 @@ export default function RecordingWidgetPage() {
         <button
           onClick={handlePause}
           disabled={busy}
-          className="flex items-center justify-center w-7 h-7 rounded-md bg-white/10 hover:bg-white/20 disabled:opacity-50 disabled:cursor-not-allowed text-white transition"
+          className="flex items-center justify-center w-7 h-7 rounded-md bg-slate-100 hover:bg-slate-200 text-slate-700 dark:bg-white/10 dark:hover:bg-white/20 dark:text-white disabled:opacity-50 disabled:cursor-not-allowed transition"
           title="Pausar"
         >
           <Pause className="w-3.5 h-3.5" />
@@ -357,11 +362,11 @@ export default function RecordingWidgetPage() {
             )}
             <span className={`relative inline-flex rounded-full h-2 w-2 ${isPaused ? 'bg-amber-400' : 'bg-red-500'}`} />
           </span>
-          <span className="text-[13px] font-semibold tabular-nums text-white">
+          <span className="text-[13px] font-semibold tabular-nums text-slate-900 dark:text-white">
             {formatDuration(displaySecs)}
           </span>
           {isPaused && (
-            <span className="text-[9px] uppercase tracking-wider text-amber-400 font-bold">
+            <span className="text-[9px] uppercase tracking-wider text-amber-500 dark:text-amber-400 font-bold">
               pausa
             </span>
           )}
@@ -371,7 +376,7 @@ export default function RecordingWidgetPage() {
     return (
       <div className="flex items-center gap-1.5 min-w-0" data-tauri-drag-region>
         <span className="inline-flex h-2 w-2 rounded-full bg-zinc-500 shrink-0" />
-        <span className="text-[11px] uppercase tracking-wider font-bold text-white/80">
+        <span className="text-[11px] uppercase tracking-wider font-bold text-slate-600 dark:text-white/80">
           Maity
         </span>
       </div>
@@ -383,7 +388,7 @@ export default function RecordingWidgetPage() {
     <div className="flex items-center gap-0.5 shrink-0">
       <button
         onClick={toggleExpand}
-        className="p-1 hover:bg-white/15 rounded text-white/70 transition"
+        className="p-1 hover:bg-slate-200 dark:hover:bg-white/15 rounded text-slate-500 dark:text-white/70 transition"
         title={isExpanded ? 'Colapsar' : 'Expandir'}
         aria-label={isExpanded ? 'Colapsar' : 'Expandir'}
       >
@@ -395,7 +400,7 @@ export default function RecordingWidgetPage() {
       </button>
       <button
         onClick={closeWidget}
-        className="p-1 hover:bg-red-500/30 hover:text-red-300 rounded text-white/70 transition"
+        className="p-1 hover:bg-red-500/15 hover:text-red-500 dark:hover:bg-red-500/30 dark:hover:text-red-300 rounded text-slate-500 dark:text-white/70 transition"
         title="Ocultar widget"
         aria-label="Ocultar widget"
       >
@@ -410,7 +415,7 @@ export default function RecordingWidgetPage() {
     return (
       <div
         onMouseDown={handleDragMouseDown}
-        className="h-screen w-screen flex items-center px-2.5 gap-2 rounded-xl overflow-hidden text-white cursor-grab active:cursor-grabbing"
+        className={`h-screen w-screen flex items-center px-2.5 gap-2 rounded-xl overflow-hidden cursor-grab active:cursor-grabbing ${PANEL_CLASS}`}
         style={GLASS_STYLE}
         data-tauri-drag-region
       >
@@ -421,7 +426,7 @@ export default function RecordingWidgetPage() {
         {renderWindowButtons()}
         {errorMsg && (
           <div
-            className="absolute left-2.5 right-2.5 -bottom-5 text-[9px] text-red-400 truncate"
+            className="absolute left-2.5 right-2.5 -bottom-5 text-[9px] text-red-500 dark:text-red-400 truncate"
             title={errorMsg}
           >
             {errorMsg}
@@ -437,12 +442,12 @@ export default function RecordingWidgetPage() {
     return (
       <div
         onMouseDown={handleDragMouseDown}
-        className="h-screen w-screen flex flex-col rounded-xl overflow-hidden text-white cursor-grab active:cursor-grabbing"
+        className={`h-screen w-screen flex flex-col rounded-xl overflow-hidden cursor-grab active:cursor-grabbing ${PANEL_CLASS}`}
         style={GLASS_STYLE}
         data-tauri-drag-region
       >
         <div
-          className="flex items-center justify-between px-3 h-12 select-none border-b border-white/5"
+          className="flex items-center justify-between px-3 h-12 select-none border-b border-slate-200 dark:border-white/5"
           data-tauri-drag-region
         >
           {renderStatusBlock()}
@@ -452,7 +457,7 @@ export default function RecordingWidgetPage() {
         <div className="flex-1 flex flex-col gap-3 px-4 py-4" data-tauri-drag-region>
           <div className="flex items-center justify-between gap-3">
             <div className="flex items-center gap-2">
-              <Mic className="w-3.5 h-3.5 text-white/55" />
+              <Mic className="w-3.5 h-3.5 text-slate-500 dark:text-white/55" />
               <AudioLevelBars
                 channel="mic"
                 color="#485df4"
@@ -464,7 +469,7 @@ export default function RecordingWidgetPage() {
               />
             </div>
             <div className="flex items-center gap-2">
-              <Volume2 className="w-3.5 h-3.5 text-white/55" />
+              <Volume2 className="w-3.5 h-3.5 text-slate-500 dark:text-white/55" />
               <AudioLevelBars
                 channel="sys"
                 color="#10b981"
@@ -489,11 +494,11 @@ export default function RecordingWidgetPage() {
           </div>
 
           {errorMsg ? (
-            <p className="text-[10px] text-center text-red-400 leading-tight">
+            <p className="text-[10px] text-center text-red-500 dark:text-red-400 leading-tight">
               {errorMsg}
             </p>
           ) : (
-            <p className="text-[10px] text-center text-white/40 leading-tight">
+            <p className="text-[10px] text-center text-slate-500 dark:text-white/40 leading-tight">
               Arrancar grabación sin abrir la app principal.
             </p>
           )}
@@ -508,13 +513,13 @@ export default function RecordingWidgetPage() {
   return (
     <div
       onMouseDown={handleDragMouseDown}
-      className="h-screen w-screen flex flex-col rounded-xl overflow-hidden text-white cursor-grab active:cursor-grabbing"
+      className={`h-screen w-screen flex flex-col rounded-xl overflow-hidden cursor-grab active:cursor-grabbing ${PANEL_CLASS}`}
       style={GLASS_STYLE}
       data-tauri-drag-region
     >
       {/* Header REC */}
       <div
-        className="flex items-center justify-between px-3 h-12 select-none border-b border-white/10"
+        className="flex items-center justify-between px-3 h-12 select-none border-b border-slate-200 dark:border-white/10"
         data-tauri-drag-region
       >
         <div className="flex items-center gap-1.5" data-tauri-drag-region>
@@ -524,7 +529,7 @@ export default function RecordingWidgetPage() {
             )}
             <span className={`relative inline-flex rounded-full h-2.5 w-2.5 ${isPaused ? 'bg-amber-400' : 'bg-red-500'}`} />
           </span>
-          <span className="text-[11px] uppercase tracking-widest font-bold text-white">
+          <span className="text-[11px] uppercase tracking-widest font-bold text-slate-900 dark:text-white">
             {isPaused ? 'PAUSADO' : 'GRABANDO'}
           </span>
         </div>
@@ -533,18 +538,18 @@ export default function RecordingWidgetPage() {
 
       {/* Timer grande */}
       <div className="flex flex-col items-center py-3" data-tauri-drag-region>
-        <span className="text-3xl font-bold tabular-nums tracking-wider text-white">
+        <span className="text-3xl font-bold tabular-nums tracking-wider text-slate-900 dark:text-white">
           {formatDuration(displaySecs)}
         </span>
-        <span className="text-[9px] uppercase tracking-wider text-white/40 mt-0.5">
+        <span className="text-[9px] uppercase tracking-wider text-slate-400 dark:text-white/40 mt-0.5">
           Tiempo de sesión
         </span>
       </div>
 
       {/* Niveles grandes — barras 8 elementos, h-8 estilo coach-float */}
-      <div className="flex flex-col gap-2 px-4 py-2 border-y border-white/5" data-tauri-drag-region>
+      <div className="flex flex-col gap-2 px-4 py-2 border-y border-slate-200 dark:border-white/5" data-tauri-drag-region>
         <div className="flex items-center justify-between gap-3">
-          <div className="flex items-center gap-2 text-[10px] uppercase tracking-wider text-white/55 w-16">
+          <div className="flex items-center gap-2 text-[10px] uppercase tracking-wider text-slate-500 dark:text-white/55 w-16">
             <Mic className="w-3 h-3" />
             Mic
           </div>
@@ -559,7 +564,7 @@ export default function RecordingWidgetPage() {
           />
         </div>
         <div className="flex items-center justify-between gap-3">
-          <div className="flex items-center gap-2 text-[10px] uppercase tracking-wider text-white/55 w-16">
+          <div className="flex items-center gap-2 text-[10px] uppercase tracking-wider text-slate-500 dark:text-white/55 w-16">
             <Volume2 className="w-3 h-3" />
             Sistema
           </div>
@@ -581,7 +586,7 @@ export default function RecordingWidgetPage() {
           <button
             onClick={handlePause}
             disabled={busy}
-            className="flex items-center gap-2 px-4 py-2.5 rounded-lg bg-white/10 hover:bg-white/20 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold text-xs transition"
+            className="flex items-center gap-2 px-4 py-2.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 dark:bg-white/10 dark:hover:bg-white/20 dark:text-white disabled:opacity-50 disabled:cursor-not-allowed font-semibold text-xs transition"
           >
             <Pause className="w-4 h-4" />
             Pausa

@@ -19,6 +19,7 @@ import { AudioLevelBars } from '@/components/audio/AudioLevelBars';
 // (fitness test: app/(aux)/layout.test.ts).
 import { trackAux } from '@/lib/auxAnalytics';
 import { TauriEvent } from '@/lib/tauri-events';
+import { useAuxThemeSync } from '@/lib/auxTheme';
 
 type TipFeedback = 'like' | 'dislike' | null;
 
@@ -52,19 +53,19 @@ function CoachFloatIdleEmptyState({
       <img
         src="/logo-collapsed.png"
         alt="Maity"
-        className="w-14 h-14 rounded-xl mb-4 select-none shadow-lg shadow-black/40"
+        className="w-14 h-14 rounded-xl mb-4 select-none shadow-lg shadow-black/10 dark:shadow-black/40"
         draggable={false}
       />
-      <h2 className="text-sm font-semibold text-white mb-1.5">
+      <h2 className="text-sm font-semibold text-slate-900 dark:text-white mb-1.5">
         Listo para tu próxima sesión
       </h2>
-      <p className="text-[11px] text-white/55 leading-snug mb-4 max-w-[240px]">
+      <p className="text-[11px] text-slate-500 dark:text-white/55 leading-snug mb-4 max-w-[240px]">
         Inicia una grabación para recibir coaching y métricas en tiempo real
       </p>
       <button
         onClick={onStart}
         disabled={busy}
-        className="flex items-center gap-2 px-4 py-2 rounded-full bg-white hover:bg-indigo-500 text-black hover:text-white disabled:opacity-50 text-xs font-semibold transition-all shadow-lg shadow-white/10"
+        className="flex items-center gap-2 px-4 py-2 rounded-full bg-indigo-50 hover:bg-indigo-500 text-indigo-600 hover:text-white border border-indigo-200 hover:border-indigo-500 dark:border-transparent dark:bg-white dark:hover:bg-indigo-500 dark:text-black dark:hover:text-white disabled:opacity-50 text-xs font-semibold transition-all shadow-sm dark:shadow-lg dark:shadow-white/10"
         aria-label="Iniciar grabación"
       >
         {busy ? (
@@ -112,11 +113,13 @@ function formatDuration(secs: number): string {
 // usuarios del piloto). Fondo opaco #0F1018 (equivalente sin alpha de
 // rgba(15,16,24,*)) en vez de blur — el `clipPath` sigue dando las esquinas
 // redondeadas sobre la ventana Tauri `transparent: true`.
-const GLASS_STYLE_COMPACT: React.CSSProperties = {
-  background: '#0F1018',
-};
+//
+// Tema (sep-2026): el fondo va por clases (`SURFACE_CLASS`, claro con `dark:`)
+// porque sigue el tema de la barra lateral vía useAuxThemeSync.
+const SURFACE_CLASS = 'bg-white text-slate-900 dark:bg-[#0F1018] dark:text-white';
 
 export default function CoachFloatPage() {
+  useAuxThemeSync();
   const { tips } = useCoachTips(50);
   const { metrics, isWaitingForAudio } = useMeetingMetrics();
   // Iter 11: cambio de "compact vs expanded" a "drawer open vs closed".
@@ -633,9 +636,8 @@ export default function CoachFloatPage() {
       {/* Barra constante 76px — logo · mic · sis · timer · play/stop · controls */}
       <div
         onMouseDown={handleDragMouseDown}
-        className="h-[76px] w-full flex items-center gap-2 px-2.5 relative shrink-0"
+        className={`h-[76px] w-full flex items-center gap-2 px-2.5 relative shrink-0 ${SURFACE_CLASS}`}
         style={{
-          ...GLASS_STYLE_COMPACT,
           clipPath: barClipPath,
           // Iter 11: boxShadow CSS interior — antes 0 8px 32px (alto rango)
           // proyectaba sombra rectangular fuera del rounded del WebView2. Con
@@ -645,7 +647,7 @@ export default function CoachFloatPage() {
           // veía como un contorno amarillo sucio. El estado de pausa se
           // comunica ahora dentro de los controles (mic/barras ámbar, halo
           // del botón Reanudar, dot del logo), sin tocar el contenedor.
-          boxShadow: '0 8px 24px -4px rgba(0,0,0,0.65)',
+          boxShadow: '0 8px 24px -4px rgba(0,0,0,0.35)',
         }}
         data-tauri-drag-region
       >
@@ -656,7 +658,7 @@ export default function CoachFloatPage() {
             sobre el button parent (un solo elemento clickeable). */}
         <button
           onClick={toggleDrawer}
-          className="relative shrink-0 w-7 h-7 rounded-md transition-transform hover:scale-105 active:scale-95 outline-none focus-visible:ring-2 focus-visible:ring-white/40"
+          className="relative shrink-0 w-7 h-7 rounded-md transition-transform hover:scale-105 active:scale-95 outline-none focus-visible:ring-2 focus-visible:ring-slate-400 dark:focus-visible:ring-white/40"
           title={drawerOpen ? 'Cerrar panel' : 'Ver panel de coaching'}
           aria-label={drawerOpen ? 'Cerrar panel' : 'Abrir panel'}
         >
@@ -686,7 +688,7 @@ export default function CoachFloatPage() {
           <button
             ref={micButtonRef}
             onClick={() => handleOpenDevicePicker('mic')}
-            className="w-8 h-8 rounded-full bg-white/5 hover:bg-white/10 border border-white/10 flex items-center justify-center relative transition-colors"
+            className="w-8 h-8 rounded-full bg-slate-100 hover:bg-slate-200 border border-slate-200 dark:bg-white/5 dark:hover:bg-white/10 dark:border-white/10 flex items-center justify-center relative transition-colors"
             title={selectedMic ?? 'Cambiar micrófono'}
             aria-label="Seleccionar micrófono"
           >
@@ -694,7 +696,7 @@ export default function CoachFloatPage() {
                 atenuadas — señal de "no está capturando" sin texto ni ancho extra. */}
             <Mic
               className={`w-4 h-4 transition-colors ${
-                recordingActive ? (isPaused ? 'text-amber-400' : 'text-red-400') : 'text-white/70'
+                recordingActive ? (isPaused ? 'text-amber-500 dark:text-amber-400' : 'text-red-500 dark:text-red-400') : 'text-slate-600 dark:text-white/70'
               }`}
             />
           </button>
@@ -710,11 +712,11 @@ export default function CoachFloatPage() {
           <button
             ref={sysButtonRef}
             onClick={() => handleOpenDevicePicker('sys')}
-            className="w-8 h-8 rounded-full bg-white/5 hover:bg-white/10 border border-white/10 flex items-center justify-center transition-colors"
+            className="w-8 h-8 rounded-full bg-slate-100 hover:bg-slate-200 border border-slate-200 dark:bg-white/5 dark:hover:bg-white/10 dark:border-white/10 flex items-center justify-center transition-colors"
             title={selectedSys ?? 'Cambiar audio del sistema'}
             aria-label="Seleccionar audio del sistema"
           >
-            <Volume2 className="w-4 h-4 text-white/70" />
+            <Volume2 className="w-4 h-4 text-slate-600 dark:text-white/70" />
           </button>
           <AudioLevelBars
             channel="sys"
@@ -756,7 +758,7 @@ export default function CoachFloatPage() {
               className={
                 isPaused
                   ? 'relative shrink-0 h-9 w-9 rounded-full bg-emerald-500 hover:bg-emerald-400 text-white disabled:opacity-50 flex items-center justify-center transition-all shadow-lg shadow-emerald-500/30'
-                  : 'shrink-0 h-9 w-9 rounded-full bg-white/[0.08] hover:bg-white/15 border border-white/10 text-white/75 hover:text-white disabled:opacity-50 flex items-center justify-center transition-all'
+                  : 'shrink-0 h-9 w-9 rounded-full bg-slate-100 hover:bg-slate-200 border border-slate-200 text-slate-600 hover:text-slate-900 dark:bg-white/[0.08] dark:hover:bg-white/15 dark:border-white/10 dark:text-white/75 dark:hover:text-white disabled:opacity-50 flex items-center justify-center transition-all'
               }
               title={isPaused ? `Reanudar grabación · en pausa ${pauseLabel}` : 'Pausar grabación'}
               aria-label={isPaused ? 'Reanudar' : 'Pausar'}
@@ -779,7 +781,7 @@ export default function CoachFloatPage() {
             className={
               recordingActive
                 ? 'shrink-0 h-9 w-9 rounded-full bg-red-500 hover:bg-red-400 text-white disabled:opacity-50 flex items-center justify-center transition-all shadow-lg shadow-red-500/30'
-                : 'shrink-0 h-9 w-9 rounded-full bg-white hover:bg-indigo-500 text-black hover:text-white disabled:opacity-50 flex items-center justify-center transition-all'
+                : 'shrink-0 h-9 w-9 rounded-full bg-indigo-50 hover:bg-indigo-500 text-indigo-600 hover:text-white border border-indigo-200 hover:border-indigo-500 dark:border-transparent dark:bg-white dark:hover:bg-indigo-500 dark:text-black dark:hover:text-white disabled:opacity-50 flex items-center justify-center transition-all'
             }
             title={recordingActive ? 'Detener grabación' : 'Iniciar grabación'}
             aria-label={recordingActive ? 'Detener' : 'Grabar'}
@@ -798,7 +800,7 @@ export default function CoachFloatPage() {
               que no compita visualmente con el botón rojo de grabación. */}
           <button
             onClick={toggleDrawer}
-            className="shrink-0 h-9 w-9 rounded-full bg-white/[0.08] hover:bg-white/15 border border-white/10 text-white/75 hover:text-white flex items-center justify-center transition-all"
+            className="shrink-0 h-9 w-9 rounded-full bg-slate-100 hover:bg-slate-200 border border-slate-200 text-slate-600 hover:text-slate-900 dark:bg-white/[0.08] dark:hover:bg-white/15 dark:border-white/10 dark:text-white/75 dark:hover:text-white flex items-center justify-center transition-all"
             title={drawerOpen ? 'Cerrar panel' : 'Ver panel completo'}
             aria-label={drawerOpen ? 'Cerrar panel' : 'Abrir panel'}
           >
@@ -812,7 +814,7 @@ export default function CoachFloatPage() {
             junto al chevron, ambos absolute, y se encimaban con el Play/Stop. */}
         <button
           onClick={close}
-          className="absolute top-1.5 right-2 p-1 hover:bg-red-500/30 rounded text-white/40 hover:text-red-300 transition-colors"
+          className="absolute top-1.5 right-2 p-1 hover:bg-red-500/15 dark:hover:bg-red-500/30 rounded text-slate-400 hover:text-red-500 dark:text-white/40 dark:hover:text-red-300 transition-colors"
           title="Cerrar"
           aria-label="Cerrar"
         >
@@ -822,7 +824,7 @@ export default function CoachFloatPage() {
         {/* Error inline (overlay debajo del modal, fuera del flow horizontal) */}
         {errorMsg && (
           <div
-            className="absolute -bottom-5 left-3 right-3 text-[9px] text-red-400 truncate"
+            className="absolute -bottom-5 left-3 right-3 text-[9px] text-red-500 dark:text-red-400 truncate"
             title={errorMsg}
           >
             {errorMsg}
@@ -836,14 +838,12 @@ export default function CoachFloatPage() {
           en iter 13. */}
       {drawerOpen && (
         <div
-          className="flex-1 w-full overflow-hidden flex flex-col text-white"
+          className={`flex-1 w-full overflow-hidden flex flex-col border-t border-slate-200 dark:border-white/[0.06] ${SURFACE_CLASS}`}
           style={{
             // Issue #07: mismo tratamiento sin blur que GLASS_STYLE_COMPACT
             // (fondo opaco #0F1018 en vez de backdrop-filter). clipPath
             // sigue redondeando solo abajo.
-            background: '#0F1018',
             clipPath: 'inset(0 round 0 0 24px 24px)',
-            borderTop: '1px solid rgba(255,255,255,0.06)',
           }}
         >
           {(recordingActive || totalTips > 0) ? (
@@ -852,18 +852,18 @@ export default function CoachFloatPage() {
           <div className="px-3 py-2 shrink-0 flex items-center gap-3">
             <HealthGauge value={health} />
             <div className="flex-1 min-w-0">
-              <div className="flex flex-col rounded-lg bg-white/5 border border-white/10 p-2">
-                <div className="flex items-center gap-1 text-[9px] uppercase tracking-wider text-white/55">
+              <div className="flex flex-col rounded-lg bg-slate-50 border border-slate-200 dark:bg-white/5 dark:border-white/10 p-2">
+                <div className="flex items-center gap-1 text-[9px] uppercase tracking-wider text-slate-500 dark:text-white/55">
                   <Timer className="w-2.5 h-2.5" />
                   <span>Tiempo</span>
                 </div>
-                <div className="text-base font-bold mt-0.5 tabular-nums text-[#a8b3ff]">
+                <div className="text-base font-bold mt-0.5 tabular-nums text-indigo-600 dark:text-[#a8b3ff]">
                   {sessionTime}
                 </div>
                 {/* Iter 14: el tiempo en pausa vive aquí (el drawer es
                     flex-1 min-w-0, sin problema de ancho), no en la barra. */}
                 {recordingActive && isPaused && (
-                  <div className="text-[9px] uppercase tracking-wider tabular-nums text-amber-400/80">
+                  <div className="text-[9px] uppercase tracking-wider tabular-nums text-amber-600 dark:text-amber-400/80">
                     En pausa · {pauseLabel}
                   </div>
                 )}
@@ -873,7 +873,7 @@ export default function CoachFloatPage() {
 
           {/* TalkSplit */}
           <div className="px-3 pb-2 shrink-0">
-            <div className="flex items-center justify-between text-[9px] uppercase tracking-wider text-white/55 mb-1">
+            <div className="flex items-center justify-between text-[9px] uppercase tracking-wider text-slate-500 dark:text-white/55 mb-1">
               <span>Tiempo de palabra</span>
             </div>
             <TalkSplitBar
@@ -888,12 +888,12 @@ export default function CoachFloatPage() {
               cuando llegamos aqui ya sabemos que recordingActive || totalTips>0. */}
           <div className="flex-1 flex flex-col px-3 pb-2 gap-2 min-h-0 overflow-hidden">
             <div
-              className="flex-1 rounded-lg border p-2.5 flex flex-col min-h-0 overflow-hidden"
+              className="flex-1 rounded-lg border p-2.5 flex flex-col min-h-0 overflow-hidden bg-slate-50 border-slate-200 dark:bg-white/[0.04] dark:border-white/[0.08]"
               style={{
                 background: tip
-                  ? `linear-gradient(135deg, ${tipColor}1a 0%, rgba(255,255,255,0.04) 100%)`
-                  : 'rgba(255,255,255,0.04)',
-                borderColor: tip ? `${tipColor}55` : 'rgba(255,255,255,0.08)',
+                  ? `linear-gradient(135deg, ${tipColor}1a 0%, transparent 100%)`
+                  : undefined,
+                borderColor: tip ? `${tipColor}55` : undefined,
                 transition: 'border-color 0.3s ease, background 0.3s ease',
               }}
             >
@@ -913,15 +913,15 @@ export default function CoachFloatPage() {
                         {prioMeta?.label ?? 'Sugerencia'}
                       </span>
                       {catMeta && (
-                        <span className="text-[9px] px-1.5 py-0.5 rounded bg-white/10 text-white/70 font-semibold truncate">
+                        <span className="text-[9px] px-1.5 py-0.5 rounded bg-slate-200 text-slate-600 dark:bg-white/10 dark:text-white/70 font-semibold truncate">
                           {catMeta.label}
                         </span>
                       )}
                     </>
                   ) : (
                     <>
-                      <Sparkles className="w-3.5 h-3.5 text-white/50" />
-                      <span className="text-[10px] font-bold uppercase tracking-wider text-white/50">
+                      <Sparkles className="w-3.5 h-3.5 text-slate-400 dark:text-white/50" />
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 dark:text-white/50">
                         Esperando
                       </span>
                     </>
@@ -932,19 +932,19 @@ export default function CoachFloatPage() {
                     <button
                       onClick={goPrev}
                       disabled={!canPrev}
-                      className="w-6 h-6 flex items-center justify-center rounded-md bg-white/10 hover:bg-white/20 disabled:opacity-25 disabled:cursor-not-allowed text-white transition"
+                      className="w-6 h-6 flex items-center justify-center rounded-md bg-slate-200 hover:bg-slate-300 text-slate-700 dark:bg-white/10 dark:hover:bg-white/20 dark:text-white disabled:opacity-25 disabled:cursor-not-allowed transition"
                       title="Tip anterior"
                       aria-label="Tip anterior"
                     >
                       <ChevronLeft className="w-3.5 h-3.5" />
                     </button>
-                    <span className="text-[10px] tabular-nums text-white/80 px-1 font-semibold">
+                    <span className="text-[10px] tabular-nums text-slate-600 dark:text-white/80 px-1 font-semibold">
                       {tipIndex + 1}/{totalTips}
                     </span>
                     <button
                       onClick={goNext}
                       disabled={!canNext}
-                      className="w-6 h-6 flex items-center justify-center rounded-md bg-white/10 hover:bg-white/20 disabled:opacity-25 disabled:cursor-not-allowed text-white transition"
+                      className="w-6 h-6 flex items-center justify-center rounded-md bg-slate-200 hover:bg-slate-300 text-slate-700 dark:bg-white/10 dark:hover:bg-white/20 dark:text-white disabled:opacity-25 disabled:cursor-not-allowed transition"
                       title="Tip siguiente"
                       aria-label="Tip siguiente"
                     >
@@ -954,9 +954,9 @@ export default function CoachFloatPage() {
                 )}
               </div>
 
-              <div className="text-xs text-white/95 leading-snug overflow-y-auto custom-scrollbar flex-1 font-medium">
+              <div className="text-xs text-slate-800 dark:text-white/95 leading-snug overflow-y-auto custom-scrollbar flex-1 font-medium">
                 {tip?.tip ?? (
-                  <div className="text-white/55 text-[11px] italic">
+                  <div className="text-slate-500 dark:text-white/55 text-[11px] italic">
                     Escuchando...
                   </div>
                 )}
@@ -977,13 +977,13 @@ export default function CoachFloatPage() {
                       'flex items-center gap-1 px-2 py-1 rounded-md text-[10px] border transition-all',
                       feedback === r
                         ? r === 'like'
-                          ? 'border-emerald-500/50 bg-emerald-500/15 text-emerald-400'
-                          : 'border-red-500/50 bg-red-500/15 text-red-400'
+                          ? 'border-emerald-500/50 bg-emerald-500/15 text-emerald-600 dark:text-emerald-400'
+                          : 'border-red-500/50 bg-red-500/15 text-red-600 dark:text-red-400'
                         : feedback !== null
-                        ? 'border-white/5 text-zinc-700 cursor-not-allowed'
+                        ? 'border-slate-100 text-slate-300 dark:border-white/5 dark:text-zinc-700 cursor-not-allowed'
                         : r === 'like'
-                        ? 'border-white/10 text-zinc-400 hover:border-emerald-500/40 hover:text-emerald-400'
-                        : 'border-white/10 text-zinc-400 hover:border-red-500/40 hover:text-red-400',
+                        ? 'border-slate-200 text-slate-500 dark:border-white/10 dark:text-zinc-400 hover:border-emerald-500/40 hover:text-emerald-400'
+                        : 'border-slate-200 text-slate-500 dark:border-white/10 dark:text-zinc-400 hover:border-red-500/40 hover:text-red-400',
                     ].join(' ')}
                   >
                     {r === 'like' ? <ThumbsUp className="w-3 h-3" /> : <ThumbsDown className="w-3 h-3" />}

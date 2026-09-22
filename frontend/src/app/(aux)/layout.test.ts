@@ -154,15 +154,23 @@ describe('app/(aux) — root layout propio de las ventanas auxiliares (#23)', ()
     expect(/\sstyle=\{/.test(src), 'style={{…}} inline se bloquea por la CSP con nonce en el primer paint; usar clases').toBe(false);
   });
 
-  // Tema claro/oscuro (sep-2026): la main arranca en claro vía public/theme-boot.js, pero las
-  // ventanas aux siguen OSCURAS y con esquinas transparentes en ambos modos. Si el layout aux
-  // cargara theme-boot, un usuario en claro vería los floats con fondo claro y opaco.
-  it('(aux)/layout.tsx sigue "dark bg-transparent" y no carga theme-boot.js', () => {
+  // Tema claro/oscuro (sep-2026): las ventanas aux siguen el tema de la barra lateral vía
+  // public/aux-theme-boot.js (SOLO alterna `.dark`), pero con esquinas transparentes en ambos
+  // modos. El theme-boot.js de la main estampa data-portal-theme, que pinta el lienzo de fondo
+  // en el <html> y taparía la transparencia de los floats.
+  it('(aux)/layout.tsx es transparente, carga aux-theme-boot.js y no el theme-boot de la main', () => {
     const src = readFileSync(AUX_LAYOUT, 'utf8');
-    expect(src).toContain('<html lang="es" className="dark bg-transparent">');
+    expect(src).toContain('<html lang="es" className="bg-transparent"');
     expect(src).toContain('<body className="bg-transparent');
-    expect(/theme-boot/.test(src), 'las ventanas aux no deben cargar theme-boot.js').toBe(false);
+    expect(src).toContain('<script src="/aux-theme-boot.js" />');
+    expect(/["/]theme-boot\.js/.test(src), 'las ventanas aux no deben cargar el theme-boot.js de la main').toBe(false);
     expect(/data-portal-theme/.test(src), 'data-portal-theme es solo de la main (activa el lienzo de fondo)').toBe(false);
+  });
+
+  it('aux-theme-boot.js solo alterna .dark (nunca data-portal-theme)', () => {
+    const boot = readFileSync(path.resolve(SRC, '..', 'public', 'aux-theme-boot.js'), 'utf8');
+    expect(boot).toContain("classList.toggle('dark'");
+    expect(/setAttribute\(\s*['"]data-portal-theme/.test(boot)).toBe(false);
   });
 
   it('el grafo de imports de las ventanas aux no alcanza supabase-js, platformLogger, analytics, contexts ni (main)', () => {
