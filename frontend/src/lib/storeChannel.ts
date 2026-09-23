@@ -30,6 +30,13 @@ export const STORE_PRODUCT_PAGE_URL = `https://apps.microsoft.com/detail/${STORE
  */
 export const STORE_UPDATES_DEEP_LINK = 'ms-windows-store://downloadsandupdates';
 
+/**
+ * Deep link a la página de Maity en la app Microsoft Store. Para una copia de prueba
+ * (`signatureKind !== 'store'`) "Obtener actualizaciones" no sirve: hay que instalar
+ * Maity desde aquí.
+ */
+export const STORE_PDP_DEEP_LINK = `ms-windows-store://pdp/?ProductId=${STORE_PRODUCT_ID}`;
+
 /** Clave en `maity.system_config` con la última versión publicada en la Store. */
 export const STORE_LATEST_VERSION_KEY = 'desktop_store_latest_version';
 
@@ -37,11 +44,18 @@ export const STORE_LATEST_VERSION_KEY = 'desktop_store_latest_version';
  * Respuesta de `store_check_updates` (Rust, `store_update.rs`): la Store misma dice
  * si hay versión nueva para ESTA instalación (StoreContext). Es la fuente primaria;
  * la fila de `system_config` queda como respaldo si el comando falla.
+ *
+ * Sin número de versión: la API solo expone el paquete INSTALADO. El número del
+ * aviso sale de `system_config` (y solo si es mayor al instalado).
  */
 export interface StoreUpdateCheck {
   available: boolean;
-  version: string | null;
   mandatory: boolean;
+  /**
+   * Firma del MSIX (`store` | `developer` | …). Con otra firma que no sea `store`
+   * Rust ni consulta StoreContext: es una copia de prueba que la Store nunca actualiza.
+   */
+  signatureKind: string | null;
 }
 
 /** Respuesta de `store_install_updates` (Rust). `completed` casi nunca llega: Windows cierra Maity. */

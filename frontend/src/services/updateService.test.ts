@@ -158,8 +158,8 @@ describe('UpdateService — logging visible y resultados', () => {
       // (que sale antes de resolver canal) se comeria estos casos. Un mock que
       // responde true a todo no puede distinguir que gate se disparo.
       // Estos casos cubren el RESPALDO por system_config: `store_check_updates`
-      // (StoreContext) falla, como en un MSIX de prueba `Developer`. La ruta
-      // primaria (API) tiene su propio describe abajo.
+      // (StoreContext) falla. La ruta primaria (API) y la copia de prueba
+      // (`signatureKind: developer`) tienen su propio describe abajo.
       invokeMock.mockImplementation((cmd: string) =>
         cmd === 'store_check_updates'
           ? Promise.reject('StoreContext no disponible')
@@ -266,8 +266,9 @@ describe('UpdateService — logging visible y resultados', () => {
       });
     };
 
-    it('con update confirmado por la Store: avisa con storeSource api y NO consulta system_config', async () => {
-      mockStoreApi({ available: true, version: '0.2.36', mandatory: false });
+    it('con update confirmado por la Store: avisa con storeSource api y el número de system_config si es mayor', async () => {
+      mockStoreApi({ available: true, mandatory: false, signatureKind: 'store' });
+      fetchStoreMock.mockResolvedValue({ status: 'ok', version: '0.2.36' });
 
       const result = await service.checkForUpdates(true);
 
@@ -278,13 +279,35 @@ describe('UpdateService — logging visible y resultados', () => {
         storeSource: 'api',
         version: '0.2.36',
       });
-      expect(fetchStoreMock).not.toHaveBeenCalled();
       expect(checkMock).not.toHaveBeenCalled();
       expect(service.wasCheckedRecently()).toBe(true);
     });
 
+    it('la API no da número: si system_config es igual al instalado, avisa SIN versión (nunca "Actual X / Nueva X")', async () => {
+      mockStoreApi({ available: true, mandatory: false, signatureKind: 'store' });
+      fetchStoreMock.mockResolvedValue({ status: 'ok', version: '0.2.35' });
+
+      const result = await service.checkForUpdates(true);
+
+      expect(result).toEqual({ available: true, currentVersion: '0.2.35', channel: 'store', storeSource: 'api' });
+    });
+
+    it('si leer system_config falla, el aviso de la API sale igual, sin número', async () => {
+      mockStoreApi({ available: true, mandatory: false, signatureKind: 'store' });
+      fetchStoreMock.mockRejectedValue(new Error('system_config read failed: offline'));
+
+      const result = await service.checkForUpdates(true);
+
+      expect(result).toEqual({ available: true, currentVersion: '0.2.35', channel: 'store', storeSource: 'api' });
+      expect(fileLoggerMock.warn).toHaveBeenCalledWith(
+        'updater_service',
+        'store-version-lookup-failed',
+        expect.objectContaining({ message: 'system_config read failed: offline' }),
+      );
+    });
+
     it('la Store dice que no hay update: no avisa aunque system_config tenga una versión mayor', async () => {
-      mockStoreApi({ available: false, version: null, mandatory: false });
+      mockStoreApi({ available: false, mandatory: false, signatureKind: 'store' });
       fetchStoreMock.mockResolvedValue({ status: 'ok', version: '9.9.9' });
 
       const result = await service.checkForUpdates(true);
@@ -309,6 +332,53 @@ describe('UpdateService — logging visible y resultados', () => {
         'store-api-failed',
         expect.objectContaining({ message: 'GetAppAndOptionalStorePackageUpdatesAsync falló' }),
       );
+    });
+  });
+
+  describe('copia de prueba (MSIX con firma ≠ store): la Store nunca la actualiza', () => {
+    // PC de Julio 2026-09-23: 0.2.60.0 `SignatureKind: Developer` + aviso "abre la Store"
+    // → "Obtener actualizaciones" no encontraba nada. Rust ya no consulta StoreContext
+    // con esa firma; el aviso debe pedir reinstalar desde la Store.
+    beforeEach(() => {
+      invokeMock.mockImplementation((cmd: string) => {
+        if (cmd === 'store_check_updates') {
+          return Promise.resolve({ available: false, mandatory: false, signatureKind: 'developer' });
+        }
+        return Promise.resolve(cmd === 'is_running_under_package_identity');
+      });
+    });
+
+    it('con una versión publicada mayor: avisa con storeSource sideload', async () => {
+      fetchStoreMock.mockResolvedValue({ status: 'ok', version: '0.2.36' });
+
+      const result = await service.checkForUpdates(true);
+
+      expect(result).toEqual({
+        available: true,
+        currentVersion: '0.2.35',
+        channel: 'store',
+        storeSource: 'sideload',
+        version: '0.2.36',
+      });
+      expect(checkMock).not.toHaveBeenCalled();
+    });
+
+    it('con la misma versión publicada: no avisa', async () => {
+      fetchStoreMock.mockResolvedValue({ status: 'ok', version: '0.2.35.0' });
+
+      const result = await service.checkForUpdates(true);
+
+      expect(result).toEqual({ available: false, currentVersion: '0.2.35', channel: 'store' });
+      expect(service.wasCheckedRecently()).toBe(true);
+    });
+
+    it('sin sesión: no avisa y no marca cooldown (reintenta tras el login)', async () => {
+      fetchStoreMock.mockResolvedValue({ status: 'no-session' });
+
+      const result = await service.checkForUpdates(true);
+
+      expect(result).toEqual({ available: false, currentVersion: '0.2.35', channel: 'store' });
+      expect(service.wasCheckedRecently()).toBe(false);
     });
   });
 

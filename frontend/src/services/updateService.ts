@@ -11,7 +11,9 @@
  *   StoreContext (`store_check_updates`, Rust) y el `UpdateDialog` instala con el
  *   diálogo de la propia Store (`store_install_updates`). Si la API falla, respaldo:
  *   `getVersion()` contra `maity.system_config['desktop_store_latest_version']` y
- *   el diálogo manda a la Store (deep link) / ofrece cerrar Maity.
+ *   el diálogo manda a la Store (deep link) / ofrece cerrar Maity. Una copia de
+ *   prueba (firma ≠ `store`) no la actualiza la Store: si hay una versión publicada
+ *   más nueva, el aviso `sideload` pide reinstalar desde la Store.
  *   El updater de GitHub nunca corre aquí: dentro del MSIX instalaría el
  *   setup.exe NSIS como segunda copia Win32 (issue #71).
  */
@@ -35,9 +37,11 @@ export interface UpdateInfo {
   /**
    * Solo canal `store`: de dónde salió el aviso. `api` = StoreContext (la Store confirmó
    * el update → se puede instalar desde el diálogo); `config` = respaldo por la fila de
-   * `system_config` (la API falló → solo "Abrir la Store" / "Cerrar Maity").
+   * `system_config` (la API falló → solo "Abrir la Store" / "Cerrar Maity");
+   * `sideload` = copia de prueba (MSIX con firma ≠ `store`): la Store NUNCA la
+   * actualiza, el diálogo pide reinstalar desde la Store.
    */
-  storeSource?: 'api' | 'config';
+  storeSource?: 'api' | 'config' | 'sideload';
   version?: string;
   date?: string;
   body?: string;
@@ -213,25 +217,37 @@ export class UpdateService {
    * `checkForUpdates`, igual que la rama GitHub).
    */
   private async checkStoreChannel(currentVersion: string, force: boolean): Promise<UpdateInfo> {
+    let api: StoreUpdateCheck | null = null;
     try {
-      const api = await invoke<StoreUpdateCheck>('store_check_updates');
-      this.lastCheckTime = Date.now();
+      api = await invoke<StoreUpdateCheck>('store_check_updates');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      logger.warn(`[updateService] Store (API) falló, uso system_config: ${message}`);
+      void fileLogger.warn('updater_service', 'store-api-failed', { message, force });
+    }
+
+    if (api) {
       void fileLogger.info('updater_service', 'store-api-result', { currentVersion, ...api, force });
+
+      if (api.signatureKind && api.signatureKind !== 'store') {
+        return this.checkSideloadedPackage(currentVersion, api.signatureKind, force);
+      }
+
+      this.lastCheckTime = Date.now();
       if (api.available) {
-        logger.info(`[updateService] Store (API): update disponible ${api.version ?? '?'} (current: ${currentVersion})`);
+        // La API no expone el número nuevo (su `Package` es el instalado): se toma de
+        // la fila, y solo si es mayor al instalado. Si no, el aviso sale sin número.
+        const version = await this.publishedStoreVersionNewerThan(currentVersion);
+        logger.info(`[updateService] Store (API): update disponible ${version ?? '(sin número)'} (current: ${currentVersion})`);
         return {
           available: true,
           currentVersion,
           channel: 'store',
           storeSource: 'api',
-          version: api.version ?? undefined,
+          ...(version ? { version } : {}),
         };
       }
       return { available: false, currentVersion, channel: 'store' };
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      logger.warn(`[updateService] Store (API) falló, uso system_config: ${message}`);
-      void fileLogger.warn('updater_service', 'store-api-failed', { message, force });
     }
 
     logger.info(`[updateService] Canal Store (MSIX): comparando ${currentVersion} contra system_config (force: ${force})`);
@@ -269,6 +285,60 @@ export class UpdateService {
     logger.info(`[updateService] Store: ${currentVersion} ya es la última publicada (remota: ${lookup.version})`);
     void fileLogger.info('updater_service', 'store-up-to-date', { currentVersion, remote: lookup.version, force });
     return { available: false, currentVersion, channel: 'store' };
+  }
+
+  /**
+   * Copia de prueba (MSIX con firma `developer`, `.msix` local o `winapp run`): tiene
+   * identidad de paquete pero la Store NUNCA le sirve updates, así que mandar a
+   * "Obtener actualizaciones" no hace nada (PC de Julio, 2026-09-23). Si hay una
+   * versión publicada más nueva se avisa con `storeSource: 'sideload'` para que el
+   * diálogo pida reinstalar desde la Store. Lanza en errores de red/RLS, igual que
+   * el respaldo por `system_config`.
+   */
+  private async checkSideloadedPackage(
+    currentVersion: string,
+    signatureKind: string,
+    force: boolean,
+  ): Promise<UpdateInfo> {
+    const lookup = await fetchStoreLatestVersion();
+    if (lookup.status === 'no-session') {
+      // Sin cooldown: reintentar en cuanto haya sesión (mismo criterio que el respaldo).
+      void fileLogger.info('updater_service', 'store-check-skipped', { reason: 'no-session', signatureKind, force });
+      return { available: false, currentVersion, channel: 'store' };
+    }
+    this.lastCheckTime = Date.now();
+
+    if (lookup.status === 'ok' && isNewerVersion(lookup.version, currentVersion)) {
+      logger.info(`[updateService] Copia de prueba (${signatureKind}): la Store publica ${lookup.version} (current: ${currentVersion})`);
+      void fileLogger.info('updater_service', 'store-sideload', { currentVersion, remote: lookup.version, signatureKind, force });
+      return { available: true, currentVersion, channel: 'store', storeSource: 'sideload', version: lookup.version };
+    }
+
+    void fileLogger.info('updater_service', 'store-sideload-up-to-date', {
+      currentVersion,
+      remote: lookup.status === 'ok' ? lookup.version : null,
+      signatureKind,
+      force,
+    });
+    return { available: false, currentVersion, channel: 'store' };
+  }
+
+  /**
+   * Número para el aviso confirmado por StoreContext: la fila de `system_config`,
+   * solo si es estrictamente mayor al instalado. Best-effort — sin sesión, sin fila
+   * o con error de red el aviso sale igual, sin número.
+   */
+  private async publishedStoreVersionNewerThan(currentVersion: string): Promise<string | undefined> {
+    try {
+      const lookup = await fetchStoreLatestVersion();
+      if (lookup.status === 'ok' && isNewerVersion(lookup.version, currentVersion)) {
+        return lookup.version;
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      void fileLogger.warn('updater_service', 'store-version-lookup-failed', { message });
+    }
+    return undefined;
   }
 
   /**

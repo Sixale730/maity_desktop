@@ -12,7 +12,12 @@
 //! - Los `.get()` bloquean: corren en `startup_task::with_mta` (spawn_blocking + MTA),
 //!   nunca en el hilo STA de wry.
 //! - Sólo funciona con el paquete instalado DESDE la Store (`SignatureKind: Store`).
-//!   Un MSIX de prueba (`Developer`) no tiene updates que la Store le sirva.
+//!   Un MSIX de prueba (`Developer`) no tiene updates que la Store le sirva: con
+//!   otra firma NO se consulta StoreContext y se reporta `signatureKind` para que
+//!   el frontend muestre el aviso de "copia de prueba" (reinstalar desde la Store).
+//! - La API NO expone el número de la versión nueva: `StorePackageUpdate.Package`
+//!   es el paquete INSTALADO (leerlo hacía decir "Actual X / Nueva X"). El número
+//!   lo pone el frontend desde `system_config` cuando es mayor al instalado.
 
 use serde::Serialize;
 
@@ -20,9 +25,15 @@ use serde::Serialize;
 #[serde(rename_all = "camelCase")]
 pub struct StoreUpdateCheck {
     pub available: bool,
-    /// `Major.Minor.Build` del paquete nuevo (el 4º dígito del MSIX siempre es 0).
-    pub version: Option<String>,
     pub mandatory: bool,
+    /// `utils::package_signature_kind()`: `store` | `developer` | … (`None` sin paquete).
+    pub signature_kind: Option<String>,
+}
+
+/// ¿Esta firma recibe updates de la Store? Sólo `store`.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn is_store_signed(signature_kind: Option<&str>) -> bool {
+    signature_kind == Some("store")
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -89,26 +100,17 @@ mod imp {
             .map_err(|e| format!("GetAppAndOptionalStorePackageUpdatesAsync falló: {e}"))
     }
 
-    pub fn summarize(updates: &IVectorView<StorePackageUpdate>) -> Result<StoreUpdateCheck, String> {
+    /// Sin versión a propósito: `update.Package()` es el paquete INSTALADO, no el nuevo.
+    pub fn summarize(
+        updates: &IVectorView<StorePackageUpdate>,
+        signature_kind: Option<String>,
+    ) -> Result<StoreUpdateCheck, String> {
         let count = updates.Size().map_err(|e| format!("Size() falló: {e}"))?;
-        if count == 0 {
-            return Ok(StoreUpdateCheck { available: false, version: None, mandatory: false });
-        }
-        let mut version = None;
         let mut mandatory = false;
         for update in updates {
             mandatory |= update.Mandatory().unwrap_or(false);
-            if version.is_none() {
-                // La versión es informativa (texto del diálogo): si falla, se avisa igual.
-                version = update
-                    .Package()
-                    .and_then(|p| p.Id())
-                    .and_then(|id| id.Version())
-                    .ok()
-                    .map(|v| format!("{}.{}.{}", v.Major, v.Minor, v.Build));
-            }
         }
-        Ok(StoreUpdateCheck { available: true, version, mandatory })
+        Ok(StoreUpdateCheck { available: count > 0, mandatory, signature_kind })
     }
 
     pub fn install(ctx: &StoreContext, updates: &IVectorView<StorePackageUpdate>) -> Result<StoreInstallOutcome, String> {
@@ -134,9 +136,14 @@ pub async fn store_check_updates(app: tauri::AppHandle) -> Result<StoreUpdateChe
         }
         let hwnd = imp::main_hwnd(&app)?;
         let check = crate::startup_task::with_mta(move || {
+            let signature_kind = crate::utils::package_signature_kind().map(str::to_string);
+            if !is_store_signed(signature_kind.as_deref()) {
+                // Copia de prueba: la Store nunca le servirá el update; ni se le pregunta.
+                return Ok(StoreUpdateCheck { available: false, mandatory: false, signature_kind });
+            }
             let ctx = imp::store_context(hwnd)?;
             let updates = imp::pending_updates(&ctx)?;
-            imp::summarize(&updates)
+            imp::summarize(&updates, signature_kind)
         })
         .await;
         match &check {
@@ -167,6 +174,11 @@ pub async fn store_install_updates(app: tauri::AppHandle) -> Result<StoreInstall
         }
         let hwnd = imp::main_hwnd(&app)?;
         let outcome = crate::startup_task::with_mta(move || {
+            if !is_store_signed(crate::utils::package_signature_kind()) {
+                return Ok(StoreInstallOutcome::Error(
+                    "instalación de prueba: la Store no la actualiza".into(),
+                ));
+            }
             let ctx = imp::store_context(hwnd)?;
             let updates = imp::pending_updates(&ctx)?;
             if updates.Size().unwrap_or(0) == 0 {
@@ -206,6 +218,26 @@ mod tests {
                 "estado {state} debería ser Error"
             );
         }
+    }
+
+    #[test]
+    fn solo_la_firma_store_recibe_updates_de_la_store() {
+        assert!(is_store_signed(Some("store")));
+        for other in [None, Some("developer"), Some("none"), Some("enterprise"), Some("unknown")] {
+            assert!(!is_store_signed(other), "{other:?} no debería consultar StoreContext");
+        }
+    }
+
+    #[test]
+    fn check_serializa_signature_kind_en_camel_case_y_sin_version() {
+        let json = serde_json::to_value(StoreUpdateCheck {
+            available: false,
+            mandatory: false,
+            signature_kind: Some("developer".into()),
+        })
+        .unwrap();
+        assert_eq!(json["signatureKind"], "developer");
+        assert!(json.get("version").is_none(), "la API no conoce la versión nueva");
     }
 
     #[test]

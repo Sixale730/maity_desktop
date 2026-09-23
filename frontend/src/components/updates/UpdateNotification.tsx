@@ -35,7 +35,10 @@ export function showUpdateNotification(updateInfo: UpdateInfo, onUpdateClick?: (
         <div>
           <p className="font-medium">Actualización Disponible</p>
           <p className="text-sm text-muted-foreground">
-            Versión {updateInfo.version} ya está disponible
+            {/* El aviso de StoreContext puede no traer número (la API no lo expone). */}
+            {updateInfo.version
+              ? `Versión ${updateInfo.version} ya está disponible`
+              : 'Hay una nueva versión de Maity disponible'}
           </p>
         </div>
       </div>

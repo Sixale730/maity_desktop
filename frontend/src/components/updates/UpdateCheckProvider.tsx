@@ -16,8 +16,42 @@ interface UpdateCheckContextType {
 
 const UpdateCheckContext = createContext<UpdateCheckContextType | undefined>(undefined);
 
+/** Variantes del `UpdateDialog` para QA visual en desarrollo (`window.__updateDebug.preview`). */
+type UpdateDialogPreviewKind = 'api' | 'apiNoVersion' | 'config' | 'sideload' | 'github';
+
+const PREVIEW_INFO: Record<UpdateDialogPreviewKind, UpdateInfo> = {
+  api: { available: true, currentVersion: '0.2.61', channel: 'store', storeSource: 'api', version: '0.2.62' },
+  apiNoVersion: { available: true, currentVersion: '0.2.62', channel: 'store', storeSource: 'api' },
+  config: { available: true, currentVersion: '0.2.60', channel: 'store', storeSource: 'config', version: '0.2.61' },
+  sideload: { available: true, currentVersion: '0.2.60', channel: 'store', storeSource: 'sideload', version: '0.2.61' },
+  github: { available: true, currentVersion: '0.2.52', channel: 'github', version: '0.2.62' },
+};
+
 export function UpdateCheckProvider({ children }: { children: React.ReactNode }) {
   const [showDialog, setShowDialog] = useState(false);
+  const [previewInfo, setPreviewInfo] = useState<UpdateInfo | null>(null);
+
+  // Solo en `pnpm dev`/`tauri:dev` (Next reemplaza NODE_ENV y elimina esto del
+  // bundle de producción): abre el diálogo con datos falsos para revisar el layout
+  // de cada variante sin depender de la Store ni de system_config.
+  useEffect(() => {
+    if (process.env.NODE_ENV !== 'development') return;
+    const w = window as Window & { __updateDebug?: { preview: (kind: UpdateDialogPreviewKind) => void } };
+    w.__updateDebug = {
+      preview: (kind) => {
+        setPreviewInfo(PREVIEW_INFO[kind]);
+        setShowDialog(true);
+      },
+    };
+    return () => {
+      delete w.__updateDebug;
+    };
+  }, []);
+
+  const handleDialogOpenChange = useCallback((open: boolean) => {
+    setShowDialog(open);
+    if (!open) setPreviewInfo(null);
+  }, []);
 
   const handleShowDialog = useCallback(() => {
     setShowDialog(true);
@@ -84,8 +118,8 @@ export function UpdateCheckProvider({ children }: { children: React.ReactNode })
       {children}
       <UpdateDialog
         open={showDialog}
-        onOpenChange={setShowDialog}
-        updateInfo={updateInfo}
+        onOpenChange={handleDialogOpenChange}
+        updateInfo={previewInfo ?? updateInfo}
       />
     </UpdateCheckContext.Provider>
   );

@@ -18,7 +18,8 @@ import { toast } from 'sonner';
 import { logger } from '@/lib/logger';
 import { fileLogger } from '@/lib/fileLogger';
 import { openExternalUrl } from '@/lib/planLinks';
-import { STORE_UPDATES_DEEP_LINK, type StoreInstallOutcome } from '@/lib/storeChannel';
+import { STORE_PDP_DEEP_LINK, STORE_UPDATES_DEEP_LINK, type StoreInstallOutcome } from '@/lib/storeChannel';
+import { compareVersions } from '@/lib/versionCompare';
 
 interface UpdateDialogProps {
   open: boolean;
@@ -40,9 +41,18 @@ export function UpdateDialog({ open, onOpenChange, updateInfo }: UpdateDialogPro
   // setup.exe NSIS como segunda copia (#71). Si la Store confirmó el update
   // (StoreContext, `storeSource: 'api'`) se instala con el diálogo de la Store;
   // si no, o si eso falla, quedan "Abrir la Store" / "Cerrar Maity".
+  // Copia de prueba (MSIX con firma ≠ `store`): la Store nunca la actualiza, así que
+  // ni "Actualizar ahora" ni "Cerrar Maity" sirven — solo reinstalar desde la Store.
   const isStoreChannel = updateInfo?.channel === 'store';
+  const isSideloaded = isStoreChannel && updateInfo?.storeSource === 'sideload';
   const canInstallFromStore = isStoreChannel && updateInfo?.storeSource === 'api' && !storeInstallFailed;
   const storeBusy = isClosingToUpdate || isInstallingFromStore;
+  // StoreContext no expone el número nuevo: puede faltar. Y nunca se pinta una
+  // "Nueva Versión" igual a la actual (el bug de e4f31b1 leía el paquete instalado).
+  const newVersion =
+    updateInfo?.version && compareVersions(updateInfo.version, updateInfo.currentVersion) !== 0
+      ? updateInfo.version
+      : undefined;
 
   useEffect(() => {
     if (open && updateInfo?.available) {
@@ -176,10 +186,15 @@ export function UpdateDialog({ open, onOpenChange, updateInfo }: UpdateDialogPro
    * botón "Obtener actualizaciones" fuerza el check; la Store descarga en
    * segundo plano y aplica el paquete cuando Maity esté cerrado.
    */
-  const handleOpenStore = async () => {
-    void fileLogger.info('updater_dialog', 'store-open-deep-link', { version: updateInfo?.version });
+  const handleOpenStore = () => openStoreLink(STORE_UPDATES_DEEP_LINK);
+
+  /** Copia de prueba: la página de Maity en la Store, para instalar la versión de la Store. */
+  const handleOpenStorePage = () => openStoreLink(STORE_PDP_DEEP_LINK);
+
+  const openStoreLink = async (link: string) => {
+    void fileLogger.info('updater_dialog', 'store-open-deep-link', { version: updateInfo?.version, link });
     try {
-      await openExternalUrl(STORE_UPDATES_DEEP_LINK);
+      await openExternalUrl(link);
     } catch (err: unknown) {
       console.error('Failed to open Microsoft Store:', err);
       toast.error('No se pudo abrir la Microsoft Store: ' + (err instanceof Error ? err.message : 'Error desconocido'));
@@ -297,13 +312,16 @@ export function UpdateDialog({ open, onOpenChange, updateInfo }: UpdateDialogPro
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
+      {/* `grid-cols-[minmax(0,1fr)]`: sin esto la columna única del grid de DialogContent
+          crece hasta el ancho mínimo de su hijo más ancho (el pie con 3 botones
+          `whitespace-nowrap`) y versiones + caja gris se salían del card (captura 2026-09-23). */}
       <DialogContent
-        className="sm:max-w-[500px]"
+        className="sm:max-w-[540px] grid-cols-[minmax(0,1fr)]"
         onEscapeKeyDown={handleEscapeKeyDown}
         onInteractOutside={handleInteractOutside}
       >
         <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
+          <DialogTitle className="flex items-center gap-2 pr-6">
             {isDownloading ? (
               <>
                 <Loader2 className="h-5 w-5 animate-spin text-maity-blue" />
@@ -314,9 +332,14 @@ export function UpdateDialog({ open, onOpenChange, updateInfo }: UpdateDialogPro
                 <AlertCircle className="h-5 w-5 text-destructive" />
                 Error de Actualización
               </>
+            ) : isSideloaded ? (
+              <>
+                <Store className="h-5 w-5 shrink-0 text-maity-blue" />
+                Esta copia de Maity no se actualiza sola
+              </>
             ) : isStoreChannel ? (
               <>
-                <Store className="h-5 w-5 text-maity-blue" />
+                <Store className="h-5 w-5 shrink-0 text-maity-blue" />
                 Actualización disponible en la Microsoft Store
               </>
             ) : (
@@ -331,9 +354,17 @@ export function UpdateDialog({ open, onOpenChange, updateInfo }: UpdateDialogPro
               ? 'Descargando la última versión...'
               : error
               ? 'Ocurrió un error durante la actualización'
+              : isSideloaded
+              ? newVersion
+                ? `Maity ${newVersion} ya está en la Microsoft Store`
+                : 'Hay una versión nueva de Maity en la Microsoft Store'
               : isStoreChannel
-              ? `Maity ${updateInfo.version} ya está publicada en la Microsoft Store`
-              : `Una nueva versión (${updateInfo.version}) está disponible`}
+              ? newVersion
+                ? `Maity ${newVersion} ya está publicada en la Microsoft Store`
+                : 'Hay una versión nueva de Maity en la Microsoft Store'
+              : newVersion
+              ? `Una nueva versión (${newVersion}) está disponible`
+              : 'Hay una nueva versión disponible'}
           </DialogDescription>
         </DialogHeader>
 
@@ -341,14 +372,16 @@ export function UpdateDialog({ open, onOpenChange, updateInfo }: UpdateDialogPro
           {!isDownloading && !error && (
             <>
               <div className="space-y-2">
-                <div className="flex justify-between text-sm">
+                <div className="flex justify-between gap-4 text-sm">
                   <span className="text-muted-foreground">Versión Actual:</span>
                   <span className="font-medium">{updateInfo.currentVersion}</span>
                 </div>
-                <div className="flex justify-between text-sm">
-                  <span className="text-muted-foreground">Nueva Versión:</span>
-                  <span className="font-medium text-maity-blue">{updateInfo.version}</span>
-                </div>
+                {newVersion && (
+                  <div className="flex justify-between gap-4 text-sm">
+                    <span className="text-muted-foreground">Nueva Versión:</span>
+                    <span className="font-medium text-maity-blue">{newVersion}</span>
+                  </div>
+                )}
                 {updateInfo.date && (
                   <div className="flex justify-between text-sm">
                     <span className="text-muted-foreground">Fecha de Lanzamiento:</span>
@@ -370,7 +403,21 @@ export function UpdateDialog({ open, onOpenChange, updateInfo }: UpdateDialogPro
                 </div>
               )}
 
-              {isStoreChannel && !canInstallFromStore && (
+              {isSideloaded && (
+                <div className="bg-muted rounded-lg p-3 space-y-1">
+                  <p className="text-sm text-foreground">
+                    Esta copia se instaló con un paquete de prueba, no desde la Microsoft Store,
+                    así que Windows no la va a actualizar.
+                  </p>
+                  <p className="text-sm text-foreground">
+                    Para recibir actualizaciones: espera a que termine de sincronizar, cierra Maity,
+                    desinstálala e instálala desde la Microsoft Store. Tus conversaciones
+                    sincronizadas se conservan en la nube.
+                  </p>
+                </div>
+              )}
+
+              {isStoreChannel && !canInstallFromStore && !isSideloaded && (
                 <div className="bg-muted rounded-lg p-3 space-y-1">
                   <p className="text-sm text-foreground">
                     La Microsoft Store descarga la actualización en segundo plano y la aplica
@@ -424,7 +471,21 @@ export function UpdateDialog({ open, onOpenChange, updateInfo }: UpdateDialogPro
           )}
         </div>
 
-        <DialogFooter>
+        {/* `sm:flex-wrap` + `gap-2`: los botones Store (hasta 3, `whitespace-nowrap`) pasan
+            a otra línea en vez de desbordar; `sm:space-x-0` porque el margen de space-x
+            se rompe al envolver. */}
+        <DialogFooter className="gap-2 sm:flex-wrap sm:space-x-0">
+          {!isDownloading && !error && isSideloaded && (
+            <>
+              <Button variant="outline" onClick={() => handleOpenChange(false)}>
+                Más Tarde
+              </Button>
+              <Button onClick={handleOpenStorePage} className="bg-[#3a4ac3] hover:bg-[#2b3892]">
+                <ExternalLink className="h-4 w-4 mr-2" />
+                Abrir Maity en la Store
+              </Button>
+            </>
+          )}
           {!isDownloading && !error && canInstallFromStore && (
             <>
               <Button variant="outline" onClick={() => handleOpenChange(false)} disabled={storeBusy}>
@@ -448,7 +509,7 @@ export function UpdateDialog({ open, onOpenChange, updateInfo }: UpdateDialogPro
               </Button>
             </>
           )}
-          {!isDownloading && !error && isStoreChannel && !canInstallFromStore && (
+          {!isDownloading && !error && isStoreChannel && !canInstallFromStore && !isSideloaded && (
             <>
               <Button variant="outline" onClick={() => handleOpenChange(false)} disabled={storeBusy}>
                 Más Tarde

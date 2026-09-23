@@ -30,6 +30,44 @@ pub fn is_running_under_package_identity() -> bool {
     }
 }
 
+/// Traduce `Windows.ApplicationModel.PackageSignatureKind` (su valor i32) a texto.
+/// Pura para poder testearla sin WinRT.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+pub fn signature_kind_label(kind: i32) -> &'static str {
+    match kind {
+        0 => "none",
+        1 => "developer",
+        2 => "enterprise",
+        3 => "store",
+        4 => "system",
+        _ => "unknown",
+    }
+}
+
+/// Firma del paquete MSIX: `store` sólo si lo instaló la Microsoft Store. Un MSIX
+/// de prueba (`developer`, p. ej. el `.msix` local o `winapp run`) tiene identidad
+/// de paquete igual, pero la Store NUNCA le sirve updates. `None` sin identidad de
+/// paquete (NSIS/dev/macOS/Linux). Llamar dentro de `startup_task::with_mta`.
+pub fn package_signature_kind() -> Option<&'static str> {
+    if !is_running_under_package_identity() {
+        return None;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        match windows::ApplicationModel::Package::Current().and_then(|p| p.SignatureKind()) {
+            Ok(kind) => Some(signature_kind_label(kind.0)),
+            Err(e) => {
+                log::warn!("[utils] Package::Current().SignatureKind() falló: {e}");
+                Some("unknown")
+            }
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        None
+    }
+}
+
 /// true cuando la app corre como build de Mac App Store.
 ///
 /// Apple prohibe que una app de la Store se auto-actualice (guideline 2.4.5):
@@ -122,3 +160,18 @@ pub async fn open_system_settings(preference_pane: String) -> Result<(), String>
 
     Ok(())
 } 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn signature_kind_label_mapea_package_signature_kind() {
+        assert_eq!(signature_kind_label(0), "none");
+        assert_eq!(signature_kind_label(1), "developer");
+        assert_eq!(signature_kind_label(2), "enterprise");
+        assert_eq!(signature_kind_label(3), "store");
+        assert_eq!(signature_kind_label(4), "system");
+        assert_eq!(signature_kind_label(99), "unknown");
+    }
+}
