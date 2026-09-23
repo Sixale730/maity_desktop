@@ -417,6 +417,10 @@ pub struct DeviceProfile {
     /// del StartupTask (WinRT); en el resto de canales, del plugin autostart.
     /// `disabledByUser` = apagado en Task Manager y la app NO puede reactivarlo.
     pub autostart_state: String,
+    /// Firma del MSIX (`store` | `developer` | `enterprise` | `system` | `none` |
+    /// `unknown`); `None` fuera de MSIX. Sólo `store` recibe updates de la Store:
+    /// `build_channel=store` + `developer` = copia de prueba que nunca se actualiza.
+    pub signature_kind: Option<&'static str>,
 }
 
 #[tauri::command]
@@ -438,6 +442,13 @@ pub async fn get_device_profile<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> 
         // Err solo ocurre bajo MSIX (WinRT falló); el plugin no aplica ahí.
         Err(_) => "unknown".to_string(),
     };
+
+    #[cfg(target_os = "windows")]
+    let signature_kind = crate::startup_task::with_mta(|| Ok(crate::utils::package_signature_kind()))
+        .await
+        .unwrap_or(Some("unknown"));
+    #[cfg(not(target_os = "windows"))]
+    let signature_kind = crate::utils::package_signature_kind();
 
     let hw = HardwareProfile::detect();
     DeviceProfile {
@@ -467,6 +478,7 @@ pub async fn get_device_profile<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> 
         },
         started_at_boot: crate::STARTED_AT_BOOT.load(std::sync::atomic::Ordering::Relaxed),
         autostart_state,
+        signature_kind,
     }
 }
 

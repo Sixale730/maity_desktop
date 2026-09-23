@@ -117,6 +117,8 @@ interface DeviceProfile {
   build_channel: string
   started_at_boot: boolean
   autostart_state: string
+  /** Firma del MSIX (`store` | `developer` | …); null fuera de MSIX. */
+  signature_kind: string | null
 }
 
 class HealthHeartbeatService {
