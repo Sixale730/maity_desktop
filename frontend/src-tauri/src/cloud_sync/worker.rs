@@ -278,7 +278,7 @@ async fn process_job<R: Runtime>(app: &AppHandle<R>, pool: &SqlitePool, job: &Sy
         }
     }
 
-    // El finalize puede tardar minutos (LLM + embeddings del lado de la nube):
+    // El finalize puede tardar minutos (LLM del lado de la nube):
     // sin heartbeat el lease de 5 min vencería y `reset_stale_jobs` lo devolvería
     // a 'pending' mientras todavía está corriendo → doble ejecución.
     let heartbeat = if job.job_type == JOB_FINALIZE {

@@ -1,9 +1,18 @@
 // api/finalize.rs
 //
-// Tauri command to call the conversations-finalize endpoint on Vercel.
+// Tauri command to call the finalize action on Vercel
+// (`POST /api/conversations` with `action: "finalize"`).
 // This replaces the previous deepseek-evaluate Edge Function call.
-// The endpoint evaluates the conversation, generates embeddings, memories,
-// and daily scores — all written directly to Supabase server-side.
+// The endpoint evaluates the conversation, extracts memories (hoy fallan en
+// silencio, Sixale730/maity#169) and computes daily scores — all written
+// directly to Supabase server-side.
+//
+// NO genera embeddings: la web los retiró a propósito en jul-2026
+// (docs/rag-implementation-plan.md del repo web), así que
+// `omi_conversations.embedding` queda NULL (#81). `segment_count` y
+// `last_segment_at` también le tocan a este finalize, no al desktop
+// (Sixale730/maity#168): es el único paso que corre con todos los
+// segmentos ya subidos.
 
 use log::{info, warn, error};
 use serde::{Deserialize, Serialize};
@@ -133,8 +142,8 @@ struct FinalizeRequest {
 /// estado de sesión.
 ///
 /// The endpoint reads transcript segments from Supabase, evaluates with LLM
-/// (DeepSeek → OpenAI fallback), generates embeddings, memories, and daily scores,
-/// then writes everything back to Supabase.
+/// (DeepSeek → OpenAI fallback), extracts memories and computes daily scores,
+/// then writes everything back to Supabase. No embeddings (see module header, #81).
 ///
 /// # Arguments
 /// * `conversation_id` - UUID of the conversation in omi_conversations
