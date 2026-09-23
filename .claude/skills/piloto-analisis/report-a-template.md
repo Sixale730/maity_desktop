@@ -56,7 +56,7 @@ Universo: <N> conversaciones no descartadas · <h> h · <N personas> de <M>. Est
 
 ## Backfill de análisis (si aplicó)
 
-Fecha/hora · candidatos (Q9) · método (worker `conversations-async-analysis` con `CRON_SECRET`, `--one` primero) · resultado (`completed`/`skipped` por persona) · cifras actualizadas después.
+Fecha/hora · candidatos (Q9) · método (worker `/api/conversations?action=async-analysis` con `CRON_SECRET`, `--one` primero) · resultado (`completed`/`skipped` por persona) · cifras actualizadas después.
 
 ## Tablas de apoyo
 

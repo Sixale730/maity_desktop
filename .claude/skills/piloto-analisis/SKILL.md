@@ -55,7 +55,7 @@ Correr Q0. Mostrar al usuario quién quedó dentro/fuera y las cifras base (conv
 ## Paso 2 — Backfill si hace falta (Q9)
 
 Si Q9 devuelve filas (`quota_skipped`/`failed`/sin estado con ≥100 palabras):
-- `retry_analysis` exige el JWT del dueño → no sirve. Usar el worker `POST https://www.maity.cloud/api/conversations-async-analysis` con `Authorization: Bearer <CRON_SECRET>` (`C:\maity\.env`), body `{conversation_id, type:'communication'}`; síncrono (≤300 s), no toca minuta ni cobra cuota.
+- `retry_analysis` exige el JWT del dueño → no sirve. Usar el worker `POST https://www.maity.cloud/api/conversations?action=async-analysis` con `Authorization: Bearer <CRON_SECRET>` (`C:\maity\.env`), body `{conversation_id, type:'communication'}`; síncrono (≤300 s), no toca minuta ni cobra cuota.
 - Script patrón: `backfill_dingler.mjs` (scratchpad de la sesión 2026-08-28; ver memoria `ref_backfill_analysis_cron_secret.md`): lista de ids, concurrencia 2, `--one <uuid>` primero, `--skip`. **Nunca imprimir el secreto**; host `www.maity.cloud` (los redirects tiran el header).
 - Después: recontar Q0 y anotar el backfill en A.
 
