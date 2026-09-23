@@ -110,32 +110,40 @@ export function MaityChatLayout() {
 
   const handleSend = useCallback(async (text?: string) => {
     const content = (text ?? input).trim();
-    if (!content || sendMessage.isPending || !userId) return;
+    // `createThread.isPending`: sin esto, clics repetidos mientras se crea el
+    // hilo apilaban inserts (y con Supabase colgado, promesas que nunca vuelven).
+    if (!content || sendMessage.isPending || createThread.isPending || !userId) return;
 
-    let thread = activeThread;
-    if (!thread) {
-      thread = await createThread.mutateAsync();
-      // Llevamos la lente elegida antes de que existiera el thread al nuevo
-      // thread, y la persistimos para que sobreviva un reload. Override local
-      // primero para que este envío ya la use (sendMessage lee thread.lens).
-      if (pendingLens !== 'open') {
-        thread = { ...thread, lens: pendingLens };
-        updateLens.mutate({ threadId: thread.id, lens: pendingLens });
+    try {
+      let thread = activeThread;
+      if (!thread) {
+        thread = await createThread.mutateAsync();
+        // Llevamos la lente elegida antes de que existiera el thread al nuevo
+        // thread, y la persistimos para que sobreviva un reload. Override local
+        // primero para que este envío ya la use (sendMessage lee thread.lens).
+        if (pendingLens !== 'open') {
+          thread = { ...thread, lens: pendingLens };
+          updateLens.mutate({ threadId: thread.id, lens: pendingLens });
+        }
+        setActiveThreadId(thread.id);
+        setPendingLens('open');
       }
-      setActiveThreadId(thread.id);
-      setPendingLens('open');
-    }
 
-    const turnAttachments = attachments;
-    setInput('');
-    setAttachments([]);
-    await sendMessage.mutateAsync({
-      thread,
-      content,
-      history: messages,
-      approvedMemories,
-      attachments: turnAttachments.length > 0 ? turnAttachments : undefined,
-    });
+      // Si crear el hilo falla, no llegamos aquí: el texto escrito se conserva.
+      const turnAttachments = attachments;
+      setInput('');
+      setAttachments([]);
+      await sendMessage.mutateAsync({
+        thread,
+        content,
+        history: messages,
+        approvedMemories,
+        attachments: turnAttachments.length > 0 ? turnAttachments : undefined,
+      });
+    } catch {
+      // Los `onError` de createThread/sendMessage ya muestran el toast y loguean;
+      // aquí solo se evita el unhandledrejection (clics de tarjetas y Enviar).
+    }
   }, [activeThread, approvedMemories, attachments, createThread, input, messages, pendingLens, sendMessage, updateLens, userId]);
 
   const handlePickStarter = useCallback(

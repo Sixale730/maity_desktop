@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
+import { fileLogger } from '@/lib/fileLogger'
 import * as svc from '../services/maityChatService'
 import type { ChatThread } from '../types'
 
@@ -25,6 +26,10 @@ export function useCreateThread(userId: string | undefined) {
       qc.setQueryData<ChatThread[]>(threadsKey(userId), (prev) => [thread, ...(prev ?? [])])
     },
     onError: (err: unknown) => {
+      // Sin esta línea un fallo al crear el hilo no dejaba rastro en el log exportable.
+      void fileLogger.warn('chat', 'createThread failed', {
+        message: err instanceof Error ? err.message : String(err),
+      })
       toast.error('No se pudo crear el chat', { description: String(err) })
     },
   })

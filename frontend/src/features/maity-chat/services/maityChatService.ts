@@ -5,6 +5,7 @@ import { logger } from '@/lib/logger'
 // distinguir "nadie usó el chat" de "falló N veces". Solo eventos de diagnóstico,
 // nunca contenido de mensajes (PII).
 import { fileLogger } from '@/lib/fileLogger'
+import { TimeoutError, withTimeout } from '@/lib/withTimeout'
 import type {
   ChatThread,
   ChatMessage,
@@ -14,6 +15,29 @@ import type {
   MemoryStatus,
   Lens,
 } from '../types'
+
+/**
+ * Plazos del camino de envío. Sin ellos, una llamada de supabase-js colgada (deadlock
+ * del lock de auth ≤0.2.59, incidente 2026-09-10; caso Kari 2026-09-23) dejaba
+ * "Enviar" y las tarjetas sin hacer nada: ni error, ni toast, ni log.
+ */
+const CHAT_DB_TIMEOUT_MS = 15_000
+const CHAT_SESSION_TIMEOUT_MS = 10_000
+const CHAT_STUCK_MESSAGE =
+  'Maity no pudo conectar con tu cuenta a tiempo. Cierra Maity desde la bandeja y vuelve a abrirla.'
+
+/** `withTimeout` + mensaje accionable para el usuario y línea en el log de archivo. */
+async function chatDeadline<T>(promise: PromiseLike<T>, ms: number, label: string): Promise<T> {
+  try {
+    return await withTimeout(promise, ms, label)
+  } catch (err) {
+    if (err instanceof TimeoutError) {
+      void fileLogger.warn('chat', 'supabase call timed out', { label, ms })
+      throw new Error(CHAT_STUCK_MESSAGE)
+    }
+    throw err
+  }
+}
 
 /**
  * Threads
@@ -39,12 +63,16 @@ export async function listThreads(userId: string): Promise<ChatThread[]> {
 }
 
 export async function createThread(userId: string, title?: string): Promise<ChatThread> {
-  const { data, error } = await supabase
-    .schema('maity')
-    .from('chat_threads')
-    .insert({ user_id: userId, title: title ?? 'Nuevo chat' })
-    .select('*')
-    .single()
+  const { data, error } = await chatDeadline(
+    supabase
+      .schema('maity')
+      .from('chat_threads')
+      .insert({ user_id: userId, title: title ?? 'Nuevo chat' })
+      .select('*')
+      .single(),
+    CHAT_DB_TIMEOUT_MS,
+    'createThread',
+  )
 
   if (error) throw error
   return data as ChatThread
@@ -321,7 +349,13 @@ async function callEndpoint(params: {
   const { threadId, history, approvedMemories, idempotencyKey, lens, attachments, onDelta } = params
   const t0 = Date.now()
 
-  const { data: { session } } = await supabase.auth.getSession()
+  // Antes de los watchdogs del stream (que arrancan abajo): sin plazo propio, un
+  // getSession colgado dejaba el envío pendiente para siempre.
+  const { data: { session } } = await chatDeadline(
+    supabase.auth.getSession(),
+    CHAT_SESSION_TIMEOUT_MS,
+    'getSession',
+  )
   const token = session?.access_token
   if (!token) throw new Error('Sesión no disponible. Vuelve a iniciar sesión.')
 
@@ -501,13 +535,17 @@ async function fetchLatestPair(
   threadId: string,
   idempotencyKey: string,
 ): Promise<{ userMessage: ChatMessage; assistantMessage: ChatMessage }> {
-  const { data, error } = await supabase
-    .schema('maity')
-    .from('chat_messages')
-    .select('*')
-    .eq('thread_id', threadId)
-    .eq('client_idempotency_key', idempotencyKey)
-    .order('created_at', { ascending: true })
+  const { data, error } = await chatDeadline(
+    supabase
+      .schema('maity')
+      .from('chat_messages')
+      .select('*')
+      .eq('thread_id', threadId)
+      .eq('client_idempotency_key', idempotencyKey)
+      .order('created_at', { ascending: true }),
+    CHAT_DB_TIMEOUT_MS,
+    'fetchLatestPair',
+  )
 
   if (error) throw error
   const rows = (data ?? []) as ChatMessage[]

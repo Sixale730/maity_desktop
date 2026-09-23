@@ -10,6 +10,7 @@ import { onOpenUrl, getCurrent as getCurrentDeepLink } from '@tauri-apps/plugin-
 import { logger } from '@/lib/logger'
 import { fileLogger } from '@/lib/fileLogger'
 import { translateAuthError } from '@/lib/auth-errors'
+import { withTimeout as withDeadline } from '@/lib/withTimeout'
 import { TauriEvent } from '@/lib/tauri-events'
 import {
   extractQueryParams,
@@ -85,15 +86,7 @@ async function seedCloudSession(session: Session, maityUserId: string): Promise<
 const AUTH_REQUEST_TIMEOUT_MS = 30_000
 
 function withTimeout<T>(promise: Promise<T>, label: string): Promise<T> {
-  return Promise.race([
-    promise,
-    new Promise<T>((_, reject) =>
-      setTimeout(
-        () => reject(new Error(`Auth ${label} timeout (${AUTH_REQUEST_TIMEOUT_MS}ms)`)),
-        AUTH_REQUEST_TIMEOUT_MS,
-      ),
-    ),
-  ])
+  return withDeadline(promise, AUTH_REQUEST_TIMEOUT_MS, `Auth ${label}`)
 }
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
