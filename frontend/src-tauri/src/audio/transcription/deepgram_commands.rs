@@ -44,7 +44,7 @@ pub struct DeepgramProxyConfigError {
     pub details: Option<String>,
 }
 
-/// Response from Vercel API /api/deepgram-token
+/// Response from Vercel API GET /api/conversations?action=deepgram-token
 #[derive(Debug, Deserialize)]
 struct VercelDeepgramTokenResponse {
     #[allow(dead_code)]
@@ -121,9 +121,12 @@ pub async fn fetch_deepgram_proxy_config(access_token: String) -> Result<Deepgra
 
     info!("Fetching Deepgram proxy config from Vercel API...");
 
-    // Make the HTTP request from Rust (no CORS restrictions)
+    // Make the HTTP request from Rust (no CORS restrictions).
+    // Desde sep-2026 vive como acción del router de conversaciones (issue #82):
+    // la ruta vieja /api/deepgram-token ya no existe y, por el rewrite catch-all
+    // de la web, responde 200 con el HTML de la SPA (no 404).
     let response = crate::api::HTTP
-        .get("https://www.maity.cloud/api/deepgram-token")
+        .get("https://www.maity.cloud/api/conversations?action=deepgram-token")
         .header("Authorization", format!("Bearer {}", access_token))
         .send()
         .await

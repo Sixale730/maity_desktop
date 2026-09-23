@@ -380,7 +380,7 @@ Ojo: `tauri.<plataforma>.conf.json` **reemplaza** el array `externalBin`, no lo 
 ## Nube: Supabase, Deepgram y Meeting Detector
 
 - **Cliente Supabase**: ver § Cuentas, nube y análisis (arriba) y `docs/NUBE_CUENTAS_SYNC.md`.
-- **Deepgram** via Cloudflare Worker proxy — **la API key nunca llega al cliente**; token JWT de 5 min de Vercel `/api/deepgram-token`; el Worker `maity-deepgram-proxy` es el único que conoce la key. Default: Nova-3, `es-419` (persiste en `transcript_settings` de SQLite). **No recrear `supabase/functions/`** (#67; ESLint bloquea `supabase.functions.invoke(`). Gotchas de JWT y tabla de archivos: `docs/NUBE_CUENTAS_SYNC.md`.
+- **Deepgram** via Cloudflare Worker proxy — **la API key nunca llega al cliente**; token JWT de 5 min de Vercel `GET /api/conversations?action=deepgram-token` (#82; la ruta vieja `/api/deepgram-token` ya no existe); el Worker `maity-deepgram-proxy` es el único que conoce la key. Default: Nova-3, `es-419` (persiste en `transcript_settings` de SQLite). **No recrear `supabase/functions/`** (#67; ESLint bloquea `supabase.functions.invoke(`). Gotchas de JWT y tabla de archivos: `docs/NUBE_CUENTAS_SYNC.md`.
 - **Meeting Detector: APAGADO por `DETECTOR_KILL_SWITCH = true`** (`meeting_detector/mod.rs`; independiente de `settings.enabled`). **NO borrar el módulo** — `scheduled_recording` reusa su `ProcessMonitor`. Todo campo nuevo en `MeetingDetectorSettings` lleva `#[serde(default)]` o el parse resetea las preferencias en silencio. Criterios anti-falsos-positivos y cómo reactivar: `docs/REGLAS_AUDIO_GRABACION.md` § Meeting Detector.
 
 ## Restricciones Importantes
