@@ -175,6 +175,9 @@ interface DeviceProfile {
   package_installed_at_source: string | null
   /** `null` = el scheduler todavía no publicó nada en este proceso. */
   jornada?: JornadaConfig | null
+  /** Inicio rápido de Windows (`HiberbootEnabled`); null fuera de Windows o si no
+   * se pudo leer el registro. Desde 0.2.62 (fixes-pre-0262, F3). */
+  hiberboot_enabled: boolean | null
 }
 
 /** Tope de re-emisiones de `device.profile` por proceso mientras `jornada` sea `null`

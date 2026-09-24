@@ -450,6 +450,37 @@ pub struct DeviceProfile {
     /// `jornada.settings_changed`). `None` = el scheduler todavía no publicó nada en
     /// este proceso. Desde 0.2.62 (#83).
     pub jornada: Option<crate::scheduled_recording::status_snapshot::JornadaConfig>,
+    /// Inicio rápido de Windows (`HKLM\SYSTEM\CurrentControlSet\Control\Session
+    /// Manager\Power!HiberbootEnabled`, DWORD): con Fast Startup activo, un
+    /// "apagado" no reinicia el kernel — `os_boot_at` no cambia. `None` fuera de
+    /// Windows o si no se pudo leer el valor. Desde 0.2.62 (fixes-pre-0262, F3).
+    pub hiberboot_enabled: Option<bool>,
+}
+
+/// Convierte el DWORD crudo de `HiberbootEnabled` a bool: pura, testeable sin
+/// Windows. `None` = valor ausente o registro ilegible (no confundir con `0`).
+fn parse_hiberboot_enabled(raw: Option<u32>) -> Option<bool> {
+    raw.map(|v| v != 0)
+}
+
+#[cfg(target_os = "windows")]
+fn read_hiberboot_enabled() -> Option<bool> {
+    use winreg::enums::{HKEY_LOCAL_MACHINE, KEY_READ};
+    use winreg::RegKey;
+
+    let raw = RegKey::predef(HKEY_LOCAL_MACHINE)
+        .open_subkey_with_flags(
+            r"SYSTEM\CurrentControlSet\Control\Session Manager\Power",
+            KEY_READ,
+        )
+        .ok()
+        .and_then(|k| k.get_value::<u32, _>("HiberbootEnabled").ok());
+    parse_hiberboot_enabled(raw)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn read_hiberboot_enabled() -> Option<bool> {
+    None
 }
 
 #[tauri::command]
@@ -502,6 +533,7 @@ pub async fn get_device_profile<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> 
         package_installed_at: installed.as_ref().map(|(at, _)| at.clone()),
         package_installed_at_source: installed.map(|(_, src)| src),
         jornada: crate::scheduled_recording::status_snapshot::jornada_config(),
+        hiberboot_enabled: read_hiberboot_enabled(),
     }
 }
 
@@ -624,6 +656,7 @@ mod health_snapshot_tests {
             package_installed_at: None,
             package_installed_at_source: None,
             jornada: None,
+            hiberboot_enabled: None,
         };
 
         let v = serde_json::to_value(&profile).expect("DeviceProfile serializable");
@@ -658,6 +691,7 @@ mod health_snapshot_tests {
             package_installed_at: None,
             package_installed_at_source: None,
             jornada: None,
+            hiberboot_enabled: None,
         };
 
         let v = serde_json::to_value(&profile).expect("DeviceProfile serializable");
@@ -687,6 +721,7 @@ mod health_snapshot_tests {
             package_installed_at: Some("2026-01-01T00:00:00+00:00".to_string()),
             package_installed_at_source: Some("package"),
             jornada: None,
+            hiberboot_enabled: None,
         };
 
         let v = serde_json::to_value(&profile).expect("DeviceProfile serializable");
@@ -714,11 +749,60 @@ mod health_snapshot_tests {
             package_installed_at: None,
             package_installed_at_source: None,
             jornada: None,
+            hiberboot_enabled: None,
         };
 
         let v = serde_json::to_value(&profile).expect("DeviceProfile serializable");
         assert!(v["package_installed_at"].is_null());
         assert!(v["package_installed_at_source"].is_null());
+    }
+
+    /// F3 (fixes-pre-0262, AC-3): DWORD 0 = Fast Startup apagado.
+    #[test]
+    fn parse_hiberboot_enabled_cero_es_false() {
+        assert_eq!(parse_hiberboot_enabled(Some(0)), Some(false));
+    }
+
+    /// F3: cualquier DWORD distinto de 0 = Fast Startup encendido.
+    #[test]
+    fn parse_hiberboot_enabled_distinto_de_cero_es_true() {
+        assert_eq!(parse_hiberboot_enabled(Some(1)), Some(true));
+        assert_eq!(parse_hiberboot_enabled(Some(42)), Some(true));
+    }
+
+    /// F3: valor ausente o registro ilegible -> `None`, nunca `Some(false)`.
+    #[test]
+    fn parse_hiberboot_enabled_ausente_es_none() {
+        assert_eq!(parse_hiberboot_enabled(None), None);
+    }
+
+    /// F3: blinda que `device.profile` trae `hiberboot_enabled` en el JSON.
+    #[test]
+    fn device_profile_serializa_hiberboot_enabled() {
+        let profile = DeviceProfile {
+            cpu_cores: 8,
+            gpu_type: "none",
+            has_gpu_acceleration: false,
+            memory_gb: 16,
+            performance_tier: "medium",
+            os: "windows",
+            os_version: None,
+            arch: "x86_64",
+            build_channel: "direct",
+            started_at_boot: false,
+            autostart_state: "enabled".to_string(),
+            autostart_disabled_at: None,
+            autostart_mechanism: "run_key",
+            signature_kind: None,
+            package_installed_at: None,
+            package_installed_at_source: None,
+            jornada: None,
+            hiberboot_enabled: Some(true),
+        };
+
+        let v = serde_json::to_value(&profile).expect("DeviceProfile serializable");
+        assert_eq!(v["hiberboot_enabled"], true);
+        assert!(v.as_object().unwrap().contains_key("hiberboot_enabled"));
     }
 
     #[test]
