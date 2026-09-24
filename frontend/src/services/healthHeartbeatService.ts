@@ -71,6 +71,20 @@ interface SessionPeaks {
   llama_procs_max: number
 }
 
+/** Espejo de `JornadaTelemetry` (Rust, scheduled_recording/status_snapshot.rs). */
+export interface JornadaTelemetry {
+  enabled: boolean
+  configured_by_user: boolean
+  loop_running: boolean
+  scheduler_phase: string
+  in_window: boolean
+  skip: string | null
+  rearm_cause: string | null
+  rearm_until: string | null
+  backoff: { code: string; consecutive: number; halted_for_day: boolean } | null
+  settings_load: string
+}
+
 /** Espejo de `HealthSnapshot` (Rust, logging/commands.rs). */
 interface HealthSnapshot {
   mem: MemSample | null
@@ -81,6 +95,23 @@ interface HealthSnapshot {
   lag_seconds: number
   /** Contadores del puente Rust ERROR→telemetría (BridgeBudget de Rust). */
   err_budget: Record<string, unknown> | null
+  /** Opcionales: tolera un Rust viejo en dev (sin estos campos aún). */
+  idle_reason?: string | null
+  jornada?: JornadaTelemetry | null
+}
+
+/**
+ * Normaliza `idle_reason`/`jornada` del snapshot: `undefined` (Rust viejo,
+ * campos aún no agregados) se vuelve `null`, igual que su ausencia real.
+ */
+export function jornadaHeartbeatFields(snapshot: {
+  idle_reason?: string | null
+  jornada?: JornadaTelemetry | null
+}): { idle_reason: string | null; jornada: JornadaTelemetry | null } {
+  return {
+    idle_reason: snapshot.idle_reason ?? null,
+    jornada: snapshot.jornada ?? null,
+  }
 }
 
 /** Payload completo de `transcription-lag-update` (worker.rs emite 6 campos). */
@@ -211,6 +242,10 @@ class HealthHeartbeatService {
       void platformLogger.log('health.heartbeat', {
         reason,
         phase: snapshot.phase,
+        // Estado DINÁMICO del scheduler de jornada (segunda excepción de
+        // cardinalidad, documentada en TELEMETRIA.md) — no atributos
+        // estáticos: el horario configurado va en `device.profile` (J7).
+        ...jornadaHeartbeatFields(snapshot),
         uptime_s: Math.round((Date.now() - this.startedAt) / 1000),
         seq: this.seq,
         mem: snapshot.mem,

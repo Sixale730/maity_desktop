@@ -16,6 +16,7 @@ import {
   ACTIVE_EMIT_EVERY_MS,
   HEARTBEAT_TOLERANCE_MS,
   IDLE_EMIT_EVERY_MS,
+  jornadaHeartbeatFields,
   shouldEmitHeartbeat,
 } from './healthHeartbeatService'
 
@@ -53,5 +54,36 @@ describe('shouldEmitHeartbeat', () => {
 
   it('las constantes mantienen la relación activo < idle', () => {
     expect(ACTIVE_EMIT_EVERY_MS).toBeLessThan(IDLE_EMIT_EVERY_MS)
+  })
+})
+
+describe('jornadaHeartbeatFields', () => {
+  it('pasa idle_reason y jornada tal cual cuando el snapshot los trae', () => {
+    const jornada = {
+      enabled: true,
+      configured_by_user: true,
+      loop_running: true,
+      scheduler_phase: 'idle',
+      in_window: false,
+      skip: null,
+      rearm_cause: 'auto_close',
+      rearm_until: '2026-09-23T18:00:00',
+      backoff: null,
+      settings_load: 'ok',
+    }
+    expect(
+      jornadaHeartbeatFields({ idle_reason: 'closed_for_day', jornada }),
+    ).toEqual({ idle_reason: 'closed_for_day', jornada })
+  })
+
+  it('normaliza a null cuando el snapshot no trae las claves (Rust viejo)', () => {
+    expect(jornadaHeartbeatFields({})).toEqual({ idle_reason: null, jornada: null })
+  })
+
+  it('conserva idle_reason: null (grabando) como null', () => {
+    expect(jornadaHeartbeatFields({ idle_reason: null, jornada: null })).toEqual({
+      idle_reason: null,
+      jornada: null,
+    })
   })
 })

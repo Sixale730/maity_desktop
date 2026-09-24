@@ -337,6 +337,10 @@ pub struct HealthSnapshot {
     /// significar 20 o 20.000. None si el layer nunca se creó (fallback
     /// `fmt::init()` de main.rs).
     pub err_budget: Option<super::rust_error_bridge::BridgeBudget>,
+    /// Por qué no se graba (dominio cerrado `status_snapshot::IDLE_REASONS`); None = grabando.
+    pub idle_reason: Option<&'static str>,
+    /// Estado dinámico del scheduler de jornada (§1.2); None = scheduler aún no inicializado.
+    pub jornada: Option<crate::scheduled_recording::status_snapshot::JornadaTelemetry>,
 }
 
 /// Métricas de salud en UNA invocación IPC: memoria por proceso, fase de
@@ -361,13 +365,21 @@ pub async fn get_health_snapshot() -> Result<HealthSnapshot, String> {
         }
     };
 
+    let rec = crate::audio::recording_phase::current_phase();
+    let (idle_reason, jornada) = crate::scheduled_recording::status_snapshot::heartbeat_fields(
+        rec,
+        chrono::Local::now().naive_local(),
+    );
+
     Ok(HealthSnapshot {
         mem,
         mem_sample_age_s,
         peaks: mem_sampler::session_peaks(),
-        phase: crate::audio::recording_phase::current_phase().as_str(),
+        phase: rec.as_str(),
         lag_seconds: crate::audio::transcription::worker::transcription_lag_seconds(),
         err_budget: super::rust_error_bridge::budget_snapshot(),
+        idle_reason,
+        jornada,
     })
 }
 
@@ -514,6 +526,23 @@ mod health_snapshot_tests {
             phase: "recording",
             lag_seconds: 3,
             err_budget: None,
+            idle_reason: Some("outside_window"),
+            jornada: Some(crate::scheduled_recording::status_snapshot::JornadaTelemetry {
+                enabled: true,
+                configured_by_user: true,
+                loop_running: true,
+                scheduler_phase: "idle",
+                in_window: false,
+                skip: None,
+                rearm_cause: None,
+                rearm_until: None,
+                backoff: Some(crate::scheduled_recording::status_snapshot::BackoffTelemetry {
+                    code: "mic_in_use",
+                    consecutive: 1,
+                    halted_for_day: false,
+                }),
+                settings_load: "ok",
+            }),
         };
 
         let v = serde_json::to_value(&snapshot).expect("HealthSnapshot serializable");
@@ -528,6 +557,38 @@ mod health_snapshot_tests {
         );
         assert_eq!(v["peaks"]["app_rss_peak_mb"], 900);
         assert_eq!(v["peaks"]["sys_avail_min_mb"], 3000);
+        assert_eq!(v["idle_reason"], "outside_window");
+        assert_eq!(v["jornada"]["scheduler_phase"], "idle");
+        assert_eq!(v["jornada"]["in_window"], false);
+        assert!(v["jornada"]["skip"].is_null());
+        assert_eq!(v["jornada"]["backoff"]["code"], "mic_in_use");
+        assert_eq!(v["jornada"]["settings_load"], "ok");
+        let jornada_obj = v["jornada"]
+            .as_object()
+            .expect("jornada debe serializar como objeto");
+        let expected_keys = [
+            "enabled",
+            "configured_by_user",
+            "loop_running",
+            "scheduler_phase",
+            "in_window",
+            "skip",
+            "rearm_cause",
+            "rearm_until",
+            "backoff",
+            "settings_load",
+        ];
+        assert_eq!(
+            jornada_obj.len(),
+            expected_keys.len(),
+            "espejo de healthHeartbeatService.ts y de docs/TELEMETRIA.md"
+        );
+        for key in expected_keys {
+            assert!(
+                jornada_obj.contains_key(key),
+                "espejo de healthHeartbeatService.ts y de docs/TELEMETRIA.md: falta {key}"
+            );
+        }
     }
 
     #[test]
@@ -545,10 +606,14 @@ mod health_snapshot_tests {
             phase: "idle",
             lag_seconds: 0,
             err_budget: None,
+            idle_reason: None,
+            jornada: None,
         };
 
         let v = serde_json::to_value(&snapshot).expect("serializable");
         assert!(v["mem"].is_null());
         assert!(v["mem_sample_age_s"].is_null());
+        assert!(v["idle_reason"].is_null());
+        assert!(v["jornada"].is_null());
     }
 }

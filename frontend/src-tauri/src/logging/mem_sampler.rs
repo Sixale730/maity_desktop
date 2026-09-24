@@ -381,9 +381,16 @@ async fn emit_native_heartbeat<R: Runtime>(
     uptime_s: u64,
     seq: u64,
 ) {
+    let (idle_reason, jornada) = crate::scheduled_recording::status_snapshot::heartbeat_fields(
+        phase,
+        chrono::Local::now().naive_local(),
+    );
+
     let payload = serde_json::json!({
         "reason": "native",
         "phase": phase.as_str(),
+        "idle_reason": idle_reason,
+        "jornada": jornada,
         // Desde el arranque del sampler (setup de la app) ≈ arranque del
         // proceso. El del JS cuenta desde el mount POST-AUTH: no son
         // comparables entre emisores.
