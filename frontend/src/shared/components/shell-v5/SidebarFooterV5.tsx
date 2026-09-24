@@ -41,7 +41,7 @@ export function SidebarFooterV5() {
   const { avatar } = useAvatarWithDefault(userProfile?.id);
 
   const handleLogout = async () => {
-    await signOut();
+    await signOut('chat_sidebar');
     navigate('/');
   };
 

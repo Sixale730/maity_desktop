@@ -61,7 +61,7 @@ export const SidebarControls: React.FC<SidebarControlsProps> = ({
         {isSignedIn && (
           <button
             onClick={() => {
-              void signOut();
+              void signOut('sidebar');
             }}
             aria-label="Cerrar sesión"
             title="Cerrar sesión"

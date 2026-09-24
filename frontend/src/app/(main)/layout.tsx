@@ -254,7 +254,7 @@ function AuthGate({ children }: { children: React.ReactNode }) {
                 Reintentar
               </button>
               <button
-                onClick={() => signOut()}
+                onClick={() => signOut('account_error')}
                 className="px-4 py-2 rounded-lg border border-border bg-secondary hover:bg-muted text-secondary-foreground text-sm font-medium transition-colors"
               >
                 Cerrar sesión

@@ -541,7 +541,7 @@ export function PreferenceSettings() {
           </p>
         )}
         <button
-          onClick={signOut}
+          onClick={() => void signOut('settings')}
           className="flex items-center gap-2 px-4 py-2 text-sm text-primary border border-primary/50 rounded-md hover:bg-primary/10 transition-colors"
         >
           <LogOut className="w-4 h-4" />

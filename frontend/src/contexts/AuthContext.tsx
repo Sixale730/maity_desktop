@@ -21,6 +21,18 @@ import {
   extractAuthError,
 } from '@/lib/authCallbackUrl'
 
+/**
+ * Superficies de logout aceptadas por Rust (`logging/telemetry/auth.rs::LOGOUT_SURFACES`,
+ * S3b). Cualquier otro valor que llegue a `logout_cleanup` cae a "unknown" allá —
+ * este tipo solo evita que el frontend invente strings nuevos sin tocar el espejo.
+ */
+export type LogoutSurface =
+  | 'settings'
+  | 'sidebar'
+  | 'chat_sidebar'
+  | 'onboarding_badge'
+  | 'account_error'
+
 interface AuthContextType {
   session: Session | null
   user: User | null
@@ -35,7 +47,7 @@ interface AuthContextType {
   signInWithEmail: (email: string, password: string) => Promise<void>
   signUpWithEmail: (email: string, password: string, fullName: string) => Promise<{ needsVerification: boolean }>
   sendPasswordReset: (email: string) => Promise<void>
-  signOut: () => Promise<void>
+  signOut: (surface?: LogoutSurface) => Promise<void>
   retryFetchMaityUser: () => void
 }
 
@@ -946,10 +958,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, [])
 
-  const signOut = useCallback(async () => {
-    // re-entrada: un doble clic en Cerrar sesion reusa el logout en curso (no dos logout_cleanup)
+  const signOut = useCallback(async (surface?: LogoutSurface) => {
+    // re-entrada: un doble clic en Cerrar sesion reusa el logout en curso (no dos
+    // logout_cleanup). La superficie del primer clic es la que queda registrada.
     if (signOutPromise.current) return signOutPromise.current
-    logger.debug('[Auth] signOut called')
+    // Normalización defensiva: `surface` solo puede llegar tipado desde TS, pero
+    // un caller JS suelto (o un cast) no debe filtrar texto libre a Rust — allá
+    // cualquier valor fuera de LOGOUT_SURFACES ya cae a "unknown", esto es doble cerrojo.
+    const normalizedSurface = typeof surface === 'string' ? surface : undefined
+    logger.debug('[Auth] signOut called', { surface: normalizedSurface })
     isSigningOut.current = true
 
     const doSignOut = async () => {
@@ -958,7 +975,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         // de limpiar el estado local: el guardado del segmento necesita que
         // current_user_id siga vivo en Rust. Best-effort con timeout en Rust —
         // nunca bloquea el logout.
-        await invoke('logout_cleanup').catch((err) => {
+        await invoke('logout_cleanup', { surface: normalizedSurface }).catch((err) => {
           logger.warn('[Auth] logout_cleanup failed:', err)
         })
 
