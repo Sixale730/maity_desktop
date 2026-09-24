@@ -1788,6 +1788,8 @@ pub fn run() {
             // Updates del canal Store vía StoreContext (aviso + instalación con el diálogo de la Store)
             store_update::store_check_updates,
             store_update::store_install_updates,
+            // "Cerrar Maity para actualizar" (Store): registra app.exit update/store_button y sale (#83, L3)
+            logging::telemetry::lifecycle::exit_for_update,
             // Update del canal directo (NSIS): se niega con grabación o post-proceso y cierra DB/sidecar antes del instalador (B2)
             direct_update::direct_update_install,
             // Equivalente macOS: build de Mac App Store — gatea el auto-updater

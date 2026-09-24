@@ -28,7 +28,7 @@ import type { UpdateInfo } from '@/services/updateService';
 import { STORE_PDP_DEEP_LINK } from '@/lib/storeChannel';
 import { invoke } from '@tauri-apps/api/core';
 import { check } from '@tauri-apps/plugin-updater';
-import { relaunch } from '@tauri-apps/plugin-process';
+import { exit, relaunch } from '@tauri-apps/plugin-process';
 import { toast } from 'sonner';
 import { beginPostStop, endPostStop } from '@/lib/postStopState';
 
@@ -39,6 +39,50 @@ function renderDialog(updateInfo: UpdateInfo) {
 describe('UpdateDialog — canal Store', () => {
   beforeEach(() => {
     openExternalUrlMock.mockClear();
+    vi.mocked(invoke).mockReset();
+    vi.mocked(exit).mockClear();
+    vi.mocked(toast.warning).mockClear();
+    vi.mocked(toast.error).mockClear();
+  });
+
+  const configInfo: UpdateInfo = {
+    available: true,
+    currentVersion: '0.2.60',
+    channel: 'store',
+    storeSource: 'config',
+    version: '0.2.61',
+  };
+
+  function mockStoreExit(exitForUpdate: () => Promise<unknown>) {
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd === 'get_recording_state') return { is_recording: false, phase: 'idle' };
+      if (cmd === 'exit_for_update') return exitForUpdate();
+      return undefined;
+    });
+  }
+
+  it('Cerrar Maity para actualizar invoca exit_for_update y no plugin-process exit', async () => {
+    mockStoreExit(async () => undefined);
+    renderDialog(configInfo);
+    fireEvent.click(screen.getByRole('button', { name: /Cerrar Maity para actualizar/ }));
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('exit_for_update'));
+    expect(exit).not.toHaveBeenCalled();
+    expect(toast.error).not.toHaveBeenCalled();
+  });
+
+  it('rechazo recording_active muestra el aviso de grabación', async () => {
+    mockStoreExit(() => Promise.reject('recording_active'));
+    renderDialog(configInfo);
+    fireEvent.click(screen.getByRole('button', { name: /Cerrar Maity para actualizar/ }));
+
+    await waitFor(() =>
+      expect(toast.warning).toHaveBeenCalledWith(
+        'Hay una grabación en curso. Detenla antes de cerrar Maity para actualizar.',
+      ),
+    );
+    expect(toast.error).not.toHaveBeenCalled();
+    expect(exit).not.toHaveBeenCalled();
   });
 
   it('StoreContext sin número: no pinta "Nueva Versión" y ofrece "Actualizar ahora"', () => {

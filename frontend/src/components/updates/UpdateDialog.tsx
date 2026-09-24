@@ -12,7 +12,6 @@ import { Button } from '@/components/ui/button';
 import { UpdateInfo, UpdateProgress, type DirectInstallOutcome } from '@/services/updateService';
 import type { RecordingState } from '@/services/recordingService';
 import { check, type DownloadEvent } from '@tauri-apps/plugin-updater';
-import { exit } from '@tauri-apps/plugin-process';
 import { Channel, invoke } from '@tauri-apps/api/core';
 import { isPostStopInFlight } from '@/lib/postStopState';
 import { toast } from 'sonner';
@@ -236,24 +235,31 @@ export function UpdateDialog({ open, onOpenChange, updateInfo }: UpdateDialogPro
 
   /**
    * Canal Store: la Store NO puede reemplazar un MSIX en ejecución; el paquete
-   * se aplica al siguiente cierre. Se sale con `exit(0)` (RunEvent::Exit en
-   * lib.rs corre graceful_shutdown_before_exit como backstop), pero NUNCA con
-   * una grabación viva: una jornada de horas no debe depender de ese backstop.
+   * se aplica al siguiente cierre. Sale por el comando Rust `exit_for_update`
+   * (#83): registra `app.exit` `update`/`store_button` antes de cerrar y se niega
+   * (`recording_active`) en cualquier fase distinta de idle — una jornada de
+   * horas no debe depender del backstop de RunEvent::Exit.
    */
   const handleCloseToUpdate = async () => {
+    const recordingWarning = 'Hay una grabación en curso. Detenla antes de cerrar Maity para actualizar.';
     setIsClosingToUpdate(true);
     try {
       const state = await invoke<RecordingState>('get_recording_state');
       if (state?.is_recording) {
         void fileLogger.info('updater_dialog', 'store-exit-refused-recording', { phase: state.phase });
-        toast.warning('Hay una grabación en curso. Detenla antes de cerrar Maity para actualizar.');
+        toast.warning(recordingWarning);
         return;
       }
       void fileLogger.info('updater_dialog', 'store-exit-to-update', { version: updateInfo?.version });
-      await exit(0);
+      await invoke('exit_for_update');
     } catch (err: unknown) {
-      console.error('Failed to exit for Store update:', err);
-      toast.error('No se pudo cerrar Maity: ' + (err instanceof Error ? err.message : 'Error desconocido'));
+      if (String(err).includes('recording_active')) {
+        void fileLogger.info('updater_dialog', 'store-exit-refused-recording', { source: 'rust' });
+        toast.warning(recordingWarning);
+        return;
+      }
+      logger.error('[UpdateDialog] exit_for_update falló', err);
+      toast.error('No se pudo cerrar Maity: ' + (err instanceof Error ? err.message : String(err) || 'Error desconocido'));
     } finally {
       setIsClosingToUpdate(false);
     }

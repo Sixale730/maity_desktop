@@ -809,7 +809,6 @@ pub enum ExitHint {
     /// Desinstalación de la instalación rival (`rival_install::uninstall_rival`).
     RivalInstall,
     /// Update. `via` = `store_button | store_api | nsis` (va en `detail`).
-    #[allow(dead_code)]
     Update { via: &'static str },
 }
 
@@ -927,6 +926,78 @@ pub fn clear_session_ending() {
     if let Err(e) = mutate_marker(true, clear_session_intent) {
         warn_once(WarnKind::Accessor, &e);
     }
+}
+
+// ── Updates de la Store (L3, contrato §5.7) ────────────────────────────────
+
+/// Pura. Intención `update` (reemplaza una `session_end`: si el update llega
+/// por Restart Manager, `summarize_prev` lo convierte en `update`).
+fn apply_update_intent(m: &mut LifecycleMarker, via: &str, target_version: Option<&str>, now: u64) {
+    m.exit_intent = Some(MarkerIntent {
+        reason: "update".into(),
+        via: Some(via.into()),
+        detail: None,
+        target_version: target_version.map(Into::into),
+        at_ms: now,
+    });
+}
+
+/// Pura. Borra la intención SOLO si es `update`.
+fn clear_update_intent_in(m: &mut LifecycleMarker) {
+    if m.exit_intent.as_ref().map(|i| i.reason.as_str()) == Some("update") {
+        m.exit_intent = None;
+    }
+}
+
+/// Deja durable la intención `update` justo antes de que un instalador pueda
+/// matar el proceso sin `RunEvent::Exit` (StoreContext: `store_install_updates`).
+/// Síncrona (corre en el hilo MTA de `with_mta`); no caduca por edad.
+pub fn record_update_intent(via: &str, target_version: Option<&str>) {
+    let now = now_ms();
+    if let Err(e) = mutate_marker(true, |m| apply_update_intent(m, via, target_version, now)) {
+        warn_once(WarnKind::Accessor, &e);
+    }
+}
+
+/// El update no se aplicó (cancelado, error, sin updates): borra la intención
+/// `update` (durable) para que el siguiente `app.start` no la reporte.
+pub fn clear_update_intent() {
+    if let Err(e) = mutate_marker(true, clear_update_intent_in) {
+        warn_once(WarnKind::Accessor, &e);
+    }
+}
+
+/// Pura. `exit_for_update` se niega en cualquier fase distinta de `Idle`: más
+/// estricto que `is_recording()`, incluye `Starting` y `Stopping` (post-proceso).
+pub(crate) fn update_exit_refusal(
+    phase: crate::audio::recording_phase::RecordingPhase,
+) -> Option<&'static str> {
+    match phase {
+        crate::audio::recording_phase::RecordingPhase::Idle => None,
+        _ => Some("recording_active"),
+    }
+}
+
+/// "Cerrar Maity para actualizar" (canal Store): la Store no reemplaza un MSIX
+/// en ejecución, así que Maity sale y el paquete se aplica al cerrar. Registra
+/// `app.exit` `update`/`store_button` (marcador durable + fila ≤750 ms + flush
+/// dirigido de 3 s) y sale con `app.exit(0)`: `RunEvent::Exit` sigue corriendo
+/// su backstop (graceful, DB, sidecar) y su `begin_exit(None)` es no-op.
+/// `Err("recording_active")` con grabación o post-proceso en curso.
+#[tauri::command]
+pub async fn exit_for_update(app: tauri::AppHandle) -> Result<(), String> {
+    let phase = crate::audio::recording_phase::current_phase();
+    if let Some(refusal) = update_exit_refusal(phase) {
+        log::warn!("[lifecycle] exit_for_update rechazado: fase {}", phase.as_str());
+        return Err(refusal.into());
+    }
+    if let Some(rec) = begin_exit(Some(ExitHint::Update { via: "store_button" })) {
+        if let Some(id) = emit_exit_row(&app, &rec, EXIT_ROW_TIMEOUT).await {
+            let _ = super::drain::flush_row(&app, id, Duration::from_secs(3)).await;
+        }
+    }
+    app.exit(0);
+    Ok(())
 }
 
 /// Resultado puro de `classify_exit`.
@@ -1763,6 +1834,100 @@ mod tests {
         m.exit_intent = None;
         clear_session_intent(&mut m);
         assert_eq!(m.exit_intent, None);
+    }
+
+    // ── Updates de la Store (L3) ──
+
+    #[test]
+    fn apply_update_intent_escribe_y_reemplaza_session_end() {
+        let mut m = marker();
+        m.exit_intent = Some(intent("session_end", None, Some("logoff"), T0));
+        apply_update_intent(&mut m, "store_api", Some("0.2.63"), T0 + 9);
+        let i = m.exit_intent.clone().expect("intención");
+        assert_eq!(i.reason, "update");
+        assert_eq!(i.via.as_deref(), Some("store_api"));
+        assert_eq!(i.detail, None);
+        assert_eq!(i.target_version.as_deref(), Some("0.2.63"));
+        assert_eq!(i.at_ms, T0 + 9);
+
+        // Sin versión objetivo (StoreContext no la expone): null, nunca un centinela.
+        apply_update_intent(&mut m, "store_api", None, T0 + 10);
+        assert_eq!(m.exit_intent.as_ref().and_then(|i| i.target_version.clone()), None);
+    }
+
+    #[test]
+    fn clear_update_intent_in_borra_update_pero_no_session_end() {
+        let mut m = marker();
+        apply_update_intent(&mut m, "store_api", None, T0);
+        clear_update_intent_in(&mut m);
+        assert_eq!(m.exit_intent, None);
+
+        let ses = intent("session_end", None, Some("shutdown"), T0);
+        m.exit_intent = Some(ses.clone());
+        clear_update_intent_in(&mut m);
+        assert_eq!(m.exit_intent, Some(ses));
+
+        m.exit_intent = None;
+        clear_update_intent_in(&mut m); // sin intención: no-op
+        assert_eq!(m.exit_intent, None);
+    }
+
+    #[test]
+    fn intencion_update_store_api_pendiente_se_resume_como_update() {
+        let mut m = marker();
+        apply_update_intent(&mut m, "store_api", None, T0 + 3_000_000);
+        let s = summarize(&MarkerRead::Ok(m.clone()), T0 + 4_000_000, &[], None, None);
+        assert_eq!(s.prev_exit_reason.as_deref(), Some("update"));
+        assert_eq!(s.prev_exit_detail.as_deref(), Some("store_api"));
+        assert_eq!(s.prev_exit_source, Some("intent"));
+        assert_eq!(s.prev_exit_clean, Some(true));
+
+        // Restart Manager durante el update: el fin de sesión observado cede.
+        m.exit = Some(exit("os_session_end", Some("unknown"), true));
+        let s = summarize(&MarkerRead::Ok(m.clone()), T0 + 4_000_000, &[], None, None);
+        assert_eq!(s.prev_exit_reason.as_deref(), Some("update"));
+        assert_eq!(s.prev_exit_source, Some("observed"));
+
+        // Borrada tras un update no aplicado: vuelve a la inferencia.
+        m.exit = None;
+        clear_update_intent_in(&mut m);
+        let s = summarize(&MarkerRead::Ok(m), T0 + 4_000_000, &[], None, None);
+        assert_eq!(s.prev_exit_reason.as_deref(), Some("unclean"));
+    }
+
+    #[test]
+    fn salida_observada_store_button_se_resume_como_update() {
+        let mut m = marker();
+        let c = classify_exit(
+            Some(&ExitHint::Update { via: "store_button" }),
+            &ExitRequestSeen::NotSeen,
+            None,
+            false,
+        );
+        m.exit = Some(MarkerExit {
+            reason: c.reason.into(),
+            detail: c.detail.clone(),
+            ..exit("", None, true)
+        });
+        let s = summarize(&MarkerRead::Ok(m), T0 + 4_000_000, &[], None, None);
+        assert_eq!(s.prev_exit_reason.as_deref(), Some("update"));
+        assert_eq!(s.prev_exit_detail.as_deref(), Some("store_button"));
+        assert_eq!(s.prev_exit_source, Some("observed"));
+        assert_eq!(s.prev_exit_clean, Some(true));
+    }
+
+    #[test]
+    fn exit_for_update_solo_sale_en_idle() {
+        use crate::audio::recording_phase::RecordingPhase;
+        assert_eq!(update_exit_refusal(RecordingPhase::Idle), None);
+        for phase in [
+            RecordingPhase::Starting,
+            RecordingPhase::Recording,
+            RecordingPhase::Paused,
+            RecordingPhase::Stopping,
+        ] {
+            assert_eq!(update_exit_refusal(phase), Some("recording_active"), "{:?}", phase);
+        }
     }
 
     #[test]

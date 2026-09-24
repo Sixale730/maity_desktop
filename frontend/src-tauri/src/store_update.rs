@@ -184,9 +184,17 @@ pub async fn store_install_updates(app: tauri::AppHandle) -> Result<StoreInstall
             if updates.Size().unwrap_or(0) == 0 {
                 return Ok(StoreInstallOutcome::NoUpdates);
             }
+            // #83 (L3): intención durable ANTES de instalar. Si se completa, Windows
+            // cierra Maity sin `RunEvent::Exit` propio y el siguiente `app.start`
+            // reporta `prev_exit_reason: update` / `store_api`. Síncrona: OK en MTA.
+            crate::logging::telemetry::lifecycle::record_update_intent("store_api", None);
             imp::install(&ctx, &updates)
         })
         .await;
+        // Update no aplicado (cancelado, error, sin updates o Err): sin intención.
+        if !matches!(outcome, Ok(StoreInstallOutcome::Completed)) {
+            crate::logging::telemetry::lifecycle::clear_update_intent();
+        }
         match &outcome {
             Ok(o) => log::info!("[store_update] install: {:?}", o),
             Err(e) => log::warn!("[store_update] install falló: {e}"),
