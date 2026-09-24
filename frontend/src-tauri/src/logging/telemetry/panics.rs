@@ -16,7 +16,36 @@ use std::sync::OnceLock;
 use tauri::{AppHandle, Manager, Runtime};
 
 static PANIC_FILE: OnceLock<PathBuf> = OnceLock::new();
-const PANIC_FILE_NAME: &str = "telemetry-panics.jsonl";
+/// Vive en `app_data_dir` (no en el local). `lifecycle::rotate_at_boot` lo LEE
+/// (sin borrarlo) antes de `import_pending` para decidir `crash_panic` (#83).
+pub(crate) const PANIC_FILE_NAME: &str = "telemetry-panics.jsonl";
+
+/// Instante e hilo de un panic anotado por el hook (una línea del `.jsonl`).
+/// Lo usa `lifecycle::summarize_prev`: solo un panic del hilo `main` tumba el
+/// proceso (`panic = "unwind"`: los de tasks tokio se anotan pero no lo matan).
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct PanicTs {
+    pub ts_ms: u64,
+    pub thread: Option<String>,
+}
+
+/// Pura: una entrada por línea JSON válida con `ts_ms` numérico. Líneas
+/// vacías, JSON roto o sin `ts_ms` se saltan. No toca el archivo.
+pub(crate) fn parse_panic_ts(contents: &str) -> Vec<PanicTs> {
+    contents
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter_map(|entry| {
+            let ts_ms = entry.get("ts_ms").and_then(|v| v.as_u64())?;
+            let thread = entry
+                .get("thread")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            Some(PanicTs { ts_ms, thread })
+        })
+        .collect()
+}
 
 fn now_ms() -> u64 {
     std::time::SystemTime::now()
@@ -50,10 +79,14 @@ pub fn install<R: Runtime>(app: &AppHandle<R>) {
             } else {
                 "Unknown panic payload".to_string()
             };
+            // `thread`: nombre del hilo (null si no tiene). El ciclo de vida
+            // (#83) distingue un panic del hilo `main` (mata el proceso →
+            // `crash_panic`) de uno de un worker tokio (se anota y sigue).
             let line = serde_json::json!({
                 "ts_ms": now_ms(),
                 "message": message,
                 "location": location,
+                "thread": std::thread::current().name(),
             });
             if let Ok(mut file) = std::fs::OpenOptions::new()
                 .create(true)
@@ -126,5 +159,58 @@ pub async fn import_pending<R: Runtime>(app: &AppHandle<R>) {
             }),
         };
         crate::logging::incident::arm(app, payload).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_panic_ts_lee_varias_lineas_con_y_sin_hilo() {
+        let contents = concat!(
+            r#"{"ts_ms":1000,"message":"a","location":"x.rs:1:1","thread":"main"}"#,
+            "\n",
+            r#"{"ts_ms":2000,"message":"b","location":"y.rs:2:2","thread":null}"#,
+            "\n",
+            // Formato previo a #83 (sin `thread`): sigue contando, hilo None.
+            r#"{"ts_ms":3000,"message":"c","location":"z.rs:3:3"}"#,
+            "\n",
+            r#"{"ts_ms":4000,"thread":"tokio-runtime-worker"}"#,
+            "\n",
+        );
+        let got = parse_panic_ts(contents);
+        assert_eq!(
+            got,
+            vec![
+                PanicTs { ts_ms: 1000, thread: Some("main".into()) },
+                PanicTs { ts_ms: 2000, thread: None },
+                PanicTs { ts_ms: 3000, thread: None },
+                PanicTs { ts_ms: 4000, thread: Some("tokio-runtime-worker".into()) },
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_panic_ts_salta_vacias_rotas_y_sin_ts() {
+        let contents = concat!(
+            "\n",
+            "   \n",
+            "{esto no es json\n",
+            r#"{"message":"sin ts","thread":"main"}"#,
+            "\n",
+            r#"{"ts_ms":"no-numero","thread":"main"}"#,
+            "\n",
+            r#"{"ts_ms":5000,"thread":"main"}"#,
+            "\n",
+            r#"{"ts_ms":6000,"thread":"main""#, // línea truncada (crash a media escritura)
+        );
+        let got = parse_panic_ts(contents);
+        assert_eq!(got, vec![PanicTs { ts_ms: 5000, thread: Some("main".into()) }]);
+    }
+
+    #[test]
+    fn parse_panic_ts_vacio_no_da_entradas() {
+        assert!(parse_panic_ts("").is_empty());
     }
 }

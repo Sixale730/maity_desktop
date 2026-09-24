@@ -13,6 +13,9 @@
 //!   espejo del CHECK de `docs/platform-logs-status.sql`. El RPC traga la
 //!   violación del CHECK y responde 200, así que un literal libre se perdía
 //!   en silencio (sep-2026: `stt.*`, `audio.*`, `incident.*` con 0 filas).
+//! - `lifecycle`: marcador de ciclo de vida del PROCESO (`lifecycle.json`),
+//!   `app.start`/`app.exit`/`app.resumed` (#83, desde 0.2.62). No confundir con
+//!   `app.open`/`app.close`, que emite el webview.
 //!
 //! Regla de oro (aprendida del puente `rust_error_bridge`, que desde sep-2026
 //! también la cumple): la telemetría nativa NO emite al webview para que otro
@@ -23,6 +26,7 @@ pub mod catalog;
 pub mod context;
 pub mod drain;
 pub mod emit;
+pub mod lifecycle;
 pub mod panics;
 pub mod recording_session;
 pub mod status;

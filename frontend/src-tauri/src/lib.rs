@@ -689,6 +689,11 @@ pub fn run() {
                 if audio::recording_preferences::pilot_batch_build() { "build piloto MAITY_PILOT_BATCH=1" } else { "build normal" }
             );
 
+            // Marcador de ciclo de vida del proceso (#83): se rota ANTES del init
+            // de la DB para que un cuelgue de la DB se vea como "arrancó y nunca
+            // vivió". Síncrono (std::fs); `app.start` se emite tras la DB.
+            logging::telemetry::lifecycle::rotate_at_boot(_app.handle());
+
             // CRITICAL: Initialize database FIRST, before any spawn that might
             // access AppState. Tauri commands can be invoked before setup completes,
             // and async tasks spawned later (notifications, tray refresh) might race
@@ -727,6 +732,10 @@ pub fn run() {
                     });
                 }
             }
+
+            // `app.start` con el resumen del proceso anterior + ticker de vida
+            // (`app.resumed`). Spawn: no bloquea el setup; necesita `AppState`.
+            logging::telemetry::lifecycle::emit_start(_app.handle());
 
             // Warm-up de ffmpeg, DETACHED (sep-2026, #32). `find_ffmpeg_path()`
             // toca disco (`current_exe`, `which`, `read_dir`) y en Linux / dev sin
