@@ -142,6 +142,15 @@ fn get_settings_path<R: Runtime>(app_handle: &AppHandle<R>) -> Result<PathBuf> {
     Ok(config_dir.join("scheduled_recording_settings.json"))
 }
 
+/// ¿Existe ya el archivo de settings en disco? Lo usa `initialize` (J5) para distinguir,
+/// al cargar, un `Err` real de "primer arranque, todavía no hay archivo" — reusa
+/// `get_settings_path` en vez de duplicar el nombre del archivo en `service.rs`.
+pub fn settings_file_exists<R: Runtime>(app_handle: &AppHandle<R>) -> bool {
+    get_settings_path(app_handle)
+        .map(|p| p.exists())
+        .unwrap_or(false)
+}
+
 /// Carga settings desde disco (o defaults si no existe el archivo).
 pub async fn load_settings<R: Runtime>(
     app_handle: &AppHandle<R>,

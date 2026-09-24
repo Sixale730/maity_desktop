@@ -11,6 +11,7 @@ pub mod runtime_state;
 pub mod schedule;
 pub mod service;
 pub mod settings;
+pub mod status_snapshot;
 
 pub use commands::*;
 pub use service::ScheduledRecordingService;

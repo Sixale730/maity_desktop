@@ -25,7 +25,8 @@ use crate::events;
 use super::runtime_state::{self, RestoreOutcome};
 use super::schedule;
 use super::schedule::start_of_next_day;
-use super::settings::{load_settings, save_settings, ScheduledRecordingSettings};
+use super::settings::{load_settings, save_settings, settings_file_exists, ScheduledRecordingSettings};
+use super::status_snapshot;
 
 /// Shape idéntico al `TranscriptSegment` que escribe `recording_saver` en `transcripts.json`.
 /// Lo mantengo local (en vez de reusar el struct público) para dos motivos: (a) desacoplo el
@@ -59,8 +60,11 @@ pub enum SchedulerPhase {
 }
 
 /// Razón por la que una ventana arranca pero se omite.
+///
+/// `pub(crate)` desde J5: `status_snapshot::idle_reason` (otro módulo del crate) necesita
+/// leerla para clasificar `idle_reason`. Sigue sin usarse fuera de `scheduled_recording`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SkipReason {
+pub(crate) enum SkipReason {
     ManualInProgress,
     TranscriptionNotReady,
     RearmingNextHour,
@@ -79,7 +83,7 @@ enum SkipReason {
 }
 
 impl SkipReason {
-    fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             SkipReason::ManualInProgress => "manual_in_progress",
             SkipReason::TranscriptionNotReady => "transcription_not_ready",
@@ -242,6 +246,30 @@ fn session_ending_flag() -> bool {
     SESSION_ENDING.load(Ordering::SeqCst)
 }
 
+/// Calcula la transición de `idle_reason` desde la instantánea publicada (J5) y, si hay
+/// algo que reportar, la emite por el outbox en una task aparte — para no retrasar quien
+/// llama (el `initialize`/`update_settings` retienen el lock exterior del servicio y el
+/// loop no debe demorar el tick por una emisión de telemetría).
+fn spawn_idle_reason_emit<R: Runtime>(app: &AppHandle<R>) {
+    let now = Local::now().naive_local();
+    let rec = crate::audio::recording_phase::current_phase();
+    if let Some(payload) = status_snapshot::take_idle_transition(rec, now) {
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            crate::logging::telemetry::emit::emit_event(
+                &app,
+                crate::logging::telemetry::context::process_session_id(),
+                crate::logging::telemetry::catalog::JORNADA_IDLE_REASON_CHANGED,
+                payload,
+                Some(crate::logging::telemetry::status::TelemetryStatus::Ok),
+                None,
+                None,
+            )
+            .await;
+        });
+    }
+}
+
 fn log_rearm(r: &Rearm) {
     info!(
         "[scheduled] rearme {} hasta {} (puesto {})",
@@ -275,8 +303,11 @@ const OTHER_BACKOFF_SECS: [i64; 3] = [60, 120, 300];
 const NO_INPUT_PROBE_SECS: i64 = 300;
 
 /// Causa clasificada de un fallo de arranque, a efectos de política de reintento.
+///
+/// `pub(crate)` desde J5 (queda disponible para `status_snapshot`, aunque hoy solo lo
+/// consume este archivo vía `BackoffView.code`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum StartFailureKind {
+pub(crate) enum StartFailureKind {
     /// El equipo no tiene micrófono (`AudioStartError::MicNotFound`).
     NoInputDevice,
     /// Windows deniega el acceso (`0x80070005`).
@@ -312,6 +343,12 @@ impl StartFailureKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct StartBackoff {
     kind: StartFailureKind,
+    /// Código estable de `audio::device_errors::classify_device_error(raw).code()`
+    /// (J5): telemetría necesita el código real (`mic_not_found` / `mic_permission_denied` /
+    /// `mic_in_use` / `mic_format_unsupported` / `audio_unknown`), no solo el `kind` de la
+    /// política de reintento (que agrupa varios códigos bajo `Other`). Si la causa cambia
+    /// de un fallo a otro, `code` es siempre el del fallo ACTUAL.
+    code: &'static str,
     consecutive: u32,
     /// Antes de este instante no se vuelve a intentar.
     retry_at: NaiveDateTime,
@@ -451,9 +488,21 @@ impl ScheduledRecordingService {
 
     /// Carga settings persistidos en el estado compartido.
     pub async fn initialize<R: Runtime>(&mut self, app_handle: &AppHandle<R>) -> Result<()> {
-        let settings = load_settings(app_handle).await.unwrap_or_default();
-        *self.shared.settings.write().await = settings;
+        // `settings_load` (J5/AC-7): distingue, para telemetría, "primer arranque sin
+        // archivo todavía" de un JSON corrupto/ilegible — ambos caen en el mismo
+        // `unwrap_or_default()`, pero solo el segundo es un error real.
+        let had_file = settings_file_exists(app_handle);
+        let (settings, load) = match load_settings(app_handle).await {
+            Ok(s) => (s, if had_file { "ok" } else { "missing" }),
+            Err(e) => {
+                warn!("[scheduled] no se pudieron cargar los settings: {}", e);
+                (ScheduledRecordingSettings::default(), "error")
+            }
+        };
+        *self.shared.settings.write().await = settings.clone();
         self.restore_persisted_rearm(app_handle).await;
+        status_snapshot::publish_settings(&settings, load);
+        spawn_idle_reason_emit(app_handle);
         info!("Scheduled recording service initialized");
         Ok(())
     }
@@ -513,9 +562,15 @@ impl ScheduledRecordingService {
         *self.shared.is_running.write().await = true;
 
         let shared = self.shared.clone();
+        // Nueva generación ANTES del spawn: un tick tardío de un loop anterior (ya
+        // detenido) nunca debe pisar la instantánea de éste (J5).
+        let gen = status_snapshot::begin_loop();
+        // Clon PROPIO para la emisión: `app_handle` se mueve al loop de abajo.
+        let handle_for_emit = app_handle.clone();
         tokio::spawn(async move {
-            run_scheduler_loop(app_handle, shared, rx).await;
+            run_scheduler_loop(app_handle, shared, rx, gen).await;
         });
+        spawn_idle_reason_emit(&handle_for_emit);
 
         info!("Scheduled recording loop spawned");
         Ok(())
@@ -529,6 +584,10 @@ impl ScheduledRecordingService {
         }
         self.command_tx = None;
         *self.shared.phase.write().await = SchedulerPhase::Disabled;
+        // Sin `AppHandle` aquí: no emite. La transición a `jornada_off` la emite
+        // `update_settings`, que en `set_scheduled_recording_enabled` corre ANTES del
+        // `stop()` (J5; ver Trampas del plan).
+        status_snapshot::publish_stopped();
         info!("Scheduled recording loop stopped");
     }
 
@@ -546,6 +605,8 @@ impl ScheduledRecordingService {
             .await
             .map_err(|e| format!("Failed to save scheduled recording settings: {}", e))?;
         *self.shared.settings.write().await = settings.clone();
+        status_snapshot::publish_settings(&settings, "ok");
+        spawn_idle_reason_emit(app_handle);
         if let Some(tx) = &self.command_tx {
             let _ = tx.send(SchedulerCommand::UpdateSettings(settings)).await;
         }
@@ -656,6 +717,7 @@ async fn run_scheduler_loop<R: Runtime>(
     app: AppHandle<R>,
     shared: SchedulerShared,
     mut command_rx: mpsc::Receiver<SchedulerCommand>,
+    gen: u64,
 ) {
     let mut tick = {
         let s = shared.settings.read().await;
@@ -686,6 +748,26 @@ async fn run_scheduler_loop<R: Runtime>(
                     evaluate_tick(&app, &shared, &settings, now, &mut process_monitor).await;
 
                 *shared.phase.write().await = new_phase;
+
+                // Instantánea para telemetría (J5), en TODOS los ticks (no solo en el
+                // cambio de fase: `idle_reason` puede cambiar sin que cambie `new_phase`,
+                // p. ej. de `mic_in_use` a `start_failed` dentro de la misma fase Armed).
+                {
+                    let rearm = *shared.rearm.read().await;
+                    let backoff = *shared.start_backoff.read().await;
+                    status_snapshot::publish_tick(
+                        gen,
+                        new_phase,
+                        skip,
+                        rearm,
+                        backoff.map(|b| status_snapshot::BackoffView {
+                            code: b.code,
+                            consecutive: b.consecutive,
+                            halted_for_day: b.halted_for_day,
+                        }),
+                    );
+                }
+                spawn_idle_reason_emit(&app);
 
                 if prev_phase != Some(new_phase) {
                     emit_status(&app, new_phase, &settings, now);
@@ -2129,6 +2211,9 @@ async fn record_start_failure<R: Runtime>(
     now: NaiveDateTime,
 ) -> SkipReason {
     let kind = StartFailureKind::classify(raw);
+    // Código estable del fallo ACTUAL (J5): telemetría necesita el código real, no solo
+    // el `kind` de la política de reintento (que agrupa formatos y `Unknown` bajo `Other`).
+    let code = crate::audio::device_errors::classify_device_error(raw).code();
 
     let previous = *shared.start_backoff.read().await;
     // Una causa distinta reinicia la cuenta y el latch: son problemas distintos
@@ -2142,6 +2227,7 @@ async fn record_start_failure<R: Runtime>(
 
     *shared.start_backoff.write().await = Some(StartBackoff {
         kind,
+        code,
         consecutive,
         retry_at,
         halted_for_day,
