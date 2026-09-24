@@ -16,6 +16,7 @@ import { supabase } from '@/lib/supabase';
 import { logger } from '@/lib/logger';
 import { logPoll } from '@/lib/diagnostics';
 import { ANALYSIS_FEATURE } from '@/hooks/usePlanStatus';
+import { beginPostStop, endPostStop } from '@/lib/postStopState';
 import type { Transcript } from '@/types';
 
 type SummaryStatus = 'idle' | 'processing' | 'summarizing' | 'regenerating' | 'completed' | 'error';
@@ -292,6 +293,10 @@ export function useRecordingStop(
       return;
     }
     stopInProgressRef.current = true;
+    // Post-proceso en vuelo: el update NSIS se niega hasta que el `finally` lo
+    // cierre (guardado streaming / lote). Va DESPUÉS del guard para que un stop
+    // duplicado no incremente sin su `endPostStop()`.
+    beginPostStop();
 
     // Set status to STOPPING immediately
     setStatus(RecordingStatus.STOPPING);
@@ -660,6 +665,7 @@ export function useRecordingStop(
     } finally {
       // Always reset the guard flag when done
       stopInProgressRef.current = false;
+      endPostStop();
     }
   }, [
     setIsRecordingDisabled,

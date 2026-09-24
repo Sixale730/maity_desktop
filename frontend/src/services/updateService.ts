@@ -6,7 +6,9 @@
  *
  * Dos canales (ver `UpdateInfo.channel`):
  * - `github`: instalación NSIS → `tauri-plugin-updater` contra `latest.json` de
- *   GitHub Releases; descarga + instala + relaunch.
+ *   GitHub Releases; el JS solo hace `check()`. La descarga y la instalación las
+ *   hace el comando Rust `direct_update_install` (se niega con grabación o
+ *   post-proceso y cierra DB/sidecar antes del instalador, B2).
  * - `store`: instalación MSIX (Microsoft Store) → pregunta a la Store vía
  *   StoreContext (`store_check_updates`, Rust) y el `UpdateDialog` instala con el
  *   diálogo de la propia Store (`store_install_updates`). Si la API falla, respaldo:
@@ -18,11 +20,10 @@
  *   setup.exe NSIS como segunda copia Win32 (issue #71).
  */
 
-import { check, Update } from '@tauri-apps/plugin-updater';
+import { check } from '@tauri-apps/plugin-updater';
 import { invoke } from '@tauri-apps/api/core';
 import { logger } from '@/lib/logger';
 import { fileLogger } from '@/lib/fileLogger';
-import { relaunch } from '@tauri-apps/plugin-process';
 import { getVersion } from '@tauri-apps/api/app';
 import { fetchStoreLatestVersion, type StoreUpdateCheck } from '@/lib/storeChannel';
 import { isNewerVersion, parseVersion } from '@/lib/versionCompare';
@@ -53,6 +54,11 @@ export interface UpdateProgress {
   total: number;
   percentage: number;
 }
+
+/** Resultado de `direct_update_install` (Rust, direct_update.rs): `{kind, detail}` en camelCase. */
+export type DirectInstallOutcome =
+  | { kind: 'restarting' | 'noUpdate' | 'recordingActive' | 'postProcessing' | 'busy' | 'unsupported' }
+  | { kind: 'error'; detail: string };
 
 /**
  * Update Service
@@ -339,34 +345,6 @@ export class UpdateService {
       void fileLogger.warn('updater_service', 'store-version-lookup-failed', { message });
     }
     return undefined;
-  }
-
-  /**
-   * Download and install the available update
-   * @param update The update object from checkForUpdates
-   * @param onProgress Optional progress callback
-   * @returns Promise that resolves when download completes
-   */
-  async downloadAndInstall(
-    update: Update,
-    onProgress?: (progress: UpdateProgress) => void
-  ): Promise<void> {
-    try {
-      // Download the update
-      await update.download();
-
-      // Notify progress if callback provided
-      if (onProgress) {
-        onProgress({ downloaded: 100, total: 100, percentage: 100 });
-      }
-
-      // Install and relaunch
-      await update.install();
-      await relaunch();
-    } catch (error) {
-      console.error('Failed to download/install update:', error);
-      throw error;
-    }
   }
 
   /**

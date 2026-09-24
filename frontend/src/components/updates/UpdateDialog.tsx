@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Download, AlertCircle, Loader2, ExternalLink, Power, Store } from 'lucide-react';
 import {
   Dialog,
@@ -9,11 +9,12 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
-import { UpdateInfo, UpdateProgress } from '@/services/updateService';
+import { UpdateInfo, UpdateProgress, type DirectInstallOutcome } from '@/services/updateService';
 import type { RecordingState } from '@/services/recordingService';
-import { check, Update } from '@tauri-apps/plugin-updater';
-import { exit, relaunch } from '@tauri-apps/plugin-process';
-import { invoke } from '@tauri-apps/api/core';
+import { check, type DownloadEvent } from '@tauri-apps/plugin-updater';
+import { exit } from '@tauri-apps/plugin-process';
+import { Channel, invoke } from '@tauri-apps/api/core';
+import { isPostStopInFlight } from '@/lib/postStopState';
 import { toast } from 'sonner';
 import { logger } from '@/lib/logger';
 import { fileLogger } from '@/lib/fileLogger';
@@ -31,10 +32,12 @@ export function UpdateDialog({ open, onOpenChange, updateInfo }: UpdateDialogPro
   const [isDownloading, setIsDownloading] = useState(false);
   const [progress, setProgress] = useState<UpdateProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [update, setUpdate] = useState<Update | null>(null);
   const [isClosingToUpdate, setIsClosingToUpdate] = useState(false);
   const [isInstallingFromStore, setIsInstallingFromStore] = useState(false);
   const [storeInstallFailed, setStoreInstallFailed] = useState(false);
+  // Instalación NSIS en vuelo: el re-check del tray (UpdateCheckProvider) cambia
+  // `updateInfo` a media descarga y el efecto de apertura reseteaba la barra.
+  const installInFlightRef = useRef(false);
 
   // Canal Store (MSIX): no hay objeto `Update` del plugin (bajo identidad de
   // paquete check() no aplica) y el updater de GitHub nunca corre: instalaría el
@@ -55,6 +58,8 @@ export function UpdateDialog({ open, onOpenChange, updateInfo }: UpdateDialogPro
       : undefined;
 
   useEffect(() => {
+    // A media instalación NSIS no se resetea nada (re-check del tray u otra apertura).
+    if (installInFlightRef.current) return;
     if (open && updateInfo?.available) {
       // Reset state when dialog opens
       setIsDownloading(false);
@@ -65,19 +70,15 @@ export function UpdateDialog({ open, onOpenChange, updateInfo }: UpdateDialogPro
       setStoreInstallFailed(false);
 
       if (updateInfo.channel === 'store') {
-        setUpdate(null);
         return;
       }
 
-      // Get the update object when dialog opens
+      // Solo sonda de disponibilidad: la descarga y la instalación las hace Rust
+      // (`direct_update_install`), el JS nunca toca el objeto `Update`.
       check().then((updateResult) => {
-        if (updateResult?.available) {
-          setUpdate(updateResult);
-        } else {
-          setError('Actualización ya no disponible');
-        }
+        if (!updateResult?.available) setError('Actualización ya no disponible');
       }).catch((err) => {
-        console.error('Failed to get update object:', err);
+        logger.error('[UpdateDialog] check falló', err);
         setError('Error al preparar actualización: ' + (err.message || 'Error desconocido'));
       });
     } else {
@@ -85,99 +86,131 @@ export function UpdateDialog({ open, onOpenChange, updateInfo }: UpdateDialogPro
       setIsDownloading(false);
       setProgress(null);
       setError(null);
-      setUpdate(null);
       setIsClosingToUpdate(false);
       setIsInstallingFromStore(false);
       setStoreInstallFailed(false);
     }
   }, [open, updateInfo]);
 
+  /**
+   * Canal directo (NSIS): TODO el update lo hace el comando Rust
+   * `direct_update_install` (B2). En Windows el plugin termina con
+   * `process::exit(0)` y se salta `RunEvent::Exit`; Rust se niega con grabación o
+   * post-proceso y cierra DB/sidecar antes del instalador. Aquí no hay
+   * `downloadAndInstall`/`download`/`install`/`relaunch`: en Windows el proceso
+   * muere dentro del invoke y NSIS `/P /R` relanza; en macOS/Linux Rust reinicia.
+   */
   const handleDownloadAndInstall = async () => {
-    // Get update object if not already available
-    let updateToUse: Update | null = update;
-    if (!updateToUse) {
-      try {
-        const updateResult = await check();
-        if (updateResult?.available) {
-          updateToUse = updateResult;
-          setUpdate(updateResult);
-        } else {
-          setError('Actualización no disponible');
-          return;
-        }
-      } catch (err: unknown) {
-        setError('Error al obtener actualización: ' + (err instanceof Error ? err.message : 'Error desconocido'));
+    // Pre-chequeo de fase: cualquier fase distinta de idle (incluye stopping).
+    try {
+      const state = await invoke<RecordingState>('get_recording_state');
+      const busy = state?.phase ? state.phase !== 'idle' : Boolean(state?.is_recording);
+      if (busy) {
+        void fileLogger.info('updater_dialog', 'direct-install-refused-recording', { phase: state?.phase });
+        toast.warning('Hay una grabación en curso. Detenla antes de actualizar Maity.');
         return;
       }
+    } catch {
+      /* Rust es la autoridad: direct_update_install se niega igual */
     }
 
-    // At this point, updateToUse is guaranteed to be non-null
-    if (!updateToUse) {
-      return; // This should never happen, but TypeScript needs this check
+    // Tras detener, la fase ya es idle pero el JS sigue guardando / el lote transcribiendo.
+    if (isPostStopInFlight()) {
+      void fileLogger.info('updater_dialog', 'direct-install-refused-post-stop', {});
+      toast.warning('Maity está guardando o transcribiendo la última grabación. Actualiza cuando termine.');
+      return;
     }
 
+    installInFlightRef.current = true;
     setIsDownloading(true);
     setError(null);
     setProgress({ downloaded: 0, total: 0, percentage: 0 });
 
-    try {
-      let downloaded = 0;
-      let contentLength = 0;
+    let downloaded = 0;
+    let contentLength = 0;
+    const onEvent = new Channel<DownloadEvent>();
+    onEvent.onmessage = (event) => {
+      switch (event.event) {
+        case 'Started':
+          contentLength = event.data.contentLength || 0;
+          logger.debug(`[UpdateDialog] Started downloading ${contentLength} bytes`);
+          setProgress({
+            downloaded: 0,
+            total: contentLength,
+            percentage: 0,
+          });
+          break;
 
-      // Use the official Tauri updater API with progress callbacks
-      await updateToUse.downloadAndInstall((event) => {
-        switch (event.event) {
-          case 'Started':
-            contentLength = event.data.contentLength || 0;
-            logger.debug(`[UpdateDialog] Started downloading ${contentLength} bytes`);
-            setProgress({
-              downloaded: 0,
-              total: contentLength,
-              percentage: 0,
-            });
-            break;
-
-          case 'Progress':
-            downloaded += event.data.chunkLength || 0;
-            const percentage = contentLength > 0
-              ? Math.round((downloaded / contentLength) * 100)
-              : 0;
-            logger.debug(`[UpdateDialog] Progress: ${downloaded} / ${contentLength} bytes (${percentage}%)`);
-            setProgress({
-              downloaded,
-              total: contentLength,
-              percentage,
-            });
-            break;
-
-          case 'Finished':
-            logger.debug('[UpdateDialog] Download finished');
-            setProgress({
-              downloaded: contentLength,
-              total: contentLength,
-              percentage: 100,
-            });
-            break;
+        case 'Progress': {
+          downloaded += event.data.chunkLength || 0;
+          const percentage = contentLength > 0
+            ? Math.round((downloaded / contentLength) * 100)
+            : 0;
+          logger.debug(`[UpdateDialog] Progress: ${downloaded} / ${contentLength} bytes (${percentage}%)`);
+          setProgress({
+            downloaded,
+            total: contentLength,
+            percentage,
+          });
+          break;
         }
-      });
 
-      logger.debug('[UpdateDialog] Update installed successfully');
-      toast.success('Actualización instalada exitosamente. La aplicación se reiniciará...');
+        case 'Finished':
+          logger.debug('[UpdateDialog] Download finished');
+          setProgress({
+            downloaded: contentLength,
+            total: contentLength,
+            percentage: 100,
+          });
+          break;
+      }
+    };
 
-      // Mark download as complete before closing
-      setIsDownloading(false);
-
-      // Close dialog before relaunch
-      handleOpenChange(false);
-
-      // Relaunch the app
-      await relaunch();
+    try {
+      void fileLogger.info('updater_dialog', 'direct-install-start', { version: updateInfo?.version });
+      const outcome = await invoke<DirectInstallOutcome>('direct_update_install', { onEvent });
+      void fileLogger.info('updater_dialog', 'direct-install-result', { ...outcome });
+      switch (outcome.kind) {
+        case 'restarting':
+          // El proceso se va: se deja `isDownloading`.
+          toast.success('Actualización instalada. Maity se reiniciará…');
+          break;
+        case 'noUpdate':
+          setIsDownloading(false);
+          setError('Actualización ya no disponible');
+          break;
+        case 'recordingActive':
+          setIsDownloading(false);
+          setProgress(null);
+          toast.warning('Empezó una grabación durante la descarga. Actualiza cuando la detengas.');
+          break;
+        case 'postProcessing':
+          setIsDownloading(false);
+          setProgress(null);
+          toast.warning('Maity está guardando o transcribiendo la última grabación. Actualiza cuando termine.');
+          break;
+        case 'busy':
+          setIsDownloading(false);
+          toast.info('La actualización ya se está instalando.');
+          break;
+        case 'unsupported':
+          setIsDownloading(false);
+          setError('Esta instalación se actualiza desde su tienda.');
+          break;
+        case 'error':
+          setIsDownloading(false);
+          setError(outcome.detail || 'Error al descargar o instalar actualización');
+          toast.error('Actualización fallida: ' + outcome.detail);
+          break;
+      }
     } catch (err: unknown) {
-      console.error('Update failed:', err);
-      const errMsg = err instanceof Error ? err.message : 'Error desconocido';
+      const errMsg = err instanceof Error ? err.message : String(err);
+      void fileLogger.error('updater_dialog', 'direct-install-failed', { message: errMsg });
       setError(errMsg || 'Error al descargar o instalar actualización');
       setIsDownloading(false);
       toast.error('Actualización fallida: ' + errMsg);
+    } finally {
+      installInFlightRef.current = false;
     }
   };
 

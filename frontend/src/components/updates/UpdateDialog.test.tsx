@@ -7,14 +7,14 @@
  * - una copia de prueba (firma `developer`) no la actualiza la Store: el aviso debe
  *   pedir reinstalar, no mandar a "Obtener actualizaciones".
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 
 const openExternalUrlMock = vi.fn(async (_url: string) => undefined);
 
 vi.mock('@tauri-apps/plugin-updater', () => ({ check: vi.fn(async () => null), Update: class {} }));
 vi.mock('@tauri-apps/plugin-process', () => ({ exit: vi.fn(), relaunch: vi.fn() }));
-vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
+vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn(), Channel: class { onmessage: unknown = null } }));
 vi.mock('sonner', () => ({
   toast: Object.assign(vi.fn(), { success: vi.fn(), error: vi.fn(), warning: vi.fn(), info: vi.fn() }),
 }));
@@ -26,6 +26,11 @@ vi.mock('@/lib/supabase', () => ({ supabase: {} }));
 import { UpdateDialog } from './UpdateDialog';
 import type { UpdateInfo } from '@/services/updateService';
 import { STORE_PDP_DEEP_LINK } from '@/lib/storeChannel';
+import { invoke } from '@tauri-apps/api/core';
+import { check } from '@tauri-apps/plugin-updater';
+import { relaunch } from '@tauri-apps/plugin-process';
+import { toast } from 'sonner';
+import { beginPostStop, endPostStop } from '@/lib/postStopState';
 
 function renderDialog(updateInfo: UpdateInfo) {
   return render(<UpdateDialog open onOpenChange={() => {}} updateInfo={updateInfo} />);
@@ -78,5 +83,149 @@ describe('UpdateDialog — canal Store', () => {
     expect(screen.getByRole('dialog').className).toContain('grid-cols-[minmax(0,1fr)]');
     const footer = screen.getByRole('button', { name: /Cerrar Maity para actualizar/ }).parentElement;
     expect(footer?.className).toContain('sm:flex-wrap');
+  });
+});
+
+/**
+ * Canal directo (NSIS), B2 (#83): el plugin termina en `process::exit(0)` y se salta
+ * `RunEvent::Exit`, así que el diálogo NUNCA instala desde JS — invoca el comando Rust
+ * `direct_update_install` — y se niega antes con grabación viva o post-proceso en vuelo.
+ */
+describe('UpdateDialog — canal directo (NSIS)', () => {
+  const githubInfo: UpdateInfo = { available: true, currentVersion: '0.2.61', version: '0.2.62', channel: 'github' };
+  const downloadAndInstallSpy = vi.fn();
+  const installSpy = vi.fn();
+
+  function mockInvoke({ phase, outcome }: { phase: string; outcome?: unknown }) {
+    vi.mocked(invoke).mockImplementation(async (cmd: string) =>
+      cmd === 'get_recording_state'
+        ? { is_recording: phase === 'recording', phase }
+        : cmd === 'direct_update_install'
+          ? outcome
+          : undefined,
+    );
+  }
+
+  function directInstallCalls() {
+    return vi.mocked(invoke).mock.calls.filter(([cmd]) => cmd === 'direct_update_install');
+  }
+
+  async function clickInstall() {
+    fireEvent.click(await screen.findByRole('button', { name: /Descargar e Instalar/ }));
+  }
+
+  beforeEach(() => {
+    vi.mocked(check).mockResolvedValue({
+      available: true,
+      version: '0.2.62',
+      downloadAndInstall: downloadAndInstallSpy,
+      install: installSpy,
+    } as never);
+    vi.mocked(invoke).mockReset();
+    vi.mocked(toast.warning).mockClear();
+    vi.mocked(toast.error).mockClear();
+    vi.mocked(toast.info).mockClear();
+    vi.mocked(toast.success).mockClear();
+    vi.mocked(relaunch).mockClear();
+    downloadAndInstallSpy.mockClear();
+    installSpy.mockClear();
+  });
+
+  afterEach(() => {
+    endPostStop();
+    endPostStop();
+    endPostStop();
+    vi.mocked(check).mockResolvedValue(null as never);
+  });
+
+  it('(1) fase recording: toast de grabación en curso y no invoca el comando', async () => {
+    mockInvoke({ phase: 'recording' });
+    renderDialog(githubInfo);
+    await clickInstall();
+
+    await waitFor(() =>
+      expect(toast.warning).toHaveBeenCalledWith(expect.stringContaining('Hay una grabación en curso')),
+    );
+    expect(directInstallCalls()).toHaveLength(0);
+  });
+
+  it('(2) fase stopping también se niega', async () => {
+    mockInvoke({ phase: 'stopping' });
+    renderDialog(githubInfo);
+    await clickInstall();
+
+    await waitFor(() =>
+      expect(toast.warning).toHaveBeenCalledWith(expect.stringContaining('Hay una grabación en curso')),
+    );
+    expect(directInstallCalls()).toHaveLength(0);
+  });
+
+  it('(3) idle con post-proceso en vuelo: toast y no invoca el comando', async () => {
+    mockInvoke({ phase: 'idle', outcome: { kind: 'restarting' } });
+    beginPostStop();
+    renderDialog(githubInfo);
+    await clickInstall();
+
+    await waitFor(() =>
+      expect(toast.warning).toHaveBeenCalledWith(expect.stringContaining('guardando o transcribiendo')),
+    );
+    expect(directInstallCalls()).toHaveLength(0);
+  });
+
+  it('(4) outcome error: pinta el detalle y toast.error', async () => {
+    mockInvoke({ phase: 'idle', outcome: { kind: 'error', detail: 'boom' } });
+    renderDialog(githubInfo);
+    await clickInstall();
+
+    expect(await screen.findByText('boom')).toBeInTheDocument();
+    expect(toast.error).toHaveBeenCalled();
+  });
+
+  it('(5) outcome recordingActive: toast y sale de "Descargando"', async () => {
+    mockInvoke({ phase: 'idle', outcome: { kind: 'recordingActive' } });
+    renderDialog(githubInfo);
+    await clickInstall();
+
+    await waitFor(() => expect(toast.warning).toHaveBeenCalled());
+    await waitFor(() => expect(screen.queryByText('Descargando Actualización')).not.toBeInTheDocument());
+  });
+
+  it('(6) outcome postProcessing: toast.warning', async () => {
+    mockInvoke({ phase: 'idle', outcome: { kind: 'postProcessing' } });
+    renderDialog(githubInfo);
+    await clickInstall();
+
+    await waitFor(() =>
+      expect(toast.warning).toHaveBeenCalledWith(expect.stringContaining('guardando o transcribiendo')),
+    );
+  });
+
+  it('(7) instala solo por direct_update_install: nunca downloadAndInstall, install ni relaunch', async () => {
+    mockInvoke({ phase: 'idle', outcome: { kind: 'noUpdate' } });
+    renderDialog(githubInfo);
+    await clickInstall();
+
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith('direct_update_install', { onEvent: expect.any(Object) }),
+    );
+    expect(downloadAndInstallSpy).not.toHaveBeenCalled();
+    expect(installSpy).not.toHaveBeenCalled();
+    expect(relaunch).not.toHaveBeenCalled();
+  });
+
+  it('(8) un re-check del tray a media descarga no resetea el diálogo', async () => {
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd === 'get_recording_state') return { is_recording: false, phase: 'idle' };
+      if (cmd === 'direct_update_install') return new Promise(() => {});
+      return undefined;
+    });
+    const { rerender } = renderDialog(githubInfo);
+    await clickInstall();
+
+    expect(await screen.findByText('Descargando Actualización')).toBeInTheDocument();
+    rerender(<UpdateDialog open onOpenChange={() => {}} updateInfo={{ ...githubInfo }} />);
+    // Deja correr los efectos del re-render antes de afirmar.
+    await waitFor(() => expect(directInstallCalls()).toHaveLength(1));
+    expect(screen.getByText('Descargando Actualización')).toBeInTheDocument();
   });
 });
