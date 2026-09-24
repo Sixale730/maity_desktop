@@ -43,6 +43,7 @@ pub mod cloud_sync;
 pub mod coach;
 pub mod console_utils;
 pub mod database;
+pub mod direct_update;
 pub mod events;
 pub mod file_export;
 pub mod llm;
@@ -1787,6 +1788,8 @@ pub fn run() {
             // Updates del canal Store vía StoreContext (aviso + instalación con el diálogo de la Store)
             store_update::store_check_updates,
             store_update::store_install_updates,
+            // Update del canal directo (NSIS): se niega con grabación o post-proceso y cierra DB/sidecar antes del instalador (B2)
+            direct_update::direct_update_install,
             // Equivalente macOS: build de Mac App Store — gatea el auto-updater
             // (Apple prohibe la auto-actualizacion, guideline 2.4.5)
             utils::is_mac_app_store_build,
