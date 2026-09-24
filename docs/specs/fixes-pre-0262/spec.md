@@ -1,7 +1,7 @@
 ---
 slug: fixes-pre-0262
 repo: maity_desktop
-status: approved
+status: executed
 base_commit: 62b7e984fdbbfdce26b495c07169e6b16b2988e0
 approved_at: 2026-09-24T22:15:34Z
 ---
