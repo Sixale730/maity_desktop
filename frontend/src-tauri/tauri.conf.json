@@ -70,7 +70,7 @@
                         "store:default",
                         "notification:default",
                         "notification:allow-is-permission-granted",
-                        "updater:default",
+                        "updater:allow-check",
                         "process:default",
                         "deep-link:default",
                         "autostart:default",
