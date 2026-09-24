@@ -7,6 +7,7 @@
 //! Ver spec: "Maity - Documentación Técnica / Grabación Programada por Jornada".
 
 pub mod commands;
+pub mod runtime_state;
 pub mod schedule;
 pub mod service;
 pub mod settings;

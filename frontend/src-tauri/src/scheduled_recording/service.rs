@@ -22,6 +22,7 @@ use tokio::time::{interval, Duration as TokioDuration};
 use crate::audio::recording_preferences::TranscriptionMode;
 use crate::events;
 
+use super::runtime_state::{self, RestoreOutcome};
 use super::schedule;
 use super::schedule::start_of_next_day;
 use super::settings::{load_settings, save_settings, ScheduledRecordingSettings};
@@ -383,9 +384,20 @@ struct SchedulerShared {
     owned_since: Arc<RwLock<Option<NaiveDateTime>>>,
     /// Rearme vigente con su causa: NO (re)arrancar una grabación programada antes de
     /// `until`. `UserStop` (paro manual, siguiente hora en punto), `AutoClose` (cierre por
-    /// hora fija, día siguiente) o `SessionEnd` (retención de salida/logout: SOLO memoria,
-    /// nunca se persiste; la acompaña la bandera estática `SESSION_ENDING`).
+    /// hora fija, siguiente inicio de ventana) o `SessionEnd` (retención de salida/logout:
+    /// SOLO memoria, nunca se persiste; la acompaña la bandera estática `SESSION_ENDING`).
+    ///
+    /// ÚNICO escritor: `update_rearm`/`set_rearm` (J4), que además persiste `UserStop` y
+    /// `AutoClose` en `runtime_state` — salvo la restauración de `initialize`, que ya viene
+    /// del disco.
     rearm: Arc<RwLock<Option<Rearm>>>,
+    /// Serializa la E/S del archivo de supresión (J4). Mutex PROPIO, fuera del contrato de
+    /// los `RwLock` de arriba: SÍ cruza el `.await` de la E/S, y nunca se toma sosteniendo
+    /// un guard de ellos.
+    persist_lock: Arc<tokio::sync::Mutex<()>>,
+    /// Ruta del archivo de supresión. Se fija en `initialize`; vacía (tests, o sin
+    /// `app_local_data_dir`) ⇒ el rearme vive solo en memoria.
+    runtime_path: Arc<std::sync::OnceLock<std::path::PathBuf>>,
     /// Límite del periodo de gracia del cierre por hora fija (None salvo en fase Grace).
     grace_deadline: Arc<RwLock<Option<NaiveDateTime>>>,
     /// Back-off tras fallos de arranque. `None` = sin fallos pendientes.
@@ -405,6 +417,8 @@ impl SchedulerShared {
             owned: Arc::new(AtomicBool::new(false)),
             owned_since: Arc::new(RwLock::new(None)),
             rearm: Arc::new(RwLock::new(None)),
+            persist_lock: Arc::new(tokio::sync::Mutex::new(())),
+            runtime_path: Arc::new(std::sync::OnceLock::new()),
             grace_deadline: Arc::new(RwLock::new(None)),
             start_backoff: Arc::new(RwLock::new(None)),
         }
@@ -439,8 +453,53 @@ impl ScheduledRecordingService {
     pub async fn initialize<R: Runtime>(&mut self, app_handle: &AppHandle<R>) -> Result<()> {
         let settings = load_settings(app_handle).await.unwrap_or_default();
         *self.shared.settings.write().await = settings;
+        self.restore_persisted_rearm(app_handle).await;
         info!("Scheduled recording service initialized");
         Ok(())
+    }
+
+    /// Restaura la supresión persistida (J4/AC-6): paro del usuario (hasta la siguiente
+    /// hora en punto) y cierre del día (hasta el siguiente horario) sobreviven al reinicio.
+    /// Corre en `initialize`, ANTES de que exista el loop (el setup lo llama bajo `write()`
+    /// antes de `start()`), y aunque `enabled=false`. NO se persiste ni restaura el back-off
+    /// (reiniciar es un reintento legítimo) ni el ownership.
+    async fn restore_persisted_rearm<R: Runtime>(&self, app_handle: &AppHandle<R>) {
+        let path = match runtime_state::state_path(app_handle) {
+            Ok(p) => p,
+            Err(e) => {
+                warn!("[scheduled] sin ruta para el estado de supresión: {}", e);
+                return;
+            }
+        };
+        // `OnceLock::set` devuelve Err si ya estaba fijada (initialize repetido): se ignora.
+        let _ = self.shared.runtime_path.set(path.clone());
+        let Some(content) = runtime_state::read_to_string_opt(&path).await else {
+            return;
+        };
+        let now = Local::now().naive_local();
+        match runtime_state::restore(&content, now) {
+            RestoreOutcome::Restored(r) => {
+                info!(
+                    "[scheduled] supresión restaurada: {} hasta {} (puesta {})",
+                    r.cause.as_str(),
+                    r.until,
+                    r.set_at
+                );
+                // ÚNICA excepción a "`update_rearm` es el único escritor": el valor viene
+                // del disco, así que no hay nada que persistir.
+                *self.shared.rearm.write().await = Some(r);
+            }
+            RestoreOutcome::Empty => {
+                let _ = runtime_state::write_to_path(&path, None).await;
+            }
+            RestoreOutcome::Discard(why) => {
+                warn!("[scheduled] estado de supresión descartado ({})", why);
+                let _ = runtime_state::write_to_path(&path, None).await;
+            }
+            RestoreOutcome::Ignore(why) => {
+                warn!("[scheduled] estado de supresión ignorado ({}); no se borra", why);
+            }
+        }
     }
 
     /// Arranca el loop de fondo (idempotente: no-op si ya corre).
@@ -552,30 +611,35 @@ impl ScheduledRecordingService {
     /// Pone la retención de fin de sesión: bandera + rearme en memoria `SessionEnd`
     /// (hasta `now + SESSION_END_HOLD_MINUTES`). Idempotente: una retención vigente no se
     /// extiende y un `UserStop`/`AutoClose` vigente se conserva (ya impide arrancar).
-    /// Sin E/S de disco.
+    /// Sin E/S de disco: la bandera se pone DENTRO del guard y ANTES de calcular el valor,
+    /// así `update_rearm` la ve puesta y no toca el archivo (un `UserStop` persistido
+    /// conservado durante la salida sigue en disco; la retención jamás lo borra).
     pub async fn begin_session_end(&self) {
         let now = Local::now().naive_local();
         // Bandera y rearme bajo el MISMO guard de escritura: así un tick que libera la
         // retención nunca intercala su `store(false)` entre ambos. Sin `.await` dentro.
-        let mut guard = self.shared.rearm.write().await;
-        mark_session_ending();
-        let next = hold_for_session_end(*guard, now);
-        if next != *guard {
-            if let Some(r) = &next {
-                log_rearm(r);
-            }
-        }
-        *guard = next;
+        update_rearm(&self.shared, |cur| {
+            mark_session_ending();
+            hold_for_session_end(cur, now)
+        })
+        .await;
     }
 
     /// Quita la retención de fin de sesión (bandera + rearme `SessionEnd`). Un rearme
     /// `UserStop`/`AutoClose` se conserva. Lo llaman el login/logout (transición de sesión)
     /// y la instalación rival fallida.
+    /// La bandera se limpia ANTES de soltar la retención: `SessionEnd` y `None` tienen la
+    /// misma proyección persistible, así que no hay E/S.
     pub async fn cancel_session_end(&self) {
-        let mut guard = self.shared.rearm.write().await;
-        clear_session_ending_flag();
-        if matches!(*guard, Some(r) if r.cause == RearmCause::SessionEnd) {
-            *guard = None;
+        let (prev, _) = update_rearm(&self.shared, |cur| {
+            clear_session_ending_flag();
+            match cur {
+                Some(r) if r.cause == RearmCause::SessionEnd => None,
+                other => other,
+            }
+        })
+        .await;
+        if matches!(prev, Some(r) if r.cause == RearmCause::SessionEnd) {
             info!("[scheduled] retención de fin de sesión liberada");
         }
     }
@@ -692,19 +756,20 @@ async fn evaluate_tick<R: Runtime>(
     if session_ending_flag() {
         // `has_session` ANTES de tomar el guard: jamás guard vivo cruzando un `.await`.
         let has_session = crate::state::has_session(app).await;
-        let still_held = {
-            let mut guard = shared.rearm.write().await;
-            let rearm = *guard;
+        // La bandera se limpia DENTRO del guard y antes de soltar la retención: `SessionEnd`
+        // y `None` proyectan igual ⇒ sin E/S (J4).
+        let mut still_held = true;
+        update_rearm(shared, |rearm| {
             if should_release_hold(rearm, has_session, now) {
+                still_held = false;
                 clear_session_ending_flag();
                 if matches!(rearm, Some(r) if r.cause == RearmCause::SessionEnd) {
-                    *guard = None;
+                    return None;
                 }
-                false
-            } else {
-                true
             }
-        };
+            rearm
+        })
+        .await;
         if still_held {
             return (SchedulerPhase::Armed, None);
         }
@@ -815,7 +880,9 @@ async fn evaluate_tick<R: Runtime>(
                     if now < r.until {
                         return (SchedulerPhase::Armed, r.cause.skip_reason());
                     }
-                    *shared.rearm.write().await = None;
+                    // Vencido: limpiarlo (y borrar el archivo). Re-comprobado bajo el guard
+                    // para no pisar un rearme que se haya puesto entre la lectura y aquí.
+                    clear_rearm_if_expired(shared, now).await;
                 }
             }
 
@@ -881,14 +948,7 @@ async fn evaluate_tick<R: Runtime>(
         // Fuera de toda ventana y sin grabación nuestra → reposo.
         (false, None) => {
             // Limpiar el re-arme SOLO si ya venció (no borrar la supresión del cierre por hora fija).
-            {
-                let rearm = *shared.rearm.read().await;
-                if let Some(r) = rearm {
-                    if now >= r.until {
-                        *shared.rearm.write().await = None;
-                    }
-                }
-            }
+            clear_rearm_if_expired(shared, now).await;
             *shared.grace_deadline.write().await = None;
             // Fuera de ventana el episodio de fallos ya no aplica: mañana se
             // vuelve a evaluar desde cero.
@@ -970,14 +1030,10 @@ fn hold_for_session_end(current: Option<Rearm>, now: NaiveDateTime) -> Option<Re
 
 /// Aplica `rearm_after_external_stop` bajo un único guard de escritura (sin `.await` dentro).
 async fn set_rearm_after_external_stop(shared: &SchedulerShared, now: NaiveDateTime) {
-    let mut guard = shared.rearm.write().await;
-    let next = rearm_after_external_stop(*guard, session_ending_flag(), now);
-    if next != *guard {
-        if let Some(r) = &next {
-            log_rearm(r);
-        }
-    }
-    *guard = next;
+    update_rearm(shared, |cur| {
+        rearm_after_external_stop(cur, session_ending_flag(), now)
+    })
+    .await;
 }
 
 /// Escribe el rearme de cierre (si el trigger lo produce). El `if let` es sobre un valor,
@@ -989,8 +1045,82 @@ async fn apply_close_rearm(
     settings: &ScheduledRecordingSettings,
 ) {
     if let Some(r) = rearm_for_close(trigger, now, settings) {
-        log_rearm(&r);
-        *shared.rearm.write().await = Some(r);
+        set_rearm(shared, Some(r)).await;
+    }
+}
+
+/// Limpia el rearme SOLO si ya venció (no borra la supresión del cierre por hora fija ni
+/// una retención vigente). Lectura barata primero: el arm de reposo lo llama cada tick.
+async fn clear_rearm_if_expired(shared: &SchedulerShared, now: NaiveDateTime) {
+    let rearm = *shared.rearm.read().await;
+    if !matches!(rearm, Some(r) if now >= r.until) {
+        return;
+    }
+    update_rearm(shared, |cur| match cur {
+        Some(r) if now >= r.until => None,
+        other => other,
+    })
+    .await;
+}
+
+// ── Supresión persistida entre reinicios (#83, J4 / B4) ───────────────────────
+//
+// `update_rearm` es el ÚNICO escritor de `SchedulerShared.rearm` (salvo la restauración
+// de `initialize`). Aplica el cambio bajo un solo guard (lectura-modificación-escritura
+// atómica, sin `.await` dentro) y DESPUÉS, ya sin guard, persiste `UserStop`/`AutoClose`
+// si cambió la proyección persistible. Invariante más cara del módulo: con
+// `SESSION_ENDING` puesto NADA toca disco — una supresión escrita desde la ruta de
+// salida/logout/apagado apagaría la jornada tras cualquier reinicio.
+
+/// Aplica `f` al rearme bajo un único guard de escritura y persiste si hace falta.
+/// Devuelve `(anterior, nuevo)`. `f` es síncrona: jamás un `.await` con el guard vivo.
+async fn update_rearm<F>(shared: &SchedulerShared, f: F) -> (Option<Rearm>, Option<Rearm>)
+where
+    F: FnOnce(Option<Rearm>) -> Option<Rearm>,
+{
+    let (prev, next) = {
+        let mut guard = shared.rearm.write().await;
+        let prev = *guard;
+        let next = f(prev);
+        *guard = next;
+        (prev, next)
+    }; // el guard muere aquí
+    if next != prev {
+        if let Some(r) = &next {
+            log_rearm(r);
+        }
+    }
+    persist_rearm_change(shared, prev, next).await;
+    (prev, next)
+}
+
+/// Pone el rearme a `value` (atajo de `update_rearm`).
+async fn set_rearm(shared: &SchedulerShared, value: Option<Rearm>) {
+    update_rearm(shared, |_| value).await;
+}
+
+/// Lleva el cambio de rearme al disco. Sin E/S si: hay una salida en curso, la proyección
+/// persistible no cambió (p. ej. `SessionEnd` ↔ `None`) o no hay ruta (tests). Si la E/S
+/// falla solo `warn!`: la memoria manda en este proceso.
+async fn persist_rearm_change(shared: &SchedulerShared, prev: Option<Rearm>, next: Option<Rearm>) {
+    if session_ending_flag() {
+        return; // NUNCA disco durante una salida
+    }
+    if runtime_state::persisted_projection(prev.as_ref())
+        == runtime_state::persisted_projection(next.as_ref())
+    {
+        return;
+    }
+    let Some(path) = shared.runtime_path.get().cloned() else {
+        return;
+    };
+    let _io = shared.persist_lock.lock().await;
+    if session_ending_flag() {
+        return; // re-check bajo el lock: la salida pudo empezar mientras esperábamos
+    }
+    let snap = *shared.rearm.read().await; // gana el último valor en memoria (statement propio)
+    if let Err(e) = runtime_state::write_to_path(&path, runtime_state::serialize_state(snap.as_ref())).await {
+        warn!("[scheduled] no se pudo persistir la supresión: {}", e);
     }
 }
 
@@ -2285,6 +2415,111 @@ mod rearm_tests {
         let r = Rearm::user_stop(t(2026, 9, 23, 10, 15));
         let back: Rearm = serde_json::from_str(&serde_json::to_string(&r).unwrap()).unwrap();
         assert_eq!(back, r);
+    }
+
+    #[test]
+    fn la_retencion_de_salida_no_es_persistible() {
+        // J4: la ruta de salida (SessionEnd) nunca produce nada que llegue a disco.
+        let now = t(2026, 9, 23, 17, 0);
+        let settings = ScheduledRecordingSettings::default();
+        let close = rearm_for_close(CloseTrigger::SessionEnd, now, &settings);
+        assert_eq!(runtime_state::persisted_projection(close.as_ref()), None);
+        assert_eq!(
+            runtime_state::persisted_projection(Some(&Rearm::session_end(now))),
+            None
+        );
+        assert_eq!(
+            runtime_state::persisted_projection(hold_for_session_end(None, now).as_ref()),
+            None
+        );
+        // Y las causas legítimas sí.
+        assert!(runtime_state::persisted_projection(Some(&Rearm::user_stop(now))).is_some());
+        let auto = rearm_for_close(CloseTrigger::AutoClose, now, &settings);
+        assert!(runtime_state::persisted_projection(auto.as_ref()).is_some());
+    }
+
+    /// Limpia la bandera estática aunque falle una aserción (no contaminar otros tests).
+    struct FlagReset;
+    impl Drop for FlagReset {
+        fn drop(&mut self) {
+            clear_session_ending_flag();
+        }
+    }
+
+    /// UN solo test toca la bandera estática `SESSION_ENDING` (los tests corren en hilos
+    /// paralelos): las dos secuencias van en serie aquí dentro.
+    #[tokio::test]
+    async fn la_supresion_solo_toca_disco_fuera_de_una_salida() {
+        let _reset = FlagReset;
+        let now = t(2026, 9, 23, 10, 15);
+
+        // (a) `set_rearm` directo.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(runtime_state::FILE_NAME);
+        let shared = SchedulerShared::new();
+        shared.runtime_path.set(path.clone()).unwrap();
+
+        mark_session_ending();
+        set_rearm(&shared, Some(Rearm::user_stop(now))).await;
+        assert!(!path.exists(), "con la salida en curso no se crea archivo");
+
+        clear_session_ending_flag();
+        set_rearm(&shared, None).await;
+        set_rearm(&shared, Some(Rearm::user_stop(now))).await;
+        assert!(path.exists(), "fuera de una salida el paro del usuario se persiste");
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            runtime_state::restore(&content, now + Duration::minutes(5)),
+            RestoreOutcome::Restored(Rearm::user_stop(now))
+        );
+
+        mark_session_ending();
+        set_rearm(&shared, Some(Rearm::session_end(now))).await;
+        assert!(path.exists(), "la retención de salida no borra el UserStop persistido");
+        clear_session_ending_flag();
+
+        // Proyección sin cambios ⇒ sin E/S: SessionEnd → None no borra el archivo.
+        set_rearm(&shared, None).await; // SessionEnd → None: ambas proyectan a None
+        assert!(path.exists());
+
+        // (b) Flujo del servicio: retención + paro externo concurrente + cancelación.
+        let dir2 = tempfile::tempdir().unwrap();
+        let path2 = dir2.path().join(runtime_state::FILE_NAME);
+        let service = ScheduledRecordingService::new();
+        service.shared.runtime_path.set(path2.clone()).unwrap();
+
+        service.begin_session_end().await;
+        assert!(session_ending_flag());
+        let held = *service.shared.rearm.read().await;
+        assert_eq!(held.map(|r| r.cause), Some(RearmCause::SessionEnd));
+        // Un tick que ve el paro de nuestra grabación en plena salida no pisa la retención
+        // ni escribe nada.
+        set_rearm_after_external_stop(&service.shared, now).await;
+        assert!(!path2.exists());
+        // Un cierre de salida tampoco.
+        apply_close_rearm(
+            &service.shared,
+            CloseTrigger::SessionEnd,
+            now,
+            &ScheduledRecordingSettings::default(),
+        )
+        .await;
+        assert!(!path2.exists());
+
+        service.cancel_session_end().await;
+        assert!(!session_ending_flag());
+        assert_eq!(*service.shared.rearm.read().await, None);
+        assert!(!path2.exists(), "logout+login no deja supresión en disco");
+
+        // Tras la salida, un cierre automático legítimo sí se persiste y un vencido se borra.
+        let settings = ScheduledRecordingSettings::default();
+        apply_close_rearm(&service.shared, CloseTrigger::AutoClose, now, &settings).await;
+        assert!(path2.exists());
+        let until = service.shared.rearm.read().await.expect("AutoClose").until;
+        clear_rearm_if_expired(&service.shared, until - Duration::minutes(1)).await;
+        assert!(path2.exists(), "vigente: no se borra");
+        clear_rearm_if_expired(&service.shared, until).await;
+        assert!(!path2.exists(), "vencido: se limpia en memoria y en disco");
     }
 
     #[test]
