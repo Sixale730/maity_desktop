@@ -1,9 +1,9 @@
 ---
 slug: telemetria-ciclo-vida-83
-run_id: wf_44aba775-ed6
-base_commit: c258088eae3c70287872177addeffb20958c06a2
-head_commit: 2481aa7
-status: failed
+run_id: wf_07166535-eeb
+base_commit: 2b3b05d040e044203382eb9c367db3d837373069
+head_commit: e6c8d49
+status: executed
 ---
 
 # Reporte de ejecución: telemetria-ciclo-vida-83
@@ -17,102 +17,115 @@ status: failed
 > - P1a corregida a mano (`filetime_ticks_to_rfc3339` trunca sub-segundos + test literal del plan): `142c5ef`.
 > - 3.ª `wf_0e7106a1-adb`: P1b (`07570e9`); L1 refutada. Reporte en `aec36c2`.
 > - L1 corregida a mano (ventana de pánicos anclada en `last_alive_ms + 120 s`, test `caso_10b`): `c258088`.
-> - 4.ª `wf_44aba775-ed6` (esta): L2, E1, E2a, E2b, E3, U1, U2, L3, U4; P2 refutada.
+> - 4.ª `wf_44aba775-ed6`: L2, E1, E2a, E2b, E3, U1, U2, L3, U4 (`e4400ef`…`2481aa7`); P2 refutada. Reporte en `a9f9068`.
+> - P2 corregida a mano (reconcile `boot` DESPUÉS de la fila `app.start`): `2b3b05d`.
+> - 5.ª `wf_07166535-eeb` (esta): S1, S2, S3a, S3b, S4, S5, Z1 — sin fallos. **Las 29 tareas quedan commiteadas.**
 >
-> **Notas del líder:** AC-22 se verificó en prod durante A1 (1.ª corrida; ver `75df2b9`). AC-21 queda sin build por decisión de Julio. En esta corrida el implementador de E1 corrió por su cuenta `tauri:build:debug` (y con él el smoke del post-build) porque un refutador le reclamó AC-21: el build pasó (MSI + NSIS 0.2.61 debug, `lint-aux-bundle`, `lint-main-bundle`, `lint-exe-imports` OK), pero fue contra la instrucción "sin smoke ni build".
+> **Notas del líder:**
+> - AC-22 se verificó en prod durante A1 (1.ª corrida; ver `75df2b9`).
+> - AC-21: por decisión de Julio ninguna tarea corrió build ni smoke como gate. Excepción: en la 4.ª corrida el implementador de E1 corrió `tauri:build:debug` por su cuenta (un refutador le reclamó AC-21); pasó (MSI + NSIS debug, `lint-aux-bundle`, `lint-main-bundle`, `lint-exe-imports`), pero sobre E1, no sobre el HEAD final.
+> - Chequeo de tipos sobre el HEAD final (`npx tsc --noEmit`, no es build): **0 errores fuera de archivos de test**; 34 errores en `*.test.*` preexistentes en `main` (p. ej. `updateService.test.ts:79/103/142/408/418`, idénticos a la medición del 2026-09-23), ninguno en los tests nuevos de la spec.
+> - El implementador de S3b dejó `frontend/tsc_out.txt` (volcado de `tsc`) sin trackear; el líder lo borró tras revisarlo.
+> - **Riesgo "S5 sin compilar" resuelto por tests:** tras la corrida el líder corrió `cargo test --lib` completo sobre el HEAD → **958 passed, 0 failed, 3 ignored** (línea base 773), lo que compila todo `lib.rs` incluido `session_lost_cleanup` y su registro. Vitest: 564/564 (lo corrió el revisor). No hubo `tauri:build:debug` final (decisión de Julio).
+> - **Z1 corregida en `e6c8d49`** (el revisor la marcó como no conforme al plan): CLAUDE.md ahora tiene exactamente las 5 adiciones breves del plan (updater NSIS :53, cláusula WM_ENDSESSION en audio :166, rearme de jornada :223, logout/recarga :241, "¿Por qué no grabó?" :316), cada una con puntero a la sección real de su doc, y se eliminó el dato falso (`device.profile` NO lleva `idle_reason`). TELEMETRIA.md quedó reconciliada con el código (emisores como `archivo::función`, drenado por fila, 16 valores de `IDLE_REASONS`, `autostart_toggled` vs `autostart.changed`, qué salidas hacen `flush_row`). `lint-telemetry` OK (36 eventos). Todo nombre citado en CLAUDE.md se verificó con grep.
+> - **Divergencias contrato→código** (el doc sigue al código): (1) el escritor único del rearme es `service.rs::update_rearm` (`set_rearm` es un atajo); (2) `OVERRIDABLE_BY_UPDATE` también incluye `process_exit_after_cleanup`; (3) con el loop nunca arrancado `idle_reason` es `initializing`, no `scheduler_stopped`; (4) `telemetry_auth_session_lost` vive en `logging/telemetry/auth.rs` (lib.rs solo lo registra).
+> - **Huecos en otros docs de área** (fuera del alcance de Z1): `docs/NUBE_CUENTAS_SYNC.md` no describe la regla de la recarga (S2) ni `session_lost_cleanup` (S5); `reset_immediately` (J3) no está en `docs/ONBOARDING_Y_GATES.md`.
+> - La etiqueta "(S1)" en todos los commits es el `phaseTag` del plan, a propósito; la trazabilidad commit→tarea está en el cuerpo de cada commit (`Spec: … · tarea <id>`).
 
 ## Resumen
-Esta corrida (base `c258088`) cerró 9 tareas con commit local: L2, E1, E2a, E2b, E3, U1, U2, L3 y U4. Cubren `app.exit` con motivo de salida, el fin de sesión de Windows acotado, la recuperación tolerante a checkpoints truncados, el update NSIS vía `direct_update_install`, `exit_for_update` para la Store y la ACL `updater:allow-check`. P2 (`autostart.changed`) fue refutada tras su corrección: en el disparador `boot` emite `autostart.changed` **antes** de `app.start`, y el plan pide lo contrario. Su trabajo quedó sin commitear en el árbol. Por la cadena de dependencias no corrieron S1, S2, S3a, S3b, S4, S5 ni Z1. Veredicto: **ejecución parcial**. AC-11 a AC-15 quedan cubiertos en código y tests. AC-16 a AC-20 siguen sin implementar y AC-23 está incompleto.
+Esta corrida ejecutó las 7 tareas pendientes de la parte S (sesión) y la parte Z (docs): S1, S2, S3a, S3b, S4, S5 y Z1. Hay un commit local por tarea (`467f098`..`78855d0`) y ninguna tarea falló. Las otras 22 tareas (A, J, P, L, E, U) se saltaron porque ya se habían hecho en corridas anteriores, antes de `2b3b05d`. El código de sesión cumple AC-17, AC-18 y AC-19, y la parte de código de AC-20. Los tests también pasan: vitest 564/564 y `lint-telemetry` OK con 36 eventos.
+
+Quedan tres pendientes:
+- **Build de S5 (AC-21):** nunca se corrió `tauri:build:debug` después de S5. El exe es de las 03:41:32 y `lib.rs` se editó por última vez a las 03:49:43, así que el comando Rust nuevo `session_lost_cleanup` no se ha compilado.
+- **Tarea Z1:** no siguió el plan. Nunca se tocó `TELEMETRIA.md`, faltan 3 de los 5 bullets pedidos para CLAUDE.md, y CLAUDE.md quedó con un dato falso.
+- **Firma de los commits:** todos los mensajes llevan la etiqueta "(S1)", sea cual sea su tarea.
+
+**Veredicto:** aceptable para revisión. Antes del push hacen falta un build de verificación y corregir CLAUDE.md.
 
 ## Criterios de aceptación
 | AC | Evidencia (comando o archivo:línea) | Resultado |
 |---|---|---|
 | AC-1 | `cd frontend && node scripts/lint-telemetry.js` → `OK: catálogo espejo (36 eventos, 12 legacy)` (corrido en esta revisión) | cumplido |
-| AC-2 | Commit `4c34b81` (A2, de una corrida anterior). En esta revisión no se re-corrió `cargo test --lib logging::telemetry` | cumplido según corrida anterior (no re-verificado) |
-| AC-3 | Commit `3dd8405` (J1, corrida anterior). La parte manual (matriz E2E) está pendiente | parcial: código de la corrida anterior, manual no verificable |
-| AC-4 | Commit `664747e` (J2, corrida anterior). No se re-corrió `cargo test --lib scheduled_recording` | cumplido según corrida anterior (no re-verificado) |
-| AC-5 | Commit `8e3ad73` (J3, corrida anterior) | cumplido según corrida anterior (no re-verificado) |
-| AC-6 | Commit `192ef5e` (J4, corrida anterior). Manual (7) pendiente | parcial: manual no verificable |
-| AC-7 | Commits `dc3849e` y `b915bcb` (J5/J6, corrida anterior). La prueba en DevTools está pendiente | parcial: manual no verificable |
-| AC-8 | Commit `8cbacdb` (J7, corrida anterior). Manual (6) pendiente | parcial: manual no verificable |
-| AC-9 | Commits `142c5ef` y `07570e9` (P1a/P1b, corrida anterior). Manual (5) pendiente | parcial: manual no verificable |
-| AC-10 | Commit `c258088` (L1, base). Tests `caso_01…caso_14` de `summarize_prev` en `frontend/src-tauri/src/logging/telemetry/lifecycle.rs:1423-1643`. Según el workflow, la verificación de L3 dio 42/42 en `cargo test --lib logging::telemetry::lifecycle`. Manual (4) y (10) pendientes | parcial: código y tests sí, manual no verificable |
-| AC-11 | `lifecycle.rs:1022` (`classify_exit`), tests `classify_exit_tabla` (`lifecycle.rs:1736`) y `classify_exit_con_el_mapeo_de_session_end` (`:1776`), `session_end.rs:443` (`classify_tabla`). Commits `e4400ef` y `f2dc99a`. Manual (1) y (2) pendientes | cumplido en código y tests; manual pendiente |
-| AC-12 | `session_end.rs:571` (`presupuestos_de_fin_de_sesion_caben_en_5_s`). Commits `5bda495` y `c8049f1`. Manual (3) pendiente | cumplido en código y tests; manual pendiente |
-| AC-13 | `useTranscriptRecovery.ts:287` (`shouldCleanupCheckpoints(audioRecoveryStatus)` condiciona `cleanup_checkpoints`), `incremental_saver.rs:623/634` (`concat_list_content`, `partition_valid`) y sus tests en `:1327/:1346`. Commit `614cab3`. El test E2E `recover_con_chunk_truncado_devuelve_partial_y_pone_bad` (`incremental_saver.rs:1391`) lleva `#[ignore]` porque necesita ffmpeg en PATH, así que no se ejecutó | cumplido (el test de integración con ffmpeg no corrió) |
-| AC-14 | `tauri.conf.json:73` = `"updater:allow-check"`, `direct_update.rs` (9 tests), `UpdateDialog.test.tsx:247` (instala solo por `direct_update_install`), `updaterInstall.fitness.test.ts`. Commits `69b8522`, `8c553a2` y `2481aa7`. Manual (11) pendiente | cumplido en código y tests; manual pendiente |
-| AC-15 | `UpdateDialog.test.tsx:64-69` (`exit_for_update`). Tests `intencion_update_store_api_pendiente_se_resume_como_update` en `lifecycle.rs`. Commit `4d46f10` | cumplido |
-| AC-16 | P2 refutada: `lifecycle.rs:438` llama `reconcile_with(&app, "boot", …)` antes de `catalog::APP_START` (`:465`), y `plan.md:1992` pide ese orden al revés. Sin commit | no cumplido |
-| AC-17 | S-tasks no ejecutadas (dependen de P2). `authSignOut.fitness.test.ts` no existe en ningún commit | no cumplido |
-| AC-18 | Igual que AC-17 (`lib/authRelease.test.ts` no creado) | no cumplido |
-| AC-19 | Igual que AC-17 | no cumplido |
-| AC-20 | Igual que AC-17 | no cumplido |
-| AC-21 | Hubo `npm run tauri:build:debug` EXIT=0 en E1, E2b, U1 y L3, según las notas del workflow. `target/debug/maity-desktop.exe` y `Maity_0.2.61_x64-setup.exe` son de las 02:26-02:28. **U4 (`2481aa7`, 02:36) cambia `tauri.conf.json` y no tuvo build integrado posterior.** L2 tampoco lo tuvo en su propia tarea, aunque la build de E1 ya incluye su código. `npm run test` = 542/542 (corrido en esta revisión) | parcial: falta la build después de U4 |
-| AC-22 | Se corrió en prod durante A1 (1.ª corrida, reporte `75df2b9`). En esta corrida no se ejecutó SQL | cumplido según corrida anterior |
-| AC-23 | Desde `4ea3927` se tocaron `TELEMETRIA.md`, `REGLAS_AUDIO_GRABACION.md`, `CANALES_DISTRIBUCION.md` y `ONBOARDING_Y_GATES.md`. **`CLAUDE.md` y `NUBE_CUENTAS_SYNC.md` no cambiaron**: eran parte de Z1/S*, que no corrieron | no cumplido |
-| AC-24 | Matriz E2E manual de Julio | no verificable (pendiente) |
+| AC-2 | A2 (`4c34b81`) se hizo en una corrida anterior. No se corrió `cargo test` en esta revisión | no verificable en esta corrida |
+| AC-3 | J1 (`3dd8405`) se hizo en una corrida anterior. La parte manual es la matriz E2E | no verificable en esta corrida |
+| AC-4 | J2 (`664747e`) se hizo en una corrida anterior | no verificable en esta corrida |
+| AC-5 | `frontend/src-tauri/src/scheduled_recording/service.rs:844` `tick.reset_immediately();` (J3 `8e3ad73`) | cumplido (revisado por grep) |
+| AC-6 | J4 (`192ef5e`) se hizo en una corrida anterior. El caso manual (7) sigue pendiente | no verificable en esta corrida |
+| AC-7 | `frontend/src-tauri/src/logging/commands.rs:341,343` (`idle_reason` y `jornada` en `HealthSnapshot`), de J5/J6 (`dc3849e`, `b915bcb`). No se corrió `cargo test` | no verificable en esta corrida (el campo existe) |
+| AC-8 | `logging/commands.rs:452` (`DeviceProfile.jornada: JornadaConfig`), de J7 (`8cbacdb`). El caso manual (6) sigue pendiente | no verificable en esta corrida |
+| AC-9 | P1a y P1b (`142c5ef`, `07570e9`) se hicieron en una corrida anterior. El caso manual (5) sigue pendiente | no verificable en esta corrida |
+| AC-10 | `logging/telemetry/lifecycle.rs:136-138` (`lifecycle-debug.json` / `lifecycle.json`), de L1 (`c258088`). Los casos manuales (4) y (10) siguen pendientes | no verificable en esta corrida |
+| AC-11 | L2 y E1 (`e4400ef`, `f2dc99a`) se hicieron en una corrida anterior. Los casos manuales (1) y (2) siguen pendientes | no verificable en esta corrida |
+| AC-12 | E2a y E2b (`5bda495`, `c8049f1`) se hicieron en una corrida anterior. El caso manual (3) sigue pendiente | no verificable en esta corrida |
+| AC-13 | `frontend/src/hooks/useTranscriptRecovery.ts:289` (de E3, `614cab3`). Esta revisión no confirmó la condición que envuelve la llamada | no verificable en esta corrida |
+| AC-14 | U1, U2 y U4 (`69b8522`, `8c553a2`, `2481aa7`) se hicieron en una corrida anterior. Los tests de TS entran en los 564 verdes. El caso manual (11) sigue pendiente | no verificable en esta corrida |
+| AC-15 | L3 (`4d46f10`) se hizo en una corrida anterior | no verificable en esta corrida |
+| AC-16 | P2 (`2b3b05d`, el commit base) se hizo en una corrida anterior | no verificable en esta corrida |
+| AC-17 | `frontend/src/contexts/authSignOut.fitness.test.ts` pasa (dentro de vitest 564/564). `SidebarFooterV5.tsx` ahora llama a `signOut('chat_sidebar')`. El guard de re-entrada está en `AuthContext.tsx:1010`, antes de `isSigningOut.current = true`. Lo de "falla contra el SidebarFooterV5 viejo" lo afirmó el refutador; no se re-verificó | cumplido |
+| AC-18 | `frontend/src/lib/authRelease.ts` (`shouldReleaseRustUser`, `isBootSessionUncertain`). `authRelease.test.ts` tiene 10 tests verdes. El efecto de `AuthContext.tsx` solo suelta a Rust tras una transición real o con `authReady` | cumplido |
+| AC-19 | En `logging/telemetry/auth.rs:36,58,105` están `normalize_surface`, `logout_payload` y `should_emit_session_lost`, con 9 tests (:226-313; S4 los corrió con `cargo test --lib logging::telemetry::auth` y 9 ok). `lib.rs:170-222` emite `auth.logout` antes del stop y hace `flush_row` de 3 s. `authSessionLost.test.ts` tiene 10 verdes. El caso manual (9) sigue pendiente | cumplido en lo automático; manual pendiente |
+| AC-20 | `AuthContext.tsx:555-563` asigna el ref de forma síncrona y hace telemetría → `session_lost_cleanup`. El efecto de liberación espera `pending` antes de `clear_current_user` y revisa la carrera con `lastSyncedUserIdRef`. `lib.rs:232` define el comando y `:1697` lo registra. Ni el Rust de S5 ni el caso manual con `__pollDebug.forceTokenRefresh()` están verificados | parcial: el código está, la compilación y el manual no |
+| AC-21 | S4 corrió `npm run tauri:build:debug` con EXIT=0 (el log está en el scratchpad `s4_build.log`), y ese build cubre S1-S4. En S5, `target/debug/maity-desktop.exe` tiene mtime 03:41:32 y `lib.rs` 03:49:43, con commit `9426c68` a las 03:53:37. No hay ningún build ni `cargo` después de S5. Las verificaciones de S1, S2, S3b y S5 corrieron solo vitest | no cumplido para S5 |
+| AC-22 | Pertenece a A1 (corrida anterior). No se re-ejecutó ninguna query | no verificable en esta corrida |
+| AC-23 | Los docs de área existen: `docs/ONBOARDING_Y_GATES.md:29`, `docs/REGLAS_AUDIO_GRABACION.md:80`, `docs/CANALES_DISTRIBUCION.md:34`, `docs/NUBE_CUENTAS_SYNC.md:35`, y el lint da OK. En cambio, Z1 dejó cuatro problemas (se detallan en Riesgos): el bullet de `CLAUDE.md:225`, el párrafo de `CLAUDE.md:314` con un dato falso, `TELEMETRIA.md` sin tocar en esta corrida y `autostart_toggled` sin mencionar en ese doc | parcial / no cumplido |
+| AC-24 | Es la matriz E2E manual de Julio | pendiente (manual) |
 
 ## Tareas
 | Tarea | Riesgo | Correcciones | Refutadores | Verificación | Commit |
 |---|---|---|---|---|---|
-| A1, A2, J1, J2, J3, J4, J5, J6, J7, P1a, P1b, L1 | — | — | — | hechas en corridas anteriores | — |
-| L2 | high | 1 | 2 no sostenidas | verde | `e4400ef` |
-| E1 | high | 1 | 2 no sostenidas | verde | `f2dc99a` |
-| E2a | high | 0 | 2 no sostenidas | verde | `5bda495` |
-| E2b | high | 1 | 2 no sostenidas | verde | `c8049f1` |
-| E3 | high | 0 | 2 no sostenidas | verde | `614cab3` |
-| U1 | high | 1 | 2 no sostenidas | verde | `69b8522` |
-| U2 | high | 0 | 2 no sostenidas | verde | `8c553a2` |
-| L3 | high | 1 | 2 no sostenidas | verde | `4d46f10` |
-| U4 | medium | 0 | 2 no sostenidas | verde | `2481aa7` |
-| P2 | — | ≥1 | 1 sostenidas | refutada tras corrección | — (árbol sucio) |
-| S1, S2, S3a, S3b, S4, S5, Z1 | — | — | — | saltada (dependencia) | — |
+| A1, A2, J1, J2, J3, J4, J5, J6, J7, P1a, P1b, L1, L2, E1, E2a, E2b, E3, U1, U2, L3, U4, P2 | — | — | — | hechas en corridas anteriores | — |
+| S1 | high | 0 | 2 no sostenidas | verde | `467f098` |
+| S2 | high | 0 | 2 no sostenidas | verde | `95560ee` |
+| S3a | high | 0 | 2 no sostenidas | verde | `e0698c5` |
+| S3b | medium | 0 | 2 no sostenidas | verde | `902d761` |
+| S4 | high | 1 | 2 no sostenidas | verde | `2fa3d3c` |
+| S5 | high | 0 | 2 no sostenidas | verde | `9426c68` |
+| Z1 | low | 0 | 0 (riesgo low) | verde | `78855d0` |
 
 ## Commits
-- `e4400ef` · feat(telemetria): app.exit con motivo de salida y manejo de ExitRequested (S1) · L2
-- `f2dc99a` · feat(salida): tipo de fin de sesión de Windows vía subclass de la ventana main (S1) · E1
-- `5bda495` · feat(grabacion): flush acotado de la grabación para el fin de sesión de Windows (S1) · E2a
-- `c8049f1` · fix(grabacion): el fin de sesión de Windows ya no bloquea 30 s guardando la grabación (S1) · E2b
-- `614cab3` · fix(grabacion): la recuperación tolera checkpoints truncados y ya no borra audio tras un merge fallido (S1) · E3
-- `69b8522` · fix(updater): el update NSIS pasa por direct_update_install y cierra DB y sidecar antes del instalador (S1) · U1
-- `8c553a2` · fix(updates): el dialogo NSIS instala por Rust y se niega con grabacion o post-proceso en curso (S1) · U2
-- `4d46f10` · feat(store): salidas por update de la Store registradas desde Rust con exit_for_update (S1) · L3
-- `2481aa7` · fix(updater): la capability solo permite check y un fitness test impide instalar desde JS (S1) · U4
-
-(`S1` es el `phaseTag` del plan, no la tarea S1.)
+Todos los mensajes terminan en "(S1)". La tarea real sale del orden de ejecución y de los archivos que toca cada commit:
+- `467f098` · fix(auth): el logout del sidebar del chat pasa por logout_cleanup y guarda la grabacion · S1
+- `95560ee` · fix(auth): recargar el webview ya no suelta al usuario en Rust · S2
+- `e0698c5` · feat(telemetria): auth.logout desde logout_cleanup con flush dirigido de su fila · S3a
+- `902d761` · feat(auth): signOut informa la superficie de cada boton de cerrar sesion · S3b
+- `2fa3d3c` · feat(telemetria): auth.session_lost solo cuando la sesion se pierde de verdad · S4
+- `9426c68` · fix(auth): una sesion perdida a media grabacion guarda el segmento antes de soltar al usuario · S5
+- `78855d0` · docs(telemetria): CLAUDE.md apunta a las reglas nuevas de #83 y TELEMETRIA.md coincide con el código · Z1. El mensaje dice que tocó TELEMETRIA.md, pero el commit solo cambia CLAUDE.md.
 
 ## Fallos
-- **P2** · Refutada tras la corrección. En `boot`, `emit_start` llama `autostart_state::reconcile_with` (`lifecycle.rs:438`) antes de emitir `app.start` (`lifecycle.rs:465`). Si en ese arranque cambió el autostart, `autostart.changed` entra al outbox antes que `app.start`, y `plan.md:1992` exige start → changed. Archivos sucios, confirmados con `git status --short`:
-  - `frontend/src-tauri/src/autostart_state.rs` (+144)
-  - `frontend/src-tauri/src/lib.rs` (+4, registra `autostart_reconcile`)
-  - `frontend/src-tauri/src/logging/telemetry/lifecycle.rs` (+4)
-  - `frontend/src/components/settings/PreferenceSettings.tsx` (+39)
-  - `frontend/src/hooks/useAutostartBootstrap.ts` (+6)
-  
-  El arreglo probable es mover la llamada después del `emit_event(… APP_START …)` y reusar `autostart`. No se verificó que el estado sucio compile con cargo.
-- **S1, S2, S3a, S3b, S4, S5, Z1** · No se ejecutaron: la cadena depende de P2. No dejaron archivos sucios.
+Ninguna tarea falló (`failures: []`).
+
+Hay un archivo sucio sin trackear: `frontend/tsc_out.txt`, un volcado de `tsc` que dejó S3b (03:21). Tiene 34 `error TS`, todos en tests preexistentes y ninguno en archivos que tocó la spec. No debe commitearse.
 
 ## Riesgos
-- **Build pendiente tras U4**: `tauri.conf.json` cambió de `updater:default` a `updater:allow-check` después de la última build integrada (02:26). `lint-tauri-acl.js` y el fitness test pasan, pero nada prueba en runtime que el `check()` siga permitido.
-- **Árbol sucio con P2 a medias**: una build o un commit hechos ahora arrastrarían el orden incorrecto `autostart.changed` → `app.start`. El `npm run test` de esta revisión (542) incluye esos cambios de TS de P2.
-- **Test E2E de recuperación ignorado**: `recover_con_chunk_truncado_devuelve_partial_y_pone_bad` necesita ffmpeg en PATH. El camino `partial` con un `.mp4` truncado real solo quedó cubierto con tests unitarios.
-- **Nada de la matriz E2E está verificado**: fin de sesión/apagado real, subclass de WM_ENDSESSION, update NSIS real, salida de la Store. Es código de alto riesgo (hilo principal durante WM_ENDSESSION, hook del instalador que cierra la DB y el sidecar) validado solo con tests puros.
-- **AC-16…AC-20 sin implementar**: la brecha del logout (SidebarFooter sin `logout_cleanup`, `auth.logout`/`auth.session_lost`, grabación a media sesión caída) sigue abierta. `docs/TELEMETRIA.md` ya documenta eventos (`auth.*`, `autostart.changed`) que el código todavía no emite, aunque `lint-telemetry` pasa porque el catálogo espejo sí los tiene.
-- **Ratchets**: vitest 542 pasan (baseline 513, sube, 65 archivos). Catálogo de telemetría: 36 eventos (baseline 28, sube). Ninguno retrocede.
-- **Refutadores**: las 9 tareas hechas tuvieron 2 refutadores cada una, sin refutación sostenida. No hay refutadores ausentes.
-- No se re-corrieron los `cargo test` en esta revisión; la evidencia Rust viene de los `verifyOutput` del workflow.
+- **S5 sin compilar:** `session_lost_cleanup` (lib.rs:232) y su registro en `generate_handler!` no pasaron por `cargo` ni por `tauri:build:debug`. Rompe el Protocolo de Compilación de CLAUDE.md.
+- **Z1 no siguió el plan.** El plan pedía 5 bullets breves (≤10 líneas) con puntero `docs/X.md § <sección>`, más la reconciliación de TELEMETRIA.md. Z1 entregó:
+  - 1 bullet de jornada (CLAUDE.md:225) sin `closed_for_day`, sin `reset_immediately` y sin `scheduled_recording_runtime.json`.
+  - 1 párrafo de ~1500 caracteres en Telemetría (CLAUDE.md:314) que junta logout, fin de sesión y autostart.
+  - Nada del bullet de canales/updater NSIS (`direct_update_install`, `updater:allow-check`), de la cláusula de audio para WM_ENDSESSION ni de los punteros `§`.
+- **Dato falso en CLAUDE.md:314.** Dice que `device.profile` lleva `idle_reason`, pero `DeviceProfile` (logging/commands.rs:452) solo lleva `jornada: JornadaConfig`. `idle_reason` vive solo en `HealthSnapshot` (:341). CLAUDE.md se carga en cada sesión, así que el error se propaga.
+- **Refutadores y revisión de TELEMETRIA.md:**
+  - Z1 corrió con 0 refutadores (riesgo low), así que nadie detectó lo anterior.
+  - TELEMETRIA.md no se tocó. Su cabecera dice 2026-09-23 y no tiene marcas de "pendiente" (las dos que hay son "intención pendiente" legítima, :396 y :410), pero la reconciliación campo por campo contra el código no está hecha.
+- **Etiqueta "(S1)":** todos los commits de esta corrida y de las anteriores llevan "(S1)", así que la trazabilidad commit→tarea en `git log` no es confiable. Es un defecto del workflow.
+- **Pruebas manuales:** no se probaron la sesión revocada a media grabación (AC-20), el logout del chat grabando (caso 9) ni la matriz completa (AC-24).
+- **ACs de corridas anteriores (AC-2 a AC-16 y AC-22):** en esta revisión solo se revisaron por grep. No se re-corrieron sus `cargo test`.
+- **Ratchets** (no bloquean):
+  - vitest tests: 564 pasan (línea base 513, +51, sube).
+  - eventos en catálogo: 36 (línea base 28, +8, sube).
 
 ## Lecciones propuestas para CLAUDE.md
-- Una tarea que toque `tauri.conf.json` (capabilities o plugins) necesita su propio `tauri:build:debug`. `lint-tauri-acl.js` no sustituye la build integrada.
-- Cuando dos eventos del outbox se emiten en la misma tarea async, el orden que exige el contrato se fija con un test que inspeccione el orden de inserción, no solo con comentarios.
+- Una tarea que agrega o cambia un comando Tauri no está verificada hasta que `tauri:build:debug` corre DESPUÉS de su último edit: vitest no compila Rust, y un build de una tarea anterior no cuenta (hay que comparar el mtime del exe con el de la fuente).
+- `device.profile` lleva configuración (`jornada` = `JornadaConfig`, autostart, `package_installed_at`). El estado dinámico (`idle_reason` y el bloque `jornada` de runtime) va solo en `health.heartbeat`.
 
 ## Qué queda para Julio
-- **Push manual** de los 9 commits (`e4400ef`…`2481aa7`), más los de corridas anteriores que siguen sin push.
-- **Decidir sobre P2**: arreglar a mano el orden en `lifecycle.rs` (mover `reconcile_with` después del `emit_event` de `APP_START`) y commitearlo, o descartar los 5 archivos sucios. Después, re-lanzar `/spec-execute telemetria-ciclo-vida-83` con el motor serial para P2 → S1…S5 → Z1.
-- Correr `cd frontend && npm run tauri:build:debug` sobre `HEAD` (después de U4) antes de cualquier release.
-- Opcional: `cargo test --lib audio::incremental_saver -- --ignored` con ffmpeg en PATH.
-- Antes de la próxima corrida: `git branch backup/2026-09-23-telemetria-83` (Protocolo Guardian).
-- Matriz E2E en Windows 11 (NSIS debug y MSIX local vía `/store-msix`). Hoy aplican los escenarios (1), (2), (3), (4), (10) y (11). Los escenarios (5) a (8) dependen de código de corridas anteriores (J*/P1*); el (5) también necesita P2 y el (9) necesita las S-tasks.
-- Correr la query "¿Por qué no grabó? — persona × día hábil" sobre el usuario de pruebas para los días de la matriz.
-- Control de dominio de `idle_reason` y de `app.exit reason` tras la primera semana de 0.2.62 en campo.
-- `graphify update .` al terminar.
+- **Build y push:** correr `cd frontend && pnpm run tauri:build:debug` (exit 0) sobre `78855d0` antes del push. Es lo único que compila S5. Después, push manual: `main` va 33 commits por delante de `origin/main`, todos locales. El backup `backup/2026-09-23-telemetria-83` existe.
+- **Corregir CLAUDE.md:**
+  - Quitar el `idle_reason` de `device.profile` en :314.
+  - Decidir si ese párrafo se parte en los bullets breves del plan (canales/updater NSIS, cuentas/logout, cláusula de audio WM_ENDSESSION, jornada completa con `closed_for_day` y `reset_immediately`) con puntero `§` a cada doc de área.
+  - Opcional: la nota `autostart_toggled` vs `autostart.changed` en TELEMETRIA.md.
+- **Archivo suelto:** borrar o ignorar `frontend/tsc_out.txt`.
+- **Matriz E2E** en Windows 11 (NSIS debug y MSIX local vía `/store-msix`), los casos (1) a (11) de `verify.md`. Los más ligados a esta corrida son el (9), cerrar sesión desde el sidebar del chat grabando (se guarda la conversación y aparece `auth.logout` con surface `chat_sidebar`), y la prueba de AC-20: revocar la sesión y correr `__pollDebug.forceTokenRefresh()` a media grabación (el segmento se guarda y un re-login reanuda la jornada).
+- **Query de telemetría:** correr "¿Por qué no grabó? — persona × día hábil" de `docs/TELEMETRIA.md` sobre el usuario de pruebas en los días de la matriz.
+- **Tras la primera semana de 0.2.62 en campo:** control de dominio de `idle_reason` en `health.heartbeat` y distinct de `app.exit` reason contra las tablas del contrato.
+- **Grafo:** correr `graphify update .`.

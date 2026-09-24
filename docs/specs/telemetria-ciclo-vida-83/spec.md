@@ -1,7 +1,7 @@
 ---
 slug: telemetria-ciclo-vida-83
 repo: maity_desktop
-status: approved
+status: executed
 base_commit: 2cc397a69ec1eb0e89915c89cae0b449c52589d7
 approved_at: 2026-09-23T19:30:00-06:00
 ---
