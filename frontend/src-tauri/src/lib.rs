@@ -158,18 +158,65 @@ async fn set_main_window_auth_layout<R: Runtime>(
 /// Cleanup al cerrar sesión: detiene y guarda cualquier grabación activa (segmento
 /// de jornada → persistencia nativa; manual → stop estándar) ANTES de que el
 /// frontend limpie `current_user_id` — sin el user el guardado del segmento falla.
-/// Best-effort con timeout: nunca bloquea el logout.
+///
+/// Orden (#83, AC-19): 1) escribe `auth.logout` al outbox PRIMERO (captura la fase
+/// de grabación antes del stop); 2) en paralelo, el stop de la grabación (≤30 s) y
+/// el flush dirigido de esa fila (≤3 s, con el token de quien sale, sin refrescar);
+/// 3) borra la marca de último login (un logout del usuario no es sesión perdida).
+/// `surface` la manda el webview (`invoke('logout_cleanup', { surface })`, S3b);
+/// sin ella se reporta `"unknown"`.
+/// Best-effort con timeout: nunca bloquea ni falla el logout.
 #[tauri::command]
-async fn logout_cleanup<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
-    if tokio::time::timeout(
-        std::time::Duration::from_secs(30),
-        graceful_shutdown_before_exit(&app),
-    )
-    .await
-    .is_err()
-    {
-        log::warn!("logout_cleanup: stop de grabación excedió 30s; continuando logout");
-    }
+async fn logout_cleanup<R: Runtime>(
+    app: AppHandle<R>,
+    surface: Option<String>,
+) -> Result<(), String> {
+    let phase = crate::audio::recording_phase::current_phase();
+    let maity_user_id = match app.try_state::<crate::state::AppState>() {
+        Some(s) => s.current_user_id().await,
+        None => None,
+    };
+    let facts = logging::telemetry::auth::LogoutFacts {
+        surface: logging::telemetry::auth::normalize_surface(surface.as_deref()),
+        maity_user_id,
+        recording_was_active: phase.is_session_active(),
+        recording_phase: phase.as_str(),
+    };
+    // La fila se escribe ANTES del stop: si fuera después, `recording_was_active`
+    // saldría siempre false y la fila competiría con el cierre del segmento.
+    let row_id = logging::telemetry::auth::emit_logout(&app, &facts).await;
+
+    let stop = async {
+        if tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            graceful_shutdown_before_exit(&app),
+        )
+        .await
+        .is_err()
+        {
+            log::warn!("logout_cleanup: stop de grabación excedió 30s; continuando logout");
+        }
+    };
+    // Sin timeout extra: el presupuesto de 3 s ya es de `flush_row` (cancelar un
+    // drenado a medias duplicaría filas).
+    let flush = async {
+        match row_id {
+            Some(id) => Some(
+                logging::telemetry::drain::flush_row(&app, id, std::time::Duration::from_secs(3))
+                    .await,
+            ),
+            None => None,
+        }
+    };
+    let (_, flushed) = tokio::join!(stop, flush);
+    log::info!(
+        "logout_cleanup: auth.logout surface={} fila={:?} flush={:?}",
+        facts.surface,
+        row_id,
+        flushed
+    );
+
+    let _ = logging::telemetry::lifecycle::take_last_login_user();
     Ok(())
 }
 

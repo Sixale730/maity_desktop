@@ -16,12 +16,15 @@
 //! - `lifecycle`: marcador de ciclo de vida del PROCESO (`lifecycle.json`),
 //!   `app.start`/`app.exit`/`app.resumed` (#83, desde 0.2.62). No confundir con
 //!   `app.open`/`app.close`, que emite el webview.
+//! - `auth`: `auth.logout` desde `logout_cleanup` (outbox + `flush_row` con el
+//!   token de quien sale) y, desde S4, `auth.session_lost` (#83).
 //!
 //! Regla de oro (aprendida del puente `rust_error_bridge`, que desde sep-2026
 //! también la cumple): la telemetría nativa NO emite al webview para que otro
 //! la suba — WebView2 suspende el JS con la ventana oculta y los eventos se
 //! pierden. Outbox + drenadora nativa.
 
+pub mod auth;
 pub mod catalog;
 pub mod context;
 pub mod drain;
