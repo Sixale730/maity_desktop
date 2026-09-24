@@ -17,6 +17,7 @@
 //! `plugin`, igual que antes de este módulo.
 
 use serde::Serialize;
+use std::sync::Mutex;
 
 /// Nombre de valor bajo `HKCU\...\Run` y `...\StartupApproved\Run` que usa
 /// tauri-plugin-autostart en canal directo (`app.package_info().name`, que resuelve al
@@ -87,6 +88,126 @@ pub async fn current<R: tauri::Runtime>(_app: &tauri::AppHandle<R>) -> Autostart
 #[tauri::command]
 pub async fn autostart_get_state<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> AutostartSnapshot {
     current(&app).await
+}
+
+// ── `autostart.changed` contra la línea base del marcador (#83 P2, AC-16) ──
+//
+// La línea base ("último estado visto") vive en `lifecycle.json`
+// (`last_autostart_state`, §1.5 del contrato) y se arrastra entre arranques.
+// `reconcile` la compara contra el estado real de ESTE momento y, si cambió,
+// emite `autostart.changed` y avanza la línea base — pero SOLO si la fila
+// quedó en el outbox (si `emit_event_with_id` no consigue insertarla, se
+// revierte el swap para reintentar en el próximo reconcile). Sin previo
+// (primer arranque, o el marcador aún no tenía el campo) NO se emite nada:
+// solo se fija la línea base.
+//
+// `RECONCILE_LOCK` serializa la sección síncrona (leer+swap la línea base)
+// entre los tres disparadores (`boot`, `settings_toggle`, `bootstrap`), que
+// en la práctica nunca corren en paralelo entre sí, pero el candado evita que
+// dos reconcile solapados pisen el swap del otro. El lock NUNCA se sostiene
+// a través de un `.await` (un `std::sync::MutexGuard` no es `Send`).
+static RECONCILE_LOCK: Mutex<()> = Mutex::new(());
+
+/// Pura (sin I/O): decide qué hacer al comparar la línea base persistida
+/// (`prev`, `None` = sin marcador todavía) contra el estado real actual.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ReconcileDecision {
+    /// Sin línea base previa (primer arranque, o instalación nueva): solo se
+    /// fija, nunca se emite (evitaría un `autostart.changed` fantasma con
+    /// `from: null` en cada instalación).
+    BaselineOnly,
+    /// El estado no cambió respecto a la línea base: nada que hacer.
+    Unchanged,
+    /// El estado cambió: hay que emitir `autostart.changed` con este `from`.
+    Changed { from: String },
+}
+
+pub(crate) fn decide_change(prev: Option<&str>, current_state: &str) -> ReconcileDecision {
+    match prev {
+        None => ReconcileDecision::BaselineOnly,
+        Some(p) if p == current_state => ReconcileDecision::Unchanged,
+        Some(p) => ReconcileDecision::Changed { from: p.to_string() },
+    }
+}
+
+/// Compara el estado real del autostart contra la línea base y, si cambió,
+/// emite `autostart.changed`. Lee el estado actual con `current(app)` (un
+/// registro más en canal directo); usa `reconcile_with` cuando el llamador ya
+/// tiene el `AutostartSnapshot` a mano (p. ej. `lifecycle::emit_start`, que lo
+/// necesita también para `app.start.autostart_state`).
+pub async fn reconcile<R: tauri::Runtime>(app: &tauri::AppHandle<R>, trigger: &'static str) {
+    let snapshot = current(app).await;
+    reconcile_with(app, trigger, snapshot).await;
+}
+
+pub(crate) async fn reconcile_with<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    trigger: &'static str,
+    snapshot: AutostartSnapshot,
+) {
+    // Un fallo transitorio de lectura (WinRT discrepante bajo MSIX, o el plugin
+    // devolviendo Err en macOS/Linux) no debe tocar la línea base: produciría un
+    // ciclo `enabled→unknown→enabled` con dos eventos `autostart.changed` falsos
+    // (plan.md P2, paso b). Salir sin swap ni emit.
+    if snapshot.state == "unknown" {
+        return;
+    }
+
+    let decision = {
+        let _guard = RECONCILE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let prev = crate::logging::telemetry::lifecycle::swap_last_autostart_state(&snapshot.state);
+        decide_change(prev.as_deref(), &snapshot.state)
+    };
+
+    let from = match decision {
+        ReconcileDecision::BaselineOnly | ReconcileDecision::Unchanged => return,
+        ReconcileDecision::Changed { from } => from,
+    };
+
+    let payload = serde_json::json!({
+        "from": from,
+        "to": snapshot.state,
+        "trigger": trigger,
+        "mechanism": snapshot.mechanism,
+        "disabled_at": snapshot.disabled_at,
+    });
+    let session_id = crate::logging::telemetry::context::process_session_id();
+    let id = crate::logging::telemetry::emit::emit_event_with_id(
+        app,
+        session_id,
+        crate::logging::telemetry::catalog::AUTOSTART_CHANGED,
+        payload,
+        Some(crate::logging::telemetry::status::TelemetryStatus::Ok),
+        None,
+        None,
+    )
+    .await;
+
+    if id.is_none() {
+        // La fila no quedó en el outbox (sin AppState o error de escritura):
+        // revertir la línea base para que el próximo reconcile vuelva a ver
+        // el cambio pendiente.
+        let _guard = RECONCILE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::logging::telemetry::lifecycle::swap_last_autostart_state(&from);
+    }
+}
+
+/// Comando invocable desde JS: dispara `reconcile` para los disparadores que
+/// NO son `boot` (ese lo llama `lifecycle::emit_start` internamente).
+/// Allowlist explícita — `settings_toggle` (PreferenceSettings, tras cada
+/// toggle exitoso) y `bootstrap` (`useAutostartBootstrap`, tras `enable()`).
+#[tauri::command]
+pub async fn autostart_reconcile<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    trigger: String,
+) -> Result<(), String> {
+    let trigger: &'static str = match trigger.as_str() {
+        "settings_toggle" => "settings_toggle",
+        "bootstrap" => "bootstrap",
+        other => return Err(format!("trigger de autostart_reconcile no permitido: {other}")),
+    };
+    reconcile(&app, trigger).await;
+    Ok(())
 }
 
 #[cfg(target_os = "windows")]
@@ -253,6 +374,29 @@ mod tests {
         let snap = classify_from_task_manager_override(Some(bytes));
         assert_eq!(snap.state, "disabledByUser");
         assert_eq!(snap.disabled_at, None);
+    }
+
+    #[test]
+    fn decide_change_sin_linea_base_solo_fija() {
+        assert_eq!(decide_change(None, "enabled"), ReconcileDecision::BaselineOnly);
+    }
+
+    #[test]
+    fn decide_change_igual_a_la_linea_base_no_hace_nada() {
+        assert_eq!(
+            decide_change(Some("enabled"), "enabled"),
+            ReconcileDecision::Unchanged
+        );
+    }
+
+    #[test]
+    fn decide_change_distinto_de_la_linea_base_emite_con_el_from_correcto() {
+        assert_eq!(
+            decide_change(Some("enabled"), "disabledByUser"),
+            ReconcileDecision::Changed {
+                from: "enabled".to_string()
+            }
+        );
     }
 
     #[test]

@@ -1808,6 +1808,10 @@ pub fn run() {
             // Estado real de autostart (canal directo: distingue "nunca configurado" de
             // "lo apagó Task Manager"; MSIX: delega en startup_task). Ver autostart_state.rs.
             autostart_state::autostart_get_state,
+            // `autostart.changed` contra la línea base (#83 P2, AC-16): triggers
+            // `settings_toggle`/`bootstrap` desde JS; `boot` lo dispara internamente
+            // `lifecycle::emit_start`, nunca este comando.
+            autostart_state::autostart_reconcile,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

@@ -76,6 +76,12 @@ export function useAutostartBootstrap() {
         const alreadyEnabled = await isEnabled().catch(() => false);
         if (!alreadyEnabled) {
           await enable();
+          // autostart.changed contra la línea base del marcador (#83 P2, AC-16):
+          // en una instalación nueva la línea base todavía no existe, así que este
+          // reconcile solo la fija (disabled→enabled esperado, no emite fantasma).
+          invoke('autostart_reconcile', { trigger: 'bootstrap' }).catch((err) => {
+            logger.warn('[AutostartBootstrap] autostart_reconcile failed:', err);
+          });
           toast.success('Maity se iniciará con tu PC', {
             description: 'El modal de grabación aparecerá listo para usar. Puedes desactivarlo en Configuración → Preferencias.',
             duration: 6000,

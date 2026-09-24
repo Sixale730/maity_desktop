@@ -25,6 +25,14 @@ type MsixStartupState =
   | 'unknown'
   | 'unsupported';
 
+// Estados del comando Tauri `autostart_get_state` (canal directo: distingue "nunca
+// configurado" de "lo apagó Task Manager", algo que el plugin oficial no reporta).
+type DirectAutostartSnapshot = {
+  state: 'enabled' | 'enabledByPolicy' | 'disabled' | 'disabledByUser' | 'disabledByPolicy' | 'unknown';
+  disabled_at: string | null;
+  mechanism: string;
+};
+
 export function PreferenceSettings() {
   const {
     notificationSettings,
@@ -115,6 +123,10 @@ export function PreferenceSettings() {
   // Estado del StartupTask MSIX. `disabledByUser` = el usuario lo apagó desde Task
   // Manager/Configuración de Windows: la app NO puede reactivarlo, solo abrir Settings.
   const [msixStartupState, setMsixStartupState] = useState<MsixStartupState | null>(null);
+  // Snapshot real del autostart en canal directo (#83 P2, AC-16): distingue
+  // "nunca configurado" de "lo apagó Task Manager" contra la línea base del
+  // marcador. `null` mientras carga o en canales/SO donde no aplica.
+  const [directAutostartSnapshot, setDirectAutostartSnapshot] = useState<DirectAutostartSnapshot | null>(null);
   useEffect(() => {
     let cancelled = false;
     Promise.all([
@@ -132,6 +144,12 @@ export function PreferenceSettings() {
           .catch((err) => {
             logger.warn('Failed to read MSIX startup task state:', err);
             if (!cancelled) setMsixStartupState('unsupported');
+          });
+      } else {
+        invoke<DirectAutostartSnapshot>('autostart_get_state')
+          .then((snapshot) => { if (!cancelled) setDirectAutostartSnapshot(snapshot); })
+          .catch((err) => {
+            logger.warn('Failed to read direct-channel autostart state:', err);
           });
       }
     });
@@ -160,6 +178,13 @@ export function PreferenceSettings() {
         await Analytics.track('autostart_toggled', { enabled: next.toString(), channel: 'msix' });
       } catch (err) {
         logger.warn('Failed to toggle MSIX startup task:', err);
+      } finally {
+        // autostart.changed contra la línea base (#83 P2, AC-16): dispara en
+        // ambos canales, el toggle OK o no (si falló, reconcile no encuentra
+        // cambio real y no emite nada — es barato dejarlo correr siempre).
+        invoke('autostart_reconcile', { trigger: 'settings_toggle' }).catch((err) => {
+          logger.warn('autostart_reconcile (msix toggle) failed:', err);
+        });
       }
       return;
     }
@@ -174,6 +199,14 @@ export function PreferenceSettings() {
     } catch (err) {
       logger.warn('Failed to toggle autostart:', err);
       setAutostartEnabled(!next);
+    } finally {
+      invoke('autostart_reconcile', { trigger: 'settings_toggle' }).catch((err) => {
+        logger.warn('autostart_reconcile (direct toggle) failed:', err);
+      });
+      // Refresca el snapshot real (distingue disabledByUser) tras el toggle.
+      invoke<DirectAutostartSnapshot>('autostart_get_state')
+        .then((snapshot) => setDirectAutostartSnapshot(snapshot))
+        .catch((err) => logger.warn('Failed to refresh direct-channel autostart state:', err));
     }
   };
 
@@ -407,6 +440,12 @@ export function PreferenceSettings() {
                   >
                     ábrelo en Configuración de Windows
                   </button>.
+                </span>
+              )}
+              {!isPackaged && directAutostartSnapshot?.state === 'disabledByUser' && (
+                <span className="block mt-2 text-amber-500 text-xs">
+                  Lo desactivaste desde el Administrador de tareas de Windows; si lo activas aquí se
+                  vuelve a habilitar.
                 </span>
               )}
               {isPackaged && (msixStartupState === 'disabledByPolicy' || msixStartupState === 'enabledByPolicy') && (

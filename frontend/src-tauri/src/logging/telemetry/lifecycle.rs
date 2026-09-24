@@ -446,7 +446,7 @@ pub fn emit_start<R: Runtime>(app: &AppHandle<R>) {
                 build: build_name(),
                 build_channel: boot.build_channel,
                 started_at_boot: crate::STARTED_AT_BOOT.load(Ordering::Relaxed),
-                autostart_state: Some(autostart.state),
+                autostart_state: Some(autostart.state.clone()),
                 started_at_ms: boot.now_ms,
                 os_boot_ms: boot.os_boot_ms,
             };
@@ -465,6 +465,11 @@ pub fn emit_start<R: Runtime>(app: &AppHandle<R>) {
                 None,
             )
             .await;
+            // P2: línea base del autostart y autostart.changed(trigger=boot); después
+            // de app.start para que el orden en platform_logs sea start → changed.
+            // Reusa el snapshot recién leído en vez de volver a leer el registro;
+            // `emit_start` es el único disparador `boot`.
+            crate::autostart_state::reconcile_with(&app, "boot", autostart).await;
         }
         spawn_alive_ticker(app);
     });
