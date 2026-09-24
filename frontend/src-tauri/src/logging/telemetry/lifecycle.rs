@@ -20,6 +20,11 @@
 //! 2. `emit_start` — tras el init de la DB (el outbox necesita `AppState`):
 //!    spawn que calcula `summarize_prev` y deja `app.start` en el outbox, y
 //!    arranca el ticker de 60 s (`last_alive_ms` + `app.resumed`).
+//! 3. `begin_exit` — PRIMERO en toda salida (bandeja, rival, `RunEvent::Exit`):
+//!    escribe el bloque `exit` (durable) con el motivo del contrato §1.7 y
+//!    apaga la drenadora; luego `emit_exit_row` deja `app.exit` en el outbox
+//!    (insert acotado) y `finish_exit` sella `done_at_ms`. Un centinela en la
+//!    tabla de recursos cubre las salidas que no pasan por `RunEvent::Exit`.
 //!
 //! Reglas: nunca `log::error!` en este módulo (solo `warn!`, fuera del lock y
 //! con rate-limit); nunca `.lock().unwrap()`; ningún literal de "versión
@@ -206,11 +211,13 @@ enum WarnKind {
     Rotate,
     Tick,
     Accessor,
+    Exit,
 }
 
 static WARNED_ROTATE: AtomicBool = AtomicBool::new(false);
 static WARNED_TICK: AtomicBool = AtomicBool::new(false);
 static WARNED_ACCESSOR: AtomicBool = AtomicBool::new(false);
+static WARNED_EXIT: AtomicBool = AtomicBool::new(false);
 
 /// Un `warn!` por tipo de error y proceso. Llamar SIEMPRE fuera del lock del
 /// marcador (el logger puede tocar disco).
@@ -219,6 +226,7 @@ fn warn_once(kind: WarnKind, msg: &str) {
         WarnKind::Rotate => (&WARNED_ROTATE, "rotate"),
         WarnKind::Tick => (&WARNED_TICK, "tick"),
         WarnKind::Accessor => (&WARNED_ACCESSOR, "accessor"),
+        WarnKind::Exit => (&WARNED_EXIT, "exit"),
     };
     if !flag.swap(true, Ordering::Relaxed) {
         log::warn!("[lifecycle] {} falló (se avisa una vez): {}", label, msg);
@@ -777,6 +785,345 @@ pub fn take_last_login_user() -> Option<LastLoginUser> {
     taken
 }
 
+// ── Salida del proceso: app.exit (L2, contrato §1.7) ───────────────────────
+
+/// Tope del insert de `app.exit` en las salidas normales: el pool tiene
+/// `acquire_timeout` de 30 s y el marcador ya es la fuente de verdad, así que
+/// la fila del outbox es best-effort y no puede retrasar la salida.
+pub const EXIT_ROW_TIMEOUT: Duration = Duration::from_millis(750);
+/// Tope del insert en la rama de fin de sesión de Windows (lo usa E2b).
+#[allow(dead_code)]
+pub const EXIT_ROW_TIMEOUT_SESSION_END: Duration = Duration::from_millis(400);
+
+/// Motivo propio de una salida que la inicia la app misma. Gana sobre lo que
+/// se observe después (el `app.exit(0)` que sigue llega como `ExitRequested`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExitHint {
+    /// "Salir" del menú de la bandeja.
+    TrayQuit,
+    /// Desinstalación de la instalación rival (`rival_install::uninstall_rival`).
+    RivalInstall,
+    /// Update. `via` = `store_button | store_api | nsis` (va en `detail`).
+    #[allow(dead_code)]
+    Update { via: &'static str },
+}
+
+/// Último `RunEvent::ExitRequested` visto por el `.run` de lib.rs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ExitRequestSeen {
+    NotSeen,
+    /// `AppHandle::exit(code)` / `restart()` (`Some(code)`).
+    Programmatic(i32),
+    /// `None`: se cerró la última ventana (regresión tipo 0.2.57).
+    UserInteraction,
+}
+
+static EXIT_REQUESTED: Mutex<ExitRequestSeen> = Mutex::new(ExitRequestSeen::NotSeen);
+
+/// Emit-once de la salida: el primero que llega (bandeja, rival, `RunEvent::Exit`
+/// o el centinela) escribe el bloque `exit`; los demás son no-op.
+static EXIT_BEGUN: AtomicBool = AtomicBool::new(false);
+
+/// `true` solo para el primer llamador (swap atómico).
+fn claim_once(flag: &AtomicBool) -> bool {
+    !flag.swap(true, Ordering::SeqCst)
+}
+
+/// Lo llama el `.run` de lib.rs en `RunEvent::ExitRequested`. Síncrona; NO
+/// hace `prevent_exit` (no cambia el comportamiento de la salida).
+pub fn note_exit_requested(code: Option<i32>) {
+    let seen = match code {
+        Some(c) => ExitRequestSeen::Programmatic(c),
+        None => ExitRequestSeen::UserInteraction,
+    };
+    *EXIT_REQUESTED.lock().unwrap_or_else(|e| e.into_inner()) = seen;
+}
+
+/// `GetSystemMetrics(SM_SHUTTINGDOWN) != 0`: Windows está cerrando la sesión o
+/// apagando. Respaldo cuando no hay registro exacto del fin de sesión (E1).
+/// Extern crudo de `user32` (sin feature nueva del crate `windows`).
+pub(crate) fn os_shutting_down() -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        #[link(name = "user32")]
+        extern "system" {
+            fn GetSystemMetrics(n_index: i32) -> i32;
+        }
+        const SM_SHUTTINGDOWN: i32 = 0x2000;
+        // SAFETY: función sin punteros ni estado; solo lee una métrica del sistema.
+        unsafe { GetSystemMetrics(SM_SHUTTINGDOWN) != 0 }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        false
+    }
+}
+
+/// Fin de sesión de Windows observado (E1 lo llena desde el subclass del HWND).
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SessionEndHint {
+    /// `logoff | shutdown | unknown`.
+    pub detail: &'static str,
+    pub critical: bool,
+    /// Restart Manager `CLOSEAPP` SIN apagado del sistema (instalador).
+    pub external_close: bool,
+}
+
+/// Resultado puro de `classify_exit`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ExitClass {
+    pub reason: &'static str,
+    pub detail: Option<String>,
+    pub exit_code: Option<i32>,
+    pub session_end_kind: Option<&'static str>,
+    pub critical: bool,
+}
+
+/// Pura. Precedencia (contrato §1.7): (1) motivo propio; (2) `restart`;
+/// (3) `app_exit` con su código; (4) `last_window_closed`; y sin
+/// `ExitRequested`: (5) `external_close`, (6) `os_session_end` con el tipo
+/// observado, (7) `os_session_end`/`unknown` por la métrica del SO,
+/// (8) `loop_destroyed`.
+pub(crate) fn classify_exit(
+    hint: Option<&ExitHint>,
+    requested: &ExitRequestSeen,
+    session_end: Option<&SessionEndHint>,
+    os_shutting_down: bool,
+) -> ExitClass {
+    let exit_code = match requested {
+        ExitRequestSeen::Programmatic(c) => Some(*c),
+        _ => None,
+    };
+    let plain = |reason: &'static str| ExitClass {
+        reason,
+        detail: None,
+        exit_code,
+        session_end_kind: None,
+        critical: false,
+    };
+
+    if let Some(hint) = hint {
+        return match hint {
+            ExitHint::TrayQuit => plain("tray_quit"),
+            ExitHint::RivalInstall => plain("rival_install"),
+            ExitHint::Update { via } => ExitClass {
+                detail: Some((*via).to_string()),
+                ..plain("update")
+            },
+        };
+    }
+    match requested {
+        ExitRequestSeen::Programmatic(c) if *c == tauri::RESTART_EXIT_CODE => plain("restart"),
+        ExitRequestSeen::Programmatic(_) => plain("app_exit"),
+        ExitRequestSeen::UserInteraction => plain("last_window_closed"),
+        ExitRequestSeen::NotSeen => match session_end {
+            Some(se) if se.external_close => ExitClass {
+                session_end_kind: Some("close_app"),
+                critical: se.critical,
+                ..plain("external_close")
+            },
+            Some(se) => ExitClass {
+                detail: Some(se.detail.to_string()),
+                session_end_kind: Some(se.detail),
+                critical: se.critical,
+                ..plain("os_session_end")
+            },
+            None if os_shutting_down => ExitClass {
+                detail: Some("unknown".to_string()),
+                session_end_kind: Some("unknown"),
+                ..plain("os_session_end")
+            },
+            None => plain("loop_destroyed"),
+        },
+    }
+}
+
+/// Salida registrada: lo que se escribió en el marcador + lo que lleva la fila.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExitRecord {
+    pub reason: String,
+    pub detail: Option<String>,
+    pub exit_code: Option<i32>,
+    pub begun_at_ms: u64,
+    pub uptime_s: u64,
+    pub recording_active: bool,
+    pub recording_phase: &'static str,
+    pub session_end_kind: Option<String>,
+    pub critical: bool,
+}
+
+/// Inicio de la vida del proceso: el del marcador vivo o, si no hubo
+/// directorio, el que capturó `rotate_at_boot`.
+fn process_started_ms() -> Option<u64> {
+    let from_slot = {
+        let guard = MARKER.lock().unwrap_or_else(|e| e.into_inner());
+        guard.as_ref().map(|s| s.marker.started_at_ms)
+    };
+    from_slot
+        .filter(|&t| t > 0)
+        .or_else(|| BOOT_PREV.get().map(|b| b.now_ms))
+}
+
+/// PRIMERO en toda salida. Emit-once: el segundo llamador recibe `None` (p. ej.
+/// el `RunEvent::Exit` que sigue a la salida de la bandeja). Escribe el bloque
+/// `exit` del marcador (durable) ANTES que nada — es la fuente de verdad — y
+/// luego apaga la drenadora (`drain::set_exiting`). Síncrona.
+pub fn begin_exit(hint: Option<ExitHint>) -> Option<ExitRecord> {
+    if !claim_once(&EXIT_BEGUN) {
+        return None;
+    }
+    let requested = *EXIT_REQUESTED.lock().unwrap_or_else(|e| e.into_inner());
+    let shutting_down = requested == ExitRequestSeen::NotSeen && os_shutting_down();
+    // E1 conecta aquí el tipo exacto de fin de sesión (subclass del HWND).
+    let session_end: Option<SessionEndHint> = None;
+    let class = classify_exit(hint.as_ref(), &requested, session_end.as_ref(), shutting_down);
+
+    let phase = crate::audio::recording_phase::current_phase();
+    let now = now_ms();
+    let uptime_s = process_started_ms()
+        .map(|s| now.saturating_sub(s) / 1000)
+        .unwrap_or(0);
+    let record = ExitRecord {
+        reason: class.reason.to_string(),
+        detail: class.detail,
+        exit_code: class.exit_code,
+        begun_at_ms: now,
+        uptime_s,
+        recording_active: phase.is_session_active(),
+        recording_phase: phase.as_str(),
+        session_end_kind: class.session_end_kind.map(str::to_string),
+        critical: class.critical,
+    };
+
+    let block = MarkerExit {
+        reason: record.reason.clone(),
+        detail: record.detail.clone(),
+        exit_code: record.exit_code,
+        begun_at_ms: now,
+        done_at_ms: None,
+        recording_active: record.recording_active,
+        session_end_kind: record.session_end_kind.clone(),
+        critical: record.critical,
+    };
+    let written = mutate_marker(true, |m| {
+        m.exit = Some(block);
+        m.last_alive_ms = m.last_alive_ms.max(now);
+    });
+    if let Err(e) = written {
+        warn_once(WarnKind::Exit, &e);
+    }
+    super::drain::set_exiting();
+    log::info!(
+        "[lifecycle] salida: reason={} detail={:?} code={:?} phase={}",
+        record.reason,
+        record.detail,
+        record.exit_code,
+        record.recording_phase
+    );
+    Some(record)
+}
+
+/// Payload de `app.exit` (contrato §1.6).
+pub(crate) fn exit_payload(rec: &ExitRecord) -> serde_json::Value {
+    serde_json::json!({
+        "lifecycle_schema": MARKER_SCHEMA,
+        "reason": rec.reason,
+        "detail": rec.detail,
+        "exit_code": rec.exit_code,
+        "uptime_s": rec.uptime_s,
+        "recording_active": rec.recording_active,
+        "recording_phase": rec.recording_phase,
+        "session_end_kind": rec.session_end_kind,
+        "critical": rec.critical,
+        "build": build_name(),
+    })
+}
+
+/// Deja la fila `app.exit` en el outbox, acotado a `timeout` (`EXIT_ROW_TIMEOUT`
+/// en salidas normales, `EXIT_ROW_TIMEOUT_SESSION_END` en fin de sesión).
+/// Devuelve el rowid para un `drain::flush_row` dirigido; `None` si se descartó
+/// o si expiró el tope (el marcador ya tiene el motivo).
+pub async fn emit_exit_row<R: Runtime>(
+    app: &AppHandle<R>,
+    rec: &ExitRecord,
+    timeout: Duration,
+) -> Option<i64> {
+    tokio::time::timeout(
+        timeout,
+        emit::emit_event_with_id(
+            app,
+            context::process_session_id(),
+            catalog::APP_EXIT,
+            exit_payload(rec),
+            Some(TelemetryStatus::Ok),
+            None,
+            None,
+        ),
+    )
+    .await
+    .ok()
+    .flatten()
+}
+
+/// Sella `done_at_ms` del bloque `exit` (durable) al final de la limpieza.
+/// Funciona aunque el `begin_exit` de este llamador haya devuelto `None`.
+pub fn finish_exit() {
+    let now = now_ms();
+    let written = mutate_marker(true, |m| {
+        if let Some(e) = m.exit.as_mut() {
+            if e.done_at_ms.is_none() {
+                e.done_at_ms = Some(now);
+            }
+        }
+    });
+    if let Err(e) = written {
+        warn_once(WarnKind::Exit, &e);
+    }
+}
+
+/// Centinela en la tabla de recursos de la app: `cleanup_before_exit()` la
+/// vacía, así que su `Drop` corre también en las salidas que NO pasan por
+/// `RunEvent::Exit` (el `on_before_exit` del updater NSIS antes de su
+/// `process::exit`, `restart()` desde el hilo principal, el respaldo de
+/// `AppHandle::exit`). Si nadie registró la salida, escribe
+/// `process_exit_after_cleanup`. En la salida normal tauri llama al callback
+/// de `Exit` ANTES de `cleanup_before_exit`, así que aquí ya es no-op.
+struct ExitSentinel;
+
+impl tauri::Resource for ExitSentinel {}
+
+impl Drop for ExitSentinel {
+    fn drop(&mut self) {
+        if !claim_once(&EXIT_BEGUN) {
+            return;
+        }
+        let now = now_ms();
+        let phase = crate::audio::recording_phase::current_phase();
+        let written = mutate_marker(true, |m| {
+            m.exit = Some(MarkerExit {
+                reason: "process_exit_after_cleanup".to_string(),
+                detail: None,
+                exit_code: None,
+                begun_at_ms: now,
+                done_at_ms: Some(now),
+                recording_active: phase.is_session_active(),
+                session_end_kind: None,
+                critical: false,
+            });
+            m.last_alive_ms = m.last_alive_ms.max(now);
+        });
+        if let Err(e) = written {
+            warn_once(WarnKind::Exit, &e);
+        }
+    }
+}
+
+/// En `setup()`, justo después de `rotate_at_boot`.
+pub fn install_exit_sentinel<R: Runtime>(app: &AppHandle<R>) {
+    let _ = app.resources_table().add(ExitSentinel);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1224,5 +1571,151 @@ mod tests {
         assert_eq!(resume_gap_ms(T0, T0 + RESUME_GAP_MS), None);
         assert_eq!(resume_gap_ms(T0, T0 + RESUME_GAP_MS + 1), Some(RESUME_GAP_MS + 1));
         assert_eq!(resume_gap_ms(T0, T0 - 5_000), None); // reloj hacia atrás
+    }
+
+    // ── classify_exit (L2) ──
+
+    /// Motivos observados del contrato §1.7 (`app.exit.reason`).
+    const CONTRACT_EXIT_REASONS: &[&str] = &[
+        "tray_quit",
+        "rival_install",
+        "update",
+        "restart",
+        "app_exit",
+        "last_window_closed",
+        "os_session_end",
+        "external_close",
+        "loop_destroyed",
+        "process_exit_after_cleanup",
+    ];
+
+    fn se(detail: &'static str, critical: bool, external_close: bool) -> SessionEndHint {
+        SessionEndHint { detail, critical, external_close }
+    }
+
+    #[test]
+    fn classify_exit_tabla() {
+        use ExitRequestSeen::*;
+        let logoff = se("logoff", true, false);
+        let close_app = se("unknown", false, true);
+        let tray = ExitHint::TrayQuit;
+        let store = ExitHint::Update { via: "store_button" };
+
+        // (hint, requested, session_end, os_shutting_down) ⇒ (reason, detail, exit_code, kind, critical)
+        let casos: Vec<(
+            Option<&ExitHint>,
+            ExitRequestSeen,
+            Option<&SessionEndHint>,
+            bool,
+            (&str, Option<&str>, Option<i32>, Option<&str>, bool),
+        )> = vec![
+            (Some(&tray), Programmatic(0), None, false, ("tray_quit", None, Some(0), None, false)),
+            (Some(&tray), NotSeen, Some(&logoff), true, ("tray_quit", None, None, None, false)),
+            (Some(&ExitHint::RivalInstall), NotSeen, None, false, ("rival_install", None, None, None, false)),
+            (Some(&store), NotSeen, None, false, ("update", Some("store_button"), None, None, false)),
+            (None, Programmatic(i32::MAX), None, false, ("restart", None, Some(i32::MAX), None, false)),
+            (None, Programmatic(0), None, true, ("app_exit", None, Some(0), None, false)),
+            (None, Programmatic(3), None, false, ("app_exit", None, Some(3), None, false)),
+            (None, UserInteraction, None, true, ("last_window_closed", None, None, None, false)),
+            (None, NotSeen, Some(&logoff), false, ("os_session_end", Some("logoff"), None, Some("logoff"), true)),
+            (None, NotSeen, Some(&close_app), true, ("external_close", None, None, Some("close_app"), false)),
+            (None, NotSeen, None, true, ("os_session_end", Some("unknown"), None, Some("unknown"), false)),
+            (None, NotSeen, None, false, ("loop_destroyed", None, None, None, false)),
+        ];
+        for (hint, requested, session_end, sd, (reason, detail, code, kind, critical)) in casos {
+            let c = classify_exit(hint, &requested, session_end, sd);
+            let ctx = format!("{:?} {:?} {:?} {}", hint, requested, session_end, sd);
+            assert_eq!(c.reason, reason, "{}", ctx);
+            assert_eq!(c.detail.as_deref(), detail, "{}", ctx);
+            assert_eq!(c.exit_code, code, "{}", ctx);
+            assert_eq!(c.session_end_kind, kind, "{}", ctx);
+            assert_eq!(c.critical, critical, "{}", ctx);
+        }
+    }
+
+    #[test]
+    fn restart_usa_el_codigo_de_tauri() {
+        assert_eq!(tauri::RESTART_EXIT_CODE, i32::MAX);
+        let c = classify_exit(None, &ExitRequestSeen::Programmatic(tauri::RESTART_EXIT_CODE), None, false);
+        assert_eq!(c.reason, "restart");
+    }
+
+    #[test]
+    fn todo_motivo_de_classify_exit_esta_en_el_contrato() {
+        use ExitRequestSeen::*;
+        let hints = [
+            None,
+            Some(ExitHint::TrayQuit),
+            Some(ExitHint::RivalInstall),
+            Some(ExitHint::Update { via: "nsis" }),
+        ];
+        let requested = [NotSeen, Programmatic(0), Programmatic(i32::MAX), UserInteraction];
+        let sessions = [
+            None,
+            Some(se("logoff", false, false)),
+            Some(se("shutdown", true, false)),
+            Some(se("unknown", false, true)),
+        ];
+        for h in &hints {
+            for r in &requested {
+                for s in &sessions {
+                    for sd in [false, true] {
+                        let c = classify_exit(h.as_ref(), r, s.as_ref(), sd);
+                        assert!(
+                            CONTRACT_EXIT_REASONS.contains(&c.reason),
+                            "motivo fuera del contrato: {}",
+                            c.reason
+                        );
+                    }
+                }
+            }
+        }
+        // El centinela también escribe un motivo del contrato.
+        assert!(CONTRACT_EXIT_REASONS.contains(&"process_exit_after_cleanup"));
+    }
+
+    #[test]
+    fn claim_once_solo_el_primero_gana() {
+        let flag = AtomicBool::new(false);
+        assert!(claim_once(&flag));
+        assert!(!claim_once(&flag));
+        assert!(!claim_once(&flag));
+    }
+
+    #[test]
+    fn el_payload_de_app_exit_lleva_los_campos_del_contrato() {
+        let rec = ExitRecord {
+            reason: "tray_quit".into(),
+            detail: None,
+            exit_code: None,
+            begun_at_ms: T0,
+            uptime_s: 3_600,
+            recording_active: true,
+            recording_phase: "recording",
+            session_end_kind: None,
+            critical: false,
+        };
+        let p = exit_payload(&rec);
+        let obj = p.as_object().unwrap();
+        for key in [
+            "lifecycle_schema",
+            "reason",
+            "detail",
+            "exit_code",
+            "uptime_s",
+            "recording_active",
+            "recording_phase",
+            "session_end_kind",
+            "critical",
+            "build",
+        ] {
+            assert!(obj.contains_key(key), "falta {}", key);
+        }
+        assert_eq!(obj.len(), 10);
+        assert_eq!(p["lifecycle_schema"], 1);
+        assert_eq!(p["reason"], "tray_quit");
+        assert_eq!(p["uptime_s"], 3_600);
+        assert_eq!(p["recording_active"], true);
+        assert!(p["detail"].is_null());
     }
 }

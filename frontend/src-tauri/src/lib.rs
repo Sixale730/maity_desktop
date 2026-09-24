@@ -693,6 +693,10 @@ pub fn run() {
             // de la DB para que un cuelgue de la DB se vea como "arrancó y nunca
             // vivió". Síncrono (std::fs); `app.start` se emite tras la DB.
             logging::telemetry::lifecycle::rotate_at_boot(_app.handle());
+            // Centinela de salida (#83): si el proceso sale por `cleanup_before_exit`
+            // sin pasar por `RunEvent::Exit` (update NSIS, restart en el hilo
+            // principal), deja `process_exit_after_cleanup` en el marcador.
+            logging::telemetry::lifecycle::install_exit_sentinel(_app.handle());
 
             // CRITICAL: Initialize database FIRST, before any spawn that might
             // access AppState. Tauri commands can be invoked before setup completes,
@@ -1796,10 +1800,29 @@ pub fn run() {
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
-        .run(|_app_handle, event| {
-            if let tauri::RunEvent::Exit = event {
+        .run(|_app_handle, event| match event {
+            // Solo se anota el código (#83: `restart` / `app_exit` / `last_window_closed`);
+            // sin `prevent_exit`: no cambia el comportamiento de la salida.
+            tauri::RunEvent::ExitRequested { code, .. } => {
+                logging::telemetry::lifecycle::note_exit_requested(code);
+            }
+            tauri::RunEvent::Exit => {
                 log::info!("Application exiting, cleaning up resources...");
+                // Marcador de ciclo de vida PRIMERO (#83): bloque `exit` durable con el
+                // motivo. `None` si otra ruta (bandeja, rival) ya registró la salida.
+                let exit_rec = logging::telemetry::lifecycle::begin_exit(None);
                 tauri::async_runtime::block_on(async {
+                    // Fila `app.exit` en el outbox, acotada a 750 ms (best-effort: el
+                    // marcador ya tiene el motivo; sube en el siguiente arranque).
+                    if let Some(rec) = &exit_rec {
+                        let _ = logging::telemetry::lifecycle::emit_exit_row(
+                            _app_handle,
+                            rec,
+                            logging::telemetry::lifecycle::EXIT_ROW_TIMEOUT,
+                        )
+                        .await;
+                    }
+
                     // Backstop de graceful shutdown: si la salida no vino del tray "quit"
                     // (que ya detiene y guarda), intentar stop+save aquí con presupuesto
                     // acotado. Si expira, los checkpoints de 30s siguen siendo el respaldo.
@@ -1832,8 +1855,10 @@ pub fn run() {
                         log::error!("Failed to force shutdown sidecar: {}", e);
                     }
                 });
+                logging::telemetry::lifecycle::finish_exit();
                 log::info!("Application cleanup complete");
             }
+            _ => {}
         });
 }
 

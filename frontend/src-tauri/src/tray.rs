@@ -63,6 +63,21 @@ fn handle_menu_event<R: Runtime>(app: &AppHandle<R>, item_id: &str) {
             // huérfanos (pérdida de la reunión hasta el próximo recovery manual).
             let app_clone = app.clone();
             tauri::async_runtime::spawn(async move {
+                // Marcador de ciclo de vida (#83): `app.exit` con `tray_quit` ANTES del
+                // stop (el marcador es la fuente de verdad; la fila es best-effort, ≤750 ms).
+                let exit_id = match crate::logging::telemetry::lifecycle::begin_exit(Some(
+                    crate::logging::telemetry::lifecycle::ExitHint::TrayQuit,
+                )) {
+                    Some(rec) => {
+                        crate::logging::telemetry::lifecycle::emit_exit_row(
+                            &app_clone,
+                            &rec,
+                            crate::logging::telemetry::lifecycle::EXIT_ROW_TIMEOUT,
+                        )
+                        .await
+                    }
+                    None => None,
+                };
                 set_tray_state(&app_clone, RecordingState::Stopping);
                 if tokio::time::timeout(
                     std::time::Duration::from_secs(60),
@@ -72,6 +87,16 @@ fn handle_menu_event<R: Runtime>(app: &AppHandle<R>, item_id: &str) {
                 .is_err()
                 {
                     log::warn!("Graceful stop desde tray quit excedió 60s; saliendo igual");
+                }
+                // Subir la fila `app.exit` DESPUÉS del stop (no retrasa el guardado de
+                // la grabación); acotado a 3 s y sin refrescar token.
+                if let Some(id) = exit_id {
+                    let _ = crate::logging::telemetry::drain::flush_row(
+                        &app_clone,
+                        id,
+                        std::time::Duration::from_secs(3),
+                    )
+                    .await;
                 }
                 app_clone.exit(0);
             });

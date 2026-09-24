@@ -122,6 +122,20 @@ pub async fn uninstall_rival(app: tauri::AppHandle) -> Result<(), String> {
             return Err(e);
         }
 
+        // 4b. Marcador de ciclo de vida (#83): `app.exit` con `rival_install`. Va DESPUÉS
+        //     del lanzamiento exitoso (si falla, la app sigue viva) y ANTES de cerrar el
+        //     pool. Sin flush: el pool se cierra enseguida; la fila sube al siguiente arranque.
+        if let Some(rec) = crate::logging::telemetry::lifecycle::begin_exit(Some(
+            crate::logging::telemetry::lifecycle::ExitHint::RivalInstall,
+        )) {
+            let _ = crate::logging::telemetry::lifecycle::emit_exit_row(
+                &app,
+                &rec,
+                crate::logging::telemetry::lifecycle::EXIT_ROW_TIMEOUT,
+            )
+            .await;
+        }
+
         // 5. COMMIT POINT: cerrar el pool (checkpoint redundante + close). Desde aquí
         //    la app ya no puede tocar la DB; morirá en el paso 6.
         if let Some(db) = db {
