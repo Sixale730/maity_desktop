@@ -1,8 +1,10 @@
 'use client'
 
-import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react'
+import React, { createContext, useContext, useState, useEffect, useRef, useCallback, useReducer } from 'react'
 import { supabase, SUPABASE_URL, SUPABASE_ANON_KEY } from '@/lib/supabase'
+import { isAuthRetryableFetchError } from '@supabase/supabase-js'
 import type { Session, User } from '@supabase/supabase-js'
+import { shouldReleaseRustUser, isBootSessionUncertain } from '@/lib/authRelease'
 import type { MaityUser } from '@/types/auth'
 import { invoke } from '@tauri-apps/api/core'
 import { createSubscriptionGroup } from '@/lib/tauriSubscribe'
@@ -100,28 +102,56 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const isSigningOut = useRef(false)
   const fetchMaityUserPromise = useRef<Promise<void> | null>(null)
   const signOutPromise = useRef<Promise<void> | null>(null)
+  // Id del último usuario sincronizado con Rust (set_current_user). Distingue la
+  // transición real Some→None (logout / sesión perdida) del montaje sin usuario.
+  const lastSyncedUserIdRef = useRef<string | null>(null)
+  // Arranque sin sesión por red caída (token vencido offline): NO es "sin usuario".
+  // Lo pone initialize(); lo limpia el callback de onAuthStateChange al llegar una
+  // sesión o un SIGNED_OUT real. `bumpAuthRender` fuerza el re-render al limpiarlo
+  // (un SIGNED_OUT con el estado ya en null no re-renderiza por sí solo).
+  const bootSessionUncertainRef = useRef(false)
+  const [, bumpAuthRender] = useReducer((n: number) => n + 1, 0)
 
   const isAuthenticated = !!session && !!user
 
+  // La inicialización de auth terminó y NO hay usuario (ni arranque incierto).
+  // `isLoading` baja en el finally de initialize(), DESPUÉS de resolver el maityUser
+  // de una sesión restaurada. Se mira `user` (no `session`): una falla de
+  // fetchOrCreateMaityUser con sesión viva (recargar sin red) sigue siendo la misma
+  // cuenta y no debe soltar a Rust.
+  const authReady = !isLoading && !user && !bootSessionUncertainRef.current
+
   // Sync the current user.id into the Rust AppState so SQLite queries can filter by user_id (privacy isolation between accounts).
-  // When user is null (logout), clear the Rust state so subsequent reads return empty.
+  // Soltar a Rust (clear_current_user + cloud_sync_clear_session) SOLO cuando
+  // `shouldReleaseRustUser` lo decide (lib/authRelease.ts): transición real Some→None,
+  // o auth ya lista sin usuario. Antes se soltaba en CUALQUIER render sin maityUser,
+  // incluido el primer render del montaje: cada recarga del webview (F5,
+  // ChunkErrorRecovery, ErrorBoundary) dejaba a Rust sin current_user_id a media
+  // jornada, descargaba el STT y un segmento cerrado en el hueco terminaba Failed.
   useEffect(() => {
-    if (maityUser?.id) {
-      invoke('set_current_user', { userId: maityUser.id }).catch((err) => {
+    const nextId = maityUser?.id ?? null
+    const prevId = lastSyncedUserIdRef.current
+    lastSyncedUserIdRef.current = nextId
+    if (nextId) {
+      invoke('set_current_user', { userId: nextId }).catch((err) => {
         logger.error('[Auth] Failed to sync current_user to Rust AppState:', err)
       })
-    } else {
-      invoke('clear_current_user').catch((err) => {
-        logger.error('[Auth] Failed to clear current_user in Rust AppState:', err)
-      })
-      // El maityUser puede desaparecer sin pasar por signOut (SIGNED_OUT venido
-      // de otra pestaña/proceso, sesión revocada): la sesión cloud de Rust se
-      // limpia aquí también, no solo en signOut. Idempotente.
-      invoke('cloud_sync_clear_session').catch((err) => {
-        logger.warn('[Auth] cloud_sync_clear_session falló:', err)
-      })
+      return
     }
-  }, [maityUser?.id])
+    if (!shouldReleaseRustUser(prevId, nextId, authReady)) {
+      logger.debug('[Auth] Carga inicial sin usuario todavía: Rust conserva current_user_id')
+      return
+    }
+    invoke('clear_current_user').catch((err) => {
+      logger.error('[Auth] Failed to clear current_user in Rust AppState:', err)
+    })
+    // El maityUser puede desaparecer sin pasar por signOut (SIGNED_OUT venido
+    // de otra pestaña/proceso, sesión revocada): la sesión cloud de Rust se
+    // limpia aquí también, no solo en signOut. Idempotente.
+    invoke('cloud_sync_clear_session').catch((err) => {
+      logger.warn('[Auth] cloud_sync_clear_session falló:', err)
+    })
+  }, [maityUser?.id, authReady])
 
   // Siembra la sesión Supabase en Rust (cloud_sync). Va en un efecto propio y
   // NO dentro del handler de onAuthStateChange porque ahí el maityUser todavía
@@ -409,7 +439,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const initialize = async () => {
       try {
         // Restore existing session
-        const { data: { session: existingSession } } = await supabase.auth.getSession()
+        const { data: { session: existingSession }, error: getSessionError } = await supabase.auth.getSession()
+        // auth-js devuelve session:null ante CUALQUIER error de refresh, incluido red,
+        // pero solo borra la sesión en errores no reintentables: un arranque offline
+        // con token vencido no es "sin usuario" y no debe soltar a Rust (lib/authRelease.ts).
+        const online = typeof navigator === 'undefined' ? true : navigator.onLine !== false
+        if (
+          isBootSessionUncertain(
+            !!existingSession,
+            isAuthRetryableFetchError(getSessionError),
+            online,
+          )
+        ) {
+          bootSessionUncertainRef.current = true
+          logger.debug('[Auth] Arranque sin sesión por red: incierto, Rust conserva current_user_id')
+        }
         if (existingSession && isMounted) {
           logger.debug('[Auth] Restored existing session')
           // Propagate JWT to Realtime synchronously, BEFORE the UI unblocks.
@@ -425,6 +469,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         }
       } catch (err) {
         console.error('[Auth] Failed to restore session:', err)
+        // No se pudo saber si hay sesión: incierto, no soltar a Rust.
+        bootSessionUncertainRef.current = true
       } finally {
         if (isMounted) {
           setIsLoading(false)
@@ -447,6 +493,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         logger.debug('[Auth] Auth state changed:', event, 'session:', !!newSession)
 
         if (!isMounted) return
+
+        // Un evento con sesión o un SIGNED_OUT real resuelve el arranque incierto.
+        // Solo se asigna un ref y se dispara un re-render (síncrono, sin await).
+        if (bootSessionUncertainRef.current && (newSession || event === 'SIGNED_OUT')) {
+          bootSessionUncertainRef.current = false
+          bumpAuthRender()
+        }
+
         if (isSigningOut.current) {
           logger.debug('[Auth] Ignoring auth state change during sign out')
           return
