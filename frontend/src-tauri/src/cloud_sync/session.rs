@@ -194,6 +194,25 @@ pub async fn get_valid_token<R: Runtime>(app: &AppHandle<R>) -> Result<String, S
     refresh(app, &session_arc, &snapshot).await
 }
 
+/// Token utilizable SOLO si ya tiene margen de sobra; nunca refresca.
+///
+/// Lo usa `drain::flush_row` en rutas de salida: cancelar un refresh a mitad
+/// de la salida perdería el `refresh_token` ya rotado por el servidor (rota en
+/// cada uso, ver `refresh_lock` arriba) sin dejar el par nuevo persistido, y la
+/// siguiente sesión quedaría con un `refresh_token` inservible. Mejor perder
+/// esa fila del outbox (la drenadora normal la reintenta en el próximo tick)
+/// que arriesgar la sesión completa.
+pub async fn token_if_fresh<R: Runtime>(app: &AppHandle<R>) -> Option<String> {
+    let state = app.state::<CloudSyncState>();
+    let guard = state.session.read().await;
+    let current = guard.as_ref()?;
+    if decide_token_action(current.expires_at, now_epoch()) == TokenAction::Reuse {
+        Some(current.access_token.clone())
+    } else {
+        None
+    }
+}
+
 /// Refresca contra Supabase y persiste el par nuevo. Asume el `refresh_lock`
 /// tomado por el llamador.
 async fn refresh<R: Runtime>(

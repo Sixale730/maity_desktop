@@ -47,6 +47,27 @@ pub async fn emit_event<R: Runtime>(
     error: Option<&str>,
     meeting_id: Option<&str>,
 ) {
+    // Delega y descarta el rowid: ningún llamador existente lo necesita (son
+    // los 12 emisores de hoy — audio/*, coach, incident, mem_sampler, etc.).
+    let _ = emit_event_with_id(app, session_id, event_type, payload, status, error, meeting_id)
+        .await;
+}
+
+/// Igual que `emit_event`, pero devuelve el rowid de `recording_logs` que
+/// asignó `log_event` (o `None` si el evento se descartó — sin `AppState` o
+/// por error de escritura). Lo usan las rutas de salida (`app.exit`,
+/// `auth.logout`, …) que necesitan drenar ESA fila puntual con
+/// `drain::flush_row` en vez de esperar el tick de 30 s de la drenadora.
+#[allow(clippy::too_many_arguments)]
+pub async fn emit_event_with_id<R: Runtime>(
+    app: &AppHandle<R>,
+    session_id: &str,
+    event_type: &str,
+    payload: serde_json::Value,
+    status: Option<TelemetryStatus>,
+    error: Option<&str>,
+    meeting_id: Option<&str>,
+) -> Option<i64> {
     let ctx = super::context::ctx_value(app);
     write_to_outbox(
         app,
@@ -58,7 +79,7 @@ pub async fn emit_event<R: Runtime>(
         error,
         meeting_id,
     )
-    .await;
+    .await
 }
 
 /// Evento que NACIÓ en un webview (ventanas aux) y viaja por el outbox nativo.
@@ -72,7 +93,7 @@ pub async fn emit_webview_event<R: Runtime>(
     meeting_id: Option<&str>,
 ) {
     let ctx = super::context::ctx_value_from_window(app, window_label);
-    write_to_outbox(
+    let _ = write_to_outbox(
         app,
         super::context::process_session_id(),
         event_type,
@@ -85,6 +106,8 @@ pub async fn emit_webview_event<R: Runtime>(
     .await;
 }
 
+/// Escribe la fila y devuelve su rowid (`None` si se descartó antes del
+/// insert o si el insert falló).
 #[allow(clippy::too_many_arguments)]
 async fn write_to_outbox<R: Runtime>(
     app: &AppHandle<R>,
@@ -95,7 +118,7 @@ async fn write_to_outbox<R: Runtime>(
     status: Option<&str>,
     error: Option<&str>,
     meeting_id: Option<&str>,
-) {
+) -> Option<i64> {
     if let Some(obj) = payload.as_object_mut() {
         obj.insert("ctx".into(), ctx);
     }
@@ -106,12 +129,12 @@ async fn write_to_outbox<R: Runtime>(
             "[telemetry] AppState no disponible; evento {} descartado",
             event_type
         );
-        return;
+        return None;
     };
 
     let app_version = app.package_info().version.to_string();
     let data = payload.to_string();
-    if let Err(e) = RecordingLogRepository::log_event(
+    let rowid = match RecordingLogRepository::log_event(
         state.db_manager.pool(),
         session_id,
         event_type,
@@ -124,11 +147,15 @@ async fn write_to_outbox<R: Runtime>(
     )
     .await
     {
-        log::warn!("[telemetry] fallo al escribir {} al outbox: {}", event_type, e);
-        return;
-    }
+        Ok(id) => id,
+        Err(e) => {
+            log::warn!("[telemetry] fallo al escribir {} al outbox: {}", event_type, e);
+            return None;
+        }
+    };
 
     drain_notify().notify_one();
+    Some(rowid)
 }
 
 // ── Analítica de producto desde un webview ──────────────────────────────────
