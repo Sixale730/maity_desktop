@@ -675,7 +675,12 @@ pub(crate) fn summarize_prev(input: &PrevInput) -> PrevSummary {
         } else if let Some(i) = intent_is("update") {
             ("update".to_string(), i.via.clone(), "intent", true)
         } else if let Some(i) = intent_is("session_end") {
-            ("os_session_end".to_string(), i.detail.clone(), "intent", true)
+            // Restart Manager SIN apagado (instalador): no es fin de sesión.
+            if i.detail.as_deref() == Some(crate::session_end::SessionEndKind::CloseApp.as_str()) {
+                ("external_close".to_string(), None, "intent", true)
+            } else {
+                ("os_session_end".to_string(), i.detail.clone(), "intent", true)
+            }
         } else if main_panic {
             ("crash_panic".to_string(), None, "inferred", false)
         } else if os_rebooted == Some(true) {
@@ -860,14 +865,68 @@ pub(crate) fn os_shutting_down() -> bool {
 }
 
 /// Fin de sesión de Windows observado (E1 lo llena desde el subclass del HWND).
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct SessionEndHint {
-    /// `logoff | shutdown | unknown`.
+    /// `logoff | shutdown | unknown` (`close_app` con `external_close`, que
+    /// `classify_exit` no usa como detail).
     pub detail: &'static str,
     pub critical: bool,
     /// Restart Manager `CLOSEAPP` SIN apagado del sistema (instalador).
     pub external_close: bool,
+}
+
+/// Pura. Tipo observado por `session_end` ⇒ pista para `classify_exit`:
+/// `CloseApp` ⇒ `external_close`; el resto ⇒ `os_session_end` con su detail.
+pub(crate) fn session_end_hint(
+    kind: crate::session_end::SessionEndKind,
+    critical: bool,
+) -> SessionEndHint {
+    use crate::session_end::SessionEndKind;
+    SessionEndHint {
+        detail: kind.as_str(),
+        critical,
+        external_close: kind == SessionEndKind::CloseApp,
+    }
+}
+
+/// Pura. Intención `session_end` con el tipo (`close_app` incluido: el resumen
+/// la lee como `external_close`). NO pisa una intención `update`.
+fn apply_session_intent(m: &mut LifecycleMarker, kind: crate::session_end::SessionEndKind, now: u64) {
+    if m.exit_intent.as_ref().map(|i| i.reason.as_str()) == Some("update") {
+        return;
+    }
+    m.exit_intent = Some(MarkerIntent {
+        reason: "session_end".into(),
+        via: None,
+        detail: Some(kind.as_str().into()),
+        target_version: None,
+        at_ms: now,
+    });
+}
+
+/// Pura. Borra la intención SOLO si es `session_end`.
+fn clear_session_intent(m: &mut LifecycleMarker) {
+    if m.exit_intent.as_ref().map(|i| i.reason.as_str()) == Some("session_end") {
+        m.exit_intent = None;
+    }
+}
+
+/// Lo llama el WndProc de `session_end` en `WM_QUERYENDSESSION`: deja la
+/// intención durable por si Windows mata el proceso antes del bloque `exit`.
+/// Síncrona y sin await (segura dentro de un WndProc).
+pub fn note_session_ending(kind: crate::session_end::SessionEndKind) {
+    let now = now_ms();
+    if let Err(e) = mutate_marker(true, |m| apply_session_intent(m, kind, now)) {
+        warn_once(WarnKind::Accessor, &e);
+    }
+}
+
+/// `WM_ENDSESSION(FALSE)`: otra app canceló el fin de sesión. Durable; borra
+/// la intención solo si es `session_end`.
+pub fn clear_session_ending() {
+    if let Err(e) = mutate_marker(true, clear_session_intent) {
+        warn_once(WarnKind::Accessor, &e);
+    }
 }
 
 /// Resultado puro de `classify_exit`.
@@ -975,8 +1034,13 @@ pub fn begin_exit(hint: Option<ExitHint>) -> Option<ExitRecord> {
     }
     let requested = *EXIT_REQUESTED.lock().unwrap_or_else(|e| e.into_inner());
     let shutting_down = requested == ExitRequestSeen::NotSeen && os_shutting_down();
-    // E1 conecta aquí el tipo exacto de fin de sesión (subclass del HWND).
-    let session_end: Option<SessionEndHint> = None;
+    // Tipo exacto de fin de sesión (subclass del HWND, E1). Solo cuenta sin
+    // `ExitRequested`: una salida pedida por la app gana.
+    let session_end: Option<SessionEndHint> = if requested == ExitRequestSeen::NotSeen {
+        crate::session_end::observed().map(|s| session_end_hint(s.kind, s.critical))
+    } else {
+        None
+    };
     let class = classify_exit(hint.as_ref(), &requested, session_end.as_ref(), shutting_down);
 
     let phase = crate::audio::recording_phase::current_phase();
@@ -1631,6 +1695,97 @@ mod tests {
             assert_eq!(c.session_end_kind, kind, "{}", ctx);
             assert_eq!(c.critical, critical, "{}", ctx);
         }
+    }
+
+    #[test]
+    fn classify_exit_con_el_mapeo_de_session_end() {
+        use crate::session_end::SessionEndKind;
+        use ExitRequestSeen::*;
+        // (kind, critical) observado ⇒ (reason, detail, session_end_kind, critical)
+        let casos: &[(SessionEndKind, bool, (&str, Option<&str>, Option<&str>, bool))] = &[
+            (SessionEndKind::Logoff, true, ("os_session_end", Some("logoff"), Some("logoff"), true)),
+            (SessionEndKind::Logoff, false, ("os_session_end", Some("logoff"), Some("logoff"), false)),
+            (SessionEndKind::Shutdown, false, ("os_session_end", Some("shutdown"), Some("shutdown"), false)),
+            (SessionEndKind::Unknown, false, ("os_session_end", Some("unknown"), Some("unknown"), false)),
+            (SessionEndKind::CloseApp, false, ("external_close", None, Some("close_app"), false)),
+            (SessionEndKind::CloseApp, true, ("external_close", None, Some("close_app"), true)),
+        ];
+        for &(kind, crit, (reason, detail, se_kind, critical)) in casos {
+            let hint = session_end_hint(kind, crit);
+            let c = classify_exit(None, &NotSeen, Some(&hint), false);
+            let ctx = format!("{:?} {}", kind, crit);
+            assert_eq!(c.reason, reason, "{}", ctx);
+            assert_eq!(c.detail.as_deref(), detail, "{}", ctx);
+            assert_eq!(c.session_end_kind, se_kind, "{}", ctx);
+            assert_eq!(c.critical, critical, "{}", ctx);
+            assert!(CONTRACT_EXIT_REASONS.contains(&c.reason), "{}", ctx);
+        }
+        // Un ExitRequested gana sobre el fin de sesión observado.
+        let hint = session_end_hint(SessionEndKind::Logoff, true);
+        assert_eq!(classify_exit(None, &Programmatic(0), Some(&hint), true).reason, "app_exit");
+    }
+
+    #[test]
+    fn apply_session_intent_escribe_y_no_pisa_update() {
+        use crate::session_end::SessionEndKind;
+        let mut m = marker();
+        apply_session_intent(&mut m, SessionEndKind::Logoff, T0 + 5);
+        let i = m.exit_intent.clone().expect("intención");
+        assert_eq!(i.reason, "session_end");
+        assert_eq!(i.detail.as_deref(), Some("logoff"));
+        assert_eq!(i.via, None);
+        assert_eq!(i.at_ms, T0 + 5);
+
+        // Un QES posterior actualiza el tipo.
+        apply_session_intent(&mut m, SessionEndKind::Shutdown, T0 + 6);
+        assert_eq!(m.exit_intent.as_ref().and_then(|i| i.detail.as_deref()), Some("shutdown"));
+
+        // Una intención update NO se pisa.
+        let upd = intent("update", Some("store_api"), None, T0);
+        m.exit_intent = Some(upd.clone());
+        apply_session_intent(&mut m, SessionEndKind::Logoff, T0 + 7);
+        assert_eq!(m.exit_intent, Some(upd));
+    }
+
+    #[test]
+    fn clear_session_intent_solo_borra_session_end() {
+        let mut m = marker();
+        m.exit_intent = Some(intent("session_end", None, Some("logoff"), T0));
+        clear_session_intent(&mut m);
+        assert_eq!(m.exit_intent, None);
+
+        let upd = intent("update", Some("nsis"), None, T0);
+        m.exit_intent = Some(upd.clone());
+        clear_session_intent(&mut m);
+        assert_eq!(m.exit_intent, Some(upd));
+
+        clear_session_intent(&mut m); // sin intención: no-op
+        m.exit_intent = None;
+        clear_session_intent(&mut m);
+        assert_eq!(m.exit_intent, None);
+    }
+
+    #[test]
+    fn intencion_close_app_se_resume_como_external_close() {
+        use crate::session_end::SessionEndKind;
+        let mut m = marker();
+        apply_session_intent(&mut m, SessionEndKind::CloseApp, T0 + 3_000_000);
+        let s = summarize(&MarkerRead::Ok(m), T0 + 4_000_000, &[], None, None);
+        assert_eq!(s.prev_exit_reason.as_deref(), Some("external_close"));
+        assert_eq!(s.prev_exit_detail, None);
+        assert_eq!(s.prev_exit_source, Some("intent"));
+        assert_eq!(s.prev_exit_clean, Some(true));
+    }
+
+    #[test]
+    fn intencion_de_apagado_escrita_por_el_wndproc_se_resume_como_os_session_end() {
+        use crate::session_end::SessionEndKind;
+        let mut m = marker();
+        apply_session_intent(&mut m, SessionEndKind::Shutdown, T0 + 3_000_000);
+        let s = summarize(&MarkerRead::Ok(m), T0 + 4_000_000, &[], None, None);
+        assert_eq!(s.prev_exit_reason.as_deref(), Some("os_session_end"));
+        assert_eq!(s.prev_exit_detail.as_deref(), Some("shutdown"));
+        assert_eq!(s.prev_exit_source, Some("intent"));
     }
 
     #[test]

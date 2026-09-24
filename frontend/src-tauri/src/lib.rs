@@ -61,6 +61,9 @@ pub mod canary_engine;
 pub mod recording_pipeline;
 pub mod registration_status;
 pub mod rival_install;
+// Tipo de fin de sesión de Windows (#83): subclass del HWND de main que captura
+// el lParam de WM_QUERYENDSESSION/WM_ENDSESSION que tao descarta.
+pub mod session_end;
 pub mod startup_task;
 pub mod state;
 pub mod store_update;
@@ -960,6 +963,9 @@ pub fn run() {
                         });
                     }
                 });
+                // Registra el tipo de fin de sesión de Windows (logoff/apagado/
+                // Restart Manager) para `app.exit` (#83). No cambia la salida.
+                session_end::install(&main_window);
             }
 
             // Deja constancia en el log de cómo se resolvió el app_id/AUMID del toast. Sin
@@ -1811,6 +1817,10 @@ pub fn run() {
                 // Marcador de ciclo de vida PRIMERO (#83): bloque `exit` durable con el
                 // motivo. `None` si otra ruta (bandeja, rival) ya registró la salida.
                 let exit_rec = logging::telemetry::lifecycle::begin_exit(None);
+                log::info!(
+                    "Application exiting (session_end={:?})",
+                    session_end::observed().map(|s| (s.kind.as_str(), s.critical, s.source))
+                );
                 tauri::async_runtime::block_on(async {
                     // Fila `app.exit` en el outbox, acotada a 750 ms (best-effort: el
                     // marcador ya tiene el motivo; sube en el siguiente arranque).
