@@ -444,6 +444,128 @@ async fn start_with_devices_and_meeting_impl<R: Runtime>(
 // STOP RECORDING
 // ============================================================================
 
+// ============================================================================
+// FLUSH ACOTADO DE FIN DE SESIÓN DE WINDOWS (#83, B5)
+// ============================================================================
+
+/// Presupuestos del flush de fin de sesión, medidos desde `t0`. Los define
+/// `session_end.rs` (E2b); aquí solo se consumen.
+#[derive(Debug, Clone, Copy)]
+pub struct SessionEndBudgets {
+    /// Tope para detener streams + flush del pipeline.
+    pub stream: std::time::Duration,
+    /// Hasta aquí se puede DESPACHAR el checkpoint final.
+    pub soft: std::time::Duration,
+    /// Tope duro de todo el flush (barrera del encode final incluida).
+    pub hard: std::time::Duration,
+}
+
+/// Qué hizo el flush de fin de sesión (se loguea una sola vez).
+#[derive(Debug)]
+pub struct SessionEndFlushReport {
+    pub was_recording: bool,
+    /// `batch` | `streaming` | `none`
+    pub mode: &'static str,
+    pub audio: Option<super::incremental_saver::SessionEndAudio>,
+    pub stream_stop_timed_out: bool,
+    pub manager_missing: bool,
+    pub elapsed_ms: u64,
+}
+
+/// Flush ACOTADO de la grabación para el fin de sesión de Windows (#83, B5).
+/// Todavía sin cablear: lo usa la rama de fin de sesión de `RunEvent::Exit`
+/// (E2b), en un worker con `timeout_at`. Congela la fase en `Stopping`, detiene
+/// la captura, escribe `transcripts.json` e intenta el checkpoint final solo si
+/// alcanza. Omitido A PROPÓSITO (el hilo principal está dentro de
+/// WM_ENDSESSION): espera de transcripción, `live_feedback::stop`,
+/// `save_recording_only`, merge, `mark_pending` del lote (la fila queda
+/// `recording` y es huérfana al próximo arranque porque cambia el pid),
+/// `finalize_segment_native`/`close_scheduled`, `app.emit`, bandeja y
+/// notificaciones. Nunca borra audio.
+pub async fn flush_recording_for_session_end(
+    t0: tokio::time::Instant,
+    b: SessionEndBudgets,
+) -> SessionEndFlushReport {
+    let elapsed_ms = |t0: tokio::time::Instant| t0.elapsed().as_millis() as u64;
+
+    // Recording|Paused → Stopping. Sin sesión activa no hay nada que salvar.
+    let gate = match StopGate::acquire() {
+        Ok(g) => g,
+        Err(observed) => {
+            let report = SessionEndFlushReport {
+                was_recording: false,
+                mode: "none",
+                audio: None,
+                stream_stop_timed_out: false,
+                manager_missing: false,
+                elapsed_ms: elapsed_ms(t0),
+            };
+            info!("[session_end] flush: {:?} (fase: {:?})", report, observed);
+            return report;
+        }
+    };
+
+    let mode = if crate::audio::transcription::engine::active_recording_uses_stt() {
+        "streaming"
+    } else {
+        "batch"
+    };
+
+    // Tomar el manager y soltar el guard std en su propio statement: nunca
+    // cruza un `.await`.
+    let taken = match RECORDING_MANAGER.lock() {
+        Ok(mut guard) => guard.take(),
+        Err(e) => {
+            warn!("[session_end] Recording manager lock poisoned: {}", e);
+            None
+        }
+    };
+    let Some(mut manager) = taken else {
+        // Sin manager (p. ej. `switch_audio_device` lo tiene prestado): la fase
+        // queda en Stopping igual, para que nada rearranque.
+        std::mem::forget(gate);
+        let report = SessionEndFlushReport {
+            was_recording: true,
+            mode,
+            audio: None,
+            stream_stop_timed_out: false,
+            manager_missing: true,
+            elapsed_ms: elapsed_ms(t0),
+        };
+        info!("[session_end] flush: {:?}", report);
+        return report;
+    };
+
+    let stream_stop_timed_out = tokio::time::timeout_at(
+        t0 + b.stream,
+        manager.stop_streams_and_force_flush(),
+    )
+    .await
+    .is_err();
+    if stream_stop_timed_out {
+        warn!("[session_end] detener streams excedió {:?}; se sigue con el flush", b.stream);
+    }
+
+    let audio = manager.flush_for_session_end(t0 + b.soft, t0 + b.hard).await;
+
+    // La fase queda en `Stopping` A PROPÓSITO: el scheduler no rearranca y
+    // `recover_orphans` de este proceso no toma su propia fila batch. El Drop
+    // del manager podría hacer join de hilos de captura: tampoco se ejecuta.
+    std::mem::forget(gate);
+    std::mem::forget(manager);
+
+    let report = SessionEndFlushReport {
+        was_recording: true,
+        mode,
+        audio: Some(audio),
+        stream_stop_timed_out,
+        manager_missing: false,
+        elapsed_ms: elapsed_ms(t0),
+    };
+    info!("[session_end] flush: {:?}", report);
+    report
+}
+
 /// Stop recording with optimized graceful shutdown ensuring NO transcript chunks are lost
 pub async fn stop_recording<R: Runtime>(
     app: AppHandle<R>,

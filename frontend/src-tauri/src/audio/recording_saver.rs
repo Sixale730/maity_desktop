@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 
 use super::recording_state::AudioChunk;
 use super::audio_processing::create_meeting_folder;
-use super::incremental_saver::IncrementalAudioSaver;
+use super::incremental_saver::{IncrementalAudioSaver, SessionEndAudio};
 use crate::events;
 
 /// Structured transcript segment for JSON export
@@ -392,18 +392,15 @@ impl RecordingSaver {
         }
     }
 
-    /// Stop and save using incremental saving approach
-    ///
-    /// # Arguments
-    /// * `app` - Tauri app handle for emitting events
-    /// * `recording_duration` - Actual recording duration in seconds (from RecordingState)
-    pub async fn stop_and_save<R: Runtime>(
+    /// Preludio común del stop: corta la acumulación, apaga el debounced writer
+    /// de forma determinista (cancel → grace → join acotado → abort) y hace la
+    /// escritura temprana de transcripts.json. `stop_and_save` lo llama con
+    /// (200 ms, 5 s); el flush de fin de sesión con presupuestos menores.
+    async fn quiesce_writer_and_write_transcripts(
         &mut self,
-        app: &AppHandle<R>,
-        recording_duration: Option<f64>
-    ) -> Result<Option<String>, String> {
-        info!("Stopping recording saver");
-
+        grace: std::time::Duration,
+        join_timeout: std::time::Duration,
+    ) {
         // Stop accumulation
         if let Ok(mut is_saving) = self.is_saving.lock() {
             *is_saving = false;
@@ -417,7 +414,7 @@ impl RecordingSaver {
         }
 
         // Give time for final chunks
-        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+        tokio::time::sleep(grace).await;
 
         // Join determinista del writer. A partir de aquí el ÚNICO que escribe
         // transcripts.json es este método — sin esto, el tick póstumo del writer
@@ -425,11 +422,11 @@ impl RecordingSaver {
         // final. timeout() consume el handle, por eso el abort_handle previo.
         if let Some(handle) = self.writer_handle.take() {
             let abort = handle.abort_handle();
-            match tokio::time::timeout(tokio::time::Duration::from_secs(5), handle).await {
+            match tokio::time::timeout(join_timeout, handle).await {
                 Ok(Ok(())) => {}
                 Ok(Err(e)) => warn!("Transcript writer terminó con error de join: {}", e),
                 Err(_) => {
-                    warn!("Transcript writer no terminó en 5s; abortando");
+                    warn!("Transcript writer no terminó en {:?}; abortando", join_timeout);
                     abort.abort();
                 }
             }
@@ -444,6 +441,50 @@ impl RecordingSaver {
                 error!("❌ Early final transcript write failed: {}", e);
             }
         }
+    }
+
+    /// Flush ACOTADO para el fin de sesión de Windows (#83, B5): mismo preludio
+    /// que `stop_and_save` pero con presupuestos cortos, y luego el flush acotado
+    /// del saver incremental. NO toca metadata.json, NO emite `RECORDING_SAVED`,
+    /// NO limpia el store de transcripts, NO mergea ni borra checkpoints: la
+    /// recuperación del próximo arranque parte de lo que quede en disco.
+    pub async fn flush_for_session_end(
+        &mut self,
+        soft: tokio::time::Instant,
+        hard: tokio::time::Instant,
+    ) -> SessionEndAudio {
+        let now = tokio::time::Instant::now();
+        let grace = std::time::Duration::from_millis(200).min(hard.saturating_duration_since(now));
+        let join_timeout =
+            std::time::Duration::from_secs(1).min(soft.saturating_duration_since(now + grace));
+        self.quiesce_writer_and_write_transcripts(grace, join_timeout).await;
+
+        let Some(saver_arc) = self.incremental_saver.clone() else {
+            return SessionEndAudio::NoSaver;
+        };
+        let Ok(mut saver) = tokio::time::timeout_at(hard, saver_arc.lock()).await else {
+            return SessionEndAudio::LockTimedOut;
+        };
+        saver.flush_for_session_end(soft, hard).await
+    }
+
+    /// Stop and save using incremental saving approach
+    ///
+    /// # Arguments
+    /// * `app` - Tauri app handle for emitting events
+    /// * `recording_duration` - Actual recording duration in seconds (from RecordingState)
+    pub async fn stop_and_save<R: Runtime>(
+        &mut self,
+        app: &AppHandle<R>,
+        recording_duration: Option<f64>
+    ) -> Result<Option<String>, String> {
+        info!("Stopping recording saver");
+
+        self.quiesce_writer_and_write_transcripts(
+            tokio::time::Duration::from_millis(200),
+            tokio::time::Duration::from_secs(5),
+        )
+        .await;
 
         // Check if incremental saver exists (indicates auto_save was enabled)
         let should_save_audio = self.incremental_saver.is_some();

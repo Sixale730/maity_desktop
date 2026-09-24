@@ -321,6 +321,17 @@ impl RecordingManager {
         Ok(())
     }
 
+    /// Flush ACOTADO para el fin de sesión de Windows (#83, B5): delega en el
+    /// saver (transcripts.json + checkpoint final si alcanza). Sin merge,
+    /// finalize, metadata ni emits. Ver `RecordingSaver::flush_for_session_end`.
+    pub async fn flush_for_session_end(
+        &mut self,
+        soft: tokio::time::Instant,
+        hard: tokio::time::Instant,
+    ) -> super::incremental_saver::SessionEndAudio {
+        self.recording_saver.flush_for_session_end(soft, hard).await
+    }
+
     /// Stop recording and save audio (legacy method)
     pub async fn stop_recording<R: tauri::Runtime>(&mut self, app: &tauri::AppHandle<R>) -> Result<()> {
         info!("Stopping recording manager");

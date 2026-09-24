@@ -67,6 +67,48 @@ impl FinalizeReport {
     }
 }
 
+/// Resultado del flush acotado de fin de sesión de Windows (#83, B5): qué pasó
+/// con el último tramo de audio. Ningún caso hace merge ni borra checkpoints —
+/// la recuperación del próximo arranque parte de `.checkpoints/`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionEndAudio {
+    /// El checkpoint final se despachó y terminó bien antes de `hard`.
+    Written,
+    /// No había audio pendiente en el buffer.
+    SkippedEmpty,
+    /// Un encode lento seguía en vuelo al vencer `soft`: no se despachó otro
+    /// (se pierde la cola del buffer, el archivo en vuelo no se trunca).
+    SkippedSlow,
+    /// El checkpoint final se despachó pero no terminó antes de `hard` (el
+    /// archivo puede seguir escribiéndose: no se renombra).
+    FinalTimedOut,
+    /// El checkpoint final terminó con error: quedó como `.mp4.failed`.
+    FinalFailed,
+    /// La sesión no tenía saver incremental.
+    NoSaver,
+    /// No se obtuvo el lock del saver antes de `hard`.
+    LockTimedOut,
+}
+
+/// Renombra `x.mp4` a `x.mp4.<suffix>` para sacarlo del escaneo de la
+/// recuperación (que filtra por extensión `mp4`) SIN borrarlo: el audio queda en
+/// disco para un rescate manual. `true` si el rename se hizo. Nunca borra.
+pub(crate) fn quarantine_file(path: &Path, suffix: &str) -> bool {
+    let mut target = path.as_os_str().to_owned();
+    target.push(".");
+    target.push(suffix);
+    match std::fs::rename(path, PathBuf::from(target)) {
+        Ok(()) => {
+            warn!("Checkpoint en cuarentena (.{}): {}", suffix, path.display());
+            true
+        }
+        Err(e) => {
+            warn!("No se pudo poner en cuarentena {}: {}", path.display(), e);
+            false
+        }
+    }
+}
+
 /// Incremental audio saver that writes checkpoints every 30 seconds
 /// to minimize memory usage and enable crash recovery
 pub struct IncrementalAudioSaver {
@@ -348,6 +390,70 @@ impl IncrementalAudioSaver {
         );
 
         Ok((final_audio_path, report))
+    }
+
+    /// Ruta del checkpoint número `idx` (mismo formato que `dispatch_checkpoint_encode`).
+    fn checkpoint_path(&self, idx: u32) -> PathBuf {
+        self.checkpoints_dir.join(format!("audio_chunk_{:03}.mp4", idx))
+    }
+
+    /// Flush ACOTADO para el fin de sesión de Windows (#83, B5). A diferencia de
+    /// `finalize()`: el checkpoint final solo se despacha si el slot de encode se
+    /// libera antes de `soft`; la barrera espera como mucho hasta `hard`; un
+    /// chunk que falló se RENOMBRA a `.mp4.failed` (nunca se borra), y NUNCA se
+    /// hace merge ni `remove_dir_all(.checkpoints)`: los checkpoints son la
+    /// fuente de la recuperación del próximo arranque.
+    pub async fn flush_for_session_end(&mut self, soft: Instant, hard: Instant) -> SessionEndAudio {
+        // Si hay un encode en vuelo, es el último despachado (count-1).
+        let inflight_idx = self.checkpoint_count.checked_sub(1);
+        let errs0 = self.encode_errors.load(Ordering::SeqCst);
+
+        match self.acquire_encode_slot(soft, "session end").await {
+            Ok(permit) => {
+                if self.encode_errors.load(Ordering::SeqCst) > errs0 {
+                    if let Some(idx) = inflight_idx {
+                        quarantine_file(&self.checkpoint_path(idx), "failed");
+                    }
+                }
+                if self.checkpoint_buffer.is_empty() {
+                    drop(permit);
+                    return SessionEndAudio::SkippedEmpty;
+                }
+                let errs1 = self.encode_errors.load(Ordering::SeqCst);
+                let buf = self.take_buffer_for_checkpoint();
+                // `dispatch` numera con `checkpoint_count` ANTES de incrementarlo:
+                // el archivo recién despachado es `count-1`.
+                self.dispatch_checkpoint_encode(buf, permit);
+                let final_idx = self.checkpoint_count - 1;
+                match self.acquire_encode_slot(hard, "session end barrier").await {
+                    // No renombrar: el encode puede seguir escribiendo el archivo.
+                    Err(_) => SessionEndAudio::FinalTimedOut,
+                    Ok(p) => {
+                        drop(p);
+                        if self.encode_errors.load(Ordering::SeqCst) > errs1 {
+                            quarantine_file(&self.checkpoint_path(final_idx), "failed");
+                            SessionEndAudio::FinalFailed
+                        } else {
+                            SessionEndAudio::Written
+                        }
+                    }
+                }
+            }
+            Err(_) => {
+                // Venció `soft` con un encode lento en vuelo: NO despachar otro
+                // (se pierde la cola). Esperar hasta `hard` para no truncar el
+                // archivo en vuelo y soltar el permiso. El buffer queda intacto.
+                if let Ok(p) = self.acquire_encode_slot(hard, "session end inflight").await {
+                    drop(p);
+                    if self.encode_errors.load(Ordering::SeqCst) > errs0 {
+                        if let Some(idx) = inflight_idx {
+                            quarantine_file(&self.checkpoint_path(idx), "failed");
+                        }
+                    }
+                }
+                SessionEndAudio::SkippedSlow
+            }
+        }
     }
 
     /// Merge all checkpoint files into final audio.mp4 using FFmpeg concat
@@ -896,6 +1002,76 @@ mod tests {
         assert!(err.to_string().contains("before the final flush"), "debe expirar en el flush: {err}");
         // El audio no se tiró: sigue en el buffer para quien quiera rescatarlo.
         assert_eq!(saver.checkpoint_buffer.len(), 48000);
+    }
+
+    fn session_end_saver(name: &str) -> (tempfile::TempDir, PathBuf, IncrementalAudioSaver) {
+        let temp_dir = tempdir().unwrap();
+        let meeting_folder = temp_dir.path().join(name);
+        std::fs::create_dir_all(meeting_folder.join(".checkpoints")).unwrap();
+        let saver = IncrementalAudioSaver::new(meeting_folder.clone(), 48000, 2).unwrap();
+        (temp_dir, meeting_folder, saver)
+    }
+
+    /// #83 B5: con un encode lento en vuelo (permiso tomado a mano) el flush de
+    /// fin de sesión NO despacha otro encode, no toca el buffer ni el conteo, y
+    /// jamás mergea ni borra `.checkpoints/`. Sin ffmpeg: nada se despacha.
+    #[tokio::test(start_paused = true)]
+    async fn session_end_con_encode_lento_devuelve_skipped_slow_sin_tocar_nada() {
+        let (_tmp, meeting_folder, mut saver) = session_end_saver("SE_Slow");
+        saver.add_chunk(AudioChunk {
+            data: vec![0.5f32; 48000],
+            sample_rate: 48000,
+            timestamp: 0.0,
+            chunk_id: 0,
+            device_type: DeviceType::Mixed,
+            ended_by_silence: true,
+        }).unwrap();
+        let _held = saver.encode_slots.clone().try_acquire_owned().unwrap();
+
+        let now = Instant::now();
+        let out = saver
+            .flush_for_session_end(now + Duration::from_millis(50), now + Duration::from_millis(100))
+            .await;
+
+        assert_eq!(out, SessionEndAudio::SkippedSlow);
+        assert_eq!(saver.checkpoint_buffer.len(), 48000, "el buffer queda intacto");
+        assert_eq!(saver.checkpoint_count, 0);
+        let checkpoints = meeting_folder.join(".checkpoints");
+        assert!(checkpoints.exists(), ".checkpoints/ intacto");
+        assert!(!checkpoints.join("concat_list.txt").exists(), "sin merge");
+        assert!(!meeting_folder.join("audio.mp4").exists(), "sin merge");
+    }
+
+    /// Permiso libre y buffer vacío ⇒ nada que despachar.
+    #[tokio::test]
+    async fn session_end_con_buffer_vacio_devuelve_skipped_empty() {
+        let (_tmp, meeting_folder, mut saver) = session_end_saver("SE_Empty");
+        let now = Instant::now();
+        let out = saver
+            .flush_for_session_end(now + Duration::from_millis(50), now + Duration::from_millis(100))
+            .await;
+        assert_eq!(out, SessionEndAudio::SkippedEmpty);
+        assert_eq!(saver.checkpoint_count, 0);
+        assert!(meeting_folder.join(".checkpoints").exists());
+        // El permiso se devolvió al semáforo.
+        assert!(saver.encode_slots.clone().try_acquire_owned().is_ok());
+    }
+
+    /// Un chunk fallido se RENOMBRA a `.mp4.failed` conservando su contenido.
+    #[test]
+    fn quarantine_file_renombra_sin_borrar() {
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("audio_chunk_003.mp4");
+        std::fs::write(&path, b"datos-del-chunk").unwrap();
+
+        assert!(quarantine_file(&path, "failed"));
+
+        let moved = tmp.path().join("audio_chunk_003.mp4.failed");
+        assert!(!path.exists(), "el original ya no existe con extensión .mp4");
+        assert!(moved.exists());
+        assert_eq!(std::fs::read(&moved).unwrap(), b"datos-del-chunk");
+        // Sobre un archivo inexistente devuelve false sin panic.
+        assert!(!quarantine_file(&path, "failed"));
     }
 
     /// F0a del modo lote: la política de "¿esto amerita telemetría?" es pura.

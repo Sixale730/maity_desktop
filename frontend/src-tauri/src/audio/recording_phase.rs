@@ -28,7 +28,7 @@
 //        │                       ▼           ▼
 //        └────────────────── Stopping ◄──────┘
 
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 /// Fase global de la grabación. `Stopping` modela explícitamente el "corte
 /// temprano" del stop: la sesión ya no está activa hacia afuera, pero el
@@ -147,6 +147,38 @@ pub fn try_transition(from: RecordingPhase, to: RecordingPhase) -> Result<(), Re
 }
 
 // ============================================================================
+// Fin de sesión de Windows (#83, B5)
+// ============================================================================
+
+/// Bandera global "Windows está cerrando la sesión": mientras esté puesta,
+/// `StartGate::acquire()` (el candado único de arranque de producción) se niega,
+/// así ni el scheduler ni un comando del frontend arrancan una grabación nueva
+/// durante el flush acotado de `RunEvent::Exit`. Irreversible A PROPÓSITO: solo
+/// la pone la rama de fin de sesión de `RunEvent::Exit` (E2b), cuando el proceso
+/// ya va a terminar; nunca en `WM_QUERYENDSESSION` (otra app puede cancelar).
+static SESSION_ENDING: AtomicBool = AtomicBool::new(false);
+
+/// Marca el fin de sesión de Windows (irreversible). Ver [`SESSION_ENDING`].
+pub fn set_session_ending() {
+    SESSION_ENDING.store(true, Ordering::SeqCst);
+}
+
+/// ¿Ya se marcó el fin de sesión de Windows?
+pub fn is_session_ending() -> bool {
+    SESSION_ENDING.load(Ordering::SeqCst)
+}
+
+/// Decisión pura del rechazo de arranque por fin de sesión (testeable sin tocar
+/// el static global).
+fn session_end_refusal(ending: bool) -> Option<String> {
+    if ending {
+        Some("Recording refused: session ending".into())
+    } else {
+        None
+    }
+}
+
+// ============================================================================
 // Gates RAII — el guard y la transición son la misma operación
 // ============================================================================
 
@@ -162,8 +194,12 @@ pub struct StartGate {
 }
 
 impl StartGate {
-    /// Sobre el singleton de producción.
+    /// Sobre el singleton de producción. Se niega mientras Windows cierra la
+    /// sesión ([`set_session_ending`]); `acquire_on` (tests) no mira la bandera.
     pub fn acquire() -> Result<Self, String> {
+        if let Some(e) = session_end_refusal(is_session_ending()) {
+            return Err(e);
+        }
         Self::acquire_on(&RECORDING_PHASE)
     }
 
@@ -412,6 +448,14 @@ mod tests {
         let gate = StartGate::acquire_on(m).unwrap();
         assert_eq!(StopGate::acquire_on(m).unwrap_err(), Starting);
         drop(gate);
+    }
+
+    #[test]
+    fn session_end_refusal_solo_con_bandera() {
+        // Pura: NO toca el static global (los tests corren en paralelo).
+        assert_eq!(session_end_refusal(false), None);
+        let msg = session_end_refusal(true).expect("con la bandera debe negarse");
+        assert!(msg.contains("session ending"), "{msg}");
     }
 
     #[test]
