@@ -150,7 +150,7 @@ pub async fn uninstall_rival(app: tauri::AppHandle) -> Result<(), String> {
 // ───────────────────────────── Implementación Windows ─────────────────────────────
 
 #[cfg(target_os = "windows")]
-const NSIS_UNINSTALL_SUBKEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\Maity";
+pub(crate) const NSIS_UNINSTALL_SUBKEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\Maity";
 
 /// Lee la clave de desinstalación NSIS de Maity. El instalador NSIS de Tauri (modo
 /// `currentUser` por defecto) escribe en HKCU; chequeamos también HKLM por si un usuario

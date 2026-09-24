@@ -440,6 +440,12 @@ pub struct DeviceProfile {
     /// `unknown`); `None` fuera de MSIX. Sólo `store` recibe updates de la Store:
     /// `build_channel=store` + `developer` = copia de prueba que nunca se actualiza.
     pub signature_kind: Option<&'static str>,
+    /// Desde 0.2.62: fecha (rfc3339 UTC) en que se instaló O ACTUALIZÓ por última vez la
+    /// versión que corre; null en dev/macOS/Linux o si no se pudo leer.
+    pub package_installed_at: Option<String>,
+    /// Desde 0.2.62: `package` (MSIX, Package.InstalledDate) | `nsis_uninstall_key`
+    /// (last-write de Uninstall\Maity); null si no hay fecha.
+    pub package_installed_at_source: Option<&'static str>,
     /// Configuración de jornada al emitir (1× por sesión; cambios vía
     /// `jornada.settings_changed`). `None` = el scheduler todavía no publicó nada en
     /// este proceso. Desde 0.2.62 (#83).
@@ -453,11 +459,14 @@ pub async fn get_device_profile<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> 
     let autostart = crate::autostart_state::current(&app).await;
 
     #[cfg(target_os = "windows")]
-    let signature_kind = crate::startup_task::with_mta(|| Ok(crate::utils::package_signature_kind()))
-        .await
-        .unwrap_or(Some("unknown"));
+    let (signature_kind, installed) = crate::startup_task::with_mta(|| {
+        Ok((crate::utils::package_signature_kind(), crate::utils::package_installed_at()))
+    })
+    .await
+    .unwrap_or((Some("unknown"), None));
     #[cfg(not(target_os = "windows"))]
-    let signature_kind = crate::utils::package_signature_kind();
+    let (signature_kind, installed) =
+        (crate::utils::package_signature_kind(), crate::utils::package_installed_at());
 
     let hw = HardwareProfile::detect();
     DeviceProfile {
@@ -490,6 +499,8 @@ pub async fn get_device_profile<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> 
         autostart_disabled_at: autostart.disabled_at,
         autostart_mechanism: autostart.mechanism,
         signature_kind,
+        package_installed_at: installed.as_ref().map(|(at, _)| at.clone()),
+        package_installed_at_source: installed.map(|(_, src)| src),
         jornada: crate::scheduled_recording::status_snapshot::jornada_config(),
     }
 }
@@ -610,6 +621,8 @@ mod health_snapshot_tests {
             autostart_disabled_at: Some("2024-01-01T00:00:00+00:00".to_string()),
             autostart_mechanism: "run_key",
             signature_kind: None,
+            package_installed_at: None,
+            package_installed_at_source: None,
             jornada: None,
         };
 
@@ -642,12 +655,70 @@ mod health_snapshot_tests {
             autostart_disabled_at: None,
             autostart_mechanism: "run_key",
             signature_kind: None,
+            package_installed_at: None,
+            package_installed_at_source: None,
             jornada: None,
         };
 
         let v = serde_json::to_value(&profile).expect("DeviceProfile serializable");
         assert_eq!(v["autostart_state"], "enabled");
         assert!(v["autostart_disabled_at"].is_null());
+    }
+
+    /// #83 P1b (AC-9): blinda las claves de `package_installed_at`/`_source` que
+    /// healthHeartbeatService.ts espera en `device.profile` (plan.md § P1b Tests).
+    #[test]
+    fn device_profile_serializa_package_installed_at() {
+        let profile = DeviceProfile {
+            cpu_cores: 8,
+            gpu_type: "none",
+            has_gpu_acceleration: false,
+            memory_gb: 16,
+            performance_tier: "medium",
+            os: "windows",
+            os_version: Some("10.0.26200".to_string()),
+            arch: "x86_64",
+            build_channel: "store",
+            started_at_boot: false,
+            autostart_state: "enabled".to_string(),
+            autostart_disabled_at: None,
+            autostart_mechanism: "startup_task",
+            signature_kind: Some("store"),
+            package_installed_at: Some("2026-01-01T00:00:00+00:00".to_string()),
+            package_installed_at_source: Some("package"),
+            jornada: None,
+        };
+
+        let v = serde_json::to_value(&profile).expect("DeviceProfile serializable");
+        assert_eq!(v["package_installed_at"], "2026-01-01T00:00:00+00:00");
+        assert_eq!(v["package_installed_at_source"], "package");
+    }
+
+    #[test]
+    fn device_profile_package_installed_at_none_serializa_null() {
+        let profile = DeviceProfile {
+            cpu_cores: 8,
+            gpu_type: "none",
+            has_gpu_acceleration: false,
+            memory_gb: 16,
+            performance_tier: "medium",
+            os: "windows",
+            os_version: None,
+            arch: "x86_64",
+            build_channel: "direct",
+            started_at_boot: false,
+            autostart_state: "enabled".to_string(),
+            autostart_disabled_at: None,
+            autostart_mechanism: "run_key",
+            signature_kind: None,
+            package_installed_at: None,
+            package_installed_at_source: None,
+            jornada: None,
+        };
+
+        let v = serde_json::to_value(&profile).expect("DeviceProfile serializable");
+        assert!(v["package_installed_at"].is_null());
+        assert!(v["package_installed_at_source"].is_null());
     }
 
     #[test]

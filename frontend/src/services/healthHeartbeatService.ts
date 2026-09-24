@@ -168,6 +168,11 @@ interface DeviceProfile {
   autostart_mechanism: string
   /** Firma del MSIX (`store` | `developer` | …); null fuera de MSIX. */
   signature_kind: string | null
+  /** Desde 0.2.62: fecha (rfc3339 UTC) en que se instaló o actualizó por última vez la
+   * versión que corre; null en dev/macOS/Linux o si no se pudo leer. */
+  package_installed_at: string | null
+  /** Desde 0.2.62: `package` (MSIX) | `nsis_uninstall_key` (directo); null si no hay fecha. */
+  package_installed_at_source: string | null
   /** `null` = el scheduler todavía no publicó nada en este proceso. */
   jornada?: JornadaConfig | null
 }

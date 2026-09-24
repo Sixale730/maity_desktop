@@ -91,6 +91,90 @@ pub fn package_signature_kind() -> Option<&'static str> {
     }
 }
 
+/// Traduce `Windows.Foundation.DateTime.UniversalTime` (WinRT: mismo epoch 1601 y ticks
+/// de 100 ns que FILETIME) a RFC3339 UTC. `None` si el valor es negativo (WinRT lo
+/// modela como `i64`; un `DateTime` sin inicializar puede serlo) o cae en/antes de la
+/// época Unix — reusa `filetime_ticks_to_rfc3339` para no duplicar el límite.
+pub fn winrt_datetime_to_rfc3339(universal_time: i64) -> Option<String> {
+    u64::try_from(universal_time)
+        .ok()
+        .and_then(filetime_ticks_to_rfc3339)
+}
+
+/// Compara una `InstallLocation` leída del registro contra el directorio del ejecutable
+/// que corre, normalizando comillas, barra final y mayúsculas. Evita que un build de
+/// desarrollo (`target/debug/…`) en una PC con Maity NSIS instalado reporte la fecha de
+/// esa otra instalación: contrato "dev ⇒ None". Pura, sin acceso a registro.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+pub(crate) fn install_location_matches(install_location: &str, exe_dir: &std::path::Path) -> bool {
+    fn normalize(s: &str) -> String {
+        s.trim()
+            .trim_matches('"')
+            .trim_end_matches(['\\', '/'])
+            .to_lowercase()
+    }
+
+    let left = normalize(install_location);
+    if left.is_empty() {
+        return false;
+    }
+    let right = normalize(&exe_dir.to_string_lossy());
+    left == right
+}
+
+/// Fecha (RFC3339 UTC) en que se instaló O SE ACTUALIZÓ por última vez la versión que
+/// corre; `None` en dev/macOS/Linux o si no se pudo leer. Bajo MSIX sale de
+/// `Package::Current().InstalledDate()` ("installed or last updated", doc de Microsoft);
+/// en el canal directo, del last-write de la llave `Uninstall\Maity` que escribe el NSIS
+/// de Tauri. Llamar dentro de `startup_task::with_mta` (bajo MSIX usa WinRT).
+pub fn package_installed_at() -> Option<(String, &'static str)> {
+    #[cfg(target_os = "windows")]
+    {
+        if is_running_under_package_identity() {
+            return match windows::ApplicationModel::Package::Current().and_then(|p| p.InstalledDate()) {
+                Ok(dt) => winrt_datetime_to_rfc3339(dt.UniversalTime).map(|s| (s, "package")),
+                Err(e) => {
+                    log::warn!("[utils] Package::Current().InstalledDate() falló: {e}");
+                    None
+                }
+            };
+        }
+        nsis_uninstall_key_last_write().map(|s| (s, "nsis_uninstall_key"))
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        None
+    }
+}
+
+/// Last-write de la llave `Uninstall\Maity` (HKCU luego HKLM, mismo orden que
+/// `rival_install.rs`), sólo si su `InstallLocation` coincide con el ejecutable que
+/// corre — esa llave es la del canal directo instalado en ESTA máquina, no de un
+/// NSIS rival bajo MSIX.
+#[cfg(target_os = "windows")]
+fn nsis_uninstall_key_last_write() -> Option<String> {
+    use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
+
+    let exe_dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
+
+    for hive in [HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE] {
+        let Ok(key) = winreg::RegKey::predef(hive).open_subkey(crate::rival_install::NSIS_UNINSTALL_SUBKEY) else {
+            continue;
+        };
+        let loc: String = key.get_value("InstallLocation").unwrap_or_default();
+        if !install_location_matches(&loc, &exe_dir) {
+            continue;
+        }
+        let Ok(meta) = key.query_info() else {
+            continue;
+        };
+        let ft = &meta.last_write_time;
+        let ticks = ((ft.dwHighDateTime as u64) << 32) | ft.dwLowDateTime as u64;
+        return filetime_ticks_to_rfc3339(ticks);
+    }
+    None
+}
+
 /// true cuando la app corre como build de Mac App Store.
 ///
 /// Apple prohibe que una app de la Store se auto-actualice (guideline 2.4.5):
@@ -260,5 +344,63 @@ mod tests {
             filetime_ticks_to_rfc3339(134_116_992_009_999_999).as_deref(),
             Some("2026-01-01T00:00:00+00:00")
         );
+    }
+
+    #[test]
+    fn winrt_datetime_to_rfc3339_convierte_2026() {
+        assert_eq!(
+            winrt_datetime_to_rfc3339(134_116_992_000_000_000).as_deref(),
+            Some("2026-01-01T00:00:00+00:00")
+        );
+    }
+
+    #[test]
+    fn winrt_datetime_to_rfc3339_negativo_es_none() {
+        assert_eq!(winrt_datetime_to_rfc3339(-1), None);
+    }
+
+    #[test]
+    fn winrt_datetime_to_rfc3339_cero_es_none() {
+        assert_eq!(winrt_datetime_to_rfc3339(0), None);
+    }
+
+    #[test]
+    fn install_location_matches_igual_exacto() {
+        assert!(install_location_matches(
+            r"C:\Users\x\AppData\Local\Maity",
+            std::path::Path::new(r"C:\Users\x\AppData\Local\Maity"),
+        ));
+    }
+
+    #[test]
+    fn install_location_matches_con_comillas_y_barra_final() {
+        assert!(install_location_matches(
+            "\"C:\\Users\\x\\AppData\\Local\\Maity\\\"",
+            std::path::Path::new(r"C:\Users\x\AppData\Local\Maity"),
+        ));
+    }
+
+    #[test]
+    fn install_location_matches_mayusculas_distintas() {
+        assert!(install_location_matches(
+            r"c:\users\x\appdata\local\maity",
+            std::path::Path::new(r"C:\Users\x\AppData\Local\Maity"),
+        ));
+    }
+
+    #[test]
+    fn install_location_matches_vacio_es_false() {
+        assert!(!install_location_matches(
+            "",
+            std::path::Path::new(r"C:\Users\x\AppData\Local\Maity"),
+        ));
+    }
+
+    #[test]
+    fn install_location_matches_otra_carpeta_es_false() {
+        assert!(!install_location_matches(
+            r"C:\Users\x\AppData\Local\Maity",
+            std::path::Path::new(r"C:\maity_desktop\target\debug"),
+        ));
     }
 }
