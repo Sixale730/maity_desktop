@@ -295,13 +295,19 @@ impl RecordingManager {
         Ok(())
     }
 
-    /// Save recording after transcription is complete
-    pub async fn save_recording_only<R: tauri::Runtime>(&mut self, app: &tauri::AppHandle<R>) -> Result<()> {
+    /// Save recording after transcription is complete.
+    ///
+    /// `recording_duration` DEBE ser capturado por el llamador ANTES de esta llamada (p.ej. antes
+    /// de `stop_streams_and_force_flush`): `state.stop_recording()` limpia la pausa abierta y
+    /// `state.cleanup()` borra `recording_start` y `total_pause_duration`, así que para cuando este
+    /// método corre, `self.state.get_active_recording_duration()` ya devuelve `None`.
+    pub async fn save_recording_only<R: tauri::Runtime>(
+        &mut self,
+        app: &tauri::AppHandle<R>,
+        recording_duration: Option<f64>,
+    ) -> Result<()> {
         debug!("Saving recording with transcript chunks");
-
-        // Get actual recording duration from state
-        let recording_duration = self.state.get_active_recording_duration();
-        info!("Recording duration from state: {:?}s", recording_duration);
+        info!("Recording duration (captured before teardown): {:?}s", recording_duration);
 
         // Save the recording with actual duration
         match self.recording_saver.stop_and_save(app, recording_duration).await {

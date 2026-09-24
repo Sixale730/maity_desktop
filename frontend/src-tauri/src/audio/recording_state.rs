@@ -717,6 +717,56 @@ mod tests {
             assert!(state.is_active());
         }
 
+        mod duration {
+            use super::*;
+            use std::thread::sleep;
+            use std::time::Duration;
+
+            #[test]
+            fn cleanup_borra_el_inicio_y_la_duracion_activa_queda_en_none() {
+                let state = RecordingState::new();
+                state.start_recording().unwrap();
+                assert!(state.get_active_recording_duration().is_some());
+
+                state.cleanup();
+
+                assert_eq!(state.get_active_recording_duration(), None);
+            }
+
+            #[test]
+            fn las_pausas_cerradas_se_restan() {
+                let state = RecordingState::new();
+                state.start_recording().unwrap();
+                state.pause_recording().unwrap();
+                sleep(Duration::from_millis(60));
+                state.resume_recording().unwrap();
+                sleep(Duration::from_millis(20));
+
+                let active = state.get_active_recording_duration().unwrap();
+                let wall = state.get_recording_duration().unwrap();
+
+                // La duración activa (sin pausas) debe ser menor a la de pared, con un
+                // margen amplio para no depender de timing exacto del scheduler.
+                assert!(active < wall, "active={active} wall={wall}");
+                assert!(
+                    wall - active >= 0.05,
+                    "la pausa de ~60ms no se restó lo suficiente: active={active} wall={wall}"
+                );
+            }
+
+            #[test]
+            fn stop_recording_conserva_el_inicio() {
+                // `stop_recording()` (a diferencia de `cleanup()`) NO borra `recording_start`,
+                // así que la duración capturada por el lifecycle antes del teardown sigue
+                // disponible aunque un auto-stop por error haya llamado `stop_recording` antes.
+                let state = RecordingState::new();
+                state.start_recording().unwrap();
+                state.stop_recording();
+
+                assert!(state.get_recording_duration().is_some());
+            }
+        }
+
         #[test]
         fn audio_levels_roundtrip_mic_and_system() {
             let state = RecordingState::new();

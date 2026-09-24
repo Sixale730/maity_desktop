@@ -822,7 +822,7 @@ pub async fn stop_recording_reporting<R: Runtime>(
 
         match tokio::time::timeout(
             tokio::time::Duration::from_secs(300),
-            manager.save_recording_only(&app)
+            manager.save_recording_only(&app, captured_duration_seconds)
         ).await {
             Ok(Ok(_)) => {
                 info!("✅ Recording data saved successfully during cleanup");
