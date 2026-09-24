@@ -502,6 +502,17 @@ pub async fn set_current_user<R: Runtime>(
         if releases_session_end_hold(user_transition_on_set(was_logged_out)) {
             release_scheduler_session_end_hold(&app).await;
         }
+        // Marca de último login (#83, S4): la lee el siguiente arranque sin sesión para
+        // distinguir "sesión perdida" de "primer arranque / logout limpio". Solo se
+        // escribe si cambió (cada escritura es un write durable de lifecycle.json).
+        // `clear_current_user` NO la toca (una sesión perdida debe dejarla); el logout
+        // del usuario la borra en `logout_cleanup`.
+        let already_marked = crate::logging::telemetry::lifecycle::peek_last_login_user()
+            .map(|u| u.maity_user_id == user_id)
+            .unwrap_or(false);
+        if !already_marked {
+            crate::logging::telemetry::lifecycle::set_last_login_user(&user_id);
+        }
         tauri::async_runtime::spawn(async move {
             crate::coach::commands::open_coach_on_login(app).await;
         });

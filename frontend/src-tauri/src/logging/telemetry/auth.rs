@@ -17,7 +17,7 @@
 //! solo `warn!`/`info!`.
 
 use serde_json::json;
-use tauri::{AppHandle, Runtime};
+use tauri::{AppHandle, Manager, Runtime};
 
 /// Superficies de logout aceptadas (dominio cerrado; cualquier otra ⇒ "unknown").
 /// Espejo del tipo `LogoutSurface` del frontend (S3b).
@@ -77,6 +77,136 @@ pub(crate) async fn emit_logout<R: Runtime>(app: &AppHandle<R>, f: &LogoutFacts)
         None,
     )
     .await
+}
+
+// ── auth.session_lost (S4, AC-19) ────────────────────────────────────────────
+//
+// Solo pérdidas REALES de sesión (sin que el usuario la cerrara):
+// - `webview_signed_out`: SIGNED_OUT espontáneo de supabase-js con la app viva
+//   (refresh rechazado, sesión revocada).
+// - `boot_no_session`: la app arranca sin sesión, hay marca persistida de un login
+//   previo (`lifecycle::last_login_user`) y `getSession` NO falló por red (esa
+//   decisión la toma el webview, `lib/authSessionLost.ts`).
+// Nunca por red caída: un autostart antes de que suba el Wi-Fi con el token vencido
+// devuelve `session: null` con un error reintentable y NO es sesión perdida.
+// La emite Rust (outbox) porque sin sesión el `platformLogger` de JS no puede postear:
+// la fila espera en el outbox a la siguiente siembra de sesión, y por eso lleva
+// `maity_user_id` en el payload.
+
+/// Fuentes aceptadas de `auth.session_lost` (dominio cerrado).
+pub(crate) const SESSION_LOST_SOURCES: &[&str] = &["webview_signed_out", "boot_no_session"];
+
+/// Tope del nombre de error saneado.
+const ERROR_NAME_MAX_CHARS: usize = 64;
+
+/// Regla pura: ¿se emite? Fuente desconocida ⇒ no. `boot_no_session` exige marca de
+/// login previa (sin marca = primer arranque o el anterior cerró sesión limpio).
+/// `webview_signed_out` ⇒ sí.
+pub(crate) fn should_emit_session_lost(source: &str, has_login_marker: bool) -> bool {
+    match source {
+        "webview_signed_out" => true,
+        "boot_no_session" => has_login_marker,
+        _ => false,
+    }
+}
+
+/// Nombre de error saneado: solo `[A-Za-z0-9_.]`, máx. 64 chars; vacío ⇒ `None`
+/// (sin PII ni mensajes: solo el nombre de la clase, p. ej. `AuthApiError`).
+pub(crate) fn sanitize_error_name(name: Option<&str>) -> Option<String> {
+    let cleaned: String = name?
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '.')
+        .take(ERROR_NAME_MAX_CHARS)
+        .collect();
+    if cleaned.is_empty() {
+        None
+    } else {
+        Some(cleaned)
+    }
+}
+
+/// Payload de `auth.session_lost` (contrato 1.6), puro.
+pub(crate) fn session_lost_payload(
+    source: &str,
+    maity_user_id: Option<&str>,
+    recording_was_active: bool,
+    error_name: Option<&str>,
+) -> serde_json::Value {
+    json!({
+        "source": source,
+        "maity_user_id": maity_user_id,
+        "recording_was_active": recording_was_active,
+        "error_name": error_name,
+    })
+}
+
+/// Emite `auth.session_lost` (status `warning`) al outbox. Lo invoca el webview
+/// (`invoke('telemetry_auth_session_lost', { source, errorName })`). Rust decide con la
+/// marca de login: `boot_no_session` sin marca no emite. La marca se consume SOLO si la
+/// fila quedó en el outbox. Nunca falla.
+#[tauri::command]
+pub async fn telemetry_auth_session_lost<R: Runtime>(
+    app: AppHandle<R>,
+    source: String,
+    error_name: Option<String>,
+) -> Result<(), String> {
+    if !SESSION_LOST_SOURCES.contains(&source.as_str()) {
+        log::warn!("auth.session_lost: fuente desconocida descartada");
+        return Ok(());
+    }
+    let marker = super::lifecycle::peek_last_login_user();
+    if !should_emit_session_lost(&source, marker.is_some()) {
+        log::info!(
+            "auth.session_lost: {} sin marca de login previa; no se emite",
+            source
+        );
+        return Ok(());
+    }
+
+    // `webview_signed_out`: Rust todavía tiene al usuario (clear_current_user corre
+    // después); si falta, el de la marca. `boot_no_session`: el de la marca.
+    let state_user = if source == "webview_signed_out" {
+        match app.try_state::<crate::state::AppState>() {
+            Some(s) => s.current_user_id().await,
+            None => None,
+        }
+    } else {
+        None
+    };
+    let maity_user_id =
+        state_user.or_else(|| marker.as_ref().map(|m| m.maity_user_id.clone()));
+
+    let phase = crate::audio::recording_phase::current_phase();
+    let recording_was_active = phase.is_session_active();
+    let error_name = sanitize_error_name(error_name.as_deref());
+    let payload = session_lost_payload(
+        &source,
+        maity_user_id.as_deref(),
+        recording_was_active,
+        error_name.as_deref(),
+    );
+
+    let row = super::emit::emit_event_with_id(
+        &app,
+        super::context::process_session_id(),
+        super::catalog::AUTH_SESSION_LOST,
+        payload,
+        Some(super::status::TelemetryStatus::Warning),
+        None,
+        None,
+    )
+    .await;
+
+    if row.is_some() {
+        let _ = super::lifecycle::take_last_login_user();
+    }
+    log::info!(
+        "auth.session_lost: source={} fila={:?} grabando={}",
+        source,
+        row,
+        recording_was_active
+    );
+    Ok(())
 }
 
 #[cfg(test)]
@@ -142,5 +272,61 @@ mod tests {
         .into_iter()
         .collect();
         assert_eq!(keys, expected);
+    }
+
+    #[test]
+    fn should_emit_session_lost_tabla() {
+        assert!(!should_emit_session_lost("boot_no_session", false));
+        assert!(should_emit_session_lost("boot_no_session", true));
+        assert!(should_emit_session_lost("webview_signed_out", false));
+        assert!(!should_emit_session_lost("native_refresh_rejected", true));
+        assert!(!should_emit_session_lost("", true));
+    }
+
+    #[test]
+    fn todas_las_fuentes_del_dominio_pueden_emitirse_con_marca() {
+        for s in SESSION_LOST_SOURCES {
+            assert!(should_emit_session_lost(s, true), "{s}");
+        }
+    }
+
+    #[test]
+    fn sanitize_error_name_casos() {
+        assert_eq!(sanitize_error_name(None), None);
+        assert_eq!(sanitize_error_name(Some("")), None);
+        assert_eq!(sanitize_error_name(Some("<> ")), None);
+        assert_eq!(
+            sanitize_error_name(Some("AuthApiError")).as_deref(),
+            Some("AuthApiError")
+        );
+        assert_eq!(sanitize_error_name(Some("a b<c>")).as_deref(), Some("abc"));
+        assert_eq!(
+            sanitize_error_name(Some("auth_js.Error_1")).as_deref(),
+            Some("auth_js.Error_1")
+        );
+        let largo = "x".repeat(200);
+        let s = sanitize_error_name(Some(&largo)).unwrap();
+        assert_eq!(s.chars().count(), 64);
+    }
+
+    #[test]
+    fn session_lost_payload_claves_exactas_y_nulls() {
+        let p = session_lost_payload("boot_no_session", None, false, None);
+        let keys: BTreeSet<&str> = p.as_object().unwrap().keys().map(String::as_str).collect();
+        let expected: BTreeSet<&str> =
+            ["source", "maity_user_id", "recording_was_active", "error_name"]
+                .into_iter()
+                .collect();
+        assert_eq!(keys, expected);
+        assert_eq!(p["source"], "boot_no_session");
+        assert!(p["maity_user_id"].is_null());
+        assert_eq!(p["recording_was_active"], false);
+        assert!(p["error_name"].is_null());
+
+        let q = session_lost_payload("webview_signed_out", Some("u1"), true, Some("AuthApiError"));
+        assert_eq!(q["source"], "webview_signed_out");
+        assert_eq!(q["maity_user_id"], "u1");
+        assert_eq!(q["recording_was_active"], true);
+        assert_eq!(q["error_name"], "AuthApiError");
     }
 }

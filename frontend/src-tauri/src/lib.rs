@@ -1670,6 +1670,8 @@ pub fn run() {
             // Sesión ↔ ventana: login compacto estilo Steam + cleanup de logout
             set_main_window_auth_layout,
             logout_cleanup,
+            // auth.session_lost (#83, S4): solo pérdidas reales de sesión, vía outbox
+            logging::telemetry::auth::telemetry_auth_session_lost,
             database::commands::reset_database,
             // Respaldo .bak del flujo rival (issue #64): consulta + restauracion desde el gate
             database::commands::get_db_backup_info,

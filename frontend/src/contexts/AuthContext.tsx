@@ -5,6 +5,7 @@ import { supabase, SUPABASE_URL, SUPABASE_ANON_KEY } from '@/lib/supabase'
 import { isAuthRetryableFetchError } from '@supabase/supabase-js'
 import type { Session, User } from '@supabase/supabase-js'
 import { shouldReleaseRustUser, isBootSessionUncertain } from '@/lib/authRelease'
+import { signedOutSessionLostSource, shouldReportBootNoSession, authErrorName } from '@/lib/authSessionLost'
 import type { MaityUser } from '@/types/auth'
 import { invoke } from '@tauri-apps/api/core'
 import { createSubscriptionGroup } from '@/lib/tauriSubscribe'
@@ -479,6 +480,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           setUser(existingSession.user)
           await fetchOrCreateMaityUserRef.current(existingSession.user)
         }
+        // auth.session_lost (boot_no_session, #83): arranque sin sesión cuyo getSession
+        // NO falló por red. auth-js descarta la sesión muerta dentro de su initialize(),
+        // antes de que nos suscribamos, así que el listener no ve este caso. Rust decide
+        // con la marca de último login (sin marca = primer arranque o logout limpio ⇒ no emite).
+        if (isMounted && shouldReportBootNoSession(!!existingSession, getSessionError, online)) {
+          void invoke('telemetry_auth_session_lost', {
+            source: 'boot_no_session',
+            errorName: authErrorName(getSessionError),
+          }).catch((e) => logger.warn('[Auth] telemetry_auth_session_lost (boot) falló:', e))
+        }
       } catch (err) {
         console.error('[Auth] Failed to restore session:', err)
         // No se pudo saber si hay sesión: incierto, no soltar a Rust.
@@ -516,6 +527,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         if (isSigningOut.current) {
           logger.debug('[Auth] Ignoring auth state change during sign out')
           return
+        }
+
+        // auth.session_lost (webview_signed_out, #83): SIGNED_OUT que el usuario no
+        // pidió (refresh rechazado, sesión revocada). La IPC se difiere a un macrotask:
+        // nada de await aquí (lock de auth-js).
+        const lostSource = signedOutSessionLostSource(event, !!newSession, isSigningOut.current)
+        if (lostSource) {
+          setTimeout(() => {
+            void invoke('telemetry_auth_session_lost', { source: lostSource, errorName: null })
+              .catch((e) => logger.warn('[Auth] telemetry_auth_session_lost falló:', e))
+          }, 0)
         }
 
         // Propagate JWT to the Realtime WebSocket. The Realtime module keeps its
