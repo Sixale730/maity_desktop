@@ -1817,10 +1817,22 @@ pub fn run() {
                 // Marcador de ciclo de vida PRIMERO (#83): bloque `exit` durable con el
                 // motivo. `None` si otra ruta (bandeja, rival) ya registró la salida.
                 let exit_rec = logging::telemetry::lifecycle::begin_exit(None);
+                let se = session_end::observed();
                 log::info!(
                     "Application exiting (session_end={:?})",
-                    session_end::observed().map(|s| (s.kind.as_str(), s.critical, s.source))
+                    se.map(|s| (s.kind.as_str(), s.critical, s.source))
                 );
+                // Fin de sesión de Windows (#83, B5): este brazo corre DENTRO del
+                // WM_ENDSESSION de tao en el hilo principal y Windows mata el proceso
+                // a los ~5 s. Rama acotada (< 5 s, sin graceful de 30 s, sin merge ni
+                // finalize). Todas las demás salidas siguen por el camino de abajo.
+                if session_end::is_session_end_exit(
+                    se.is_some(),
+                    exit_rec.as_ref().map(|r| r.reason.as_str()),
+                ) {
+                    run_session_end_exit(_app_handle, exit_rec.as_ref(), se);
+                    return;
+                }
                 tauri::async_runtime::block_on(async {
                     // Fila `app.exit` en el outbox, acotada a 750 ms (best-effort: el
                     // marcador ya tiene el motivo; sube en el siguiente arranque).
@@ -1870,6 +1882,127 @@ pub fn run() {
             }
             _ => {}
         });
+}
+
+/// Rama ACOTADA de `RunEvent::Exit` para el fin de sesión de Windows (#83, B5).
+///
+/// Corre síncrona en el hilo principal, DENTRO del WM_ENDSESSION de tao: sin reason
+/// string Windows mata el proceso ~5 s después, así que todo va con presupuesto
+/// (`session_end::*_BUDGET`, suma < 5 s con test de invariante) y cada paso que puede
+/// bloquear corre en su propio `spawn` + timeout (los timeouts de tokio solo disparan
+/// en un `.await`). Omitido A PROPÓSITO: el graceful de 30 s, la espera de
+/// transcripción, merge, finalize, `mark_pending`, emits, getters de ventana, bandeja,
+/// notificaciones y red (`flush_row`). La recuperación queda para el próximo arranque
+/// (checkpoints + `transcripts.json`; ver `docs/REGLAS_AUDIO_GRABACION.md` § Fin de
+/// sesión de Windows con grabación activa).
+fn run_session_end_exit(
+    app: &tauri::AppHandle,
+    exit_rec: Option<&logging::telemetry::lifecycle::ExitRecord>,
+    se: Option<session_end::SessionEndInfo>,
+) {
+    let started = std::time::Instant::now();
+    // PRIMERO, sin locks: desde aquí ningún `StartGate::acquire()` arranca y el
+    // scheduler no escribe rearme ni back-off. Irreversible: el proceso termina.
+    audio::recording_phase::set_session_ending();
+    scheduled_recording::service::mark_session_ending();
+    let phase_at_entry = audio::recording_phase::current_phase();
+    log::info!(
+        "[session_end] rama acotada: kind={:?} reason={:?} fase={}",
+        se.map(|s| s.kind.as_str()),
+        exit_rec.map(|r| r.reason.as_str()),
+        phase_at_entry.as_str()
+    );
+
+    tauri::async_runtime::block_on(async {
+        // a. Retención de fin de sesión del scheduler (lock del RwLock acotado).
+        if let Some(st) =
+            app.try_state::<scheduled_recording::commands::ScheduledRecordingState>()
+        {
+            let st = st.inner().clone();
+            let frozen = tokio::time::timeout(session_end::SCHED_FREEZE_BUDGET, async move {
+                let service = st.read().await;
+                service.begin_session_end().await;
+            })
+            .await;
+            if frozen.is_err() {
+                log::warn!("[session_end] el lock del scheduler no respondió; se sigue");
+            }
+        }
+
+        // b. Fila `app.exit` en el outbox con el tope corto. Sin `flush_row`: nada
+        //    de red en fin de sesión (sube en el siguiente arranque).
+        if let Some(rec) = exit_rec {
+            let _ = logging::telemetry::lifecycle::emit_exit_row(
+                app,
+                rec,
+                logging::telemetry::lifecycle::EXIT_ROW_TIMEOUT_SESSION_END,
+            )
+            .await;
+        }
+
+        // c. Flush acotado de la grabación en un worker: el drop de streams cpal y el
+        //    lock std de RECORDING_MANAGER no pueden alargar el hilo principal.
+        let t0 = tokio::time::Instant::now();
+        let flush = tauri::async_runtime::spawn(
+            audio::recording_lifecycle::flush_recording_for_session_end(
+                t0,
+                session_end::budgets(),
+            ),
+        );
+        match tokio::time::timeout_at(t0 + session_end::HARD_BUDGET, flush).await {
+            Ok(Ok(report)) => log::info!(
+                "[session_end] flush terminado: was_recording={} mode={} audio={:?} ({} ms)",
+                report.was_recording,
+                report.mode,
+                report.audio,
+                report.elapsed_ms
+            ),
+            Ok(Err(e)) => log::warn!("[session_end] el worker del flush falló: {}", e),
+            Err(_) => log::warn!("[session_end] flush excedió el presupuesto"),
+        }
+
+        // d. DB: cerrar el pool (checkpoint del WAL) salvo que al entrar hubiera un
+        //    stop/rotación con finalize en vuelo (fase Stopping): ese segmento queda
+        //    para la recuperación del próximo arranque y no se le cierra el pool.
+        if phase_at_entry != audio::recording_phase::RecordingPhase::Stopping {
+            if let Some(app_state) = app.try_state::<state::AppState>() {
+                let db = app_state.db_manager.clone();
+                let h = tauri::async_runtime::spawn(async move { db.cleanup().await });
+                match tokio::time::timeout(session_end::DB_CLEANUP_BUDGET, h).await {
+                    Ok(Ok(Ok(()))) => log::info!("[session_end] database cleanup completado"),
+                    Ok(Ok(Err(e))) => log::warn!("[session_end] database cleanup falló: {}", e),
+                    Ok(Err(e)) => log::warn!("[session_end] worker de database cleanup falló: {}", e),
+                    Err(_) => log::warn!("[session_end] database cleanup excedió el presupuesto"),
+                }
+            }
+        } else {
+            log::info!("[session_end] fase Stopping al entrar: el pool de la DB no se cierra");
+        }
+
+        // e. Sidecar (Built-in AI / coach), acotado.
+        let h = tauri::async_runtime::spawn(summary::summary_engine::force_shutdown_sidecar());
+        if tokio::time::timeout(session_end::SIDECAR_BUDGET, h).await.is_err() {
+            log::warn!("[session_end] cierre del sidecar excedió el presupuesto");
+        }
+    });
+
+    let elapsed = started.elapsed();
+    if elapsed >= session_end::WINDOWS_SESSION_END_GRACE {
+        log::warn!("[session_end] limpieza acotada tardó {} ms", elapsed.as_millis());
+    } else {
+        log::info!("[session_end] limpieza acotada en {} ms", elapsed.as_millis());
+    }
+    log::logger().flush();
+    logging::telemetry::lifecycle::finish_exit();
+
+    // Restart Manager SIN apagado del sistema: Windows NO mata el proceso y tao
+    // quedaría en un loop `Destroyed` que entra en panic al salir de él. Terminar aquí.
+    if matches!(se.map(|s| s.kind), Some(session_end::SessionEndKind::CloseApp)) {
+        log::info!("[session_end] CloseApp sin apagado: terminando el proceso");
+        log::logger().flush();
+        app.cleanup_before_exit();
+        std::process::exit(0);
+    }
 }
 
 /// Detiene y guarda la grabación activa antes de salir de la app (graceful shutdown).

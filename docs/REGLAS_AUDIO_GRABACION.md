@@ -77,6 +77,38 @@ Cada grabación crea al **arrancar** un registro en IndexedDB (`TranscriptContex
 
 Tests: `hooks/useTranscriptRecovery.test.ts`, `hooks/useRecordingStop.feedback.test.tsx` (bloque "0 transcripts con audio en disco").
 
+## Fin de sesión de Windows con grabación activa (#83, desde 0.2.62)
+
+Antes, cerrar sesión o reiniciar Windows con una grabación activa corría el `RunEvent::Exit` normal: backstop de graceful de **30 s** (que a su vez espera hasta 120 s la cola de transcripción ANTES del último checkpoint y 300 s el merge), cleanup de la DB y kill del sidecar **sin tope**. Windows mostraba "esta app impide apagar" o mataba el proceso a los ~5 s y el final de la grabación se perdía. Hoy hay una **rama acotada** (`lib.rs::run_session_end_exit`) y el camino de siempre queda intacto para todas las demás salidas.
+
+**Mapa de hilos:**
+- El **WndProc de `main`** (y de las demás ventanas top-level del hilo, incluida la oculta de tao) lleva un subclass (`session_end.rs`, E1) que registra el tipo de fin de sesión en el `WM_QUERYENDSESSION` (`lParam` fiable; el del `WM_ENDSESSION` es respaldo) y escribe la intención `session_end` en el marcador. El QES **no detiene nada**: otra app puede cancelar el fin de sesión (llega ES(FALSE) y se limpia).
+- **`RunEvent::Exit` corre DENTRO del `WM_ENDSESSION` de tao, en el hilo principal** (tao no procesa el QES y convierte el ES(TRUE) en `loop_destroyed()` → `RunEvent::Exit`, sin `ExitRequested`). Todo lo que bloquee ahí bloquea el cierre de Windows.
+- La rama se elige con `session_end::is_session_end_exit` (pura, con test): fin de sesión observado por el subclass o por `SM_SHUTTINGDOWN`, o `begin_exit` clasificó `os_session_end`/`external_close`. Bandeja, rival, update, restart, `app_exit`, `last_window_closed` y `loop_destroyed` siguen por el camino actual.
+- El **flush de la grabación corre en un worker de tokio** (`spawn` + `timeout_at(t0 + HARD_BUDGET)`): el drop de los streams cpal y el lock std de `RECORDING_MANAGER` no pueden alargar el hilo principal. La DB y el sidecar van igual, cada uno en su `spawn` + timeout — **los timeouts de tokio solo disparan en un `.await`**: nunca llamar código de stop bloqueante directo dentro del `block_on`.
+
+**Prohibido dentro de `WM_ENDSESSION`** (y por lo tanto en `run_session_end_exit` y en `flush_recording_for_session_end`): merge de checkpoints, `finalize_segment_native`/`close_scheduled`, `mark_pending` del lote, espera de transcripción, `live_feedback::stop`, `app.emit`, getters de ventana, bandeja, notificaciones y red (sin `flush_row`: la fila `app.exit` sube en el siguiente arranque). Cualquier llamada que necesite el hilo principal se queda colgada, porque el hilo principal es el que está en el `block_on`. **Nunca borrar audio en esta ruta.**
+
+**Presupuestos** (`session_end.rs`, sin reason string; medidos por el test de invariante `presupuestos_de_fin_de_sesion_caben_en_5_s`): escritura durable del marcador 0.3 s (`MARKER_WRITE_ALLOWANCE`, `begin_exit`/`finish_exit` fuera del `block_on`) + congelado del scheduler 0.2 s + fila `app.exit` 0.4 s (`EXIT_ROW_TIMEOUT_SESSION_END`, no los 750 ms normales) + flush 2.5 s (`HARD_BUDGET`; dentro: detener streams ≤ 1 s, despachar el checkpoint final hasta 1.5 s) + DB 0.5 s + sidecar 0.3 s = **4.2 s < 5 s**. Si se agrega un paso, entra en la suma y en el test.
+
+**Congelado:** lo primero que hace la rama, sin locks, es `recording_phase::set_session_ending()` (desde ahí `StartGate::acquire()` se niega: ni el scheduler ni un comando del frontend arrancan una grabación) y `scheduled_recording::service::mark_session_ending()`; después `begin_session_end()` del scheduler con 200 ms. `SESSION_ENDING` es **irreversible** y se pone SOLO en `RunEvent::Exit`, nunca en el QES (otra app puede cancelar). Ninguna ruta de salida escribe supresión de la jornada a disco.
+
+**`mem::forget(StopGate)` a propósito:** el flush deja la fase en `Stopping` y no la devuelve a `Idle`. Así el scheduler no rearranca en el hueco y `recover_orphans` de este mismo proceso no reclama su propia fila del lote. El manager también se olvida (su `Drop` podría hacer join de hilos de captura).
+
+**Contrato de recuperación (la hace el próximo arranque):**
+- **Lote**: la fila de la cola queda en `recording` con el pid de este proceso ⇒ al arrancar es huérfana y el planner la recupera desde los checkpoints.
+- **Streaming**: el registro de IndexedDB + `transcripts.json` + `.checkpoints/` ⇒ `autoRecoverAll`.
+- Un checkpoint cuyo encode falló se **renombra** a `.mp4.failed` (nunca se borra); el filtro por extensión `.mp4` lo deja fuera de la recuperación.
+- Si al entrar la fase ya era `Stopping` (un stop o una rotación con finalize en vuelo), **no se cierra el pool de la DB**: ese segmento queda para la recuperación del próximo arranque.
+
+**Restart Manager sin apagado del sistema (`SessionEndKind::CloseApp`, p. ej. un instalador):** Windows NO mata el proceso y tao quedaría en un loop `Destroyed` que entra en panic al salir de él ⇒ la rama termina con `app.cleanup_before_exit()` + `std::process::exit(0)`. En logoff/apagado se vuelve normal y Windows termina el proceso al devolver `WM_ENDSESSION`.
+
+**`SetProcessShutdownParameters(0x3FF, 0)`** en `session_end::install` (setup): Maity recibe QES/ES **antes** que sus hijos (nivel por defecto 0x280), así el ffmpeg del checkpoint final sigue vivo durante el flush.
+
+**Fuera, a propósito (se revisa tras la matriz E2E):** `ShutdownBlockReasonCreate` (podría mostrar la pantalla de bloqueo en cada apagado) y el checkpoint temprano en el QES.
+
+**No reintroducir el graceful de 30 s en fin de sesión**, ni "simplificar" la rama llamando `graceful_..._before_exit` con otro timeout: el stop normal espera la transcripción y el merge, que no caben en 5 s; con eso volvería el "esta app impide apagar" y se perdería justo el final que la rama salva.
+
 ## Identificador de dispositivo de audio y persistencia de selección
 
 - **Identificador canónico**: el formato es el nombre CRUDO tal como lo enumera el OS (`get_audio_devices`), SIN sufijo `(input)/(output)`. Es el formato que aceptan `switch_audio_device`, `start_audio_level_monitoring` y `start_recording_with_devices_and_meeting`. NO volver a concatenar sufijos en la UI (helper: `lib/deviceName.ts` → `stripDeviceTypeSuffix`, aplicado al hidratar `ConfigContext`). En Rust, `AudioDevice::from_name_with_default_type(name, tipo)` acepta el legacy con sufijo por compat; el tipo lo aporta el contexto del caller (path mic → Input, path system → Output). Antes convivían dos formatos y el crudo caía en fallback silencioso al default.

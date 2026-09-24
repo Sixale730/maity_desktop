@@ -28,6 +28,12 @@
 //! todas las plataformas; solo `imp` va con `cfg(windows)`. Constantes como
 //! literales documentados por Microsoft: sin feature nueva del crate `windows`
 //! (`Win32_UI_WindowsAndMessaging`).
+//!
+//! E2b (B5): los presupuestos de la rama acotada de `RunEvent::Exit` en fin de
+//! sesión viven aquí (ver `docs/REGLAS_AUDIO_GRABACION.md` § Fin de sesión de
+//! Windows con grabación activa). Sin reason string, Windows da ~5 s dentro de
+//! WM_ENDSESSION antes de matar el proceso: la suma de todo lo que corre en el
+//! hilo principal queda por debajo (test de invariante).
 
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -51,6 +57,47 @@ const SUBCLASS_ID: usize = 0x4D41_4954;
 /// Un registro de fin de sesión más viejo que esto ya no cuenta (un QES
 /// cancelado sin ES(FALSE) visible no debe clasificar una salida posterior).
 pub const RECORD_TTL: Duration = Duration::from_secs(120);
+
+// ── Presupuestos de la rama de fin de sesión (E2b, contrato §5.5) ──────────
+// Sin reason string (`ShutdownBlockReasonCreate` queda FUERA: podría mostrar la
+// pantalla de bloqueo en cada apagado) Windows mata el proceso ~5 s después de
+// entregar WM_ENDSESSION. Todo lo que corre en el hilo principal suma < 5 s.
+
+/// Detener streams + flush del pipeline (desde `t0` del flush).
+pub const STREAM_STOP_BUDGET: Duration = Duration::from_millis(1000);
+/// Hasta aquí se puede DESPACHAR el checkpoint final (desde `t0`).
+pub const FINAL_ENCODE_SOFT: Duration = Duration::from_millis(1500);
+/// Tope duro de todo el flush de la grabación (desde `t0`).
+pub const HARD_BUDGET: Duration = Duration::from_millis(2500);
+/// Cierre del pool de SQLite (checkpoint del WAL).
+pub const DB_CLEANUP_BUDGET: Duration = Duration::from_millis(500);
+/// Kill del sidecar `llama-helper`.
+pub const SIDECAR_BUDGET: Duration = Duration::from_millis(300);
+/// `begin_session_end()` del scheduler (lock de su RwLock).
+pub const SCHED_FREEZE_BUDGET: Duration = Duration::from_millis(200);
+/// Margen para las escrituras durables del marcador (`begin_exit` antes del
+/// `block_on`, `finish_exit` después), que no tienen timeout propio.
+pub const MARKER_WRITE_ALLOWANCE: Duration = Duration::from_millis(300);
+/// Umbral de Windows sin reason string.
+pub const WINDOWS_SESSION_END_GRACE: Duration = Duration::from_secs(5);
+
+/// Presupuestos del flush de la grabación (E2a los consume).
+pub fn budgets() -> crate::audio::recording_lifecycle::SessionEndBudgets {
+    crate::audio::recording_lifecycle::SessionEndBudgets {
+        stream: STREAM_STOP_BUDGET,
+        soft: FINAL_ENCODE_SOFT,
+        hard: HARD_BUDGET,
+    }
+}
+
+/// Pura. ¿`RunEvent::Exit` va por la rama acotada de fin de sesión? Sí si el
+/// subclass (o `SM_SHUTTINGDOWN`) observó un fin de sesión, o si `begin_exit`
+/// clasificó la salida como `os_session_end` / `external_close`. Cualquier otro
+/// motivo (bandeja, rival, update, restart, `app_exit`, `last_window_closed`,
+/// `loop_destroyed`) sigue por el camino actual sin cambios.
+pub(crate) fn is_session_end_exit(observed: bool, reason: Option<&str>) -> bool {
+    observed || matches!(reason, Some("os_session_end") | Some("external_close"))
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionEndKind {
@@ -254,10 +301,29 @@ mod imp {
         .as_bool()
     }
 
+    /// Nivel de fin de sesión del proceso: mayor que el de los hijos (0x280 por
+    /// defecto) ⇒ Maity recibe QES/ES ANTES que ffmpeg/llama-helper, así el
+    /// ffmpeg del checkpoint final sigue vivo durante el flush acotado (E2b).
+    const SESSION_END_LEVEL: u32 = 0x3FF;
+
     /// Instala el subclass en `main` y en las demás ventanas top-level del hilo
     /// principal. `SetWindowSubclass` con el mismo proc+id solo actualiza el
     /// refdata, así que repetir una ventana es inocuo. Nunca hace panic.
     pub fn install(window: &tauri::WebviewWindow) {
+        // SAFETY: sin punteros; solo fija el orden de notificación del proceso.
+        match unsafe {
+            windows::Win32::System::Threading::SetProcessShutdownParameters(SESSION_END_LEVEL, 0)
+        } {
+            Ok(()) => log::info!(
+                "[session_end] nivel de fin de sesión del proceso = {:#x}",
+                SESSION_END_LEVEL
+            ),
+            Err(e) => log::warn!(
+                "[session_end] no se pudo fijar el nivel de fin de sesión: {}",
+                e
+            ),
+        }
+
         // tauri devuelve el HWND de windows 0.61; el de esta app es 0.58 — mismo
         // layout (patrón de store_update.rs).
         let main = match window.hwnd() {
@@ -496,5 +562,77 @@ mod tests {
         assert_eq!(LP_LOGOFF, 0x8000_0000);
         // tao usa los ids 0 y 1.
         assert!(SUBCLASS_ID > 1);
+    }
+
+    /// Invariante del fin de sesión (AC-12): todo lo que corre en el hilo
+    /// principal dentro de WM_ENDSESSION suma menos que el umbral de Windows
+    /// sin reason string (0.3+0.2+0.4+2.5+0.5+0.3 = 4.2 s < 5 s).
+    #[test]
+    fn presupuestos_de_fin_de_sesion_caben_en_5_s() {
+        use crate::logging::telemetry::lifecycle::EXIT_ROW_TIMEOUT_SESSION_END;
+        let total = MARKER_WRITE_ALLOWANCE
+            + SCHED_FREEZE_BUDGET
+            + EXIT_ROW_TIMEOUT_SESSION_END
+            + HARD_BUDGET
+            + DB_CLEANUP_BUDGET
+            + SIDECAR_BUDGET;
+        assert!(
+            total < WINDOWS_SESSION_END_GRACE,
+            "presupuesto total {:?} >= {:?}",
+            total,
+            WINDOWS_SESSION_END_GRACE
+        );
+        assert_eq!(WINDOWS_SESSION_END_GRACE, Duration::from_secs(5));
+        // La fila del fin de sesión usa el tope corto, no el de 750 ms.
+        assert!(
+            EXIT_ROW_TIMEOUT_SESSION_END
+                < crate::logging::telemetry::lifecycle::EXIT_ROW_TIMEOUT
+        );
+    }
+
+    #[test]
+    fn presupuestos_del_flush_estan_ordenados() {
+        assert!(STREAM_STOP_BUDGET < FINAL_ENCODE_SOFT);
+        assert!(FINAL_ENCODE_SOFT < HARD_BUDGET);
+    }
+
+    #[test]
+    fn budgets_devuelve_las_tres_constantes() {
+        let b = budgets();
+        assert_eq!(b.stream, STREAM_STOP_BUDGET);
+        assert_eq!(b.soft, FINAL_ENCODE_SOFT);
+        assert_eq!(b.hard, HARD_BUDGET);
+    }
+
+    #[test]
+    fn is_session_end_exit_tabla() {
+        // Observado por el subclass / SM_SHUTTINGDOWN ⇒ siempre la rama acotada.
+        for reason in [
+            None,
+            Some("os_session_end"),
+            Some("external_close"),
+            Some("tray_quit"),
+            Some("loop_destroyed"),
+        ] {
+            assert!(is_session_end_exit(true, reason), "observed + {:?}", reason);
+        }
+        // Clasificado por begin_exit como fin de sesión ⇒ rama acotada.
+        assert!(is_session_end_exit(false, Some("os_session_end")));
+        assert!(is_session_end_exit(false, Some("external_close")));
+        // Todas las demás salidas conservan el camino actual.
+        for reason in [
+            "tray_quit",
+            "rival_install",
+            "update",
+            "restart",
+            "app_exit",
+            "last_window_closed",
+            "loop_destroyed",
+        ] {
+            assert!(!is_session_end_exit(false, Some(reason)), "{}", reason);
+        }
+        // `begin_exit` devolvió None (otra ruta ya registró la salida) y nada
+        // observado ⇒ camino actual.
+        assert!(!is_session_end_exit(false, None));
     }
 }
