@@ -893,6 +893,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [])
 
   const signOut = useCallback(async () => {
+    // re-entrada: un doble clic en Cerrar sesion reusa el logout en curso (no dos logout_cleanup)
+    if (signOutPromise.current) return signOutPromise.current
     logger.debug('[Auth] signOut called')
     isSigningOut.current = true
 
@@ -921,7 +923,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setUser(null)
         setMaityUser(null)
 
-        // Luego hacer el signOut en Supabase (puede fallar si ya no hay sesión válida)
+        // Luego hacer el signOut en Supabase (puede fallar si ya no hay sesión válida).
+        // Es el ÚNICO signOut de supabase-js autorizado en la app: logout_cleanup y
+        // cloud_sync_clear_session ya corrieron arriba (guard: authSignOut.fitness.test.ts).
         const { error } = await supabase.auth.signOut()
         if (error) {
           console.error('[Auth] Supabase signOut error:', error)

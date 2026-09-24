@@ -32,6 +32,15 @@ Reglas:
 - **Reproducir en 2 s, sin esperar una hora:** DevTools → `await window.__pollDebug.forceTokenRefresh()` (`supabase.auth.refreshSession()`, mismo camino que el refresh horario). Con el bug la promesa nunca resuelve; con el fix resuelve y el log muestra `fetchOrCreateMaityUser start` → `ok`.
 - Los demás `await fetchOrCreateMaityUser(...)` (`exchangePkceCode`, `processAuthTokens`, `handleDeepLinkCallback`) corren FUERA del callback, después de que `exchangeCodeForSession`/`setSession` resolvieron → no aplican.
 
+## Todo logout pasa por AuthContext.signOut (sep-2026, #83)
+
+**Síntoma:** el botón "Cerrar sesión" del sidebar del chat (`shared/components/shell-v5/SidebarFooterV5.tsx`) llamaba al signOut de supabase-js directo: se saltaba `logout_cleanup` y `cloud_sync_clear_session`, así que una grabación activa perdía el segmento (terminaba `Failed` por falta de `current_user_id` en Rust) y el sync headless seguía con el token de la cuenta que se iba.
+
+- **Regla:** todo botón de logout usa `useAuth().signOut()`. Solo `contexts/AuthContext.tsx` llama al signOut de supabase-js, y lo hace DESPUÉS de `logout_cleanup` (detiene y guarda la grabación) y `cloud_sync_clear_session`.
+- **Guard:** `frontend/src/contexts/authSignOut.fitness.test.ts` recorre `src/` (sin comentarios, excluye tests, `shared/maity-shared/` y `test/mocks/`) y falla ante cualquier `.auth.signOut(` fuera de `AuthContext`.
+- **`signOut` es re-entrante:** si ya hay un logout en curso devuelve ese mismo promise (un doble clic no lanza dos `logout_cleanup`). El guard va ANTES de `isSigningOut.current = true`.
+- **`shell-v5` es una adaptación desktop:** la web lo borró (`Sixale730/maity b0f8de1e`); la copia de aquí es un fork, no re-sincronizarlo desde la web.
+
 ## Sistema de Roles: `admin` / `manager` / `user`, siempre desde la DB (ago-2026)
 
 El rol lo decide **la base de datos**, nunca el dominio del correo. `lib/roles.ts` → `getUserRoleFromRPC()` llama a `public.get_user_role` (wrapper SECURITY DEFINER; la version `maity.*` no esta concedida a `authenticated`). El enum en la DB es exactamente `admin|manager|user` y el trigger `maity_users_ensure_role` le pone `'user'` a toda alta nueva, asi que **un NULL de esa RPC ya es una anomalia real**, no el caso normal.

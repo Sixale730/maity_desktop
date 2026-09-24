@@ -1,6 +1,7 @@
 import { useNavigate } from '@/lib/router-compat';
 import { ChevronsUpDown, LogOut, User } from 'lucide-react';
-import { supabase, useAvatarWithDefault } from '@maity/shared';
+import { useAvatarWithDefault } from '@maity/shared';
+import { useAuth } from '@/contexts/AuthContext';
 import { useUser } from '@/contexts/UserContext';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { LazyVoxelAvatar } from '@/features/avatar/components/LazyVoxelAvatar';
@@ -26,15 +27,21 @@ import {
  *      replacing the affordance that lived in SidebarUserFooter (shadcn-based)
  *      and UserMenuDropdown (NavigationHeader). Without this, shell v5 routes
  *      had no logout affordance.
+ *
+ * ADAPTACION DESKTOP: la web borro shell-v5 (Sixale730/maity b0f8de1e); aqui el
+ * logout DEBE pasar por useAuth().signOut -> logout_cleanup, que guarda la
+ * grabacion activa antes de soltar current_user_id. No volver al signOut
+ * directo del cliente supabase (guard: contexts/authSignOut.fitness.test.ts).
  */
 export function SidebarFooterV5() {
   const navigate = useNavigate();
   const { t } = useLanguage();
   const { userProfile } = useUser();
+  const { signOut } = useAuth();
   const { avatar } = useAvatarWithDefault(userProfile?.id);
 
   const handleLogout = async () => {
-    await supabase.auth.signOut();
+    await signOut();
     navigate('/');
   };
 
