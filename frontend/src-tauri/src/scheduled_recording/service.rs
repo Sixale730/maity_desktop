@@ -658,7 +658,10 @@ async fn run_scheduler_loop<R: Runtime>(
                         // "Evaluar ahora" es el escape hatch del alto del día:
                         // el usuario concedió el permiso y quiere reintentar ya.
                         *shared.start_backoff.write().await = None;
-                        tick.reset();
+                        // "Evaluar ahora" evalúa en el siguiente instante (el
+                        // `reset()` de tokio suma un periodo completo; por eso
+                        // `reset_immediately`).
+                        tick.reset_immediately();
                     }
                 }
             }
