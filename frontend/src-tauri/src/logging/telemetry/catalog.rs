@@ -67,6 +67,10 @@ pub const AUTH_SESSION_LOST: &str = "auth.session_lost";
 pub const JORNADA_SETTINGS_CHANGED: &str = "jornada.settings_changed";
 pub const JORNADA_IDLE_REASON_CHANGED: &str = "jornada.idle_reason_changed";
 
+// ── Quién mostró la main window y cuánto tardó el frontend (emisor: Rust,
+//    logging/telemetry/window_shown.rs; #fixes-pre-0262, desde 0.2.62) ──
+pub const APP_WINDOW_SHOWN: &str = "app.window_shown";
+
 // ── Guardado post-grabación (emisor: recordingLogService, outbox `recording_logs`) ──
 pub const MEETING_ID_GENERATED: &str = "meeting_id_generated"; // legacy
 pub const BUFFER_FLUSH_COMPLETED: &str = "buffer_flush_completed"; // legacy

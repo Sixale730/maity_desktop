@@ -763,6 +763,10 @@ pub fn run() {
                 if audio::recording_preferences::pilot_batch_build() { "build piloto MAITY_PILOT_BATCH=1" } else { "build normal" }
             );
 
+            // Origen de los `*_ms` de `app.window_shown` (#fixes-pre-0262): primera
+            // sentencia del setup, antes de cualquier init que pueda tardar.
+            logging::telemetry::window_shown::mark_setup_start();
+
             // Marcador de ciclo de vida del proceso (#83): se rota ANTES del init
             // de la DB para que un cuelgue de la DB se vea como "arrancó y nunca
             // vivió". Síncrono (std::fs); `app.start` se emite tras la DB.
@@ -862,6 +866,7 @@ pub fn run() {
             // que el flujo KEEP_MAIN_MINIMIZED_AFTER_STOP del widget no se ve afectado.
             let app_handle_for_show = _app.handle().clone();
             _app.listen(events::APP_READY, move |_event| {
+                logging::telemetry::window_shown::note_app_ready(&app_handle_for_show);
                 let at_boot = STARTED_AT_BOOT.load(Ordering::Relaxed);
                 let first_ready = !MAIN_WINDOW_PLACEMENT_DONE.swap(true, Ordering::SeqCst);
                 log::info!(
@@ -897,6 +902,7 @@ pub fn run() {
                         // app-ready tardío ya no debe re-minimizar/re-enfocar.
                         MAIN_WINDOW_PLACEMENT_DONE.store(true, Ordering::SeqCst);
                         let _ = window.show();
+                        logging::telemetry::window_shown::note_fallback_shown(&app_handle_for_fallback);
                         if STARTED_AT_BOOT.load(Ordering::Relaxed) {
                             let _ = window.minimize();
                         } else {

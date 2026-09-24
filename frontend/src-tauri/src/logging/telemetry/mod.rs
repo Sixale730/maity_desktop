@@ -18,6 +18,9 @@
 //!   `app.open`/`app.close`, que emite el webview.
 //! - `auth`: `auth.logout` desde `logout_cleanup` (outbox + `flush_row` con el
 //!   token de quien sale) y, desde S4, `auth.session_lost` (#83).
+//! - `window_shown`: `app.window_shown` (#fixes-pre-0262, desde 0.2.62) — quién
+//!   mostró la main window (`app-ready` del frontend o el fallback de 3 s) y
+//!   cuánto tardó desde el inicio de `setup()`.
 //!
 //! Regla de oro (aprendida del puente `rust_error_bridge`, que desde sep-2026
 //! también la cumple): la telemetría nativa NO emite al webview para que otro
@@ -33,3 +36,4 @@ pub mod lifecycle;
 pub mod panics;
 pub mod recording_session;
 pub mod status;
+pub mod window_shown;

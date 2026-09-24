@@ -64,6 +64,10 @@ export const TELEMETRY_EVENTS = {
   JORNADA_SETTINGS_CHANGED: 'jornada.settings_changed',
   JORNADA_IDLE_REASON_CHANGED: 'jornada.idle_reason_changed',
 
+  // ── Quién mostró la main window y cuánto tardó el frontend (emisor: Rust,
+  //    logging/telemetry/window_shown.rs; #fixes-pre-0262, desde 0.2.62) ──
+  APP_WINDOW_SHOWN: 'app.window_shown',
+
   // ── Guardado post-grabación (emisor: recordingLogService, outbox recording_logs) ──
   MEETING_ID_GENERATED: 'meeting_id_generated', // legacy
   BUFFER_FLUSH_COMPLETED: 'buffer_flush_completed', // legacy
