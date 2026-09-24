@@ -779,7 +779,7 @@ async fn run_scheduler_loop<R: Runtime>(
                 let now = Local::now().naive_local();
 
                 let (new_phase, skip) =
-                    evaluate_tick(&app, &shared, &settings, now, &mut process_monitor).await;
+                    evaluate_tick(&app, &shared, &settings, now, &mut process_monitor, gen).await;
 
                 *shared.phase.write().await = new_phase;
 
@@ -859,6 +859,7 @@ async fn evaluate_tick<R: Runtime>(
     settings: &ScheduledRecordingSettings,
     now: NaiveDateTime,
     process_monitor: &mut crate::meeting_detector::process_monitor::ProcessMonitor,
+    gen: u64,
 ) -> (SchedulerPhase, Option<SkipReason>) {
     if !settings.enabled {
         shared.owned.store(false, Ordering::SeqCst);
@@ -1013,6 +1014,12 @@ async fn evaluate_tick<R: Runtime>(
             if let Some(reason) = check_start_backoff(shared, now).await {
                 return (SchedulerPhase::Armed, Some(reason));
             }
+
+            // Publica la fase ANTES de arrancar (F2): `start_recording_with_meeting_name`
+            // emite `recording-started`, y el latido `recording-start` lee el SLOT antes
+            // de que este tick llegue a `publish_tick`. Si el arranque falla, el
+            // `publish_tick` de este mismo tick sobrescribe esto con la fase real.
+            status_snapshot::publish_starting(gen);
 
             // Arranque autónomo (ruta Rust-directa, igual que el tray).
             let meeting_name = render_segment_name(settings, now);

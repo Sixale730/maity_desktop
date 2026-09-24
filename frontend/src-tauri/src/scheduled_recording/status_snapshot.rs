@@ -130,6 +130,26 @@ pub(super) fn publish_tick(
     }
 }
 
+/// Publica que la jornada está arrancando una grabación, ANTES de llamar a
+/// `start_recording_with_meeting_name` (F2). Ese arranque emite `recording-started`
+/// (`audio/recording_lifecycle.rs`), y el latido `recording-start` lee el SLOT antes de
+/// que el loop llegue a `publish_tick` de este mismo tick — sin esto, el latido traía la
+/// fase publicada por el tick ANTERIOR (p. ej. `armed`/`no_session`) mientras la
+/// grabación ya estaba en curso. Misma guarda que `publish_tick` (`gen`/`loop_running`):
+/// si el arranque falla, el `publish_tick` del mismo tick sobrescribe esto con la fase
+/// real y no hubo `recording-started` que leyera el valor optimista.
+pub(super) fn publish_starting(gen: u64) {
+    if let Ok(mut g) = SLOT.lock() {
+        if let Some(slot) = g.as_mut() {
+            if slot.gen != gen || !slot.loop_running {
+                return;
+            }
+            slot.phase = SchedulerPhase::Recording;
+            slot.skip = None;
+        }
+    }
+}
+
 /// Vista derivada de la ranura, calculada FUERA del lock (una vez clonada la ranura).
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct JornadaView {
@@ -891,6 +911,50 @@ mod tests {
             reason_tras_stop,
             Some("pending"),
             "tras publish_stopped, un tick con la misma generación no debe aplicarse"
+        );
+
+        // `publish_starting` (F2): reinicia el loop (nueva generación) para probarlo
+        // sobre un `loop_running = true` vigente.
+        publish_settings(&weekday_settings(), "ok");
+        let gen2 = begin_loop();
+        publish_tick(gen2, SchedulerPhase::Armed, Some(SkipReason::NoSession), None, None);
+        let (_, jornada_antes) = heartbeat_fields(RecordingPhase::Idle, now);
+        assert_eq!(
+            jornada_antes.as_ref().map(|j| j.scheduler_phase),
+            Some("armed")
+        );
+        assert_eq!(
+            jornada_antes.and_then(|j| j.skip),
+            Some("no_session")
+        );
+
+        // Generación vieja: ignorado.
+        publish_starting(gen2.saturating_sub(1));
+        let (_, jornada_gen_vieja) = heartbeat_fields(RecordingPhase::Idle, now);
+        assert_eq!(
+            jornada_gen_vieja.as_ref().map(|j| j.scheduler_phase),
+            Some("armed"),
+            "publish_starting con generación vieja no debe aplicarse"
+        );
+
+        // Generación vigente: publica `recording`/`skip=None` antes del arranque real.
+        publish_starting(gen2);
+        let (_, jornada_starting) = heartbeat_fields(RecordingPhase::Idle, now);
+        assert_eq!(
+            jornada_starting.as_ref().map(|j| j.scheduler_phase),
+            Some("recording"),
+            "publish_starting debe publicar la fase recording antes del arranque"
+        );
+        assert_eq!(jornada_starting.and_then(|j| j.skip), None);
+
+        // Tras `publish_stopped`, `publish_starting` con la misma generación no aplica.
+        publish_stopped();
+        publish_starting(gen2);
+        let (_, jornada_tras_stop) = heartbeat_fields(RecordingPhase::Idle, now);
+        assert_eq!(
+            jornada_tras_stop.as_ref().map(|j| j.scheduler_phase),
+            Some("disabled"),
+            "tras publish_stopped, publish_starting no debe revivir la fase"
         );
     }
 }

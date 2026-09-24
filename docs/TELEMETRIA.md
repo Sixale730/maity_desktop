@@ -351,6 +351,17 @@ un techo fijo**: leerla de `mem_sample_age_s`, nunca asumir 30 s.
 > payload; `mem_sampler::emit_native_heartbeat` los pone directo. Leen una
 > instantánea publicada por el scheduler, nunca el `RwLock` del servicio.
 
+> El bloque `jornada` es lo ÚLTIMO que publicó el scheduler (`status_snapshot::SLOT`), no
+> lo que está pasando en este instante. Desde 0.2.62 (F2), un arranque de jornada publica
+> `scheduler_phase: "recording"`, `skip: null` ANTES de llamar a
+> `start_recording_with_meeting_name` (`status_snapshot::publish_starting`, misma guarda
+> `gen`/`loop_running` que `publish_tick`) — así el latido `recording-start`, que dispara
+> el listener del evento `recording-started` de ese mismo arranque, ya no trae la fase del
+> tick ANTERIOR (p. ej. `armed`/`no_session`). Para una grabación MANUAL (tray, botón) el
+> bloque `jornada` sigue siendo el del último tick del scheduler hasta el siguiente
+> (≤ `check_interval_seconds`, por defecto 30 s): en ese caso la verdad son `phase`
+> (nivel superior del payload de grabación) e `idle_reason`, no `jornada`.
+
 **`idle_reason` — dominio cerrado (desde 0.2.62)**
 
 | fase de grabación | condición | valor |
