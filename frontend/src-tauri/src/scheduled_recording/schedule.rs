@@ -83,6 +83,16 @@ pub fn next_hour_boundary(now: NaiveDateTime) -> NaiveDateTime {
     truncated + Duration::hours(1)
 }
 
+/// Medianoche del día siguiente a `now`. Fallback de `Rearm::auto_close` cuando no hay
+/// ninguna ventana futura configurada (`next_fire_at` devuelve `None`), y base del back-off
+/// de arranque (`next_backoff`, service.rs) — movida desde service.rs (J2) sin cambios de
+/// lógica para que `Rearm::auto_close` pueda usar `next_fire_at` del mismo módulo.
+pub fn start_of_next_day(now: NaiveDateTime) -> NaiveDateTime {
+    (now.date() + Duration::days(1))
+        .and_hms_opt(0, 0, 0)
+        .unwrap_or(now)
+}
+
 /// Tope duro de duración de un segmento, en minutos. Sólo entra en juego FUERA de la ventana
 /// horaria: dentro de ella manda la frontera de hora en punto, que ya trocea cada ≤60 min.
 ///
@@ -261,6 +271,12 @@ mod tests {
     fn next_hour_boundary_cruza_medianoche() {
         // 23:30 => día siguiente 00:00.
         assert_eq!(next_hour_boundary(dt(2026, 6, 29, 23, 30)), dt(2026, 6, 30, 0, 0));
+    }
+
+    #[test]
+    fn start_of_next_day_medianoche_del_dia_siguiente() {
+        assert_eq!(start_of_next_day(dt(2026, 6, 29, 23, 30)), dt(2026, 6, 30, 0, 0));
+        assert_eq!(start_of_next_day(dt(2026, 6, 29, 0, 0)), dt(2026, 6, 30, 0, 0));
     }
 
     #[test]

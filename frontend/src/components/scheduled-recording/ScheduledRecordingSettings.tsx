@@ -338,6 +338,9 @@ export function ScheduledRecordingSettings() {
                   Si a la hora de cierre sigue una reunión abierta, Maity espera hasta este margen
                   antes de detener la grabación.
                 </p>
+                <p className="text-xs text-muted-foreground">
+                  Tras el cierre, la jornada no vuelve a arrancar hasta tu siguiente horario.
+                </p>
               </>
             )}
           </div>

@@ -23,6 +23,7 @@ use crate::audio::recording_preferences::TranscriptionMode;
 use crate::events;
 
 use super::schedule;
+use super::schedule::start_of_next_day;
 use super::settings::{load_settings, save_settings, ScheduledRecordingSettings};
 
 /// Shape idéntico al `TranscriptSegment` que escribe `recording_saver` en `transcripts.json`.
@@ -62,6 +63,9 @@ enum SkipReason {
     ManualInProgress,
     TranscriptionNotReady,
     RearmingNextHour,
+    /// Cierre automático por hora fija (J2): el rearme dura hasta el siguiente inicio de
+    /// ventana, no hasta "la siguiente hora en punto" (`RearmingNextHour` es del paro manual).
+    ClosedForDay,
     NoSession,
     /// Sesión viva pero sin registro completado (o desconocido) — #66.
     RegistrationIncomplete,
@@ -79,6 +83,7 @@ impl SkipReason {
             SkipReason::ManualInProgress => "manual_in_progress",
             SkipReason::TranscriptionNotReady => "transcription_not_ready",
             SkipReason::RearmingNextHour => "rearming_next_hour",
+            SkipReason::ClosedForDay => "closed_for_day",
             SkipReason::NoSession => "no_session",
             SkipReason::RegistrationIncomplete => "registration_incomplete",
             SkipReason::NoInputDevice => "no_input_device",
@@ -97,6 +102,9 @@ impl SkipReason {
             }
             SkipReason::RearmingNextHour => {
                 "Grabación de jornada detenida; se reanudará a la siguiente hora en punto."
+            }
+            SkipReason::ClosedForDay => {
+                "La jornada de hoy ya se cerró; la grabación se reanudará en tu siguiente horario."
             }
             SkipReason::NoSession => "Inicia sesión en Maity para grabar la jornada.",
             SkipReason::RegistrationIncomplete => {
@@ -147,6 +155,19 @@ impl RearmCause {
             RearmCause::SessionEnd => "session_end",
         }
     }
+
+    /// Aviso que corresponde mientras el rearme de esta causa siga vigente (J2/AC-4).
+    /// `SessionEnd` no tiene aviso: en el arm de arranque siempre gana antes la retención
+    /// de fin de sesión (más arriba en `evaluate_tick`), así que este brazo es inalcanzable
+    /// para esa causa — se deja `None` en vez de un `unreachable!` para no volver frágil el
+    /// tipo ante un reordenamiento futuro del arm.
+    fn skip_reason(self) -> Option<SkipReason> {
+        match self {
+            RearmCause::UserStop => Some(SkipReason::RearmingNextHour),
+            RearmCause::AutoClose => Some(SkipReason::ClosedForDay),
+            RearmCause::SessionEnd => None,
+        }
+    }
 }
 
 /// Rearme vigente: no arrancar la jornada antes de `until`.
@@ -167,10 +188,12 @@ impl Rearm {
         }
     }
 
-    /// Cierre por hora fija: hasta medianoche.
-    pub(crate) fn auto_close(now: NaiveDateTime) -> Self {
+    /// Cierre por hora fija: hasta el siguiente inicio de ventana (turno 22-06 que cierra
+    /// a las 06:00 conserva 22:00-00:00 en vez de perderlo hasta medianoche, J2/AC-4).
+    /// Sin ventana futura configurada (`next_fire_at` devuelve `None`) cae a medianoche.
+    pub(crate) fn auto_close(now: NaiveDateTime, settings: &ScheduledRecordingSettings) -> Self {
         Self {
-            until: start_of_next_day(now),
+            until: schedule::next_fire_at(now, settings).unwrap_or_else(|| start_of_next_day(now)),
             cause: RearmCause::AutoClose,
             set_at: now,
         }
@@ -779,11 +802,15 @@ async fn evaluate_tick<R: Runtime>(
             }
 
             // ¿Re-arme pendiente (paro manual reciente o supresión por cierre)? No arrancar aún.
+            // El aviso depende de la causa (J2/AC-4): `UserStop` promete "la siguiente hora en
+            // punto", `AutoClose` promete "tu siguiente horario" (turno 22-06 cerrado a las
+            // 06:00 ya no se come 22:00-00:00, porque `Rearm::auto_close` apunta al próximo
+            // `next_fire_at`, no a medianoche).
             {
                 let rearm = *shared.rearm.read().await;
                 if let Some(r) = rearm {
                     if now < r.until {
-                        return (SchedulerPhase::Armed, Some(SkipReason::RearmingNextHour));
+                        return (SchedulerPhase::Armed, r.cause.skip_reason());
                     }
                     *shared.rearm.write().await = None;
                 }
@@ -895,18 +922,15 @@ async fn evaluate_tick<R: Runtime>(
     }
 }
 
-/// Medianoche del día siguiente a `now` (suprime el re-arranque tras el cierre por hora fija).
-fn start_of_next_day(now: NaiveDateTime) -> NaiveDateTime {
-    (now.date() + Duration::days(1))
-        .and_hms_opt(0, 0, 0)
-        .unwrap_or(now)
-}
-
 /// Rearme que deja el cierre del segmento propio según quién lo pide. La ruta de salida
 /// (`SessionEnd`) NO escribe rearme de día: deja intacta la retención que ya existe.
-fn rearm_for_close(trigger: CloseTrigger, now: NaiveDateTime) -> Option<Rearm> {
+fn rearm_for_close(
+    trigger: CloseTrigger,
+    now: NaiveDateTime,
+    settings: &ScheduledRecordingSettings,
+) -> Option<Rearm> {
     match trigger {
-        CloseTrigger::AutoClose => Some(Rearm::auto_close(now)),
+        CloseTrigger::AutoClose => Some(Rearm::auto_close(now, settings)),
         CloseTrigger::SessionEnd => None,
     }
 }
@@ -955,8 +979,13 @@ async fn set_rearm_after_external_stop(shared: &SchedulerShared, now: NaiveDateT
 
 /// Escribe el rearme de cierre (si el trigger lo produce). El `if let` es sobre un valor,
 /// no sobre un guard.
-async fn apply_close_rearm(shared: &SchedulerShared, trigger: CloseTrigger, now: NaiveDateTime) {
-    if let Some(r) = rearm_for_close(trigger, now) {
+async fn apply_close_rearm(
+    shared: &SchedulerShared,
+    trigger: CloseTrigger,
+    now: NaiveDateTime,
+    settings: &ScheduledRecordingSettings,
+) {
+    if let Some(r) = rearm_for_close(trigger, now, settings) {
         log_rearm(&r);
         *shared.rearm.write().await = Some(r);
     }
@@ -1054,7 +1083,7 @@ async fn close_scheduled<R: Runtime>(
             shared.owned.store(false, Ordering::SeqCst);
             *shared.owned_since.write().await = None;
             *shared.grace_deadline.write().await = None;
-            apply_close_rearm(shared, trigger, now).await;
+            apply_close_rearm(shared, trigger, now, settings).await;
             return SchedulerPhase::Idle;
         }
         Ok(true) => {}
@@ -1085,7 +1114,7 @@ async fn close_scheduled<R: Runtime>(
         shared.owned.store(false, Ordering::SeqCst);
         *shared.owned_since.write().await = None;
         *shared.grace_deadline.write().await = None;
-        apply_close_rearm(shared, trigger, now).await;
+        apply_close_rearm(shared, trigger, now, settings).await;
         return SchedulerPhase::Idle;
     }
 
@@ -1143,7 +1172,7 @@ async fn close_scheduled<R: Runtime>(
     shared.owned.store(false, Ordering::SeqCst);
     *shared.owned_since.write().await = None;
     *shared.grace_deadline.write().await = None;
-    apply_close_rearm(shared, trigger, now).await;
+    apply_close_rearm(shared, trigger, now, settings).await;
     SchedulerPhase::Idle
 }
 
@@ -2078,6 +2107,7 @@ mod rearm_tests {
     //! cerrar sesión o la instalación rival escribían "suprimir hasta medianoche", así que
     //! un logout+login el mismo día dejaba la jornada apagada el resto del día.
     use super::*;
+    use super::super::settings::ScheduleWindow;
 
     fn t(y: i32, m: u32, d: u32, h: u32, min: u32) -> NaiveDateTime {
         chrono::NaiveDate::from_ymd_opt(y, m, d)
@@ -2088,18 +2118,77 @@ mod rearm_tests {
 
     #[test]
     fn salida_nunca_produce_rearme_de_dia() {
+        let settings = ScheduledRecordingSettings::default();
         for now in [t(2026, 9, 23, 9, 0), t(2026, 9, 23, 17, 0), t(2026, 9, 23, 23, 59)] {
-            assert_eq!(rearm_for_close(CloseTrigger::SessionEnd, now), None);
+            assert_eq!(rearm_for_close(CloseTrigger::SessionEnd, now, &settings), None);
+        }
+    }
+
+    /// Ventana(s) explícita(s) sobre `ScheduledRecordingSettings::default()`, para no
+    /// depender de que el default no cambie de horario.
+    fn settings_with_windows(windows: Vec<ScheduleWindow>) -> ScheduledRecordingSettings {
+        ScheduledRecordingSettings {
+            windows,
+            ..ScheduledRecordingSettings::default()
+        }
+    }
+
+    fn window(days: &[u8], start: &str, end: &str) -> ScheduleWindow {
+        ScheduleWindow {
+            days_of_week: days.to_vec(),
+            start_time: start.to_string(),
+            end_time: end.to_string(),
         }
     }
 
     #[test]
     fn cierre_automatico_produce_auto_close() {
-        let now = t(2026, 9, 23, 17, 0);
-        let r = rearm_for_close(CloseTrigger::AutoClose, now).expect("AutoClose rearma");
+        // Diurna L-V 09-18, cierre martes 17:00 ⇒ hasta el siguiente inicio de ventana,
+        // que es el mismo miércoles 09:00 (J2/AC-4: ya no "hasta medianoche").
+        let settings = settings_with_windows(vec![window(&[1, 2, 3, 4, 5], "09:00", "18:00")]);
+        let now = t(2026, 9, 22, 17, 0); // martes
+        let r = rearm_for_close(CloseTrigger::AutoClose, now, &settings).expect("AutoClose rearma");
         assert_eq!(r.cause, RearmCause::AutoClose);
         assert_eq!(r.set_at, now);
+        assert_eq!(r.until, t(2026, 9, 23, 9, 0)); // miércoles 09:00
+    }
+
+    #[test]
+    fn cierre_automatico_viernes_salta_al_lunes() {
+        let settings = settings_with_windows(vec![window(&[1, 2, 3, 4, 5], "09:00", "18:00")]);
+        let now = t(2026, 9, 25, 17, 0); // viernes
+        let r = rearm_for_close(CloseTrigger::AutoClose, now, &settings).expect("AutoClose rearma");
+        assert_eq!(r.until, t(2026, 9, 28, 9, 0)); // lunes siguiente
+    }
+
+    #[test]
+    fn cierre_automatico_turno_nocturno_no_pierde_22_00_00_00() {
+        // Turno 22-06 todos los días, cierre martes 06:00 ⇒ ya no se come 22:00-00:00: el
+        // siguiente inicio de ventana es el MISMO día martes a las 22:00.
+        let settings = settings_with_windows(vec![window(&[1, 2, 3, 4, 5, 6, 7], "22:00", "06:00")]);
+        let now = t(2026, 9, 22, 6, 0); // martes 06:00 (fin de la ventana que arrancó el lunes)
+        let r = rearm_for_close(CloseTrigger::AutoClose, now, &settings).expect("AutoClose rearma");
+        assert_eq!(r.until, t(2026, 9, 22, 22, 0)); // martes 22:00, mismo día
+    }
+
+    #[test]
+    fn cierre_automatico_sin_ventanas_cae_a_medianoche() {
+        let settings = settings_with_windows(vec![]);
+        let now = t(2026, 9, 23, 17, 0);
+        let r = rearm_for_close(CloseTrigger::AutoClose, now, &settings).expect("AutoClose rearma");
         assert_eq!(r.until, start_of_next_day(now));
+    }
+
+    #[test]
+    fn session_end_no_produce_rearme_con_cualquier_settings() {
+        assert_eq!(
+            rearm_for_close(
+                CloseTrigger::SessionEnd,
+                t(2026, 9, 23, 17, 0),
+                &settings_with_windows(vec![])
+            ),
+            None
+        );
     }
 
     #[test]
@@ -2156,7 +2245,7 @@ mod rearm_tests {
         // Un UserStop / AutoClose vigente se conserva.
         let stop = Rearm::user_stop(t0);
         assert_eq!(hold_for_session_end(Some(stop), t0), Some(stop));
-        let close = Rearm::auto_close(t(2026, 9, 23, 17, 0));
+        let close = Rearm::auto_close(t(2026, 9, 23, 17, 0), &ScheduledRecordingSettings::default());
         assert_eq!(hold_for_session_end(Some(close), t(2026, 9, 23, 18, 0)), Some(close));
         // Uno vencido se reemplaza por la retención.
         let expired = Rearm::user_stop(t(2026, 9, 23, 8, 10));
@@ -2170,7 +2259,10 @@ mod rearm_tests {
         // sin sesión se libera. Nunca queda un AutoClose hasta medianoche.
         let now = t(2026, 9, 23, 12, 30);
         let hold = hold_for_session_end(None, now);
-        assert_eq!(rearm_for_close(CloseTrigger::SessionEnd, now), None);
+        assert_eq!(
+            rearm_for_close(CloseTrigger::SessionEnd, now, &ScheduledRecordingSettings::default()),
+            None
+        );
         assert!(should_release_hold(hold, false, now + Duration::seconds(30)));
         assert_ne!(hold.map(|r| r.cause), Some(RearmCause::AutoClose));
         assert!(hold.map_or(false, |r| r.until < start_of_next_day(now)));
@@ -2190,6 +2282,50 @@ mod rearm_tests {
         let r = Rearm::user_stop(t(2026, 9, 23, 10, 15));
         let back: Rearm = serde_json::from_str(&serde_json::to_string(&r).unwrap()).unwrap();
         assert_eq!(back, r);
+    }
+
+    #[test]
+    fn rearm_cause_skip_reason_por_causa() {
+        assert_eq!(RearmCause::AutoClose.skip_reason(), Some(SkipReason::ClosedForDay));
+        assert_eq!(RearmCause::UserStop.skip_reason(), Some(SkipReason::RearmingNextHour));
+        assert_eq!(RearmCause::SessionEnd.skip_reason(), None);
+    }
+
+    #[test]
+    fn closed_for_day_mensaje_y_as_str() {
+        assert_eq!(SkipReason::ClosedForDay.as_str(), "closed_for_day");
+        let msg = SkipReason::ClosedForDay.message();
+        assert!(
+            !msg.contains("siguiente hora en punto"),
+            "el cierre por hora fija no promete la siguiente hora en punto: {}",
+            msg
+        );
+        assert!(
+            msg.contains("siguiente horario"),
+            "debe prometer el siguiente horario, no medianoche: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn todas_las_variantes_de_skip_reason_tienen_as_str_no_vacio_y_unico() {
+        let all = [
+            SkipReason::ManualInProgress,
+            SkipReason::TranscriptionNotReady,
+            SkipReason::RearmingNextHour,
+            SkipReason::ClosedForDay,
+            SkipReason::NoSession,
+            SkipReason::RegistrationIncomplete,
+            SkipReason::NoInputDevice,
+            SkipReason::MicAccessDenied,
+            SkipReason::StartBackoff,
+        ];
+        let mut seen = std::collections::HashSet::new();
+        for reason in all {
+            let s = reason.as_str();
+            assert!(!s.is_empty());
+            assert!(seen.insert(s), "as_str duplicado: {}", s);
+        }
     }
 }
 
