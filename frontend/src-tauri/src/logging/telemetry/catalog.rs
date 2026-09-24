@@ -57,6 +57,16 @@ pub const INCIDENT_DETECTED: &str = "incident.detected";
 pub const INCIDENT_BUNDLE_UPLOADED: &str = "incident.bundle_uploaded";
 pub const INCIDENT_UPLOAD_FAILED: &str = "incident.upload_failed";
 
+// ── Ciclo de vida del proceso, sesión y jornada (emisor: Rust; #83, desde 0.2.62) ──
+pub const APP_START: &str = "app.start";
+pub const APP_EXIT: &str = "app.exit";
+pub const APP_RESUMED: &str = "app.resumed";
+pub const AUTOSTART_CHANGED: &str = "autostart.changed";
+pub const AUTH_LOGOUT: &str = "auth.logout";
+pub const AUTH_SESSION_LOST: &str = "auth.session_lost";
+pub const JORNADA_SETTINGS_CHANGED: &str = "jornada.settings_changed";
+pub const JORNADA_IDLE_REASON_CHANGED: &str = "jornada.idle_reason_changed";
+
 // ── Guardado post-grabación (emisor: recordingLogService, outbox `recording_logs`) ──
 pub const MEETING_ID_GENERATED: &str = "meeting_id_generated"; // legacy
 pub const BUFFER_FLUSH_COMPLETED: &str = "buffer_flush_completed"; // legacy

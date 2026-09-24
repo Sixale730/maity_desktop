@@ -54,6 +54,16 @@ export const TELEMETRY_EVENTS = {
   INCIDENT_BUNDLE_UPLOADED: 'incident.bundle_uploaded',
   INCIDENT_UPLOAD_FAILED: 'incident.upload_failed',
 
+  // ── Ciclo de vida del proceso, sesión y jornada (emisor: Rust; #83, desde 0.2.62) ──
+  APP_START: 'app.start',
+  APP_EXIT: 'app.exit',
+  APP_RESUMED: 'app.resumed',
+  AUTOSTART_CHANGED: 'autostart.changed',
+  AUTH_LOGOUT: 'auth.logout',
+  AUTH_SESSION_LOST: 'auth.session_lost',
+  JORNADA_SETTINGS_CHANGED: 'jornada.settings_changed',
+  JORNADA_IDLE_REASON_CHANGED: 'jornada.idle_reason_changed',
+
   // ── Guardado post-grabación (emisor: recordingLogService, outbox recording_logs) ──
   MEETING_ID_GENERATED: 'meeting_id_generated', // legacy
   BUFFER_FLUSH_COMPLETED: 'buffer_flush_completed', // legacy
