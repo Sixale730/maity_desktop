@@ -11,12 +11,26 @@ import { indexedDBService, MeetingMetadata, StoredTranscript } from '@/services/
 import { storageService } from '@/services/storageService';
 import { logger } from '@/lib/logger';
 
-interface AudioRecoveryStatus {
+export interface AudioRecoveryStatus {
   status: string; // "success" | "partial" | "failed" | "none"
   chunk_count: number;
   estimated_duration_seconds: number;
   audio_file_path?: string;
   message: string;
+  /** Checkpoints excluidos por inválidos y renombrados a `.mp4.bad` (solo en `partial`). */
+  excluded_chunks?: string[];
+}
+
+/**
+ * ¿Se puede borrar `.checkpoints/` tras recuperar? (#83, AC-13). Solo con un
+ * merge completo: `success`, o `partial` sin chunks excluidos. Con un merge
+ * fallido, sin audio o con chunks en cuarentena (`.mp4.bad`) la carpeta se
+ * CONSERVA: antes se borraba siempre y con ella todo el audio recuperable.
+ */
+export function shouldCleanupCheckpoints(s: AudioRecoveryStatus | null | undefined): boolean {
+  if (!s) return false;
+  if (s.status === 'success') return true;
+  return s.status === 'partial' && (s.excluded_chunks?.length ?? 0) === 0;
 }
 
 export interface RecoveredMeetingSummary {
@@ -267,14 +281,21 @@ export function useTranscriptRecovery(): UseTranscriptRecoveryReturn {
       await indexedDBService.markMeetingSaved(meetingId);
 
 
-      // 8. Clean up checkpoint files
-      if (folderPath) {
+      // 8. Clean up checkpoint files — SOLO si el merge dejó todo el audio en
+      // audio.mp4 (#83). La reunión se guarda igual aunque el audio falle; lo
+      // que ya no pasa es borrar el audio recuperable tras un merge fallido.
+      if (folderPath && shouldCleanupCheckpoints(audioRecoveryStatus)) {
         try {
           await invoke('cleanup_checkpoints', { meetingFolder: folderPath });
         } catch (error) {
           // Non-fatal - don't fail recovery if cleanup fails
           console.warn('Checkpoint cleanup failed (non-fatal):', error);
         }
+      } else if (folderPath) {
+        logger.warn('[recovery] checkpoints conservados', {
+          status: audioRecoveryStatus?.status,
+          excluded: audioRecoveryStatus?.excluded_chunks ?? [],
+        });
       }
 
       // 9. Remove from recoverable list

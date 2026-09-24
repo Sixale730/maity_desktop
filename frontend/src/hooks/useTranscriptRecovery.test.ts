@@ -28,7 +28,11 @@ vi.mock('@/services/storageService', () => ({
 }));
 
 import { indexedDBService } from '@/services/indexedDBService';
-import { useTranscriptRecovery, isTransientNoUserError } from './useTranscriptRecovery';
+import {
+  useTranscriptRecovery,
+  isTransientNoUserError,
+  shouldCleanupCheckpoints,
+} from './useTranscriptRecovery';
 
 const OLD_ENOUGH = Date.now() - 5 * 60_000; // 5 min: pasa el umbral de 15 s y la retención de 7 días
 
@@ -225,5 +229,64 @@ describe('useTranscriptRecovery — autoRecoverAll', () => {
     expect(isTransientNoUserError('no user logged in')).toBe(true);
     expect(isTransientNoUserError(new Error('disk full'))).toBe(false);
     expect(isTransientNoUserError(undefined)).toBe(false);
+  });
+});
+
+describe('useTranscriptRecovery — limpieza de checkpoints condicionada (#83)', () => {
+  const base = { chunk_count: 2, estimated_duration_seconds: 60, message: 'm' };
+
+  it.each([
+    ['success', { ...base, status: 'success' }, true],
+    ['partial sin excluidos', { ...base, status: 'partial' }, true],
+    ['partial con lista vacía', { ...base, status: 'partial', excluded_chunks: [] }, true],
+    ['partial con excluidos', { ...base, status: 'partial', excluded_chunks: ['audio_chunk_001.mp4'] }, false],
+    ['failed', { ...base, status: 'failed' }, false],
+    ['none', { ...base, status: 'none' }, false],
+    ['null', null, false],
+  ])('shouldCleanupCheckpoints: %s', (_name, status, esperado) => {
+    expect(shouldCleanupCheckpoints(status)).toBe(esperado);
+  });
+
+  beforeEach(() => {
+    invokeMock.mockReset();
+    saveMeetingMock.mockReset();
+    saveMeetingMock.mockResolvedValue({ meeting_id: 'sqlite-c' });
+  });
+
+  it('un merge fallido guarda la reunión pero NUNCA llama cleanup_checkpoints', async () => {
+    invokeMock.mockImplementation(async (cmd: string) =>
+      cmd === 'recover_audio_from_checkpoints'
+        ? { status: 'failed', chunk_count: 3, estimated_duration_seconds: 90, message: 'FFmpeg failed' }
+        : defaultInvoke(cmd)
+    );
+    await seedWithTranscripts('c1-failed', 1, 'C:/m/c1');
+
+    const { result } = renderHook(() => useTranscriptRecovery());
+    let outcome: { success: boolean; audioRecoveryStatus?: { status: string } | null } | null = null;
+    await act(async () => {
+      outcome = await result.current.recoverMeeting('c1-failed');
+    });
+
+    expect(outcome!.success).toBe(true);
+    expect(outcome!.audioRecoveryStatus?.status).toBe('failed');
+    expect(saveMeetingMock).toHaveBeenCalledTimes(1);
+    expect(invokeMock.mock.calls.map(([c]) => c)).toContain('recover_audio_from_checkpoints');
+    expect(invokeMock.mock.calls.map(([c]) => c)).not.toContain('cleanup_checkpoints');
+  });
+
+  it('un merge exitoso sí limpia los checkpoints de esa carpeta', async () => {
+    invokeMock.mockImplementation(async (cmd: string) =>
+      cmd === 'recover_audio_from_checkpoints'
+        ? { status: 'success', chunk_count: 3, estimated_duration_seconds: 90, message: 'ok' }
+        : defaultInvoke(cmd)
+    );
+    await seedWithTranscripts('c2-success', 1, 'C:/m/c2');
+
+    const { result } = renderHook(() => useTranscriptRecovery());
+    await act(async () => {
+      await result.current.recoverMeeting('c2-success');
+    });
+
+    expect(invokeMock).toHaveBeenCalledWith('cleanup_checkpoints', { meetingFolder: 'C:/m/c2' });
   });
 });

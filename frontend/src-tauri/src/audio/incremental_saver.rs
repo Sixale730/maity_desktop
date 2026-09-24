@@ -610,6 +610,149 @@ pub struct AudioRecoveryStatus {
     pub estimated_duration_seconds: f64,
     pub audio_file_path: Option<String>,
     pub message: String,
+    /// Nombres de archivo de los checkpoints que la recuperación EXCLUYÓ por
+    /// inválidos (truncados, sin `moov`…) y dejó renombrados a `.mp4.bad`. Solo
+    /// se llena con `status: "partial"`; vacío en todos los demás casos. El
+    /// frontend NO limpia `.checkpoints/` si viene con algo (#83, AC-13).
+    #[serde(default)]
+    pub excluded_chunks: Vec<String>,
+}
+
+/// Contenido del `concat_list.txt` del demuxer concat de ffmpeg: una línea
+/// `file '<ruta>'` por archivo, en el orden recibido. Pura (con test).
+pub(crate) fn concat_list_content(files: &[PathBuf]) -> String {
+    let mut content = String::new();
+    for path in files {
+        content.push_str(&format!("file '{}'\n", path.display()));
+    }
+    content
+}
+
+/// Separa `files` en (válidos, excluidos) según `valid[i]`, preservando el
+/// orden original en ambos. Un índice sin veredicto cuenta como inválido.
+/// Pura (con test).
+pub(crate) fn partition_valid(files: &[PathBuf], valid: &[bool]) -> (Vec<PathBuf>, Vec<PathBuf>) {
+    let mut ok = Vec::new();
+    let mut bad = Vec::new();
+    for (i, path) in files.iter().enumerate() {
+        if valid.get(i).copied().unwrap_or(false) {
+            ok.push(path.clone());
+        } else {
+            bad.push(path.clone());
+        }
+    }
+    (ok, bad)
+}
+
+/// Argumentos de la validación por archivo de `ffmpeg_validate`: decodifica el
+/// checkpoint completo a la salida nula y solo reporta errores. Pura (con test).
+pub(crate) fn validate_args(file: &str) -> Vec<String> {
+    ["-hide_banner", "-nostdin", "-v", "error", "-i", file, "-f", "null", "-"]
+        .into_iter()
+        .map(str::to_string)
+        .collect()
+}
+
+/// ¿El checkpoint se decodifica entero sin errores? `true` solo si ffmpeg sale
+/// con código 0 Y stderr vacío (con `-v error`, cualquier línea es un error
+/// real). Mismo estilo de proceso que `run_ffmpeg_concat`: sin stdin,
+/// `kill_on_drop`, sin ventana de consola en Windows. Solo se usa cuando el
+/// concat de la recuperación falla (el camino normal no paga este costo).
+async fn ffmpeg_validate(ffmpeg_path: &Path, file: &Path) -> bool {
+    let Some(file_str) = file.to_str() else {
+        warn!("Checkpoint con ruta no UTF-8, se trata como inválido: {:?}", file);
+        return false;
+    };
+
+    let mut command = tokio::process::Command::new(ffmpeg_path);
+    command
+        .args(validate_args(file_str))
+        .stdin(Stdio::null())
+        .kill_on_drop(true);
+
+    #[cfg(target_os = "windows")]
+    {
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    match command.output().await {
+        Ok(out) => {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            let ok = out.status.success() && stderr.trim().is_empty();
+            if !ok {
+                warn!(
+                    "Checkpoint inválido {}: {}",
+                    file.display(),
+                    stderr.lines().next().unwrap_or("(sin stderr)")
+                );
+            }
+            ok
+        }
+        Err(e) => {
+            warn!("No se pudo validar {}: {}", file.display(), e);
+            false
+        }
+    }
+}
+
+/// Plan B de la recuperación cuando el concat de TODOS los checkpoints falla:
+/// valida cada archivo, y si hay al menos uno válido y al menos uno inválido,
+/// reescribe `concat_list.txt` solo con los válidos y reintenta el concat UNA
+/// vez. Si el reintento sale bien, pone en cuarentena (`.mp4.bad`, NUNCA borra)
+/// los excluidos y devuelve `(válidos, nombres_excluidos)`. En cualquier otro
+/// caso devuelve `None` sin renombrar nada: todo queda en disco para un intento
+/// manual.
+async fn recover_valid_subset(
+    ffmpeg_path: &Path,
+    files: &[PathBuf],
+    concat_file_path: &Path,
+    output_path: &Path,
+) -> Option<(Vec<PathBuf>, Vec<String>)> {
+    if files.is_empty() {
+        return None;
+    }
+
+    let mut verdicts = Vec::with_capacity(files.len());
+    for file in files {
+        verdicts.push(ffmpeg_validate(ffmpeg_path, file).await);
+    }
+    let (valid, excluded) = partition_valid(files, &verdicts);
+
+    if valid.is_empty() || excluded.is_empty() {
+        // Ninguno válido, o todos válidos y el concat falla igual: no hay
+        // subconjunto que probar.
+        warn!(
+            "Recuperación parcial no aplicable ({} válidos, {} inválidos)",
+            valid.len(),
+            excluded.len()
+        );
+        return None;
+    }
+
+    if let Err(e) = std::fs::write(concat_file_path, concat_list_content(&valid)) {
+        warn!("No se pudo reescribir concat_list.txt: {}", e);
+        return None;
+    }
+
+    if let Err(e) = run_ffmpeg_concat(ffmpeg_path.to_path_buf(), concat_file_path, output_path).await {
+        warn!("El reintento del concat solo con checkpoints válidos también falló: {}", e);
+        return None;
+    }
+
+    let excluded_names: Vec<String> = excluded
+        .iter()
+        .map(|p| {
+            p.file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| p.display().to_string())
+        })
+        .collect();
+    for path in &excluded {
+        quarantine_file(path, "bad");
+    }
+
+    Some((valid, excluded_names))
 }
 
 /// Recover audio from checkpoint files
@@ -633,10 +776,13 @@ pub async fn recover_audio_from_checkpoints(
             estimated_duration_seconds: 0.0,
             audio_file_path: None,
             message: "No audio checkpoints found".to_string(),
+            excluded_chunks: Vec::new(),
         });
     }
 
-    // Scan for checkpoint files
+    // Scan for checkpoint files. El filtro es por extensión `mp4` EXACTA: los
+    // chunks en cuarentena (`.mp4.failed` del flush de fin de sesión, `.mp4.bad`
+    // de una recuperación parcial previa) quedan fuera solos y nunca se borran.
     let mut checkpoint_files: Vec<_> = std::fs::read_dir(&checkpoints_dir)
         .map_err(|e| format!("Failed to read checkpoints directory: {}", e))?
         .filter_map(|entry| entry.ok())
@@ -653,6 +799,7 @@ pub async fn recover_audio_from_checkpoints(
             estimated_duration_seconds: 0.0,
             audio_file_path: None,
             message: "No audio checkpoint files found".to_string(),
+            excluded_chunks: Vec::new(),
         });
     }
 
@@ -666,15 +813,14 @@ pub async fn recover_audio_from_checkpoints(
 
     // Create FFmpeg concat file
     let concat_file_path = checkpoints_dir.join("concat_list.txt");
-    let mut concat_content = String::new();
-
+    let mut checkpoint_paths: Vec<PathBuf> = Vec::with_capacity(checkpoint_files.len());
     for entry in &checkpoint_files {
         let path = entry.path().canonicalize()
             .map_err(|e| format!("Failed to canonicalize path: {}", e))?;
-        concat_content.push_str(&format!("file '{}'\n", path.display()));
+        checkpoint_paths.push(path);
     }
 
-    std::fs::write(&concat_file_path, concat_content)
+    std::fs::write(&concat_file_path, concat_list_content(&checkpoint_paths))
         .map_err(|e| format!("Failed to write concat file: {}", e))?;
 
     // Run FFmpeg to merge chunks
@@ -690,7 +836,7 @@ pub async fn recover_audio_from_checkpoints(
     // Mismo runner asíncrono que el merge normal (#18). Un fallo de ffmpeg se
     // reporta como `status: "failed"`, NUNCA como Err del comando: el diálogo de
     // recuperación distingue "no había checkpoints" de "ffmpeg falló".
-    match run_ffmpeg_concat(ffmpeg_path, &concat_file_path, &output_path).await {
+    match run_ffmpeg_concat(ffmpeg_path.clone(), &concat_file_path, &output_path).await {
         Ok(()) => {
             // Clean up concat file
             let _ = std::fs::remove_file(concat_file_path);
@@ -703,16 +849,48 @@ pub async fn recover_audio_from_checkpoints(
                 estimated_duration_seconds: estimated_duration,
                 audio_file_path: Some(output_path_str),
                 message: format!("Successfully recovered {} audio chunks", chunk_count),
+                excluded_chunks: Vec::new(),
             })
         }
         Err(e) => {
             error!("FFmpeg recovery failed: {}", e);
+
+            // #83 (AC-13): un solo checkpoint truncado (proceso matado a mitad
+            // de encode, apagón, fin de sesión) tumbaba la recuperación
+            // completa. Se valida cada chunk y se concatena solo lo válido.
+            if let Some((valid, excluded_names)) =
+                recover_valid_subset(&ffmpeg_path, &checkpoint_paths, &concat_file_path, &output_path).await
+            {
+                let _ = std::fs::remove_file(&concat_file_path);
+                let valid_count = valid.len() as u32;
+                warn!(
+                    "Recuperación parcial: {} de {} checkpoints; excluidos (.mp4.bad): {}",
+                    valid_count,
+                    chunk_count,
+                    excluded_names.join(", ")
+                );
+                return Ok(AudioRecoveryStatus {
+                    status: "partial".to_string(),
+                    chunk_count: valid_count,
+                    estimated_duration_seconds: (valid_count as f64) * 30.0,
+                    audio_file_path: Some(output_path_str),
+                    message: format!(
+                        "Recovered {} of {} audio chunks; excluded (renamed to .bad): {}",
+                        valid_count,
+                        chunk_count,
+                        excluded_names.join(", ")
+                    ),
+                    excluded_chunks: excluded_names,
+                });
+            }
+
             Ok(AudioRecoveryStatus {
                 status: "failed".to_string(),
                 chunk_count,
                 estimated_duration_seconds: estimated_duration,
                 audio_file_path: None,
                 message: format!("FFmpeg failed: {}", e),
+                excluded_chunks: Vec::new(),
             })
         }
     }
@@ -1141,5 +1319,112 @@ mod tests {
         .collect();
 
         assert_eq!(args, esperado);
+    }
+
+    /// #83 (AC-13): la lista del concat es una línea `file '...'` por archivo,
+    /// en el orden recibido.
+    #[test]
+    fn concat_list_content_una_linea_por_archivo_en_orden() {
+        let files = vec![
+            PathBuf::from("/m/.checkpoints/audio_chunk_000.mp4"),
+            PathBuf::from("/m/.checkpoints/audio_chunk_001.mp4"),
+            PathBuf::from("/m/.checkpoints/audio_chunk_002.mp4"),
+        ];
+        let content = concat_list_content(&files);
+        let lines: Vec<&str> = content.lines().collect();
+        assert_eq!(lines.len(), 3);
+        for (line, file) in lines.iter().zip(&files) {
+            assert_eq!(*line, format!("file '{}'", file.display()));
+        }
+        assert!(content.ends_with('\n'));
+        assert_eq!(concat_list_content(&[]), "");
+    }
+
+    /// #83 (AC-13): la partición preserva el orden en válidos y excluidos, y un
+    /// índice sin veredicto cuenta como inválido.
+    #[test]
+    fn partition_valid_preserva_orden() {
+        let a = PathBuf::from("a.mp4");
+        let b = PathBuf::from("b.mp4");
+        let c = PathBuf::from("c.mp4");
+        let files = vec![a.clone(), b.clone(), c.clone()];
+
+        let (ok, bad) = partition_valid(&files, &[true, false, true]);
+        assert_eq!(ok, vec![a.clone(), c.clone()]);
+        assert_eq!(bad, vec![b.clone()]);
+
+        let (ok, bad) = partition_valid(&files, &[true]);
+        assert_eq!(ok, vec![a]);
+        assert_eq!(bad, vec![b, c]);
+    }
+
+    /// Golden de la validación por archivo: decodifica a null y solo errores.
+    #[test]
+    fn validate_args_orden_estable() {
+        let esperado: Vec<String> =
+            ["-hide_banner", "-nostdin", "-v", "error", "-i", "C:\\x.mp4", "-f", "null", "-"]
+                .into_iter()
+                .map(str::to_string)
+                .collect();
+        assert_eq!(validate_args("C:\\x.mp4"), esperado);
+    }
+
+    /// Compatibilidad: un payload sin `excluded_chunks` (versión previa)
+    /// deserializa con la lista vacía; y el campo viaja serializado.
+    #[test]
+    fn audio_recovery_status_excluded_chunks_default_vacio() {
+        let json = r#"{"status":"success","chunk_count":2,"estimated_duration_seconds":60.0,"audio_file_path":null,"message":"ok"}"#;
+        let s: AudioRecoveryStatus = serde_json::from_str(json).unwrap();
+        assert!(s.excluded_chunks.is_empty());
+        assert_eq!(s.status, "success");
+
+        let v = serde_json::to_value(&s).unwrap();
+        assert_eq!(v["excluded_chunks"], serde_json::json!([]));
+    }
+
+    /// Integración real (#83, AC-13): 3 checkpoints AAC reales con el del medio
+    /// truncado a la mitad ⇒ `partial`, 2 chunks, el del medio en `.mp4.bad` y
+    /// `audio.mp4` creado. IGNORADO por defecto: necesita `ffmpeg` en PATH (sin
+    /// él el test se colgaría o fallaría). Correr con
+    /// `cargo test --lib audio::incremental_saver -- --ignored`.
+    #[tokio::test]
+    #[ignore]
+    async fn recover_con_chunk_truncado_devuelve_partial_y_pone_bad() {
+        let tmp = tempdir().unwrap();
+        let meeting = tmp.path().join("meeting");
+        let cps = meeting.join(".checkpoints");
+        std::fs::create_dir_all(&cps).unwrap();
+
+        for i in 0..3 {
+            let out = cps.join(format!("audio_chunk_{:03}.mp4", i));
+            let status = std::process::Command::new("ffmpeg")
+                .args([
+                    "-hide_banner", "-nostdin", "-v", "error", "-y",
+                    "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=2",
+                    "-ac", "2", "-c:a", "aac", "-b:a", "64k",
+                ])
+                .arg(&out)
+                .status()
+                .expect("ffmpeg en PATH");
+            assert!(status.success());
+        }
+
+        let middle = cps.join("audio_chunk_001.mp4");
+        let bytes = std::fs::read(&middle).unwrap();
+        std::fs::write(&middle, &bytes[..bytes.len() / 2]).unwrap();
+
+        let status = recover_audio_from_checkpoints(meeting.to_string_lossy().into_owned(), 48_000)
+            .await
+            .unwrap();
+
+        assert_eq!(status.status, "partial", "{}", status.message);
+        assert_eq!(status.chunk_count, 2);
+        assert_eq!(status.excluded_chunks, vec!["audio_chunk_001.mp4".to_string()]);
+        assert!(cps.join("audio_chunk_001.mp4.bad").exists());
+        assert!(!middle.exists());
+        assert!(meeting.join("audio.mp4").exists());
+        // Los válidos siguen en disco (la limpieza es decisión del frontend).
+        assert!(cps.join("audio_chunk_000.mp4").exists());
+        assert!(cps.join("audio_chunk_002.mp4").exists());
     }
 }
