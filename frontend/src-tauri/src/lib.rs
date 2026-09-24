@@ -220,6 +220,29 @@ async fn logout_cleanup<R: Runtime>(
     Ok(())
 }
 
+/// Sesión perdida SIN logout del usuario (SIGNED_OUT espontáneo en el webview: refresh
+/// rechazado, sesión revocada): detiene y GUARDA la grabación activa mientras
+/// `current_user_id` sigue vivo — el frontend espera este comando antes de
+/// `clear_current_user` (sin usuario el segmento termina Failed,
+/// scheduled_recording/service.rs). La función de stop pone la retención SessionEnd
+/// de J1, que `clear_current_user` (o un `set_current_user` de re-login) libera; un
+/// re-login reanuda la jornada. Sin telemetría propia (la emite
+/// `telemetry_auth_session_lost` antes). Best-effort con timeout: nunca falla.
+#[tauri::command]
+async fn session_lost_cleanup<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
+    if tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        graceful_shutdown_before_exit(&app),
+    )
+    .await
+    .is_err()
+    {
+        log::warn!("session_lost_cleanup: stop de grabación excedió 30s");
+    }
+    log::info!("session_lost_cleanup: grabación detenida/guardada antes de soltar al usuario");
+    Ok(())
+}
+
 #[tauri::command]
 async fn start_recording<R: Runtime>(
     app: AppHandle<R>,
@@ -1670,6 +1693,8 @@ pub fn run() {
             // Sesión ↔ ventana: login compacto estilo Steam + cleanup de logout
             set_main_window_auth_layout,
             logout_cleanup,
+            // Sesión perdida a media grabación (#83, S5): guarda antes de soltar al usuario
+            session_lost_cleanup,
             // auth.session_lost (#83, S4): solo pérdidas reales de sesión, vía outbox
             logging::telemetry::auth::telemetry_auth_session_lost,
             database::commands::reset_database,

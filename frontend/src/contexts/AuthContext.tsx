@@ -123,6 +123,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   // sesión o un SIGNED_OUT real. `bumpAuthRender` fuerza el re-render al limpiarlo
   // (un SIGNED_OUT con el estado ya en null no re-renderiza por sí solo).
   const bootSessionUncertainRef = useRef(false)
+  // Sesión perdida a media grabación (#83, S5): promise del guardado nativo
+  // (`session_lost_cleanup`) que el efecto de liberación espera antes de
+  // `clear_current_user`. Lo asigna SÍNCRONAMENTE el callback de onAuthStateChange.
+  const sessionLostCleanupRef = useRef<Promise<void> | null>(null)
   const [, bumpAuthRender] = useReducer((n: number) => n + 1, 0)
 
   const isAuthenticated = !!session && !!user
@@ -155,15 +159,27 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       logger.debug('[Auth] Carga inicial sin usuario todavía: Rust conserva current_user_id')
       return
     }
-    invoke('clear_current_user').catch((err) => {
-      logger.error('[Auth] Failed to clear current_user in Rust AppState:', err)
-    })
-    // El maityUser puede desaparecer sin pasar por signOut (SIGNED_OUT venido
-    // de otra pestaña/proceso, sesión revocada): la sesión cloud de Rust se
-    // limpia aquí también, no solo en signOut. Idempotente.
-    invoke('cloud_sync_clear_session').catch((err) => {
-      logger.warn('[Auth] cloud_sync_clear_session falló:', err)
-    })
+    // Sesión perdida sin logout (S5): primero Rust detiene y guarda la grabación
+    // con el usuario todavía vivo; soltarlo antes deja el segmento Failed.
+    const pending = sessionLostCleanupRef.current
+    sessionLostCleanupRef.current = null
+    void (async () => {
+      if (pending) {
+        logger.warn('[Auth] Sesión perdida: esperando a que Rust guarde la grabación antes de soltar al usuario')
+        await pending.catch(() => {})
+        // Carrera: si el usuario volvió a entrar mientras se guardaba, NO soltarlo.
+        if (lastSyncedUserIdRef.current) return
+      }
+      invoke('clear_current_user').catch((err) => {
+        logger.error('[Auth] Failed to clear current_user in Rust AppState:', err)
+      })
+      // El maityUser puede desaparecer sin pasar por signOut (SIGNED_OUT venido
+      // de otra pestaña/proceso, sesión revocada): la sesión cloud de Rust se
+      // limpia aquí también, no solo en signOut. Idempotente.
+      invoke('cloud_sync_clear_session').catch((err) => {
+        logger.warn('[Auth] cloud_sync_clear_session falló:', err)
+      })
+    })()
   }, [maityUser?.id, authReady])
 
   // Siembra la sesión Supabase en Rust (cloud_sync). Va en un efecto propio y
@@ -532,12 +548,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         // auth.session_lost (webview_signed_out, #83): SIGNED_OUT que el usuario no
         // pidió (refresh rechazado, sesión revocada). La IPC se difiere a un macrotask:
         // nada de await aquí (lock de auth-js).
+        // S5: el ref se asigna SÍNCRONAMENTE (antes del setMaityUser(null) de abajo)
+        // para que el efecto de liberación lo vea y espere el guardado nativo.
         const lostSource = signedOutSessionLostSource(event, !!newSession, isSigningOut.current)
         if (lostSource) {
-          setTimeout(() => {
-            void invoke('telemetry_auth_session_lost', { source: lostSource, errorName: null })
-              .catch((e) => logger.warn('[Auth] telemetry_auth_session_lost falló:', e))
-          }, 0)
+          sessionLostCleanupRef.current = new Promise<void>((resolve) => {
+            setTimeout(() => {
+              // Telemetría primero (captura recording_was_active ANTES del stop), luego guardar.
+              invoke('telemetry_auth_session_lost', { source: lostSource, errorName: null })
+                .catch((e) => logger.warn('[Auth] telemetry_auth_session_lost falló:', e))
+                .then(() => invoke('session_lost_cleanup'))
+                .catch((e) => logger.warn('[Auth] session_lost_cleanup falló:', e))
+                .finally(() => resolve())
+            }, 0)
+          })
         }
 
         // Propagate JWT to the Realtime WebSocket. The Realtime module keeps its
