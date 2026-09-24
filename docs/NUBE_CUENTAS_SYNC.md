@@ -41,6 +41,34 @@ Reglas:
 - **`signOut` es re-entrante:** si ya hay un logout en curso devuelve ese mismo promise (un doble clic no lanza dos `logout_cleanup`). El guard va ANTES de `isSigningOut.current = true`.
 - **`shell-v5` es una adaptación desktop:** la web lo borró (`Sixale730/maity b0f8de1e`); la copia de aquí es un fork, no re-sincronizarlo desde la web.
 
+### Recargar el webview NO suelta al usuario en Rust (#83, AC-18)
+
+**Síntoma:** Rust sobrevive a una recarga del webview (F5, `ChunkErrorRecovery`, `ErrorBoundary`, HMR), pero el webview vuelve a montar con `maityUser = null` mientras `getSession` restaura la sesión. Antes, el efecto de sincronización de `AuthContext` llamaba `clear_current_user` + `cloud_sync_clear_session` en ESE primer render: Rust se quedaba sin `current_user_id`, la jornada veía `has_session == false`, el STT se descargaba, y un segmento que se cerrara en el hueco terminaba `Failed` ("sin usuario logueado").
+
+**Regla — `shouldReleaseRustUser(prevId, nextId, authReady)`** (`frontend/src/lib/authRelease.ts:23-31`, función pura sin imports de React/Tauri/supabase, testeada en `authRelease.test.ts`):
+- `nextId` presente → nunca soltar (hay usuario; el efecto hace `set_current_user`).
+- `prevId` presente y `nextId` ausente → sí soltar (transición real Some→None: logout o sesión perdida).
+- Ninguno de los dos (arranque/recarga sin usuario aún) → solo si `authReady` ya es `true`.
+
+`authReady` (`AuthContext.tsx:139`) es `!isLoading && !user && !bootSessionUncertainRef.current`: se mira `user`, no `session`, porque una `fetchOrCreateMaityUser` que falla con sesión viva (recargar sin red) sigue siendo la misma cuenta. `bootSessionUncertainRef` lo marca `isBootSessionUncertain` (`authRelease.ts:44-51`) cuando el arranque sin sesión pudo ser por red caída (error reintentable u offline) — ese caso tampoco suelta, porque la misma cuenta vuelve en cuanto hay red.
+
+El efecto que consume la regla vive en `AuthContext.tsx:148-183`.
+
+### Sesión perdida a media grabación (#83, AC-19 / S5)
+
+**Qué cuenta como pérdida real** (`frontend/src/lib/authSessionLost.ts`), nunca la red caída:
+- `webview_signed_out`: `SIGNED_OUT` espontáneo de supabase-js con la app viva (refresh rechazado, sesión revocada) y SIN que el usuario esté cerrando sesión (`signedOutSessionLostSource`, `authSessionLost.ts:21-29`).
+- `boot_no_session`: arranque sin sesión cuyo `getSession` NO falló por red (`shouldReportBootNoSession`, `authSessionLost.ts:32-41`); Rust exige además una marca de último login (`should_emit_session_lost`, `logging/telemetry/auth.rs:104-111`: sin marca no emite — primer arranque o el anterior cerró sesión limpio).
+- Un autostart antes de que suba el Wi-Fi con el token vencido da `session: null` con error reintentable y NO cuenta.
+
+**Orden** (`AuthContext.tsx:553-565`, dentro del listener de `onAuthStateChange`, que es síncrono):
+1. `sessionLostCleanupRef.current` se asigna SÍNCRONAMENTE con una `Promise` (antes de que el `setMaityUser(null)` de más abajo dispare el efecto de liberación), para que ese efecto la vea y espere.
+2. Dentro de un `setTimeout(…, 0)` (fuera del lock de auth-js): `telemetry_auth_session_lost` (captura `recording_was_active` ANTES del stop) y, encadenado, `session_lost_cleanup` (comando Rust, `lib.rs:223-244`).
+3. `session_lost_cleanup` envuelve `graceful_shutdown_before_exit` con timeout de 30 s (best-effort, nunca falla) y detiene/guarda la grabación activa mientras `current_user_id` sigue vivo; pone un hold `SessionEnd` a la jornada que libera `clear_current_user` o un `set_current_user` de re-login.
+4. El efecto de liberación (`AuthContext.tsx:162-182`) espera esa promesa antes de llamar `clear_current_user` + `cloud_sync_clear_session`; si el usuario volvió a entrar mientras se guardaba (carrera), NO lo suelta.
+
+**Tests:** `authRelease.test.ts` (6 casos), `authSessionLost.test.ts` (4 casos), `logging/telemetry/auth.rs` (`:278-330`). **AC-20 de #83** (repro con `__pollDebug.forceTokenRefresh()`) sigue **manual**, no automatizado.
+
 ## Sistema de Roles: `admin` / `manager` / `user`, siempre desde la DB (ago-2026)
 
 El rol lo decide **la base de datos**, nunca el dominio del correo. `lib/roles.ts` → `getUserRoleFromRPC()` llama a `public.get_user_role` (wrapper SECURITY DEFINER; la version `maity.*` no esta concedida a `authenticated`). El enum en la DB es exactamente `admin|manager|user` y el trigger `maity_users_ensure_role` le pone `'user'` a toda alta nueva, asi que **un NULL de esa RPC ya es una anomalia real**, no el caso normal.

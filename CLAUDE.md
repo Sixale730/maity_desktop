@@ -48,7 +48,7 @@ Los post-mortems y reglas detalladas viven en `docs/`. **Antes de modificar cód
 **Reglas de canales (detalle en `docs/CANALES_DISTRIBUCION.md`):**
 - **Las migraciones de DB deben ser ADITIVAS** (version-skew dentro de cada canal; la Store va días atrás por certificación). Un `DROP`/`RENAME` rompe versiones viejas y el build compila verde igual.
 - **Todo `.dll` nuevo del que dependa un binario debe viajar dentro del paquete** (vcredist app-local vía `stage-vcredist.js`; excepción: `api-ms-win-crt-*.dll`, UCRT).
-- Store y descarga directa **NO comparten DB ni modelos** (el MSIX instalado redirige AppData). La doble instalación se mitiga con `rival_install.rs` (diálogo forzado; orquestador `.cmd` con `CREATE_BREAKAWAY_FROM_JOB`, **nunca** `DETACHED_PROCESS`).
+- El MSIX solo redirige lo que crea nuevo; en una máquina con datos previos de NSIS/dev usa los mismos archivos reales (DB, modelos, marcador de ciclo de vida) — ver `docs/CANALES_DISTRIBUCION.md` § corrección 2026-09-24. La doble instalación se mitiga con `rival_install.rs` (diálogo forzado; orquestador `.cmd` con `CREATE_BREAKAWAY_FROM_JOB`, **nunca** `DETACHED_PROCESS`).
 - **Nunca usar el `latest.json` de GitHub como referencia del canal Store**. El aviso y la instalación de updates bajo MSIX usan la API de la Store (`StoreContext`, `store_update.rs`). La fila `maity.system_config['desktop_store_latest_version']` es solo el respaldo si la API falla, y se sigue bumpeando al publicar.
 - **Updater NSIS SOLO por el comando `direct_update_install`** (`direct_update.rs`): el plugin sale con `std::process::exit(0)` sin `RunEvent::Exit`; el comando se niega con grabación o post-proceso y cierra DB y sidecar en su hook solo después de `extract`. ACL en `updater:allow-check` (guard `updaterInstall.fitness.test.ts`); la Store sale para actualizar por `exit_for_update`. Detalle: `docs/CANALES_DISTRIBUCION.md` § Updater de descarga directa (NSIS) — B2 (desde 0.2.62).
 
@@ -196,7 +196,7 @@ Comandos via `invoke()` (Frontend->Rust), Eventos via `emit()`/`listen()` (Rust-
 
 ### Gestion de Modelos
 
-Ubicaciones: dev `frontend/models/`; produccion `~/Library/Application Support/com.maity.ai/models/` (macOS) / `%APPDATA%\com.maity.ai\models\` (Windows; bajo MSIX el AppData va redirigido — ver `docs/CANALES_DISTRIBUCION.md`). Los modelos se cachean al cargar; auto-deteccion de GPU con fallback a CPU.
+Ubicaciones: dev `frontend/models/`; produccion `~/Library/Application Support/com.maity.ai/models/` (macOS) / `%APPDATA%\com.maity.ai\models\` (Windows; el MSIX solo redirige lo que crea nuevo — con datos previos de NSIS/dev usa los mismos, ver `docs/CANALES_DISTRIBUCION.md`). Los modelos se cachean al cargar; auto-deteccion de GPU con fallback a CPU.
 
 ## Arquitectura Frontend
 
