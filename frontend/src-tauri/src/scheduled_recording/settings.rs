@@ -94,7 +94,7 @@ fn default_hourly_rotation_enabled() -> bool {
 }
 
 /// Una ventana horaria recurrente por días de la semana.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScheduleWindow {
     /// Días en los que la ventana ARRANCA. 1=Lunes .. 7=Domingo
     /// (mapea directo a `chrono::Weekday::number_from_monday()`).

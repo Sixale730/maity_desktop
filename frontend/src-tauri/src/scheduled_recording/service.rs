@@ -270,6 +270,34 @@ fn spawn_idle_reason_emit<R: Runtime>(app: &AppHandle<R>) {
     }
 }
 
+/// Emite `jornada.settings_changed` solo si `changed_fields` encontró un diff real —
+/// el gate de activación (`ScheduledRecordingSetupGate.tsx`) llama `update_settings` dos
+/// veces con el mismo contenido y eso debe dejar UNA sola fila. En task aparte por el
+/// mismo motivo que `spawn_idle_reason_emit`: no retrasar a quien llama.
+fn spawn_settings_changed_emit<R: Runtime>(
+    app: &AppHandle<R>,
+    from: status_snapshot::JornadaConfig,
+    to: status_snapshot::JornadaConfig,
+) {
+    let changed = status_snapshot::changed_fields(&from, &to);
+    if changed.is_empty() {
+        return;
+    }
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        crate::logging::telemetry::emit::emit_event(
+            &app,
+            crate::logging::telemetry::context::process_session_id(),
+            crate::logging::telemetry::catalog::JORNADA_SETTINGS_CHANGED,
+            serde_json::json!({ "from": from, "to": to, "changed": changed }),
+            Some(crate::logging::telemetry::status::TelemetryStatus::Ok),
+            None,
+            None,
+        )
+        .await;
+    });
+}
+
 fn log_rearm(r: &Rearm) {
     info!(
         "[scheduled] rearme {} hasta {} (puesto {})",
@@ -604,9 +632,15 @@ impl ScheduledRecordingService {
         save_settings(app_handle, &settings)
             .await
             .map_err(|e| format!("Failed to save scheduled recording settings: {}", e))?;
-        *self.shared.settings.write().await = settings.clone();
+        let (from, to) = {
+            let mut guard = self.shared.settings.write().await;
+            let from = status_snapshot::JornadaConfig::from(&*guard);
+            *guard = settings.clone();
+            (from, status_snapshot::JornadaConfig::from(&settings))
+        };
         status_snapshot::publish_settings(&settings, "ok");
         spawn_idle_reason_emit(app_handle);
+        spawn_settings_changed_emit(app_handle, from, to);
         if let Some(tx) = &self.command_tx {
             let _ = tx.send(SchedulerCommand::UpdateSettings(settings)).await;
         }

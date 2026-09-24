@@ -135,6 +135,19 @@ export function shouldEmitHeartbeat(phase: string, msSinceLastEmit: number): boo
   return msSinceLastEmit >= emitEvery - HEARTBEAT_TOLERANCE_MS
 }
 
+/** Espejo de `JornadaConfig` (Rust, scheduled_recording/status_snapshot.rs). Estático
+ * (el horario configurado), a diferencia de `JornadaTelemetry` (dinámico, en el latido). */
+export interface JornadaConfig {
+  enabled: boolean
+  configured_by_user: boolean
+  windows: { days_of_week: number[]; start_time: string; end_time: string }[]
+  windows_count: number
+  auto_close_enabled: boolean
+  auto_close_time: string
+  hourly_rotation_enabled: boolean
+  grace_period_minutes: number
+}
+
 /** Espejo de logging/commands.rs::DeviceProfile (Rust). */
 interface DeviceProfile {
   cpu_cores: number
@@ -150,6 +163,24 @@ interface DeviceProfile {
   autostart_state: string
   /** Firma del MSIX (`store` | `developer` | …); null fuera de MSIX. */
   signature_kind: string | null
+  /** `null` = el scheduler todavía no publicó nada en este proceso. */
+  jornada?: JornadaConfig | null
+}
+
+/** Tope de re-emisiones de `device.profile` por proceso mientras `jornada` sea `null`
+ * (el scheduler puede tardar en publicar su primera instantánea). */
+export const DEVICE_PROFILE_MAX_EMITS = 3
+
+/**
+ * ¿Ya se puede fijar el latch de `device.profile` (no volver a emitirlo este proceso)?
+ * Pura para tests. `true` cuando el perfil ya trae `jornada` (objeto), o cuando se
+ * alcanzó el tope de emisiones sin que el scheduler lo haya publicado.
+ */
+export function shouldLatchDeviceProfile(
+  profile: { jornada?: unknown | null },
+  emits: number,
+): boolean {
+  return profile.jornada != null || emits >= DEVICE_PROFILE_MAX_EMITS
 }
 
 class HealthHeartbeatService {
@@ -164,6 +195,7 @@ class HealthHeartbeatService {
   /** Cache del perfil estático + latch de emisión (1× por sesión de proceso). */
   private deviceProfile: DeviceProfile | null = null
   private deviceProfileEmitted = false
+  private deviceProfileEmits = 0
 
   async start(): Promise<void> {
     if (this.active) return
@@ -221,7 +253,8 @@ class HealthHeartbeatService {
         try {
           this.deviceProfile = await invoke<DeviceProfile>('get_device_profile')
           void platformLogger.log('device.profile', { ...this.deviceProfile })
-          this.deviceProfileEmitted = true
+          this.deviceProfileEmits += 1
+          this.deviceProfileEmitted = shouldLatchDeviceProfile(this.deviceProfile, this.deviceProfileEmits)
         } catch {
           // Sin perfil no se bloquea el heartbeat; se reintenta al próximo tick.
         }

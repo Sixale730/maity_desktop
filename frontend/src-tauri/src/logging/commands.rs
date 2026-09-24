@@ -433,6 +433,10 @@ pub struct DeviceProfile {
     /// `unknown`); `None` fuera de MSIX. Sólo `store` recibe updates de la Store:
     /// `build_channel=store` + `developer` = copia de prueba que nunca se actualiza.
     pub signature_kind: Option<&'static str>,
+    /// Configuración de jornada al emitir (1× por sesión; cambios vía
+    /// `jornada.settings_changed`). `None` = el scheduler todavía no publicó nada en
+    /// este proceso. Desde 0.2.62 (#83).
+    pub jornada: Option<crate::scheduled_recording::status_snapshot::JornadaConfig>,
 }
 
 #[tauri::command]
@@ -491,6 +495,7 @@ pub async fn get_device_profile<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> 
         started_at_boot: crate::STARTED_AT_BOOT.load(std::sync::atomic::Ordering::Relaxed),
         autostart_state,
         signature_kind,
+        jornada: crate::scheduled_recording::status_snapshot::jornada_config(),
     }
 }
 

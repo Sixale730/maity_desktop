@@ -14,10 +14,12 @@ vi.mock('@/lib/platformLogger', () => ({ platformLogger: { log: vi.fn() } }))
 
 import {
   ACTIVE_EMIT_EVERY_MS,
+  DEVICE_PROFILE_MAX_EMITS,
   HEARTBEAT_TOLERANCE_MS,
   IDLE_EMIT_EVERY_MS,
   jornadaHeartbeatFields,
   shouldEmitHeartbeat,
+  shouldLatchDeviceProfile,
 } from './healthHeartbeatService'
 
 const MIN = 60_000
@@ -85,5 +87,25 @@ describe('jornadaHeartbeatFields', () => {
       idle_reason: null,
       jornada: null,
     })
+  })
+})
+
+describe('shouldLatchDeviceProfile', () => {
+  it('fija el latch en la emisión 1 si el perfil ya trae jornada (objeto)', () => {
+    expect(shouldLatchDeviceProfile({ jornada: { enabled: true } }, 1)).toBe(true)
+  })
+
+  it('no fija el latch en las emisiones 1 y 2 si jornada es null', () => {
+    expect(shouldLatchDeviceProfile({ jornada: null }, 1)).toBe(false)
+    expect(shouldLatchDeviceProfile({ jornada: null }, 2)).toBe(false)
+  })
+
+  it('fija el latch en la emisión del tope aunque jornada siga null', () => {
+    expect(shouldLatchDeviceProfile({ jornada: null }, DEVICE_PROFILE_MAX_EMITS)).toBe(true)
+  })
+
+  it('jornada undefined (Rust viejo) se trata igual que null', () => {
+    expect(shouldLatchDeviceProfile({}, 1)).toBe(false)
+    expect(shouldLatchDeviceProfile({}, DEVICE_PROFILE_MAX_EMITS)).toBe(true)
   })
 })

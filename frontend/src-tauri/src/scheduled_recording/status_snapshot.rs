@@ -324,6 +324,79 @@ impl JornadaTelemetry {
     }
 }
 
+/// Configuración de jornada proyectada en `device.profile` (contrato §1.4). Estado
+/// ESTÁTICO (a diferencia de `JornadaTelemetry`, que es dinámico y va en el latido):
+/// horario configurado, no lo que está pasando ahora. `None` (vía `jornada_config`) =
+/// el scheduler todavía no publicó nada en este proceso.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct JornadaConfig {
+    pub enabled: bool,
+    pub configured_by_user: bool,
+    /// Primeras 3 ventanas (`windows_count` lleva el total real).
+    pub windows: Vec<super::settings::ScheduleWindow>,
+    pub windows_count: usize,
+    pub auto_close_enabled: bool,
+    pub auto_close_time: String,
+    pub hourly_rotation_enabled: bool,
+    pub grace_period_minutes: u32,
+}
+
+impl From<&ScheduledRecordingSettings> for JornadaConfig {
+    fn from(s: &ScheduledRecordingSettings) -> Self {
+        Self {
+            enabled: s.enabled,
+            configured_by_user: s.configured_by_user,
+            windows: s.windows.iter().take(3).cloned().collect(),
+            windows_count: s.windows.len(),
+            auto_close_enabled: s.auto_close_enabled,
+            auto_close_time: s.auto_close_time.clone(),
+            hourly_rotation_enabled: s.hourly_rotation_enabled,
+            grace_period_minutes: s.grace_period_minutes,
+        }
+    }
+}
+
+/// Configuración vigente para `device.profile` (contrato §1.4). `None` = el scheduler
+/// todavía no publicó nada en este proceso (`SLOT` vacío).
+pub fn jornada_config() -> Option<JornadaConfig> {
+    SLOT.lock()
+        .ok()
+        .and_then(|g| g.as_ref().map(|slot| JornadaConfig::from(&slot.settings)))
+}
+
+/// Diferencia campo por campo entre dos configuraciones, en orden de declaración.
+/// PURA — la usa `update_settings` para decidir si emite `jornada.settings_changed` (el
+/// gate de activación guarda dos veces con el mismo contenido y eso debe dejar UNA fila,
+/// no dos).
+pub(crate) fn changed_fields(a: &JornadaConfig, b: &JornadaConfig) -> Vec<&'static str> {
+    let mut out = Vec::new();
+    if a.enabled != b.enabled {
+        out.push("enabled");
+    }
+    if a.configured_by_user != b.configured_by_user {
+        out.push("configured_by_user");
+    }
+    if a.windows != b.windows {
+        out.push("windows");
+    }
+    if a.windows_count != b.windows_count {
+        out.push("windows_count");
+    }
+    if a.auto_close_enabled != b.auto_close_enabled {
+        out.push("auto_close_enabled");
+    }
+    if a.auto_close_time != b.auto_close_time {
+        out.push("auto_close_time");
+    }
+    if a.hourly_rotation_enabled != b.hourly_rotation_enabled {
+        out.push("hourly_rotation_enabled");
+    }
+    if a.grace_period_minutes != b.grace_period_minutes {
+        out.push("grace_period_minutes");
+    }
+    out
+}
+
 /// `idle_reason` + bloque `jornada`, listos para el latido (J6) y `jornada.idle_reason_changed`.
 /// Sin ranura publicada todavía (proceso recién arrancado, scheduler aún no inicializado)
 /// devuelve `(idle_reason(rec, None), None)`, es decir `initializing`.
@@ -697,6 +770,85 @@ mod tests {
             idle_transition(Some(Some("outside_window")), None),
             Some((Some("outside_window"), None))
         );
+    }
+
+    #[test]
+    fn changed_fields_configs_identicas_es_vacio() {
+        let a = JornadaConfig::from(&weekday_settings());
+        let b = JornadaConfig::from(&weekday_settings());
+        assert_eq!(changed_fields(&a, &b), Vec::<&'static str>::new());
+    }
+
+    #[test]
+    fn changed_fields_toggle_enabled() {
+        let a = JornadaConfig::from(&weekday_settings());
+        let mut s = weekday_settings();
+        s.enabled = !s.enabled;
+        let b = JornadaConfig::from(&s);
+        assert_eq!(changed_fields(&a, &b), vec!["enabled"]);
+    }
+
+    #[test]
+    fn changed_fields_editar_ventana() {
+        let a = JornadaConfig::from(&weekday_settings());
+        let mut s = weekday_settings();
+        s.windows[0].end_time = "19:00".to_string();
+        let b = JornadaConfig::from(&s);
+        assert_eq!(changed_fields(&a, &b), vec!["windows"]);
+    }
+
+    #[test]
+    fn changed_fields_gate_de_activacion() {
+        // enabled + configured_by_user juntos, como hace el gate de onboarding.
+        let mut base = weekday_settings();
+        base.enabled = false;
+        base.configured_by_user = false;
+        let a = JornadaConfig::from(&base);
+        let mut s = base.clone();
+        s.enabled = true;
+        s.configured_by_user = true;
+        let b = JornadaConfig::from(&s);
+        assert_eq!(changed_fields(&a, &b), vec!["enabled", "configured_by_user"]);
+    }
+
+    #[test]
+    fn jornada_config_from_recorta_a_3_ventanas_pero_cuenta_todas() {
+        let mut s = weekday_settings();
+        s.windows = (0..5)
+            .map(|_| ScheduleWindow {
+                days_of_week: vec![1],
+                start_time: "09:00".to_string(),
+                end_time: "18:00".to_string(),
+            })
+            .collect();
+        let cfg = JornadaConfig::from(&s);
+        assert_eq!(cfg.windows.len(), 3);
+        assert_eq!(cfg.windows_count, 5);
+    }
+
+    #[test]
+    fn jornada_config_serializa_claves_exactas() {
+        let cfg = JornadaConfig::from(&weekday_settings());
+        let v = serde_json::to_value(&cfg).unwrap();
+        let obj = v.as_object().unwrap();
+        let expected = [
+            "enabled",
+            "configured_by_user",
+            "windows",
+            "windows_count",
+            "auto_close_enabled",
+            "auto_close_time",
+            "hourly_rotation_enabled",
+            "grace_period_minutes",
+        ];
+        assert_eq!(obj.len(), expected.len());
+        for k in expected {
+            assert!(obj.contains_key(k), "falta la clave {k}");
+        }
+        let w = v["windows"][0].as_object().unwrap();
+        assert!(w.contains_key("days_of_week"));
+        assert!(w.contains_key("start_time"));
+        assert!(w.contains_key("end_time"));
     }
 
     /// Único test serial sobre el `static SLOT`: publish_settings + begin_loop +
