@@ -116,6 +116,117 @@ impl SkipReason {
     }
 }
 
+// ── Causa del rearme y retención de fin de sesión (#83, J1) ───────────────────
+//
+// Antes el rearme era un `Option<NaiveDateTime>` sin causa y la ruta de salida
+// (`close_owned_segment_for_exit`, que usan logout, bandeja, `RunEvent::Exit` e
+// instalación rival) reusaba `close_scheduled`, que escribía "suprimir hasta
+// medianoche": un logout+login el mismo día dejaba la jornada apagada el resto del día.
+// Ahora el rearme lleva causa y la salida NUNCA escribe supresión de día: pone una
+// retención en memoria `SessionEnd` ANTES del stop (el loop sigue haciendo ticks
+// durante la salida: el runtime de tauri es multi-hilo) que se libera en cuanto no
+// hay sesión, al volver a entrar (`cancel_session_end`) o por el tope de 15 min.
+
+/// Por qué no se debe (re)arrancar la jornada antes de `until`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum RearmCause {
+    /// El usuario detuvo la grabación de la jornada dentro del horario.
+    UserStop,
+    /// Cierre por hora fija: el día de jornada terminó.
+    AutoClose,
+    /// Salida, logout, instalación rival o apagado en curso. SOLO memoria.
+    SessionEnd,
+}
+
+impl RearmCause {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            RearmCause::UserStop => "user_stop",
+            RearmCause::AutoClose => "auto_close",
+            RearmCause::SessionEnd => "session_end",
+        }
+    }
+}
+
+/// Rearme vigente: no arrancar la jornada antes de `until`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct Rearm {
+    pub(crate) until: NaiveDateTime,
+    pub(crate) cause: RearmCause,
+    pub(crate) set_at: NaiveDateTime,
+}
+
+impl Rearm {
+    /// Paro del usuario dentro del horario: hasta la siguiente hora en punto.
+    pub(crate) fn user_stop(now: NaiveDateTime) -> Self {
+        Self {
+            until: schedule::next_hour_boundary(now),
+            cause: RearmCause::UserStop,
+            set_at: now,
+        }
+    }
+
+    /// Cierre por hora fija: hasta medianoche.
+    pub(crate) fn auto_close(now: NaiveDateTime) -> Self {
+        Self {
+            until: start_of_next_day(now),
+            cause: RearmCause::AutoClose,
+            set_at: now,
+        }
+    }
+
+    /// Retención de fin de sesión: tope corto (backstop si la sesión nunca se limpia).
+    pub(crate) fn session_end(now: NaiveDateTime) -> Self {
+        Self {
+            until: now + Duration::minutes(SESSION_END_HOLD_MINUTES),
+            cause: RearmCause::SessionEnd,
+            set_at: now,
+        }
+    }
+}
+
+/// Quién pide el cierre del segmento propio.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CloseTrigger {
+    /// Cierre por hora fija desde `evaluate_tick`.
+    AutoClose,
+    /// Salida de la app, logout, instalación rival o apagado.
+    SessionEnd,
+}
+
+/// Tope de la retención de fin de sesión (backstop si la sesión nunca se limpia).
+pub(crate) const SESSION_END_HOLD_MINUTES: i64 = 15;
+
+/// Bandera de fin de sesión SIN lock. Hay una sola instancia del servicio, así que vive a
+/// nivel de módulo: toda ruta de salida la marca de forma síncrona ANTES de pedir el
+/// `RwLock` del servicio, de modo que un timeout de ese lock nunca la deja en `false`
+/// (el tick escribiría entonces un rearme `UserStop` en plena salida).
+pub(crate) static SESSION_ENDING: AtomicBool = AtomicBool::new(false);
+
+/// Marca que la sesión está terminando (salida, logout, instalación rival). Síncrona.
+pub fn mark_session_ending() {
+    SESSION_ENDING.store(true, Ordering::SeqCst);
+}
+
+/// Limpia la bandera de fin de sesión. Síncrona.
+pub fn clear_session_ending_flag() {
+    SESSION_ENDING.store(false, Ordering::SeqCst);
+}
+
+fn session_ending_flag() -> bool {
+    SESSION_ENDING.load(Ordering::SeqCst)
+}
+
+fn log_rearm(r: &Rearm) {
+    info!(
+        "[scheduled] rearme {} hasta {} (puesto {})",
+        r.cause.as_str(),
+        r.until,
+        r.set_at
+    );
+}
+
 // ── Back-off de arranque (piloto Dingler, ago-2026) ───────────────────────────
 //
 // El tick de 30 s reintentaba el arranque indefinidamente y etiquetaba TODO fallo
@@ -247,16 +358,18 @@ struct SchedulerShared {
     /// Instante en que arrancó la grabación que poseemos (para calcular el cierre por hora fija
     /// de forma robusta a turnos noche). `None` cuando no poseemos ninguna grabación.
     owned_since: Arc<RwLock<Option<NaiveDateTime>>>,
-    /// Instante hasta el cual NO se debe (re)arrancar una grabación programada: re-arme tras un
-    /// paro manual (siguiente hora en punto) o supresión tras el cierre por hora fija (día sig.).
-    rearm_at: Arc<RwLock<Option<NaiveDateTime>>>,
+    /// Rearme vigente con su causa: NO (re)arrancar una grabación programada antes de
+    /// `until`. `UserStop` (paro manual, siguiente hora en punto), `AutoClose` (cierre por
+    /// hora fija, día siguiente) o `SessionEnd` (retención de salida/logout: SOLO memoria,
+    /// nunca se persiste; la acompaña la bandera estática `SESSION_ENDING`).
+    rearm: Arc<RwLock<Option<Rearm>>>,
     /// Límite del periodo de gracia del cierre por hora fija (None salvo en fase Grace).
     grace_deadline: Arc<RwLock<Option<NaiveDateTime>>>,
     /// Back-off tras fallos de arranque. `None` = sin fallos pendientes.
     ///
-    /// Deliberadamente separado de `rearm_at`: aquél produce
-    /// `SkipReason::RearmingNextHour` y lo limpia el arm de reposo, así que
-    /// reusarlo mezclaría dos mensajes distintos para el usuario.
+    /// Deliberadamente separado de `rearm`: aquél lleva su propia causa y su
+    /// propio aviso y lo limpia el arm de reposo, así que reusarlo mezclaría
+    /// mensajes distintos para el usuario.
     start_backoff: Arc<RwLock<Option<StartBackoff>>>,
 }
 
@@ -268,7 +381,7 @@ impl SchedulerShared {
             phase: Arc::new(RwLock::new(SchedulerPhase::Disabled)),
             owned: Arc::new(AtomicBool::new(false)),
             owned_since: Arc::new(RwLock::new(None)),
-            rearm_at: Arc::new(RwLock::new(None)),
+            rearm: Arc::new(RwLock::new(None)),
             grace_deadline: Arc::new(RwLock::new(None)),
             start_backoff: Arc::new(RwLock::new(None)),
         }
@@ -387,9 +500,12 @@ impl ScheduledRecordingService {
         Ok(())
     }
 
-    /// Cierra y persiste el segmento de jornada que poseemos ANTES de que la app salga.
-    /// Reusa `close_scheduled` (stop + finalize a SQLite + sync jobs), que es idempotente
-    /// frente al scheduler vía StopGate. Devuelve `true` si había segmento propio.
+    /// Cierra y persiste el segmento de jornada que poseemos ANTES de que la app salga
+    /// (o de que se cierre la sesión). Reusa `close_scheduled` (stop + finalize a SQLite +
+    /// sync jobs), que es idempotente frente al scheduler vía StopGate. NUNCA suprime el
+    /// día: pone la retención de fin de sesión (memoria) antes del stop y cierra con
+    /// `CloseTrigger::SessionEnd`, que no escribe rearme. Devuelve `true` si había
+    /// segmento propio.
     pub async fn close_owned_segment_for_exit<R: Runtime>(&self, app: &AppHandle<R>) -> bool {
         if !self.shared.owned.load(Ordering::SeqCst) {
             return false;
@@ -399,11 +515,46 @@ impl ScheduledRecordingService {
         let Some(since) = owned_since_snapshot else {
             return false;
         };
+        // Orden OBLIGATORIO: retención ANTES de soltar ownership, así un tick concurrente
+        // cae en la retención y nunca en el brazo de "paro externo" (que escribiría UserStop).
+        self.begin_session_end().await;
+        self.shared.owned.store(false, Ordering::SeqCst);
         let settings = self.shared.settings.read().await.clone();
         let now = Local::now().naive_local();
         info!("[scheduled] salida de la app con jornada activa: cerrando y guardando segmento");
-        close_scheduled(app, &self.shared, &settings, since, now).await;
+        close_scheduled(app, &self.shared, &settings, since, now, CloseTrigger::SessionEnd).await;
         true
+    }
+
+    /// Pone la retención de fin de sesión: bandera + rearme en memoria `SessionEnd`
+    /// (hasta `now + SESSION_END_HOLD_MINUTES`). Idempotente: una retención vigente no se
+    /// extiende y un `UserStop`/`AutoClose` vigente se conserva (ya impide arrancar).
+    /// Sin E/S de disco.
+    pub async fn begin_session_end(&self) {
+        let now = Local::now().naive_local();
+        // Bandera y rearme bajo el MISMO guard de escritura: así un tick que libera la
+        // retención nunca intercala su `store(false)` entre ambos. Sin `.await` dentro.
+        let mut guard = self.shared.rearm.write().await;
+        mark_session_ending();
+        let next = hold_for_session_end(*guard, now);
+        if next != *guard {
+            if let Some(r) = &next {
+                log_rearm(r);
+            }
+        }
+        *guard = next;
+    }
+
+    /// Quita la retención de fin de sesión (bandera + rearme `SessionEnd`). Un rearme
+    /// `UserStop`/`AutoClose` se conserva. Lo llaman el login/logout (transición de sesión)
+    /// y la instalación rival fallida.
+    pub async fn cancel_session_end(&self) {
+        let mut guard = self.shared.rearm.write().await;
+        clear_session_ending_flag();
+        if matches!(*guard, Some(r) if r.cause == RearmCause::SessionEnd) {
+            *guard = None;
+            info!("[scheduled] retención de fin de sesión liberada");
+        }
     }
 }
 
@@ -509,6 +660,31 @@ async fn evaluate_tick<R: Runtime>(
         return (SchedulerPhase::Disabled, None);
     }
 
+    // --- Retención de fin de sesión (J1). Mientras la salida/logout está en curso no se
+    // muta nada ni se avisa. Se libera en cuanto no hay sesión o venció el tope, y este
+    // mismo tick sigue con la evaluación normal: un logout+login reanuda en ≤ 1 tick.
+    if session_ending_flag() {
+        // `has_session` ANTES de tomar el guard: jamás guard vivo cruzando un `.await`.
+        let has_session = crate::state::has_session(app).await;
+        let still_held = {
+            let mut guard = shared.rearm.write().await;
+            let rearm = *guard;
+            if should_release_hold(rearm, has_session, now) {
+                clear_session_ending_flag();
+                if matches!(rearm, Some(r) if r.cause == RearmCause::SessionEnd) {
+                    *guard = None;
+                }
+                false
+            } else {
+                true
+            }
+        };
+        if still_held {
+            return (SchedulerPhase::Armed, None);
+        }
+        info!("[scheduled] retención de fin de sesión liberada (sesión={})", has_session);
+    }
+
     let active = schedule::active_window_at(now, settings).cloned();
     let is_rec = crate::audio::recording_commands::is_recording_active_fn();
     let owned = shared.owned.load(Ordering::SeqCst);
@@ -544,7 +720,15 @@ async fn evaluate_tick<R: Runtime>(
                             now >= deadline,
                             still_active
                         );
-                        let phase = close_scheduled(app, shared, settings, since, now).await;
+                        let phase = close_scheduled(
+                            app,
+                            shared,
+                            settings,
+                            since,
+                            now,
+                            CloseTrigger::AutoClose,
+                        )
+                        .await;
                         return (phase, None);
                     }
                     return (SchedulerPhase::Grace, None);
@@ -596,12 +780,12 @@ async fn evaluate_tick<R: Runtime>(
 
             // ¿Re-arme pendiente (paro manual reciente o supresión por cierre)? No arrancar aún.
             {
-                let rearm = *shared.rearm_at.read().await;
-                if let Some(until) = rearm {
-                    if now < until {
+                let rearm = *shared.rearm.read().await;
+                if let Some(r) = rearm {
+                    if now < r.until {
                         return (SchedulerPhase::Armed, Some(SkipReason::RearmingNextHour));
                     }
-                    *shared.rearm_at.write().await = None;
+                    *shared.rearm.write().await = None;
                 }
             }
 
@@ -668,10 +852,10 @@ async fn evaluate_tick<R: Runtime>(
         (false, None) => {
             // Limpiar el re-arme SOLO si ya venció (no borrar la supresión del cierre por hora fija).
             {
-                let rearm = *shared.rearm_at.read().await;
-                if let Some(until) = rearm {
-                    if now >= until {
-                        *shared.rearm_at.write().await = None;
+                let rearm = *shared.rearm.read().await;
+                if let Some(r) = rearm {
+                    if now >= r.until {
+                        *shared.rearm.write().await = None;
                     }
                 }
             }
@@ -685,8 +869,9 @@ async fn evaluate_tick<R: Runtime>(
         // Somos dueños y seguimos dentro de la ventana.
         (true, Some(_)) => {
             if !is_rec {
-                // El usuario detuvo NUESTRA grabación dentro del horario → re-armar a la sig. hora.
-                *shared.rearm_at.write().await = Some(schedule::next_hour_boundary(now));
+                // El usuario detuvo NUESTRA grabación dentro del horario → re-armar a la sig. hora
+                // (sin pisar una retención de fin de sesión en curso).
+                set_rearm_after_external_stop(shared, now).await;
                 shared.owned.store(false, Ordering::SeqCst);
                 *shared.owned_since.write().await = None;
                 (SchedulerPhase::Armed, Some(SkipReason::RearmingNextHour))
@@ -715,6 +900,66 @@ fn start_of_next_day(now: NaiveDateTime) -> NaiveDateTime {
     (now.date() + Duration::days(1))
         .and_hms_opt(0, 0, 0)
         .unwrap_or(now)
+}
+
+/// Rearme que deja el cierre del segmento propio según quién lo pide. La ruta de salida
+/// (`SessionEnd`) NO escribe rearme de día: deja intacta la retención que ya existe.
+fn rearm_for_close(trigger: CloseTrigger, now: NaiveDateTime) -> Option<Rearm> {
+    match trigger {
+        CloseTrigger::AutoClose => Some(Rearm::auto_close(now)),
+        CloseTrigger::SessionEnd => None,
+    }
+}
+
+/// ¿Se libera la retención de fin de sesión? Sí cuando ya no hay sesión (el logout
+/// terminó) o cuando el rearme vigente venció (tope de la retención). Sin rearme la
+/// bandera sola no retiene (p. ej. el lock del servicio no respondió a tiempo).
+fn should_release_hold(rearm: Option<Rearm>, has_session: bool, now: NaiveDateTime) -> bool {
+    !has_session || rearm.map_or(true, |r| now >= r.until)
+}
+
+/// Rearme tras un paro externo de nuestra grabación (usuario o carrera de rotación):
+/// `UserStop` hasta la siguiente hora en punto, salvo que haya una retención de fin de
+/// sesión vigente en curso, que no se pisa.
+fn rearm_after_external_stop(
+    current: Option<Rearm>,
+    session_ending: bool,
+    now: NaiveDateTime,
+) -> Option<Rearm> {
+    match current {
+        Some(r) if session_ending && r.cause == RearmCause::SessionEnd => current,
+        _ => Some(Rearm::user_stop(now)),
+    }
+}
+
+/// Retención que deja `begin_session_end`: sin rearme o con uno vencido ⇒ `SessionEnd`
+/// nuevo; con uno vigente (cualquier causa) ⇒ se conserva (idempotente, sin extender el tope).
+fn hold_for_session_end(current: Option<Rearm>, now: NaiveDateTime) -> Option<Rearm> {
+    match current {
+        Some(r) if now < r.until => current,
+        _ => Some(Rearm::session_end(now)),
+    }
+}
+
+/// Aplica `rearm_after_external_stop` bajo un único guard de escritura (sin `.await` dentro).
+async fn set_rearm_after_external_stop(shared: &SchedulerShared, now: NaiveDateTime) {
+    let mut guard = shared.rearm.write().await;
+    let next = rearm_after_external_stop(*guard, session_ending_flag(), now);
+    if next != *guard {
+        if let Some(r) = &next {
+            log_rearm(r);
+        }
+    }
+    *guard = next;
+}
+
+/// Escribe el rearme de cierre (si el trigger lo produce). El `if let` es sobre un valor,
+/// no sobre un guard.
+async fn apply_close_rearm(shared: &SchedulerShared, trigger: CloseTrigger, now: NaiveDateTime) {
+    if let Some(r) = rearm_for_close(trigger, now) {
+        log_rearm(&r);
+        *shared.rearm.write().await = Some(r);
+    }
 }
 
 /// Renderiza el nombre de reunión a partir de la plantilla.
@@ -777,14 +1022,16 @@ async fn stop_current_recording<R: Runtime>(app: &AppHandle<R>) -> Result<bool, 
 /// webview vivo intente el guardado legacy). Nunca ambos: la ruta del frontend genera su
 /// propio meeting_id (`early_meeting_id`/UUID), así que un doble guardado duplicaría la
 /// reunión — la razón por la que el viejo `stop_scheduled` no podía simplemente sumarle
-/// un guardado nativo. Deja el scheduler en reposo con supresión del re-arranque por el
-/// resto del día.
+/// un guardado nativo. Deja el scheduler en reposo; SOLO con `CloseTrigger::AutoClose`
+/// suprime el re-arranque por el resto del día. Con `CloseTrigger::SessionEnd` (salida,
+/// logout, instalación rival) no escribe rearme: manda la retención de fin de sesión.
 async fn close_scheduled<R: Runtime>(
     app: &AppHandle<R>,
     shared: &SchedulerShared,
     settings: &ScheduledRecordingSettings,
     owned_since: NaiveDateTime,
     now: NaiveDateTime,
+    trigger: CloseTrigger,
 ) -> SchedulerPhase {
     // 1. Capturar el folder ANTES del stop (`stop_recording` hace `take()` del manager) y
     //    re-render determinista del nombre con el que arrancó el segmento que cerramos.
@@ -800,14 +1047,14 @@ async fn close_scheduled<R: Runtime>(
     // 2. Detener el segmento. `Ok(false)` = otro actor (usuario) ganó el StopGate en la
     //    carrera: su path hace el post-procesado completo (guardado + navegación), así que
     //    aquí NO se finaliza (duplicaría la reunión) ni se notifica — solo soltar ownership
-    //    y suprimir el re-arranque del día (el cierre ocurrió de facto).
+    //    y, con `AutoClose`, suprimir el re-arranque del día (el cierre ocurrió de facto).
     match stop_current_recording(app).await {
         Ok(false) => {
             info!("[scheduled] cierre: otro actor detuvo primero; su path hace el guardado");
             shared.owned.store(false, Ordering::SeqCst);
             *shared.owned_since.write().await = None;
             *shared.grace_deadline.write().await = None;
-            *shared.rearm_at.write().await = Some(start_of_next_day(now));
+            apply_close_rearm(shared, trigger, now).await;
             return SchedulerPhase::Idle;
         }
         Ok(true) => {}
@@ -838,7 +1085,7 @@ async fn close_scheduled<R: Runtime>(
         shared.owned.store(false, Ordering::SeqCst);
         *shared.owned_since.write().await = None;
         *shared.grace_deadline.write().await = None;
-        *shared.rearm_at.write().await = Some(start_of_next_day(now));
+        apply_close_rearm(shared, trigger, now).await;
         return SchedulerPhase::Idle;
     }
 
@@ -892,11 +1139,11 @@ async fn close_scheduled<R: Runtime>(
         }
     }
 
-    // 5. Reposo + supresión del re-arranque por el resto del día.
+    // 5. Reposo + (solo con `AutoClose`) supresión del re-arranque por el resto del día.
     shared.owned.store(false, Ordering::SeqCst);
     *shared.owned_since.write().await = None;
     *shared.grace_deadline.write().await = None;
-    *shared.rearm_at.write().await = Some(start_of_next_day(now));
+    apply_close_rearm(shared, trigger, now).await;
     SchedulerPhase::Idle
 }
 
@@ -936,7 +1183,7 @@ async fn rotate_scheduled<R: Runtime>(
             shared.owned.store(false, Ordering::SeqCst);
             *shared.owned_since.write().await = None;
             *shared.grace_deadline.write().await = None;
-            *shared.rearm_at.write().await = Some(schedule::next_hour_boundary(now));
+            set_rearm_after_external_stop(shared, now).await;
             return SchedulerPhase::Armed;
         }
         Err(e) => {
@@ -1822,6 +2069,127 @@ mod segment_mode_tests {
         assert!(!segment_is_batch(None, prefs.effective_mode()), "…pero sin auto_save el segmento grabó en streaming");
         prefs.auto_save = true;
         assert!(segment_is_batch(None, prefs.effective_mode()));
+    }
+}
+
+#[cfg(test)]
+mod rearm_tests {
+    //! Causa del rearme y retención de fin de sesión (#83, J1). Bug que cubren: salir,
+    //! cerrar sesión o la instalación rival escribían "suprimir hasta medianoche", así que
+    //! un logout+login el mismo día dejaba la jornada apagada el resto del día.
+    use super::*;
+
+    fn t(y: i32, m: u32, d: u32, h: u32, min: u32) -> NaiveDateTime {
+        chrono::NaiveDate::from_ymd_opt(y, m, d)
+            .unwrap()
+            .and_hms_opt(h, min, 0)
+            .unwrap()
+    }
+
+    #[test]
+    fn salida_nunca_produce_rearme_de_dia() {
+        for now in [t(2026, 9, 23, 9, 0), t(2026, 9, 23, 17, 0), t(2026, 9, 23, 23, 59)] {
+            assert_eq!(rearm_for_close(CloseTrigger::SessionEnd, now), None);
+        }
+    }
+
+    #[test]
+    fn cierre_automatico_produce_auto_close() {
+        let now = t(2026, 9, 23, 17, 0);
+        let r = rearm_for_close(CloseTrigger::AutoClose, now).expect("AutoClose rearma");
+        assert_eq!(r.cause, RearmCause::AutoClose);
+        assert_eq!(r.set_at, now);
+        assert_eq!(r.until, start_of_next_day(now));
+    }
+
+    #[test]
+    fn retencion_se_libera_sin_sesion_o_al_vencer() {
+        let now = t(2026, 9, 23, 10, 15);
+        let hold = Some(Rearm::session_end(now));
+        // Sin sesión (el logout terminó) ⇒ liberar.
+        assert!(should_release_hold(hold, false, now));
+        // Con sesión y dentro del tope ⇒ retener.
+        assert!(!should_release_hold(hold, true, now));
+        assert!(!should_release_hold(hold, true, now + Duration::minutes(14)));
+        // Con sesión al vencer el tope ⇒ liberar.
+        assert!(should_release_hold(
+            hold,
+            true,
+            now + Duration::minutes(SESSION_END_HOLD_MINUTES)
+        ));
+        // Bandera sin rearme (lock del servicio sin respuesta) ⇒ no retiene.
+        assert!(should_release_hold(None, true, now));
+    }
+
+    #[test]
+    fn retencion_respeta_un_paro_del_usuario_vigente() {
+        let now = t(2026, 9, 23, 10, 15);
+        let stop = Some(Rearm::user_stop(now));
+        // Con sesión y el UserStop vigente sigue retenido hasta la hora en punto.
+        assert!(!should_release_hold(stop, true, now));
+        assert!(should_release_hold(stop, true, t(2026, 9, 23, 11, 0)));
+    }
+
+    #[test]
+    fn paro_externo_no_pisa_la_retencion() {
+        let now = t(2026, 9, 23, 10, 15);
+        let hold = Some(Rearm::session_end(now));
+        assert_eq!(rearm_after_external_stop(hold, true, now), hold);
+        let r = rearm_after_external_stop(hold, false, now).expect("UserStop");
+        assert_eq!(r.cause, RearmCause::UserStop);
+        assert_eq!(r.until, schedule::next_hour_boundary(now));
+        assert_eq!(r.set_at, now);
+        // Sin rearme previo ⇒ UserStop aunque la bandera esté puesta.
+        let r = rearm_after_external_stop(None, true, now).expect("UserStop");
+        assert_eq!(r.cause, RearmCause::UserStop);
+    }
+
+    #[test]
+    fn begin_session_end_es_idempotente_y_no_extiende_el_tope() {
+        let t0 = t(2026, 9, 23, 10, 15);
+        let first = hold_for_session_end(None, t0).expect("retención");
+        assert_eq!(first.cause, RearmCause::SessionEnd);
+        assert_eq!(first.until, t0 + Duration::minutes(SESSION_END_HOLD_MINUTES));
+        // Segunda llamada 5 min después: misma retención, mismo tope.
+        let later = t0 + Duration::minutes(5);
+        assert_eq!(hold_for_session_end(Some(first), later), Some(first));
+        // Un UserStop / AutoClose vigente se conserva.
+        let stop = Rearm::user_stop(t0);
+        assert_eq!(hold_for_session_end(Some(stop), t0), Some(stop));
+        let close = Rearm::auto_close(t(2026, 9, 23, 17, 0));
+        assert_eq!(hold_for_session_end(Some(close), t(2026, 9, 23, 18, 0)), Some(close));
+        // Uno vencido se reemplaza por la retención.
+        let expired = Rearm::user_stop(t(2026, 9, 23, 8, 10));
+        let r = hold_for_session_end(Some(expired), t0).expect("retención");
+        assert_eq!(r.cause, RearmCause::SessionEnd);
+    }
+
+    #[test]
+    fn logout_y_login_el_mismo_dia_no_apagan_la_jornada() {
+        // Secuencia de la ruta de salida: retención → cierre SessionEnd (sin rearme) →
+        // sin sesión se libera. Nunca queda un AutoClose hasta medianoche.
+        let now = t(2026, 9, 23, 12, 30);
+        let hold = hold_for_session_end(None, now);
+        assert_eq!(rearm_for_close(CloseTrigger::SessionEnd, now), None);
+        assert!(should_release_hold(hold, false, now + Duration::seconds(30)));
+        assert_ne!(hold.map(|r| r.cause), Some(RearmCause::AutoClose));
+        assert!(hold.map_or(false, |r| r.until < start_of_next_day(now)));
+    }
+
+    #[test]
+    fn rearm_cause_as_str_y_serde() {
+        assert_eq!(RearmCause::UserStop.as_str(), "user_stop");
+        assert_eq!(RearmCause::AutoClose.as_str(), "auto_close");
+        assert_eq!(RearmCause::SessionEnd.as_str(), "session_end");
+        for c in [RearmCause::UserStop, RearmCause::AutoClose, RearmCause::SessionEnd] {
+            let s = serde_json::to_string(&c).unwrap();
+            assert_eq!(s, format!("\"{}\"", c.as_str()));
+            let back: RearmCause = serde_json::from_str(&s).unwrap();
+            assert_eq!(back, c);
+        }
+        let r = Rearm::user_stop(t(2026, 9, 23, 10, 15));
+        let back: Rearm = serde_json::from_str(&serde_json::to_string(&r).unwrap()).unwrap();
+        assert_eq!(back, r);
     }
 }
 

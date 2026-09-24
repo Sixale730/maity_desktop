@@ -1830,7 +1830,29 @@ pub fn run() {
 /// nativa a SQLite (`finalize_segment_native`); (2) grabación manual → stop estándar
 /// (flush + merge de checkpoints + transcripts.json en disco). Idempotente vía StopGate:
 /// si otro actor ya detuvo, ambos caminos son no-op.
+///
+/// Toda ruta de salida (bandeja, `RunEvent::Exit`, logout, instalación rival) marca
+/// PRIMERO la retención de fin de sesión de la jornada (J1, #83): el loop del scheduler
+/// sigue haciendo ticks durante la salida y, sin ella, arrancaría una grabación en el
+/// hueco o escribiría un rearme. Esa retención nunca suprime el día: se libera en cuanto
+/// no hay sesión o al volver a entrar, así un logout+login reanuda la jornada.
 pub async fn graceful_shutdown_before_exit<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    // Bandera sin lock primero: un timeout del RwLock del servicio nunca la deja en false.
+    scheduled_recording::service::mark_session_ending();
+    if let Some(state) = app.try_state::<scheduled_recording::commands::ScheduledRecordingState>() {
+        let state = state.inner().clone();
+        let begun = tokio::time::timeout(std::time::Duration::from_millis(200), async move {
+            let service = state.read().await;
+            service.begin_session_end().await;
+        })
+        .await;
+        if begun.is_err() {
+            log::warn!(
+                "begin_session_end: el lock del scheduler no respondió en 200 ms; se sigue con la salida"
+            );
+        }
+    }
+
     if !is_recording().await {
         return;
     }

@@ -497,11 +497,62 @@ pub async fn set_current_user<R: Runtime>(
                 Err(e) => warn!("[AppState] STT warm tras login falló: {}", e),
             }
         });
+        // Un login real libera la retención de fin de sesión de la jornada (J1, #83):
+        // logout+login en el mismo proceso reanuda la jornada en el siguiente tick.
+        if releases_session_end_hold(user_transition_on_set(was_logged_out)) {
+            release_scheduler_session_end_hold(&app).await;
+        }
         tauri::async_runtime::spawn(async move {
             crate::coach::commands::open_coach_on_login(app).await;
         });
     }
     Ok(())
+}
+
+/// Transición de usuario que observan los comandos de sesión.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UserTransition {
+    /// None → Some: login real.
+    Login,
+    /// Some → Some: remount de AuthContext / refresh de maityUser.
+    Refresh,
+    /// → None: logout (o sesión perdida).
+    Logout,
+}
+
+fn user_transition_on_set(was_logged_out: bool) -> UserTransition {
+    if was_logged_out {
+        UserTransition::Login
+    } else {
+        UserTransition::Refresh
+    }
+}
+
+/// Política de liberación de la retención de fin de sesión del scheduler: toda
+/// transición de sesión (login o logout) la libera; un refresh con el mismo usuario no.
+/// Ambas llamadas corren DESPUÉS de que `logout_cleanup`/`session_lost_cleanup`
+/// terminaron el stop, así que no reabren la ventana de arranque durante el guardado.
+fn releases_session_end_hold(t: UserTransition) -> bool {
+    matches!(t, UserTransition::Login | UserTransition::Logout)
+}
+
+/// Quita la retención de fin de sesión del scheduler (acotado a 200 ms: nunca bloquea
+/// el login/logout). Snapshot del estado en statement propio.
+async fn release_scheduler_session_end_hold<R: Runtime>(app: &AppHandle<R>) {
+    let Some(st) = app.try_state::<crate::scheduled_recording::commands::ScheduledRecordingState>()
+    else {
+        crate::scheduled_recording::service::clear_session_ending_flag();
+        return;
+    };
+    let st = st.inner().clone();
+    let released = tokio::time::timeout(std::time::Duration::from_millis(200), async move {
+        let service = st.read().await;
+        service.cancel_session_end().await;
+    })
+    .await;
+    if released.is_err() {
+        warn!("[AppState] cancel_session_end: el lock del scheduler no respondió en 200 ms");
+    }
 }
 
 /// Clear the current user from AppState. Called by frontend on logout.
@@ -526,6 +577,11 @@ pub async fn clear_current_user<R: Runtime>(
     // queda residente hasta el siguiente login.
     let outcome = crate::audio::transcription::unload_stt(&app, "logout").await;
     info!("[AppState] STT unload tras logout: {:?}", outcome);
+    // Al FINAL: sin sesión la retención de fin de sesión de la jornada ya no hace falta
+    // (J1, #83). El scheduler no arranca sin sesión, y el siguiente login reanuda.
+    if releases_session_end_hold(UserTransition::Logout) {
+        release_scheduler_session_end_hold(&app).await;
+    }
     Ok(())
 }
 
@@ -670,6 +726,26 @@ fn restore_db_backup_in_dir(app_data: &std::path::Path) -> Result<String, String
 
     info!("[restore_db_backup] Respaldo restaurado desde {:?}", bak_path);
     Ok(db_path.to_string_lossy().to_string())
+}
+
+#[cfg(test)]
+mod session_hold_tests {
+    use super::{releases_session_end_hold, user_transition_on_set, UserTransition};
+
+    #[test]
+    fn transicion_de_sesion_libera_la_retencion() {
+        // Login real (None→Some) y logout liberan la retención de la jornada.
+        assert_eq!(user_transition_on_set(true), UserTransition::Login);
+        assert!(releases_session_end_hold(UserTransition::Login));
+        assert!(releases_session_end_hold(UserTransition::Logout));
+    }
+
+    #[test]
+    fn refresh_con_el_mismo_usuario_no_libera() {
+        // Un remount de AuthContext durante la salida no debe reabrir la ventana de arranque.
+        assert_eq!(user_transition_on_set(false), UserTransition::Refresh);
+        assert!(!releases_session_end_hold(UserTransition::Refresh));
+    }
 }
 
 #[cfg(test)]

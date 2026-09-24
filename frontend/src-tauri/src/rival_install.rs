@@ -100,8 +100,27 @@ pub async fn uninstall_rival(app: tauri::AppHandle) -> Result<(), String> {
         }
 
         // 4. Lanzar el orquestador. Si FALLA: el pool sigue abierto → app funcional,
-        //    el usuario ve el toast de error y puede reintentar.
-        launch_detached_uninstaller(&info, std::process::id())?;
+        //    el usuario ve el toast de error y puede reintentar. La app sigue viva, así que
+        //    se quita la retención de fin de sesión que puso el paso 1 (J1): la jornada
+        //    debe poder reanudar.
+        if let Err(e) = launch_detached_uninstaller(&info, std::process::id()) {
+            if let Some(state) =
+                app.try_state::<crate::scheduled_recording::commands::ScheduledRecordingState>()
+            {
+                let state = state.inner().clone();
+                let released = tokio::time::timeout(std::time::Duration::from_millis(200), async move {
+                    let service = state.read().await;
+                    service.cancel_session_end().await;
+                })
+                .await;
+                if released.is_err() {
+                    log::warn!("[rival_install] cancel_session_end: el lock del scheduler no respondió en 200 ms");
+                }
+            } else {
+                crate::scheduled_recording::service::clear_session_ending_flag();
+            }
+            return Err(e);
+        }
 
         // 5. COMMIT POINT: cerrar el pool (checkpoint redundante + close). Desde aquí
         //    la app ya no puede tocar la DB; morirá en el paso 6.
