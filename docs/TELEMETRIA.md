@@ -1,11 +1,12 @@
 # Telemetría y diagnóstico remoto — inventario completo
 
-> Última actualización: 2026-09-23 (0.2.62, issue #83 "¿por qué no grabó?":
+> Última actualización: 2026-09-24 (0.2.62, issue #83 "¿por qué no grabó?":
 > ciclo de vida del proceso (`app.start`/`app.exit`/`app.resumed` + marcador en
-> disco), estado de la jornada en el latido (`idle_reason`, bloque `jornada`) y
-> en `device.profile`, `autostart.changed`, `auth.logout`/`auth.session_lost`,
-> `jornada.settings_changed`/`jornada.idle_reason_changed` y la query persona ×
-> día). Antes: 2026-08-17 (ciclo v0.2.57 "fail-closed": contrato `ctx`
+> disco), estado de la jornada en el latido (`idle_reason`, bloque `jornada`),
+> configuración de jornada en `device.profile`, `autostart.changed`,
+> `auth.logout`/`auth.session_lost`,
+> `jornada.settings_changed`/`jornada.idle_reason_changed`, drenado por fila y la
+> query persona × día; reconciliado con el código). Antes: 2026-08-17 (ciclo v0.2.57 "fail-closed": contrato `ctx`
 > + `install_id`, drenadora nativa única, ciclo de vida de grabación desde Rust,
 > `device.profile`, contadores de descarte, panics, y este doc pasa a ser
 > **contrato ejecutable** — lo verifica `frontend/scripts/lint-telemetry.js`).
@@ -45,19 +46,32 @@ diagnosticar remotamente. Los logs completos siguen siendo bajo demanda
    `maity.users WHERE auth_id = auth.uid()`; traga excepciones — nunca rompe la
    app, **y tampoco avisa**: si el INSERT viola un CHECK responde 200 igual y
    `drain.rs` marca la fila como sincronizada; ver gotcha del `status` abajo)
-   → tabla `maity.platform_logs`. Lo usan `app.*`, `nav.*`, `health.*`,
-   `device.profile` y el passthrough de `Analytics.track` (`coach.session_summary`
-   pasó al outbox nativo en sep-2026).
-2. **Outbox nativo (store-and-forward):** `telemetry::emit` (Rust),
-   `recordingLogService.log` (JS, vía comando) y, desde sep-2026 (#23 de la
+   → tabla `maity.platform_logs`. Lo usan `app.open`/`app.close`, el `app.error`
+   del webview, `nav.*`, el `health.heartbeat` del JS, `device.profile` y el
+   passthrough de `Analytics.track` (`coach.session_summary` pasó al outbox
+   nativo en sep-2026). El ciclo de vida del PROCESO
+   (`app.start`/`app.exit`/`app.resumed`) NO va por aquí: va por el outbox.
+2. **Outbox nativo (store-and-forward):** `telemetry::emit` (Rust:
+   `emit_event`, o `emit_event_with_id` cuando la ruta necesita el id de la
+   fila), `recordingLogService.log` (JS, vía comando) y, desde sep-2026 (#23 de la
    auditoría), **la analítica de las ventanas auxiliares** (`lib/auxAnalytics.ts`
    → comando `log_analytics_event` → `emit_webview_event`) escriben al outbox
    SQLite `recording_logs` — cero red en el camino caliente, sobrevive crash,
    suspensión y **webview cerrado** (jornada/tray). La **única drenadora es
    `logging/telemetry/drain.rs`**: tick 30 s + `Notify`, `get_unsynced_logs(50)`
    → `get_valid_token` (sin sesión ⇒ diferir sin quemar intentos) → POST al
-   mismo RPC → solo 2xx marca `synced_to_cloud`. `syncToCloud()` de JS se
-   eliminó (ago-2026): dos drenadores = filas duplicadas.
+   mismo RPC fila por fila. Desde 0.2.62 **cada fila se marca `synced_to_cloud`
+   apenas recibe su 2xx** (antes se marcaba el lote al final y un corte a mitad
+   re-posteaba filas ya subidas). Las rutas de salida (`app.exit`,
+   `auth.logout`) suben SU fila con `drain::flush_row(app, id, budget)`: una
+   fila concreta, con presupuesto acotado y el token de
+   `cloud_sync::session::token_if_fresh` (reusa el vigente, **nunca refresca**:
+   cortar un refresh a mitad de la salida perdería el `refresh_token` ya
+   rotado); devuelve `FlushOutcome` (`Sent|AlreadySynced|NoSession|TokenStale|Timeout|Rejected(status)|Network`).
+   Un reclamo por fila (`INFLIGHT`) impide que el loop y un `flush_row` posteen
+   la misma fila, y `drain::set_exiting()` (lo llama `lifecycle::begin_exit`)
+   apaga el loop durante la salida. `syncToCloud()` de JS se eliminó
+   (ago-2026): dos drenadores = filas duplicadas.
 
 > **Las ventanas aux (`coach-float`, `recording-widget`, `device-picker`) NO
 > cargan `platformLogger`** (arrastra supabase-js: ~200 KB de chunk y un segundo
@@ -213,24 +227,26 @@ tareas de proceso, así que su payload **no** lleva `trigger` ni
 
 **Ciclo de vida del proceso, sesión y jornada — emisor Rust, outbox (desde
 0.2.62, #83).** Responden "¿por qué X no grabó el día Y?" (query más abajo).
-TODOS van por el outbox nativo (`emit_event` → `recording_logs` → `drain.rs`).
-La columna `session_id` de todos es `context::process_session_id()` (`proc-…`).
+TODOS van por el outbox nativo (`emit_event`/`emit_event_with_id` →
+`recording_logs` → `drain.rs`). La columna `session_id` de todos es
+`context::process_session_id()` (`proc-…`).
 
 | event_type | Emisor | Cuándo | Payload clave |
 |---|---|---|---|
-| `app.start` | `logging/telemetry/lifecycle.rs` | 1× por proceso, después del init de la DB; `status` `ok`, o `warning` si el proceso anterior terminó sucio | `lifecycle_schema` (1), `build`, `build_channel`, `started_at_boot`, `autostart_state`, `started_at`, `os_boot_at`, `first_run`, `marker_status` (`ok\|missing\|corrupt\|foreign`), `prev_session_id`, `prev_version` (nunca `'unknown'`: `null`), `prev_version_source` (`marker\|outbox\|null`), `version_changed`, `prev_started_at`, `prev_last_alive_at`, `prev_uptime_s`, `prev_exit_reason`, `prev_exit_detail`, `prev_exit_source` (`observed\|intent\|inferred\|null`), `prev_exit_clean` (`null` = sin marcador: primer arranque o upgrade desde una versión anterior a 0.2.62), `prev_exit_interrupted` (salida empezada y no terminada), `prev_recording_active_at_exit`, `prev_panicked`, `prev_panic_count`, `os_rebooted_since_prev`, `downtime_s`, `clock_skew` |
-| `app.exit` | `lifecycle.rs` | en cada salida registrada. Primero escribe el marcador en disco y después inserta en el outbox con un tope de 750 ms. En las salidas propias (bandeja, instalación rival, update) además hace `flush_row`. `status` `ok` | `lifecycle_schema`, `reason` (tabla de motivos abajo), `detail`, `exit_code`, `uptime_s`, `recording_active`, `recording_phase`, `session_end_kind`, `critical`, `build` |
-| `app.resumed` | ticker de 60 s de `lifecycle.rs` | se emite cuando el reloj de pared saltó más de 180 s entre dos ticks (suspensión). `status` `ok` | `suspended_at`, `resumed_at` (rfc3339), `gap_s` |
-| `autostart.changed` | `autostart_state.rs::reconcile` | se emite cuando `autostart_state` difiere de la línea base guardada en el marcador. En el primer arranque solo se fija la línea base, sin fila. `status` `ok` | `from`, `to`, `trigger` (`boot\|settings_toggle\|bootstrap`), `mechanism` (`startup_task\|run_key\|plugin`), `disabled_at` |
-| `auth.logout` | `logout_cleanup` (`lib.rs`) vía `logging/telemetry/auth.rs` | cuando el usuario pide el logout, desde cualquier botón. Se inserta en el outbox y se hace `flush_row` de 3 s con el token de quien sale. `status` `ok` | `reason` (`"user"`), `surface` (`settings\|sidebar\|chat_sidebar\|onboarding_badge\|account_error\|unknown`), `maity_user_id`, `recording_was_active`, `recording_phase` |
-| `auth.session_lost` | comando Rust que invoca el JS (outbox) | ante un `SIGNED_OUT` que el usuario no pidió, o al arrancar sin sesión cuando había marca de login previo y el error NO es reintentable (una red caída nunca lo emite). `status` `warning` | `source` (`webview_signed_out\|boot_no_session`), `maity_user_id`, `recording_was_active`, `error_name` |
-| `jornada.settings_changed` | `ScheduledRecordingService::update_settings` (`scheduled_recording/service.rs`, único punto de persistencia) | solo se emite si hay diff (la UI guarda dos veces por acción y eso deja una sola fila). `status` `ok` | `from`/`to` (`JornadaConfig`, ver `device.profile`) y `changed` (nombres de campo) |
-| `jornada.idle_reason_changed` | el scheduler (`service.rs`) | se emite cuando cambia `idle_reason`, ignorando `pending`/`initializing`, con un tope de 200 por proceso. `status` `ok` | `from`/`to` (`idle_reason` o `null`), `recording_phase`, `jornada` (el bloque del latido). Es la línea de tiempo preferente de la query porque va por el outbox y sobrevive sin red |
+| `app.start` | `logging/telemetry/lifecycle.rs::emit_start` | 1× por proceso, en un spawn después del init de la DB (el marcador ya se rotó en `lifecycle::rotate_at_boot`, primera sentencia del `setup()`). `status` `warning` si `prev_exit_clean` es `false`; si no, `ok` | `lifecycle_schema` (1), `build` (`release\|debug`), `build_channel` (`store\|direct`), `started_at_boot`, `autostart_state`, `started_at`, `os_boot_at`, `first_run`, `marker_status` (`ok\|missing\|corrupt\|foreign`), `prev_session_id`, `prev_version` (nunca `'unknown'`: `null`), `prev_version_source` (`marker\|outbox\|null`; `outbox` solo en release y sin marcador usable), `version_changed`, `prev_started_at`, `prev_last_alive_at`, `prev_uptime_s`, `prev_exit_reason`, `prev_exit_detail`, `prev_exit_source` (`observed\|intent\|inferred\|null`), `prev_exit_clean` (`null` = sin marcador usable: primer arranque o upgrade desde una versión anterior a 0.2.62), `prev_exit_interrupted` (salida empezada y no terminada), `prev_recording_active_at_exit`, `prev_panicked`, `prev_panic_count`, `os_rebooted_since_prev`, `downtime_s`, `clock_skew` |
+| `app.exit` | `lifecycle.rs::begin_exit` + `lifecycle.rs::emit_exit_row` | en cada salida registrada; emit-once (la primera ruta que llega gana). `begin_exit` escribe primero el bloque `exit` del marcador (durable) y apaga la drenadora; después `emit_exit_row` inserta en el outbox con tope de 750 ms (`EXIT_ROW_TIMEOUT`; 400 ms en fin de sesión, `EXIT_ROW_TIMEOUT_SESSION_END`). `flush_row` solo en la bandeja (3 s, después del stop), en `exit_for_update` (3 s) y en el hook de `direct_update_install` (2 s); instalación rival, `RunEvent::Exit` y fin de sesión NO suben la fila (sube en el siguiente arranque). `update`/`store_api` no deja fila: su intención la lee el siguiente `app.start`. `status` `ok` | `lifecycle_schema`, `reason` (tabla de motivos abajo), `detail`, `exit_code`, `uptime_s`, `recording_active`, `recording_phase`, `session_end_kind` (`logoff\|shutdown\|unknown\|close_app`), `critical`, `build` |
+| `app.resumed` | `lifecycle.rs::spawn_alive_ticker` (ticker propio de 60 s) | el reloj de pared saltó más de 180 s entre dos ticks (suspensión); también deja `last_resume` en el marcador. `status` `ok` | `suspended_at`, `resumed_at` (rfc3339), `gap_s` |
+| `autostart.changed` | `autostart_state.rs::reconcile` (`reconcile_with`) | `autostart_state` difiere de la línea base `last_autostart_state` del marcador; la línea base avanza SOLO si la fila quedó en el outbox. Sin línea base (primer arranque) solo se fija, sin fila; un `unknown` no toca la línea base. Disparadores: `boot` (lo llama `lifecycle::emit_start` justo después de `app.start`) y `settings_toggle`/`bootstrap` (comando `autostart_reconcile`, con allowlist). `status` `ok` | `from`, `to`, `trigger` (`boot\|settings_toggle\|bootstrap`), `mechanism` (`startup_task\|run_key\|plugin`), `disabled_at` |
+| `auth.logout` | `lib.rs::logout_cleanup` → `logging/telemetry/auth.rs::emit_logout` | el usuario pide el logout desde cualquier botón (`AuthContext.signOut(surface)` → `invoke('logout_cleanup', { surface })`). La fila se escribe ANTES del stop de la grabación; después corren en paralelo el stop (≤30 s) y un `flush_row` de 3 s con el token de quien sale. Al final borra la marca `last_login_user`. `status` `ok` | `reason` (`"user"`), `surface` (`settings\|sidebar\|chat_sidebar\|onboarding_badge\|account_error\|unknown`; fuera del dominio ⇒ `unknown`), `maity_user_id`, `recording_was_active`, `recording_phase` |
+| `auth.session_lost` | comando `telemetry_auth_session_lost` (`logging/telemetry/auth.rs`), invocado desde `AuthContext` | un `SIGNED_OUT` que el usuario no pidió (`webview_signed_out`), o un arranque sin sesión con marca `last_login_user` en el marcador y un error de `getSession` NO reintentable (`boot_no_session`, decisión en `lib/authSessionLost.ts`; una red caída nunca lo emite). La marca se consume solo si la fila quedó en el outbox. `status` `warning` | `source` (`webview_signed_out\|boot_no_session`), `maity_user_id`, `recording_was_active`, `error_name` (solo `[A-Za-z0-9_.]`, ≤64) |
+| `jornada.settings_changed` | `ScheduledRecordingService::update_settings` (`scheduled_recording/service.rs`, único punto de persistencia) | solo si `status_snapshot::changed_fields` encuentra diff (el gate de activación guarda dos veces con el mismo contenido y eso deja una sola fila). `status` `ok` | `from`/`to` (`JornadaConfig`, ver `device.profile`) y `changed` (nombres de campo de `JornadaConfig`) |
+| `jornada.idle_reason_changed` | `scheduled_recording/service.rs::spawn_idle_reason_emit` (vía `status_snapshot::take_idle_transition`) | tras cada publicación de la instantánea del scheduler (`initialize`, `start`, `update_settings` y cada tick) si `idle_reason` cambió respecto del último emitido; `pending`/`initializing` ni se emiten ni reemplazan el último valor; tope de 200 por proceso. `status` `ok` | `from`/`to` (`idle_reason` o `null`), `recording_phase`, `jornada` (el bloque del latido). Es la línea de tiempo preferente de la query porque va por el outbox y sobrevive sin red |
 
-> (i) `app.exit` se escribe al salir, pero se DRENA en el siguiente arranque tras el login. La hora real es `ctx.occurred_at`, nunca `created_at`.
-> (ii) El marcador `lifecycle.json` (`lifecycle-debug.json` en debug), en `app_local_data_dir`, es la verdad. La fila es best-effort: si Windows mata el proceso antes del commit del outbox, el motivo viaja como `app.start.prev_exit_reason`.
+> (i) `app.exit` se escribe al salir, pero casi siempre se DRENA en el siguiente arranque tras el login. La hora real es `ctx.occurred_at`, nunca `created_at`.
+> (ii) El marcador `lifecycle.json` (`lifecycle-debug.json` en debug), en `app_local_data_dir`, es la verdad; la fila es best-effort: si Windows mata el proceso antes del commit del outbox, el motivo viaja como `app.start.prev_exit_reason`. Campos: `exit` (motivo observado, `begun_at_ms`/`done_at_ms`), `exit_intent` (`update` o `session_end`, escrita ANTES de una salida que puede no pasar por `RunEvent::Exit`), `last_resume`, y dos que se arrastran entre arranques: `last_autostart_state` (línea base de `autostart.changed`) y `last_login_user` (marca de `auth.session_lost`).
 > (iii) Las filas escritas sin sesión (antes del login) se atribuyen a quien inicie sesión después, porque el RPC resuelve `auth.uid()` al drenar. `auth.*` llevan `maity_user_id` en el payload para atribuirlas bien.
 > (iv) Ninguno de estos eventos se emite desde JS con `platformLogger`.
+> (v) **`autostart_toggled` ≠ `autostart.changed`.** `autostart_toggled` (passthrough de `Analytics.track` en `components/settings/PreferenceSettings.tsx`, canal MSIX y directo) solo registra los toggles hechos DENTRO de la app, va por JS directo y queda fuera del catálogo. `autostart.changed` compara el estado REAL contra la línea base del marcador, así que también ve el Administrador de tareas y el bootstrap de instalación nueva.
 
 **App / salud — emisor `platformLogger` (JS) salvo donde se indica.**
 
@@ -238,7 +254,7 @@ La columna `session_id` de todos es `context::process_session_id()` (`proc-…`)
 |---|---|---|---|
 | `app.open` / `app.close` | `app/(main)/layout.tsx` (`AppContent`) | `app.open`: cada MONTAJE del documento main: el arranque **y cada recarga** (`window.location.href` al detener una grabación manual, `reload()` de ErrorBoundary/ChunkErrorRecovery/useConversationLive); un `referrer` no vacío delata la recarga. `app.close`: el primer `onCloseRequested`/`beforeunload`/`pagehide` del documento; la X **esconde a la bandeja**, el proceso sigue vivo. Prod, 30 días al 2026-09-23: 203 `app.open` (13 con referrer), 41 `app.close`, y 9 procesos siguieron emitiendo >10 min después de su `app.close`. **Ninguno es ciclo de vida del proceso: para eso `app.start`/`app.exit`.** | `app.open`: `referrer`, `screen`, `viewport`, `language` |
 | `nav.page_view` | `usePageViewTracker` | cada navegación | ruta |
-| `device.profile` | `healthHeartbeatService.start()` (comando `get_device_profile`) | **1× por sesión** | `cpu_cores`, `gpu_type`, `memory_gb`, `os`, `os_version`, `arch`, `build_channel`, `performance_tier` — *resource attributes*, NO se repiten en cada heartbeat (ver cardinalidad abajo). Desde 0.2.60 (en 0.2.59 solo el build piloto: 1 de 27 perfiles): `started_at_boot` (bool — el proceso arrancó por autostart del OS, no a mano) y `autostart_state` (`enabled\|enabledByPolicy\|disabled\|disabledByUser\|disabledByPolicy\|unknown` — StartupTask WinRT bajo MSIX, plugin autostart en el resto; `disabledByUser` = apagado en Task Manager y la app NO puede reactivarlo, solo mandar a `ms-settings:startupapps`). Desde 0.2.62: `signature_kind` (`store\|developer\|enterprise\|system\|none\|unknown`, null fuera de MSIX — `Package.Current.SignatureKind`; solo `store` recibe updates de la Store, así que `build_channel=store` + `developer` = copia de prueba que nunca se actualiza). Desde 0.2.62 (#83): `jornada` = `null` o `JornadaConfig` `{enabled, configured_by_user, windows: [{days_of_week (ISO, 1 = lunes), start_time "HH:MM", end_time "HH:MM"}] (máx. 3), windows_count, auto_close_enabled, auto_close_time, hourly_rotation_enabled, grace_period_minutes}`, en hora LOCAL de la PC. El JS re-emite el perfil (sin fijar su latch) mientras `jornada` sea `null`, hasta 3 ticks. En canal directo `autostart_state` puede decir `disabledByUser` (Task Manager, `StartupApproved\Run`) con el mismo predicado que auto-launch 0.5.0. También: `autostart_disabled_at` (`null` o rfc3339), `autostart_mechanism` (`startup_task\|run_key\|plugin`), `package_installed_at` (`null` o rfc3339, instalada o ACTUALIZADA por última vez) y `package_installed_at_source` (`null\|package\|nsis_uninstall_key`) |
+| `device.profile` | `healthHeartbeatService.start()` (comando `get_device_profile`) | **1× por sesión** | `cpu_cores`, `gpu_type`, `memory_gb`, `os`, `os_version`, `arch`, `build_channel`, `performance_tier` — *resource attributes*, NO se repiten en cada heartbeat (ver cardinalidad abajo). Desde 0.2.60 (en 0.2.59 solo el build piloto: 1 de 27 perfiles): `started_at_boot` (bool — el proceso arrancó por autostart del OS, no a mano) y `autostart_state` (`enabled\|enabledByPolicy\|disabled\|disabledByUser\|disabledByPolicy\|unknown` — StartupTask WinRT bajo MSIX, plugin autostart en el resto; `disabledByUser` = apagado en Task Manager y la app NO puede reactivarlo, solo mandar a `ms-settings:startupapps`). Desde 0.2.62: `signature_kind` (`store\|developer\|enterprise\|system\|none\|unknown`, null fuera de MSIX — `Package.Current.SignatureKind`; solo `store` recibe updates de la Store, así que `build_channel=store` + `developer` = copia de prueba que nunca se actualiza). Desde 0.2.62 (#83): `jornada` = `null` o `JornadaConfig` `{enabled, configured_by_user, windows: [{days_of_week (ISO, 1 = lunes), start_time "HH:MM", end_time "HH:MM"}] (máx. 3), windows_count, auto_close_enabled, auto_close_time, hourly_rotation_enabled, grace_period_minutes}`, en hora LOCAL de la PC (`status_snapshot::jornada_config`; `null` = el scheduler aún no publicó nada). Es solo la CONFIGURACIÓN: `device.profile` NO lleva `idle_reason` ni el estado dinámico de la jornada, que van en `health.heartbeat`. El JS re-emite el perfil (sin fijar su latch) mientras `jornada` sea `null`, hasta 3 emisiones por proceso (`DEVICE_PROFILE_MAX_EMITS`). En canal directo `autostart_state` puede decir `disabledByUser` (Task Manager, `StartupApproved\Run`) con el mismo predicado que auto-launch 0.5.0. También: `autostart_disabled_at` (`null` o rfc3339), `autostart_mechanism` (`startup_task\|run_key\|plugin`), `package_installed_at` (`null` o rfc3339, instalada o ACTUALIZADA por última vez) y `package_installed_at_source` (`null\|package\|nsis_uninstall_key`) |
 | `health.heartbeat` | `healthHeartbeatService` (JS) **y `logging/mem_sampler.rs` (Rust, `reason:"native"`)** | JS: cada 5 min activo / 15 min idle + start/stop de grabación. Rust: cada 15 min, SOLO si el webview lleva >20 min sin pedir `get_health_snapshot` (tray / ventana congelada) | ver abajo (+ `err_budget`, `performance_tier`). Etiquetar con `event_data->'ctx'->>'emitter'` (`webview` vs `rust`); para unir la serie de un mismo proceso, agrupar por `event_data->'ctx'->>'session_id'` (la COLUMNA `session_id` difiere entre emisores) |
 | `coach.session_summary` | **`coach/live_feedback.rs::stop()` (Rust, outbox)** — hasta 0.2.59 lo reenviaba el hook `useCoachMetricsTelemetry` desde el evento Tauri `coach-metrics` | al cerrar una sesión de coach **que existió**: sin `start()` previo no hay fila. Hasta 0.2.59 cada arranque de grabación dejaba una fila fantasma (`coach_mode:'transcript'`, voz `null`) porque `start()` llama a `stop()` primero; los históricos se filtran con `ctx->>'emitter'='webview' and user_voiced_ms is null and llm_parse_total=0` | métricas LLM + sidecar (timeouts, restarts, cooldowns, idle_kills, breaker) + picos de RAM + tier. `sidecar_idle_kills` debe ser 0 en Medium+ con tips LLM (lease de sesión, #03 auditoría). Desde F5 (sep-2026) también `coach_mode` (`transcript`\|`audio`), `user_voiced_ms`, `interlocutor_voiced_ms`, `longest_user_mono_ms`, `audio_session_ms`; en modo lote `coach_mode='audio'` y los contadores LLM/sidecar deben ser 0 (`longest_user_mono_ms` calibra `INTERRUPT_MS`). Columna `session_id` = `proc-…`, `ctx.emitter='rust'` (como el latido nativo); sobrevive al webview dormido en tray — en el piloto del 2026-09-10 solo 1 de 9 segmentos dejó summary |
 | `app.error` | `errorTelemetry` (JS: window, unhandledrejection, error-boundary, db-init), **`logging/rust_error_bridge.rs` (Rust, `source:"rust"`, outbox)** y **`telemetry/panics.rs` (Rust, `source:"rust-panic"`, outbox)** | error no manejado / boundary / `log::error!` de Rust / panic (los de Rust al outbox; el panic se drena en el siguiente arranque) | ver abajo |
@@ -311,12 +327,15 @@ un techo fijo**: leerla de `mem_sample_age_s`, nunca asumir 30 s.
   "queue": { ... } | null,     // último transcription-lag-update (6 campos); null en
                                // idle. AUSENTE en el nativo: lo alimenta un listener
                                // del webview, que es justo lo que está muerto.
-  "idle_reason": null,         // desde 0.2.62, AMBOS emisores; dominio cerrado (tabla abajo). null = grabando/arrancando/deteniendo
+  "idle_reason": null,         // desde 0.2.62, AMBOS emisores, NIVEL SUPERIOR (no dentro de jornada);
+                               // dominio cerrado (tabla abajo). null = grabando/arrancando/deteniendo
   "jornada": null | {          // desde 0.2.62, AMBOS emisores; null = scheduler aún no inicializado
     "enabled": true, "configured_by_user": true, "loop_running": true,
     "scheduler_phase": "disabled | idle | armed | recording | grace",
     "in_window": true,         // pertenencia al horario; IGNORA enabled (igual que ScheduledStatus.in_window)
-    "skip": null,              // SkipReason::as_str existentes + "closed_for_day"
+    "skip": null,              // SkipReason::as_str: manual_in_progress | transcription_not_ready |
+                               // rearming_next_hour | closed_for_day | no_session | registration_incomplete |
+                               // no_input_device | mic_access_denied | start_backoff
     "rearm_cause": null,       // user_stop | auto_close | session_end, solo mientras el rearme está vigente
     "rearm_until": null,       // "YYYY-MM-DDTHH:MM:SS" en hora LOCAL de la PC
     "backoff": null,           // { "code": mic_not_found|mic_permission_denied|mic_in_use|mic_format_unsupported|audio_unknown, "consecutive": 1, "halted_for_day": false }
@@ -326,7 +345,11 @@ un techo fijo**: leerla de `mem_sample_age_s`, nunca asumir 30 s.
 ```
 
 > El nativo tampoco lleva `err_budget.webview` (limiter del JS) y manda
-> `performance_tier: null`.
+> `performance_tier: null`. `idle_reason` y `jornada` salen de la MISMA función en
+> los dos emisores (`scheduled_recording/status_snapshot.rs::heartbeat_fields`):
+> `get_health_snapshot` los pone en `HealthSnapshot` y el JS los copia al
+> payload; `mem_sampler::emit_native_heartbeat` los pone directo. Leen una
+> instantánea publicada por el scheduler, nunca el `RwLock` del servicio.
 
 **`idle_reason` — dominio cerrado (desde 0.2.62)**
 
@@ -337,7 +360,7 @@ un techo fijo**: leerla de `mem_sample_age_s`, nunca asumir 30 s.
 | idle | snapshot del scheduler ausente | `initializing` |
 | idle | `!enabled && !configured_by_user` | `jornada_unconfigured` |
 | idle | `!enabled` | `jornada_off` |
-| idle | `!loop_running` | `scheduler_stopped` |
+| idle | `!loop_running` | `scheduler_stopped` (o `initializing` si el loop aún no arrancó ninguna vez en este proceso) |
 | idle | rearme vigente con causa `session_end` | `session_ending` |
 | idle | `!in_window` | `outside_window` |
 | idle | skip `NoSession` | `no_session` |
@@ -351,8 +374,8 @@ un techo fijo**: leerla de `mem_sample_age_s`, nunca asumir 30 s.
 | idle | cualquier otro caso (skip `ManualInProgress` recién terminado, primer tick, etc.) | `pending` |
 
 - `transcription_not_ready` NO se usa en telemetría porque esconde `mic_in_use`. El string de la UI (`SkipReason::as_str`) no cambia.
-- Los 16 valores no nulos viven en `IDLE_REASONS` (`scheduled_recording/status_snapshot.rs`). Un valor nuevo exige una fila aquí y una rama en la query.
-- Desde 0.2.62 `stopped_by_user` y `closed_for_day` sobreviven al reinicio de la app. Salir, cerrar sesión y el apagado nunca escriben supresión a disco.
+- Los 16 valores no nulos viven en `IDLE_REASONS` (`scheduled_recording/status_snapshot.rs`), en el mismo orden de precedencia que `fn idle_reason`: `paused_by_user`, `initializing`, `jornada_unconfigured`, `jornada_off`, `scheduler_stopped`, `session_ending`, `outside_window`, `no_session`, `no_registration`, `closed_for_day`, `stopped_by_user`, `mic_not_found`, `mic_permission_denied`, `mic_in_use`, `start_failed`, `pending`. Un valor nuevo exige una fila aquí, una rama en `fn idle_reason` y otra en la query.
+- `closed_for_day` dura hasta el siguiente inicio de ventana (un turno 22-06 que cierra a las 06:00 conserva 22:00-00:00); `stopped_by_user`, hasta la siguiente hora en punto. Los dos sobreviven al reinicio de la app (`scheduled_recording_runtime.json`). `session_ending` es una retención solo en memoria (≤15 min) mientras se sale, se cierra sesión o se apaga; ninguna de esas rutas escribe supresión a disco.
 
 Diseño (emisor JS): un solo interval de 5 min; la cadencia real la decide
 `shouldEmitHeartbeat` por timestamps (sleep-safe: tras resume emite UNA vez).
@@ -391,24 +414,30 @@ reason='native'` = jornada sin webview).
 
 | motivo | tipo | significado |
 |---|---|---|
-| `tray_quit` | observado | "Salir" de la bandeja. |
-| `rival_install` | observado | se instaló el otro canal (Store ↔ directo) y esta copia se desinstala. |
-| `update` | observado o inferido | detail `store_button\|store_api\|nsis`; inferido cuando queda una intención de update pendiente. |
+| `tray_quit` | observado | "Salir" de la bandeja (`tray.rs`, `ExitHint::TrayQuit`). |
+| `rival_install` | observado | se instaló el otro canal (Store ↔ directo) y esta copia se desinstala (`rival_install.rs`). |
+| `update` | observado o intención | detail `store_button` (observado: comando `exit_for_update`), `nsis` (observado: hook de `direct_update_install`) o `store_api` (solo intención: `store_update.rs` llama `record_update_intent` antes de que la Store instale, y Windows cierra Maity sin `RunEvent::Exit`). |
 | `restart` | observado | `ExitRequested` con `RESTART_EXIT_CODE`. |
 | `app_exit` | observado | `ExitRequested` `Some(code)` sin motivo propio. |
 | `last_window_closed` | observado | `ExitRequested` `None`; es una regresión tipo 0.2.57 (la X mataba la app). |
-| `os_session_end` | observado | cierre de sesión o apagado de Windows. Detail `logoff\|shutdown\|unknown`, más `critical`. |
-| `external_close` | observado | Restart Manager `CLOSEAPP` SIN apagado del sistema (instalador/desinstalación). |
+| `os_session_end` | observado o intención | cierre de sesión o apagado de Windows (`session_end.rs`). Detail y `session_end_kind` `logoff\|shutdown\|unknown`, más `critical`. Si Windows mató el proceso antes del bloque `exit`, sale de la intención `session_end` que el subclass escribió en `WM_QUERYENDSESSION`. |
+| `external_close` | observado o intención | Restart Manager `CLOSEAPP` SIN apagado del sistema (instalador/desinstalación); `session_end_kind` `close_app`. |
 | `loop_destroyed` | observado | WM_QUIT u otra causa rara. |
-| `process_exit_after_cleanup` | observado | centinela, el proceso salió sin `RunEvent::Exit`. |
-| `crash_panic` | inferido | pánico en el hilo `main` durante la vida del proceso. |
+| `process_exit_after_cleanup` | observado | centinela (`ExitSentinel` en la tabla de recursos): el proceso salió por `cleanup_before_exit` sin `RunEvent::Exit`. |
+| `crash_panic` | inferido | pánico en el hilo `main` dentro de `[started_at, last_alive + 120 s]` del proceso anterior (pánicos de otros hilos solo suben `prev_panicked`). |
 | `os_restart_unclean` | inferido | cambió `os_boot` sin salida registrada (Fast Startup lo debilita). |
 | `unclean` | inferido | matado ("Finalizar tarea"), crash nativo, "Apagar de todos modos". |
 
-Precedencia al arrancar (`summarize_prev`): exit observado (si es
-`os_session_end`/`external_close` y hay intención `update`, gana `update` con
-el detail de sesión) → intención pendiente → `crash_panic` → `os_restart_unclean`
-→ `unclean`. Las intenciones no caducan por edad.
+Precedencia al arrancar (`lifecycle.rs::summarize_prev`): (1) exit observado
+(`prev_exit_source: observed`) — si es `os_session_end`, `external_close` o
+`process_exit_after_cleanup` y hay intención `update`, gana `update` (detail =
+el de sesión o, si no hay, el `via` de la intención); (2) intención `update`
+(`intent`); (3) intención `session_end` ⇒ `os_session_end` con su detail, o
+`external_close` si el detail es `close_app` (`intent`); (4) `crash_panic`;
+(5) `os_restart_unclean`; (6) `unclean` (los tres últimos `inferred`). Los tres
+primeros dan `prev_exit_clean: true`; los inferidos, `false`. Las intenciones
+no caducan por edad. Sin marcador usable (`marker_status` `missing`, `corrupt`
+o `foreign`) todos los `prev_exit_*` van `null`.
 
 ### `app.error` (jul-2026)
 
@@ -883,6 +912,7 @@ select app_version, count(*) arranques,
        count(*) filter (where (event_data->>'started_at_boot')::boolean) con_windows,
        count(*) filter (where (event_data->>'prev_exit_clean')::boolean is false) tras_cierre_sucio,
        string_agg(distinct event_data->>'prev_exit_reason', ', ') motivos_previos,
+       string_agg(distinct event_data->>'prev_exit_source', ', ') fuentes_previas, -- observed|intent|inferred
        count(*) filter (where (event_data->>'prev_panicked')::boolean) tras_panic,
        count(*) filter (where (event_data->>'version_changed')::boolean) tras_update,
        percentile_disc(0.5) within group (order by (event_data->>'downtime_s')::bigint) downtime_mediana_s
@@ -985,17 +1015,35 @@ group by 1, 2 order by sesiones desc limit 20;
 - **`Analytics.track` fuera del catálogo** (ver inventario): entra por la regla
   de 3 entradas el día que se quiera analizar.
 
-Resueltos en el ciclo 0.2.62 (#83): ciclo de vida del proceso desde un marcador
-síncrono en disco (`app.start`/`app.exit`/`app.resumed`, sobrevive a que
-Windows mate el proceso antes del outbox); `idle_reason` y el bloque `jornada`
-en ambos latidos, con `jornada.idle_reason_changed` por el outbox como línea de
-tiempo preferente; `device.profile.jornada` y `jornada.settings_changed` para
-el horario estático; autostart real en canal directo (`disabledByUser` cuando
-Task Manager lo apaga) con `autostart.changed`; `package_installed_at`; todo
-botón de logout pasa por `AuthContext.signOut` → `logout_cleanup` y emite
-`auth.logout`, y `auth.session_lost` solo en pérdidas reales (nunca por red
-caída); drenado del outbox por fila (sin duplicados) y `flush_row` dirigido con
-el token de quien sale.
+Resueltos en el ciclo 0.2.62 (#83). Telemetría: el ciclo de vida del proceso
+sale de un marcador síncrono en disco (`app.start`/`app.exit`/`app.resumed`;
+sobrevive a que Windows mate el proceso antes del outbox); `idle_reason` y el
+bloque `jornada` van en ambos latidos, con `jornada.idle_reason_changed` por el
+outbox como línea de tiempo preferente; `device.profile.jornada` y
+`jornada.settings_changed` cubren el horario estático; el autostart real del
+canal directo (`disabledByUser` cuando Task Manager lo apaga) se reporta con
+`autostart.changed`; `package_installed_at`; `auth.logout` desde Rust y
+`auth.session_lost` solo en pérdidas reales (nunca por red caída); el outbox
+drena por fila (sin duplicados) y `flush_row` sube la fila de salida con el
+token de quien sale. Arreglos que esa telemetría hace visibles:
+- El logout del sidebar del chat ya pasa por `AuthContext.signOut` →
+  `logout_cleanup` (antes se saltaba el guardado de la grabación).
+- El update NSIS va por `direct_update_install`: se niega con grabación o
+  post-proceso y cierra DB y sidecar antes de que el plugin salga.
+- Salir, cerrar sesión o apagar ya no suprimen la jornada hasta medianoche; el
+  cierre automático avisa "día cerrado" y el turno nocturno conserva sus horas
+  antes de medianoche.
+- El paro del usuario y el día cerrado se persisten entre reinicios
+  (`scheduled_recording_runtime.json`).
+- "Evaluar ahora" evalúa en el acto (`reset_immediately`).
+- El fin de sesión de Windows con grabación activa va acotado a < 5 s
+  (`lib.rs::run_session_end_exit`).
+- Recargar el webview ya no suelta al usuario en Rust
+  (`lib/authRelease.ts::shouldReleaseRustUser`).
+- Una sesión perdida a media grabación guarda el segmento
+  (`session_lost_cleanup`) antes de `clear_current_user`.
+- La recuperación de checkpoints tolera chunks truncados: los excluye y los
+  renombra a `.mp4.bad`, sin borrar audio.
 
 Resueltos en el ciclo sep-2026 (v0.2.60): dominio cerrado de `status`
 (`TelemetryStatus` + contrato `docs/platform-logs-status.sql` + re-drenado de
