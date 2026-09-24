@@ -1,8 +1,8 @@
 ---
 slug: telemetria-ciclo-vida-83
-run_id: wf_ce2ef218-3c7
-base_commit: 4c34b8159527968aeb3e10769b31507e04ef106b
-head_commit: 8cbacdb
+run_id: wf_0e7106a1-adb
+base_commit: 142c5ef3b8b46d1c6119c00d144bb7553ab9558b
+head_commit: 07570e9
 status: failed
 ---
 
@@ -10,105 +10,100 @@ status: failed
 
 > REFERENCIA HISTÓRICA — este reporte describe una corrida ya terminada; no re-ejecutar sus tareas.
 
-> **Historial de corridas**
-> - 1.ª corrida `wf_a2a028d2-ec3` (base `4ea3927`): solo A1 (`232037c`). A2 fue refutada y 27 tareas se saltaron en cascada. Su reporte está en el commit `75df2b9`.
-> - Entre corridas: A2 se corrigió a mano a pedido de Julio (relectura tras `claim` en `flush_row` y re-chequeo de `EXITING` antes de `get_valid_token`) y se commiteó en `4c34b81`.
-> - 2.ª corrida `wf_ce2ef218-3c7` (esta): J1–J7. P1a fue refutada y 19 tareas se saltaron en cascada.
-> - Decisión de Julio para las dos corridas desde A2: **"solo tests sin smoke ni build"**. Por eso ninguna tarea corrió `tauri:build:debug`.
-
-> **Notas del líder (correcciones al cuerpo del revisor final):**
-> - **AC-22 está cumplido**, aunque abajo diga "no verificable". La query se corrió en prod durante A1 (1.ª corrida): 160 filas y 10 personas, sin error, con la distribución pre-registrada en `plan.md`. Está en el reporte de `75df2b9`.
-> - Que AC-21 salga "no cumplido" por falta de build es consecuencia directa de la instrucción de Julio, no un olvido del motor.
+> **Historial de corridas** (decisión de Julio desde A2: "solo tests sin smoke ni build"; desde P1a: "corrige lo que vaya saliendo")
+> - 1.ª `wf_a2a028d2-ec3`: A1 (`232037c`); A2 refutada. Reporte en `75df2b9`.
+> - A2 corregida a mano (relectura tras `claim` en `flush_row`, `EXITING` antes de `get_valid_token`): `4c34b81`.
+> - 2.ª `wf_ce2ef218-3c7`: J1–J7 (`3dd8405`…`8cbacdb`); P1a refutada. Reporte en `9837727`.
+> - P1a corregida a mano (`filetime_ticks_to_rfc3339` trunca sub-segundos + test literal del plan): `142c5ef`.
+> - 3.ª `wf_0e7106a1-adb` (esta): P1b; L1 refutada.
+>
+> **Nota del líder:** AC-22 se verificó en prod durante A1 (1.ª corrida; ver `75df2b9`). AC-21 queda sin build por decisión de Julio.
 
 ## Resumen
-Esta corrida terminó 7 de 27 tareas de la spec. Todas son del bloque de jornada y scheduler (J1–J7) y cada una tiene su commit local sobre `4c34b81`. Cubren estos criterios: rearme por causa, cierre del día y turno nocturno, "Evaluar ahora", supresión persistida, instantánea e `idle_reason`, y configuración en `device.profile`. A1 y A2 ya estaban hechas desde una corrida anterior (`232037c` y `4c34b81`). P1a (autostart/FILETIME) falló porque los dos refutadores la rechazaron: `filetime_ticks_to_rfc3339` conserva los nanosegundos en vez de truncarlos como pide el plan, y falta el test obligatorio del plan. Las otras 19 tareas (P1b…Z1) no corrieron porque dependen en cadena de P1a. Veredicto: **ejecución parcial**. Lo que se commiteó está verde en tests. AC-9 a AC-20 siguen sin implementar. No se corrió `tauri:build:debug` porque Julio pidió "solo tests sin smoke ni build".
+Esta corrida (base `142c5ef`) terminó solo una tarea, P1b: `package_installed_at` y `package_installed_at_source` en `device.profile`, en el commit `07570e9`. Las tareas A1, A2, J1–J7 y P1a no se corrieron porque ya tenían commit; P1a se había corregido a mano en `142c5ef`. L1 (marcador de ciclo de vida `lifecycle.json`) falló. Un refutador sostuvo que la ventana de pánicos usa `last_seen` en lugar de `last_alive_ms`, como pide el plan. Su trabajo quedó sin commitear en el árbol. Las otras 17 tareas (L2…Z1) no corrieron porque dependen en cadena de L1. Veredicto: **ejecución parcial**. AC-9 queda cubierto en código y tests. AC-10 a AC-20 siguen sin implementar. En esta corrida no hay evidencia de que se haya corrido `tauri:build:debug`.
 
 ## Criterios de aceptación
 | AC | Evidencia (comando o archivo:línea) | Resultado |
 |---|---|---|
-| AC-1 | `node scripts/lint-telemetry.js` → `OK: catálogo espejo (36 eventos, 12 legacy)…` (lo hizo A1 en `232037c`, antes de la base) | cumplido |
-| AC-2 | `cargo test --lib logging::` → 63 passed; `cargo test --lib database::repositories::recording_log` → 5 passed (lo hizo A2 en `4c34b81`, antes de la base) | cumplido |
-| AC-3 | `service.rs:686-697` (`close_owned_segment_for_exit` llama a `begin_session_end` antes del stop), `lib.rs:1850`; test `rearm_tests::logout_y_login_el_mismo_dia_no_apagan_la_jornada` dentro de `cargo test --lib scheduled_recording` → 108 passed | cumplido en tests; falta la matriz E2E manual |
-| AC-4 | `service.rs:112` (mensaje "…siguiente horario"); tests `cierre_automatico_turno_nocturno_no_pierde_22_00_00_00` y `cierre_automatico_viernes_salta_al_lunes` (108 passed) | cumplido |
-| AC-5 | `service.rs:844` `tick.reset_immediately();` en `CheckNow` | cumplido |
-| AC-6 | `scheduled_recording/runtime_state.rs` con 8 tests (vencido, corrupto, versión futura, reloj movido, SessionEnd nunca escrito) incluidos en los 108 passed; `docs/ONBOARDING_Y_GATES.md:31` | cumplido en tests; falta la comprobación manual (7) |
-| AC-7 | `logging/commands.rs:341-343,369` (`idle_reason` y `jornada` en `HealthSnapshot`); `mem_sampler.rs:384-392` (latido nativo); `service.rs:262` emite `JORNADA_IDLE_REASON_CHANGED`; test `health_snapshot_serializa_con_keys_esperadas` (logging 63 passed) | cumplido en código y tests; no se verificó en DevTools |
-| AC-8 | `status_snapshot.rs:371` `changed_fields` + tests en `:776-792`; `service.rs:291` emite `JORNADA_SETTINGS_CHANGED`; `logging/commands.rs:446` `DeviceProfile.jornada` | cumplido en tests; falta la comprobación manual (6) |
-| AC-9 | P1a refutada. Hay trabajo sin commitear: `utils.rs:38-54` (nanosegundos sin truncar, falta el test de `134_116_992_009_999_999`) y `autostart_state.rs`, que está untracked | no cumplido |
-| AC-10 | Tarea L1/L2 no ejecutada | no cumplido |
-| AC-11 | Tareas L1/L2/E* no ejecutadas | no cumplido |
-| AC-12 | Tareas E1–E3 no ejecutadas | no cumplido |
-| AC-13 | Tarea de recuperación de checkpoints no ejecutada | no cumplido |
-| AC-14 | Tareas U* no ejecutadas | no cumplido |
-| AC-15 | Tareas U* no ejecutadas | no cumplido |
-| AC-16 | Tarea P1b no ejecutada | no cumplido |
-| AC-17 | Tareas S* no ejecutadas | no cumplido |
-| AC-18 | Tareas S* no ejecutadas | no cumplido |
-| AC-19 | Tareas S* no ejecutadas | no cumplido |
-| AC-20 | Tareas S* no ejecutadas | no cumplido |
-| AC-21 | Tests verdes: `cargo test --lib scheduled_recording` 108/108, `logging::` 63/63, `utils::tests` 7/7, `npm run test` 520/520. `tauri:build:debug` no se corrió por instrucción de Julio | no cumplido: falta el build |
-| AC-22 | Query de prod ejecutada en el narrativo de A1 (corrida anterior); en esta corrida no se ejecutó SQL | no verificable |
-| AC-23 | Solo se tocó `docs/ONBOARDING_Y_GATES.md` (+13). CLAUDE.md, REGLAS_AUDIO_GRABACION.md, CANALES_DISTRIBUCION.md y NUBE_CUENTAS_SYNC.md no cambiaron (Z1 no corrió). El lint de telemetría da OK | no cumplido |
+| AC-1 | `cd frontend && node scripts/lint-telemetry.js` → `OK: catálogo espejo (36 eventos, 12 legacy)…` (lo corrió el revisor) | cumplido |
+| AC-2 | Hecho en `4c34b81` (antes de esta base). Esta corrida no volvió a correr los tests | cumplido (según el reporte anterior) |
+| AC-3 | Hecho en `3dd8405` (J1), antes de esta base. Falta la matriz E2E | cumplido en tests (reporte anterior); falta la parte manual |
+| AC-4 | Hecho en `664747e` (J2), antes de esta base | cumplido (reporte anterior) |
+| AC-5 | Hecho en `8e3ad73` (J3), antes de esta base | cumplido (reporte anterior) |
+| AC-6 | Hecho en `192ef5e` (J4), antes de esta base. Falta la comprobación manual (7) | cumplido en tests (reporte anterior) |
+| AC-7 | Hecho en `dc3849e` y `b915bcb` (J5 y J6), antes de esta base. No se verificó en DevTools | cumplido en tests (reporte anterior) |
+| AC-8 | Hecho en `8cbacdb` (J7), antes de esta base. Falta la comprobación manual (6) | cumplido en tests (reporte anterior) |
+| AC-9 | Parte P1a en `142c5ef`: `autostart_state.rs:93` `classify_direct`, con tests en `:180-258`, y `utils.rs:38` `filetime_ticks_to_rfc3339`. Parte P1b en `07570e9`: `utils.rs:98` `winrt_datetime_to_rfc3339`, `utils.rs:130` `package_installed_at`, `utils.rs:155` `nsis_uninstall_key_last_write` y `logging/commands.rs:445,502`, con tests en `commands.rs:671` y `utils.rs:348-406`. Según el workflow, `cargo test --lib utils::tests` dio 17 passed, `logging::commands` 6 y `rival_install` 3. El revisor no volvió a correrlos | cumplido en código y tests; falta la comprobación manual (5) en MSIX y NSIS |
+| AC-10 | L1 refutada. `lifecycle.rs:620-636` calcula `window_end = last_seen + PANIC_GRACE_MS`; `plan.md:2071` pide `[started_at_ms, last_alive_ms + 120_000]`. No hay commit y `lifecycle.rs` está untracked | no cumplido |
+| AC-11 | L2/E1/L3 no se ejecutaron | no cumplido |
+| AC-12 | E2a/E2b no se ejecutaron | no cumplido |
+| AC-13 | E3 no se ejecutó | no cumplido |
+| AC-14 | U1/U2/U4 no se ejecutaron | no cumplido |
+| AC-15 | L3 no se ejecutó | no cumplido |
+| AC-16 | P2 no se ejecutó | no cumplido |
+| AC-17 | S1/S3b no se ejecutaron | no cumplido |
+| AC-18 | S2 no se ejecutó | no cumplido |
+| AC-19 | S3a/S3b/S4 no se ejecutaron | no cumplido |
+| AC-20 | S5 no se ejecutó | no cumplido |
+| AC-21 | Los tests de P1b pasaron según el workflow. `npm run test` (corrido por el revisor): 519 passed y 1 failed. La falla es un timeout de 5 s en `dashboard-guards.test.ts:138`, un test que recorre `src/`; no tiene relación con P1b. No consta ningún `tauri:build:debug` en esta corrida | no cumplido: falta el build y la suite no quedó 100 % verde |
+| AC-22 | La query se corrió en prod durante A1 (1.ª corrida, reporte de `75df2b9`). En esta corrida no se ejecutó SQL | cumplido (según la corrida anterior) |
+| AC-23 | Z1 no se ejecutó; los docs de reglas no se actualizaron | no cumplido |
 | AC-24 | Matriz E2E manual | no verificable (pendiente para Julio) |
 
 ## Tareas
 | Tarea | Riesgo | Correcciones | Refutadores | Verificación | Commit |
 |---|---|---|---|---|---|
-| A1 | low | — | — | hecha en la 1.ª corrida | `232037c` |
-| A2 | medium | — | — | corregida a mano; tests verdes | `4c34b81` |
-| J1 | high | 0 | 2 no sostenidas | verde | `3dd8405` |
-| J2 | medium | 0 | 2 no sostenidas | verde | `664747e` |
-| J3 | low | 0 | 0 (riesgo low) | verde | `8e3ad73` |
-| J4 | high | 0 | 2 no sostenidas | verde | `192ef5e` |
-| J5 | medium | 0 | 2 no sostenidas | verde | `dc3849e` |
-| J6 | medium | 0 | 2 no sostenidas | verde | `b915bcb` |
-| J7 | medium | 0 | 2 no sostenidas | verde | `8cbacdb` |
-| P1a | medium | 1 | 2 sostenidas | refutada tras corrección | — (árbol sucio) |
-| P1b, L1, L2, E1, E2a, E2b, E3, U1, U2, L3, U4, P2, S1, S2, S3a, S3b, S4, S5, Z1 | — | — | — | saltada (dependencia de P1a) | — |
+| A1, A2, J1, J2, J3, J4, J5, J6, J7, P1a | — | — | — | hechas en corridas anteriores | — |
+| P1b | medium | 0 | 2 no sostenidas | verde | `07570e9` |
+| L1 | — | ≥1 | 1 sostenidas | refutada tras corrección | — (árbol sucio) |
+| L2, E1, E2a, E2b, E3, U1, U2, L3, U4, P2, S1, S2, S3a, S3b, S4, S5, Z1 | — | — | — | saltada (dependencia) | — |
 
 ## Commits
-- `3dd8405` · fix(jornada): salir o cerrar sesión ya no suprime la jornada hasta medianoche (S1) · J1
-- `664747e` · fix(jornada): el cierre automático avisa día cerrado y respeta el turno nocturno (S1) · J2
-- `8e3ad73` · fix(jornada): Evaluar ahora evalúa en el siguiente instante (S1) · J3
-- `192ef5e` · feat(jornada): la supresión por paro o cierre del día sobrevive al reinicio (S1) · J4
-- `dc3849e` · feat(telemetria): instantánea del scheduler con idle_reason y sus transiciones (S1) · J5
-- `b915bcb` · feat(telemetria): idle_reason y bloque jornada en health.heartbeat (S1) · J6
-- `8cbacdb` · feat(telemetria): configuración de jornada en device.profile y jornada.settings_changed (S1) · J7
+- `07570e9` · feat(telemetria): package_installed_at en device.profile desde el paquete MSIX o la llave de desinstalacion NSIS (S1) · P1b
 
-`main` va 10 commits por delante de `origin/main`. Son estos 7 más `4ea3927`, `232037c`, `75df2b9` y `4c34b81`, todos sin push.
+`main` va 13 commits por delante de `origin/main`, todos sin push.
 
 ## Fallos
-- **P1a** (autostart real y `package_installed_at`)
-  - **Causa:** la refutaron los dos refutadores tras corrección. `filetime_ticks_to_rfc3339` (`utils.rs:52-53`) pasa `nanos` a `from_timestamp` en vez de `0`. Con eso `134_116_992_009_999_999` produce `2026-01-01T00:00:00.999999900+00:00`, cuando el plan pide `…00:00:00+00:00` (plan.md:1823 y :1876). Ese test obligatorio no se escribió.
-  - **Archivos sucios:**
-    - ` M frontend/src-tauri/src/lib.rs`: `pub mod autostart_state` y registro de `autostart_get_state`.
-    - ` M frontend/src-tauri/src/logging/commands.rs`: `autostart_disabled_at` y `autostart_mechanism` en `DeviceProfile`, más 2 tests.
-    - ` M frontend/src-tauri/src/utils.rs`: `filetime_ticks_to_rfc3339` más 6 tests.
-    - ` M frontend/src/services/healthHeartbeatService.ts`: tipos de las dos claves nuevas.
-    - `?? frontend/src-tauri/src/autostart_state.rs`: 267 líneas, `classify_direct` más 9 tests.
-  - El árbol sucio compila y sus tests pasan. Solo falla contra el plan.
-- **P1b, L1, L2, E1, E2a, E2b, E3, U1, U2, L3, U4, P2, S1, S2, S3a, S3b, S4, S5, Z1**: no se ejecutaron porque dependen en cadena de P1a. No dejaron archivos sucios.
+- **L1** (marcador de ciclo de vida, `app.start` y `app.resumed`): refutada tras una corrección. `summarize_prev` en `lifecycle.rs:620-636` usa como fin de la ventana de pánicos `last_seen`, que incluye `exit.done_at_ms`/`begun_at_ms`. El contrato de `plan.md:2071` pide `last_alive_ms + 120_000`. Con eso, un pánico de un hilo de fondo posterior a `last_alive_ms + 120 s` cuenta como `prev_panicked=true`. Ningún caso de la tabla de tests combina un exit observado con pánicos. Según el workflow, `cargo test --lib logging::telemetry::lifecycle` dio 26 passed, pero esos tests no cubren este caso.
+  - Archivos sucios: `frontend/src-tauri/src/lib.rs` (+9: `rotate_at_boot` y `emit_start`), `frontend/src-tauri/src/logging/telemetry/mod.rs` (+4), `frontend/src-tauri/src/logging/telemetry/panics.rs` (+88: `PanicTs`, `parse_panic_ts` y el campo `thread`) y `frontend/src-tauri/src/logging/telemetry/lifecycle.rs` (untracked, 1196 líneas).
+- **L2, E1, E2a, E2b, E3, U1, U2, L3, U4, P2, S1, S2, S3a, S3b, S4, S5, Z1**: no corrieron porque dependen en cadena de L1.
 
 ## Riesgos
-- **Sin build integrado:** `npm run tauri:build:debug` no corrió en ninguna tarea, por instrucción de Julio. Los 7 commits no tienen verificación de bundle, ni lints post-build (`lint-exe-imports`, `lint-aux-bundle`, `lint-main-bundle`), ni smoke. Esto contradice el protocolo de compilación de CLAUDE.md y AC-21.
-- **Tests corridos sobre el árbol sucio:** mis `cargo test`, `npm run test` y `lint-telemetry` se ejecutaron con los cambios de P1a en el working tree. HEAD solo no se verificó aislado, aunque los cambios de P1a son aditivos.
+- **Sin build integrado.** No consta `tauri:build:debug` para `07570e9`, así que AC-21 no se cumple. Las dos corridas anteriores tampoco lo corrieron, por instrucción de Julio ("solo tests sin smoke ni build").
+- **Código WinRT y de registro sin probar en ejecución.** `Package::Current().InstalledDate()` y el last-write de `Uninstall\Maity` solo tienen tests de funciones puras. En un MSIX y un NSIS reales no se probaron.
+- **El árbol sucio de L1 toca `lib.rs`.** Llama a `rotate_at_boot` antes de la DB. Cualquier commit o build hecho ahora lo arrastraría sin revisión aprobada.
 - **Ratchets:**
-  - Vitest: **520** tests pasan (baseline 513, sube 7), 64 archivos.
-  - Eventos en catálogo: **36** (baseline 28, sube 8).
-- **Refutadores ausentes:** J3 no tuvo refutadores (`refuters: []`). Su evidencia es solo el diff de una línea (`service.rs:844`) y los tests del módulo.
-- **Estado intermedio en código:** `idle_reason`, `jornada.idle_reason_changed` y `jornada.settings_changed` ya se emiten, pero `app.start`, `app.exit`, `autostart.changed`, `auth.*` y `app.resumed` no existen todavía en código. Los 8 eventos están en el catálogo y en `docs/TELEMETRIA.md`, pero 5 de ellos no tienen emisor. La query "¿Por qué no grabó?" no puede distinguir aún salida, apagado, logout ni autostart apagado.
-- **Deuda de docs (AC-23):** CLAUDE.md y 3 de los 4 docs de reglas no describen todavía la supresión persistida (`runtime_state.rs`) ni la retención `SessionEnd`. Solo lo hace ONBOARDING_Y_GATES.md.
-- **Sin comprobaciones manuales:** no se hizo ninguna de las de AC-3, AC-6, AC-7 (DevTools), AC-8 ni AC-24.
+  - vitest: 519 passing, contra 513 de línea base; sube. Hubo 1 falla por timeout, al parecer intermitente, en `dashboard-guards.test.ts`.
+  - Catálogo de eventos: 36, contra 28 de línea base; sube.
+- **Refutadores:** P1b tuvo 2 refutadores y ninguno sostuvo su objeción. No faltan refutadores.
+- **Verificación del revisor.** Los tests de cargo de P1b no se volvieron a correr: salen del output del workflow y se cotejaron contra el diff, donde los tests existen.
 
 ## Lecciones propuestas para CLAUDE.md
-- En los `plan.md` de spec, declarar solo dependencias reales entre tareas. Aquí la refutación de P1a (una conversión FILETIME) bloqueó 19 tareas, entre ellas L*, E* y S*, sin que el plan mostrara que alguna dependiera de ella.
-- Cuando el plan fija un caso de prueba literal (entrada y salida), el implementador debe escribir ese test tal cual antes que variantes propias. Omitirlo fue la causa directa del rechazo de P1a.
+- Cuando el plan define una ventana o umbral con una variable concreta (`last_alive_ms`), la tabla de tests de la función pura debe tener un caso en la frontera que distinga esa variable de sus alternativas (por ejemplo, exit observado junto con pánicos).
+- En specs con cadena lineal de dependencias, una sola refutación salta todo el resto. Conviene marcar en el plan qué tareas son independientes (E3, U1, S2) para que corran aunque falle una tarea de la cadena.
 
 ## Qué queda para Julio
-- **Push manual** de `main` (10 commits por delante de `origin/main`). No se hizo push.
-- **Decidir sobre P1a** (árbol sucio). Opción (a): corregir `utils.rs:52` a `from_timestamp(secs, 0)`, agregar el test de `134_116_992_009_999_999 → "2026-01-01T00:00:00+00:00"`, commitear y reanudar `/spec-execute telemetria-ciclo-vida-83` desde P1a con el motor serial. Opción (b): descartar los cambios sucios y re-ejecutar P1a desde cero.
-- **Build integrado:** correr `cd frontend && pnpm run tauri:build:debug` sobre los commits J1–J7 antes de cualquier release. Esta corrida no lo hizo.
-- **Rama de backup:** `backup/2026-09-23-telemetria-83` ya existe.
-- **Matriz E2E en Windows 11** (NSIS debug y MSIX local). Con lo commiteado hoy solo se pueden probar los escenarios (6), (7) y (8), más la parte de jornada de (3). Los escenarios (1), (2), (4), (5), (9), (10) y (11) dependen de tareas que no corrieron.
-- **Query "¿Por qué no grabó? — persona × día hábil"** y **control de dominio de `idle_reason` y `app.exit reason`** tras una semana en campo con 0.2.62. Hacerlo después de completar la spec.
-- **`graphify update .`** al terminar la ejecución, como pide CLAUDE.md.
+- **Push manual:** hay 13 commits en `main` sin push, que incluyen `07570e9`.
+- **Decidir sobre L1:**
+  - Opción 1: corregir a mano `window_end` para usar `alive + PANIC_GRACE_MS` y añadir el caso de tabla exit+pánicos. Después, commitear L1 como se hizo con A2 y P1a.
+  - Opción 2: descartar el árbol sucio (`lib.rs`, `mod.rs`, `panics.rs` y `lifecycle.rs`).
+  - Después, relanzar `/spec-execute telemetria-ciclo-vida-83` con el motor serial (sin `--parallel`) para L2…Z1.
+- **Backup y build:**
+  - Antes de continuar, crear `git branch backup/2026-09-23-telemetria-83` (Protocolo Guardian: lo que falta toca `lib.rs`, el scheduler y el pipeline de grabación).
+  - Correr `cd frontend && npm run tauri:build:debug` al menos una vez sobre los commits acumulados.
+- **Matriz E2E en Windows 11**, con NSIS debug y un MSIX local vía `/store-msix`, los 11 escenarios de `verify.md`:
+  - `tray_quit`
+  - logoff
+  - reinicio grabando
+  - Finalizar tarea
+  - autostart apagado desde el Administrador de tareas (lo único que esta corrida puede validar, junto con `package_installed_at` en `device.profile`)
+  - jornada apagada
+  - paro dentro del horario y reinicio
+  - cierre automático
+  - logout desde el sidebar del chat
+  - suspensión de 10+ min
+  - update NSIS
+- **Query en prod:** correr "¿Por qué no grabó? — persona × día hábil" de `docs/TELEMETRIA.md` para el usuario de pruebas en los días de la matriz.
+- **Control de dominio tras la primera semana de 0.2.62:** revisar la distribución de `idle_reason` en `health.heartbeat` y los valores distintos de `app.exit reason`. Todo valor debe estar en las tablas del contrato.
+- **Grafo:** `graphify update .` al terminar la ejecución.
+- **Test intermitente:** revisar si el timeout de `dashboard-guards.test.ts:138` se repite y, si pasa, subirle el timeout.
