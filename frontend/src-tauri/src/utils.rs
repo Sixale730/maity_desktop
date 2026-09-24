@@ -30,6 +30,29 @@ pub fn is_running_under_package_identity() -> bool {
     }
 }
 
+/// Traduce un FILETIME crudo (ticks de 100 ns desde 1601-01-01 UTC, tal como los guarda
+/// `StartupApproved\Run` en sus bytes 4..12) a RFC3339 UTC. `None` si el valor es 0 (sin
+/// timestamp) o cae en/antes de la época Unix (1970-01-01T00:00:00Z, bytes corruptos/parciales)
+/// — nunca inventa una fecha absurda. Pura para poder testearla sin registro
+/// (`autostart_state.rs`).
+pub fn filetime_ticks_to_rfc3339(ticks: u64) -> Option<String> {
+    if ticks == 0 {
+        return None;
+    }
+    // Segundos entre las épocas FILETIME (1601-01-01) y Unix (1970-01-01). Se divide en
+    // u64 ANTES de pasar a i64: un `ticks` enorme no desborda el cast.
+    const FILETIME_UNIX_EPOCH_DIFF_SECS: i64 = 11_644_473_600;
+    let secs = (ticks / 10_000_000) as i64 - FILETIME_UNIX_EPOCH_DIFF_SECS;
+    // `<= 0` (no `< 0`): secs == 0 es exactamente 1970-01-01T00:00:00Z, el límite que
+    // la spec de #83 (P1a) documenta como excluido, no solo lo negativo.
+    if secs <= 0 {
+        return None;
+    }
+    // Sub-segundos descartados a propósito (nanos = 0): la fecha de un apagado del
+    // autostart o de una instalación no necesita más precisión que el segundo.
+    chrono::DateTime::<chrono::Utc>::from_timestamp(secs, 0).map(|dt| dt.to_rfc3339())
+}
+
 /// Traduce `Windows.ApplicationModel.PackageSignatureKind` (su valor i32) a texto.
 /// Pura para poder testearla sin WinRT.
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
@@ -173,5 +196,69 @@ mod tests {
         assert_eq!(signature_kind_label(3), "store");
         assert_eq!(signature_kind_label(4), "system");
         assert_eq!(signature_kind_label(99), "unknown");
+    }
+
+    #[test]
+    fn filetime_ticks_to_rfc3339_cero_es_none() {
+        assert_eq!(filetime_ticks_to_rfc3339(0), None);
+    }
+
+    #[test]
+    fn filetime_ticks_to_rfc3339_antes_de_unix_es_none() {
+        // 1 tick (100 ns) después de la época FILETIME (1601), muy antes de 1970.
+        assert_eq!(filetime_ticks_to_rfc3339(1), None);
+    }
+
+    #[test]
+    fn filetime_ticks_to_rfc3339_limite_exacto_de_epoch_es_none() {
+        // FILETIME de 1970-01-01T00:00:00Z exacto (unix_ticks == 0, secs == 0): la spec de
+        // #83 (P1a) documenta este límite como excluido, no solo lo estrictamente negativo.
+        const FILETIME_UNIX_EPOCH_DIFF_TICKS: u64 = 116_444_736_000_000_000;
+        assert_eq!(filetime_ticks_to_rfc3339(FILETIME_UNIX_EPOCH_DIFF_TICKS), None);
+    }
+
+    #[test]
+    fn filetime_ticks_to_rfc3339_un_tick_despues_del_epoch_no_es_none() {
+        // Un solo tick (100 ns) tras la época Unix: secs sigue truncando a 0 ⇒ también
+        // debe caer en None (secs <= 0), no solo el límite exacto.
+        const FILETIME_UNIX_EPOCH_DIFF_TICKS: u64 = 116_444_736_000_000_000;
+        assert_eq!(filetime_ticks_to_rfc3339(FILETIME_UNIX_EPOCH_DIFF_TICKS + 1), None);
+    }
+
+    #[test]
+    fn filetime_ticks_to_rfc3339_primer_segundo_tras_epoch_convierte() {
+        // Ya en secs == 1 (10_000_000 ticks tras la época), sí debe convertir.
+        const FILETIME_UNIX_EPOCH_DIFF_TICKS: u64 = 116_444_736_000_000_000;
+        assert_eq!(
+            filetime_ticks_to_rfc3339(FILETIME_UNIX_EPOCH_DIFF_TICKS + 10_000_000).as_deref(),
+            Some("1970-01-01T00:00:01+00:00")
+        );
+    }
+
+    #[test]
+    fn filetime_ticks_to_rfc3339_convierte_fecha_conocida() {
+        // FILETIME de 2024-01-01T00:00:00Z.
+        let ticks: u64 = 133_485_408_000_000_000;
+        assert_eq!(
+            filetime_ticks_to_rfc3339(ticks).as_deref(),
+            Some("2024-01-01T00:00:00+00:00")
+        );
+    }
+
+    #[test]
+    fn filetime_ticks_to_rfc3339_convierte_2026() {
+        assert_eq!(
+            filetime_ticks_to_rfc3339(134_116_992_000_000_000).as_deref(),
+            Some("2026-01-01T00:00:00+00:00")
+        );
+    }
+
+    #[test]
+    fn filetime_ticks_to_rfc3339_trunca_sub_segundos() {
+        // 999.9999 ms después de 2026-01-01T00:00:00Z: el caso literal del plan (P1a).
+        assert_eq!(
+            filetime_ticks_to_rfc3339(134_116_992_009_999_999).as_deref(),
+            Some("2026-01-01T00:00:00+00:00")
+        );
     }
 }

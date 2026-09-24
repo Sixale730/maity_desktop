@@ -161,6 +161,11 @@ interface DeviceProfile {
   build_channel: string
   started_at_boot: boolean
   autostart_state: string
+  /** RFC3339 UTC de cuándo Task Manager apagó el autostart (solo con
+   * `autostart_state === 'disabledByUser'` en canal directo); null en cualquier otro caso. */
+  autostart_disabled_at: string | null
+  /** `startup_task` (MSIX) | `run_key` (directo, Windows) | `plugin` (otros SO). */
+  autostart_mechanism: string
   /** Firma del MSIX (`store` | `developer` | …); null fuera de MSIX. */
   signature_kind: string | null
   /** `null` = el scheduler todavía no publicó nada en este proceso. */

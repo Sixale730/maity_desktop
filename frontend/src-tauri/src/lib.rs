@@ -37,6 +37,7 @@ pub(crate) use perf_trace;
 pub mod api;
 pub mod audio;
 pub mod auth_server;
+pub mod autostart_state;
 pub mod builtin_ai;
 pub mod cloud_sync;
 pub mod coach;
@@ -1780,6 +1781,9 @@ pub fn run() {
             startup_task::startup_task_request_enable,
             startup_task::startup_task_disable,
             startup_task::open_startup_settings,
+            // Estado real de autostart (canal directo: distingue "nunca configurado" de
+            // "lo apagó Task Manager"; MSIX: delega en startup_task). Ver autostart_state.rs.
+            autostart_state::autostart_get_state,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

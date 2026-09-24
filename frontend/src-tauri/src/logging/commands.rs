@@ -429,6 +429,13 @@ pub struct DeviceProfile {
     /// del StartupTask (WinRT); en el resto de canales, del plugin autostart.
     /// `disabledByUser` = apagado en Task Manager y la app NO puede reactivarlo.
     pub autostart_state: String,
+    /// RFC3339 UTC de cuándo Task Manager apagó el autostart (solo con
+    /// `autostart_state == "disabledByUser"` en canal directo); `None` en cualquier
+    /// otro caso, incluido MSIX. Desde 0.2.62 (#83, AC-9).
+    pub autostart_disabled_at: Option<String>,
+    /// Mecanismo que reportó `autostart_state`: `startup_task` (MSIX) | `run_key`
+    /// (directo, Windows) | `plugin` (otros SO). Desde 0.2.62 (#83, AC-9).
+    pub autostart_mechanism: &'static str,
     /// Firma del MSIX (`store` | `developer` | `enterprise` | `system` | `none` |
     /// `unknown`); `None` fuera de MSIX. Sólo `store` recibe updates de la Store:
     /// `build_channel=store` + `developer` = copia de prueba que nunca se actualiza.
@@ -443,21 +450,7 @@ pub struct DeviceProfile {
 pub async fn get_device_profile<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> DeviceProfile {
     use crate::audio::hardware_detector::{GpuType, HardwareProfile, PerformanceTier};
 
-    let autostart_state = match crate::startup_task::startup_task_get_state().await {
-        // "unsupported" = no-MSIX (NSIS/dev/macOS/Linux): ahí el autostart vive
-        // en el plugin (registry Run / LaunchAgent / .desktop).
-        Ok(state) if state == "unsupported" => {
-            use tauri_plugin_autostart::ManagerExt;
-            match app.autolaunch().is_enabled() {
-                Ok(true) => "enabled".to_string(),
-                Ok(false) => "disabled".to_string(),
-                Err(_) => "unknown".to_string(),
-            }
-        }
-        Ok(state) => state,
-        // Err solo ocurre bajo MSIX (WinRT falló); el plugin no aplica ahí.
-        Err(_) => "unknown".to_string(),
-    };
+    let autostart = crate::autostart_state::current(&app).await;
 
     #[cfg(target_os = "windows")]
     let signature_kind = crate::startup_task::with_mta(|| Ok(crate::utils::package_signature_kind()))
@@ -493,7 +486,9 @@ pub async fn get_device_profile<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> 
             "direct"
         },
         started_at_boot: crate::STARTED_AT_BOOT.load(std::sync::atomic::Ordering::Relaxed),
-        autostart_state,
+        autostart_state: autostart.state,
+        autostart_disabled_at: autostart.disabled_at,
+        autostart_mechanism: autostart.mechanism,
         signature_kind,
         jornada: crate::scheduled_recording::status_snapshot::jornada_config(),
     }
@@ -594,6 +589,65 @@ mod health_snapshot_tests {
                 "espejo de healthHeartbeatService.ts y de docs/TELEMETRIA.md: falta {key}"
             );
         }
+    }
+
+    /// #83 P1a (AC-9): blinda las claves de autostart de `DeviceProfile` que
+    /// healthHeartbeatService.ts espera en `device.profile` (plan.md § P1a Tests).
+    #[test]
+    fn device_profile_serializa_campos_de_autostart() {
+        let profile = DeviceProfile {
+            cpu_cores: 8,
+            gpu_type: "none",
+            has_gpu_acceleration: false,
+            memory_gb: 16,
+            performance_tier: "medium",
+            os: "windows",
+            os_version: Some("10.0.26200".to_string()),
+            arch: "x86_64",
+            build_channel: "direct",
+            started_at_boot: false,
+            autostart_state: "disabledByUser".to_string(),
+            autostart_disabled_at: Some("2024-01-01T00:00:00+00:00".to_string()),
+            autostart_mechanism: "run_key",
+            signature_kind: None,
+            jornada: None,
+        };
+
+        let v = serde_json::to_value(&profile).expect("DeviceProfile serializable");
+        assert_eq!(v["autostart_state"], "disabledByUser");
+        assert_eq!(v["autostart_disabled_at"], "2024-01-01T00:00:00+00:00");
+        assert_eq!(v["autostart_mechanism"], "run_key");
+        assert!(
+            v.as_object().unwrap().contains_key("autostart_state")
+                && v.as_object().unwrap().contains_key("autostart_disabled_at")
+                && v.as_object().unwrap().contains_key("autostart_mechanism"),
+            "espejo de healthHeartbeatService.ts: device.profile debe traer las 3 keys de autostart"
+        );
+    }
+
+    #[test]
+    fn device_profile_autostart_disabled_at_none_serializa_null() {
+        let profile = DeviceProfile {
+            cpu_cores: 8,
+            gpu_type: "none",
+            has_gpu_acceleration: false,
+            memory_gb: 16,
+            performance_tier: "medium",
+            os: "windows",
+            os_version: None,
+            arch: "x86_64",
+            build_channel: "direct",
+            started_at_boot: false,
+            autostart_state: "enabled".to_string(),
+            autostart_disabled_at: None,
+            autostart_mechanism: "run_key",
+            signature_kind: None,
+            jornada: None,
+        };
+
+        let v = serde_json::to_value(&profile).expect("DeviceProfile serializable");
+        assert_eq!(v["autostart_state"], "enabled");
+        assert!(v["autostart_disabled_at"].is_null());
     }
 
     #[test]
