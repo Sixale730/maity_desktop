@@ -293,6 +293,10 @@ windows = { version = "0.58", features = [
     # Updates del canal Store vía StoreContext (store_update.rs). IInitializeWithWindow
     # ya llega por Win32_UI_Shell (implícito en Win32_UI_Shell_PropertiesSystem).
     "Services_Store",
+    # Hora de logon de la sesión de Windows (WTSQuerySessionInformationW/WTSSessionInfo)
+    # para el marcador de ciclo de vida (logging/telemetry/lifecycle.rs): con Inicio
+    # rápido un apagado no cambia el boot del SO, pero sí la sesión. wtsapi32.dll es de sistema.
+    "Win32_System_RemoteDesktop",
 ] }
 # Lectura/escritura del registro de Windows para detectar y limpiar la instalación
 # rival (NSIS de descarga directa) cuando Maity corre bajo MSIX/Store. Ver rival_install.rs.

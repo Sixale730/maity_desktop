@@ -233,7 +233,7 @@ TODOS van por el outbox nativo (`emit_event`/`emit_event_with_id` →
 
 | event_type | Emisor | Cuándo | Payload clave |
 |---|---|---|---|
-| `app.start` | `logging/telemetry/lifecycle.rs::emit_start` | 1× por proceso, en un spawn después del init de la DB (el marcador ya se rotó en `lifecycle::rotate_at_boot`, primera sentencia del `setup()`). `status` `warning` si `prev_exit_clean` es `false`; si no, `ok` | `lifecycle_schema` (1), `build` (`release\|debug`), `build_channel` (`store\|direct`), `started_at_boot`, `autostart_state`, `started_at`, `os_boot_at`, `first_run`, `marker_status` (`ok\|missing\|corrupt\|foreign`), `prev_session_id`, `prev_version` (nunca `'unknown'`: `null`), `prev_version_source` (`marker\|outbox\|null`; `outbox` solo en release y sin marcador usable), `version_changed`, `prev_started_at`, `prev_last_alive_at`, `prev_uptime_s`, `prev_exit_reason`, `prev_exit_detail`, `prev_exit_source` (`observed\|intent\|inferred\|null`), `prev_exit_clean` (`null` = sin marcador usable: primer arranque o upgrade desde una versión anterior a 0.2.62), `prev_exit_interrupted` (salida empezada y no terminada), `prev_recording_active_at_exit`, `prev_panicked`, `prev_panic_count`, `os_rebooted_since_prev`, `downtime_s`, `clock_skew` |
+| `app.start` | `logging/telemetry/lifecycle.rs::emit_start` | 1× por proceso, en un spawn después del init de la DB (el marcador ya se rotó en `lifecycle::rotate_at_boot`, primera sentencia del `setup()`). `status` `warning` si `prev_exit_clean` es `false`; si no, `ok` | `lifecycle_schema` (1), `build` (`release\|debug`), `build_channel` (`store\|direct`), `started_at_boot`, `autostart_state`, `started_at`, `os_boot_at`, `first_run`, `marker_status` (`ok\|missing\|corrupt\|foreign`), `prev_session_id`, `prev_version` (nunca `'unknown'`: `null`), `prev_version_source` (`marker\|outbox\|null`; `outbox` solo en release y sin marcador usable), `version_changed`, `prev_started_at`, `prev_last_alive_at`, `prev_uptime_s`, `prev_exit_reason`, `prev_exit_detail`, `prev_exit_source` (`observed\|intent\|inferred\|null`), `prev_exit_clean` (`null` = sin marcador usable: primer arranque o upgrade desde una versión anterior a 0.2.62), `prev_exit_interrupted` (salida empezada y no terminada), `prev_recording_active_at_exit`, `prev_panicked`, `prev_panic_count`, `os_rebooted_since_prev`, `downtime_s`, `clock_skew`. Desde 0.2.62 (Inicio rápido, ver § Inicio rápido de Windows): `os_logon_at` (rfc3339 o `null` — hora de logon de la sesión de Windows actual, `WTSQuerySessionInformationW`/`WTSSessionInfo`; `null` fuera de Windows o si la API falla) y `logon_changed_since_prev` (`bool\|null` — la hora de logon cambió más de 2 s respecto del marcador anterior; `null` si falta en alguno de los dos lados, p. ej. marcador escrito por una versión anterior a 0.2.62). Total: 29 claves |
 | `app.exit` | `lifecycle.rs::begin_exit` + `lifecycle.rs::emit_exit_row` | en cada salida registrada; emit-once (la primera ruta que llega gana). `begin_exit` escribe primero el bloque `exit` del marcador (durable) y apaga la drenadora; después `emit_exit_row` inserta en el outbox con tope de 750 ms (`EXIT_ROW_TIMEOUT`; 400 ms en fin de sesión, `EXIT_ROW_TIMEOUT_SESSION_END`). `flush_row` solo en la bandeja (3 s, después del stop), en `exit_for_update` (3 s) y en el hook de `direct_update_install` (2 s); instalación rival, `RunEvent::Exit` y fin de sesión NO suben la fila (sube en el siguiente arranque). `update`/`store_api` no deja fila: su intención la lee el siguiente `app.start`. `status` `ok` | `lifecycle_schema`, `reason` (tabla de motivos abajo), `detail`, `exit_code`, `uptime_s`, `recording_active`, `recording_phase`, `session_end_kind` (`logoff\|shutdown\|unknown\|close_app`), `critical`, `build` |
 | `app.resumed` | `lifecycle.rs::spawn_alive_ticker` (ticker propio de 60 s) | el reloj de pared saltó más de 180 s entre dos ticks (suspensión); también deja `last_resume` en el marcador. `status` `ok` | `suspended_at`, `resumed_at` (rfc3339), `gap_s` |
 | `autostart.changed` | `autostart_state.rs::reconcile` (`reconcile_with`) | `autostart_state` difiere de la línea base `last_autostart_state` del marcador; la línea base avanza SOLO si la fila quedó en el outbox. Sin línea base (primer arranque) solo se fija, sin fila; un `unknown` no toca la línea base. Disparadores: `boot` (lo llama `lifecycle::emit_start` justo después de `app.start`) y `settings_toggle`/`bootstrap` (comando `autostart_reconcile`, con allowlist). `status` `ok` | `from`, `to`, `trigger` (`boot\|settings_toggle\|bootstrap`), `mechanism` (`startup_task\|run_key\|plugin`), `disabled_at` |
@@ -436,7 +436,8 @@ reason='native'` = jornada sin webview).
 | `loop_destroyed` | observado | WM_QUIT u otra causa rara. |
 | `process_exit_after_cleanup` | observado | centinela (`ExitSentinel` en la tabla de recursos): el proceso salió por `cleanup_before_exit` sin `RunEvent::Exit`. |
 | `crash_panic` | inferido | pánico en el hilo `main` dentro de `[started_at, last_alive + 120 s]` del proceso anterior (pánicos de otros hilos solo suben `prev_panicked`). |
-| `os_restart_unclean` | inferido | cambió `os_boot` sin salida registrada (Fast Startup lo debilita). |
+| `os_restart_unclean` | inferido | cambió `os_boot` sin salida registrada. Con Inicio rápido un apagado NO cambia `os_boot`: ese caso lo cubre `os_session_end_unclean` (ver § Inicio rápido de Windows). |
+| `os_session_end_unclean` | inferido | desde 0.2.62: cambió la hora de logon de Windows (`logon_changed_since_prev: true`) sin cambiar `os_boot` y sin salida, intención ni pánico de `main` registrados — terminó la sesión de Windows (cierre de sesión o apagado con Inicio rápido) y Windows mató a Maity antes de que dejara rastro. Es la versión inferida de `os_session_end`. |
 | `unclean` | inferido | matado ("Finalizar tarea"), crash nativo, "Apagar de todos modos". |
 
 Precedencia al arrancar (`lifecycle.rs::summarize_prev`): (1) exit observado
@@ -445,10 +446,30 @@ Precedencia al arrancar (`lifecycle.rs::summarize_prev`): (1) exit observado
 el de sesión o, si no hay, el `via` de la intención); (2) intención `update`
 (`intent`); (3) intención `session_end` ⇒ `os_session_end` con su detail, o
 `external_close` si el detail es `close_app` (`intent`); (4) `crash_panic`;
-(5) `os_restart_unclean`; (6) `unclean` (los tres últimos `inferred`). Los tres
-primeros dan `prev_exit_clean: true`; los inferidos, `false`. Las intenciones
-no caducan por edad. Sin marcador usable (`marker_status` `missing`, `corrupt`
-o `foreign`) todos los `prev_exit_*` van `null`.
+(5) `os_restart_unclean`; (6) `os_session_end_unclean`; (7) `unclean` (los
+cuatro últimos `inferred`). Los tres primeros dan `prev_exit_clean: true`; los
+inferidos, `false`. Las intenciones no caducan por edad. Sin marcador usable
+(`marker_status` `missing`, `corrupt` o `foreign`) todos los `prev_exit_*` van
+`null`.
+
+### Inicio rápido de Windows (Fast Startup, desde 0.2.62)
+
+`os_boot_at` sale de `sysinfo::System::boot_time()`, que en Windows es "ahora −
+`GetTickCount64`". Con Inicio rápido activo, "Apagar" cierra la sesión del
+usuario e HIBERNA el kernel: al encender, `GetTickCount64` sigue contando desde
+el arranque anterior y `os_boot_at` no cambia (observado el 2026-09-24: mismo
+`os_boot_at` antes y después de un apagado). Por eso `os_rebooted_since_prev`
+solo detecta reinicios reales, y una app muerta en un apagado con Inicio rápido
+salía como `unclean`.
+
+Lo que sí cambia es la SESIÓN del usuario: el marcador guarda `os_logon_ms` (hora
+de logon de la sesión de Windows, `WTSQuerySessionInformationW` con
+`WTSSessionInfo`, `lifecycle.rs::os_logon_ms`) y `app.start` la publica como
+`os_logon_at` y la compara en `logon_changed_since_prev` (tolerancia 2 s). Logon
+distinto + boot igual + sin salida registrada ⇒ `os_session_end_unclean`.
+`device.profile.hiberboot_enabled` dice qué equipos tienen el Inicio rápido
+activo. Marcadores de versiones anteriores no traen `os_logon_ms`:
+`logon_changed_since_prev` va `null` y el motivo cae a `unclean` como antes.
 
 ### `app.error` (jul-2026)
 
@@ -883,7 +904,7 @@ select nombre, dia,
     when n_ev = 0 and (suspendida or vivo_todo_el_dia) then 'PC apagada / suspendida / sin sesión de Windows'
     when n_ev = 0 and not hay_senal_despues
          and (ant_ts is null or now() - ant_ts >= (select silencio_desinstalacion from p)) then 'posible desinstalación'
-    when n_ev = 0 and prev_salida in ('os_session_end','os_restart_unclean')
+    when n_ev = 0 and prev_salida in ('os_session_end','os_restart_unclean','os_session_end_unclean')
       then case when autostart in ('enabled','enabledByPolicy') then 'PC apagada / suspendida / sin sesión de Windows'
                 else 'sin arranque con Windows' end
     when n_ev = 0 and prev_salida is not null then 'crash / cierre forzado'

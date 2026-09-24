@@ -56,6 +56,13 @@ const PANIC_GRACE_MS: u64 = 120_000;
 /// Diferencia de `boot_time` del SO a partir de la cual se considera que la PC
 /// se reinició entre procesos (el valor de sysinfo oscila unos segundos).
 const OS_BOOT_TOLERANCE_MS: u64 = 120_000;
+/// Diferencia de la hora de logon de Windows a partir de la cual se considera
+/// que la sesión del usuario terminó y empezó otra entre procesos. El valor de
+/// WTS es exacto (FILETIME fijo de la sesión); el margen solo absorbe redondeos.
+const LOGON_TOLERANCE_MS: u64 = 2_000;
+/// Segundos entre la época de FILETIME (1601-01-01) y la de Unix (1970-01-01).
+/// Misma constante que `utils.rs::filetime_ticks_to_rfc3339`.
+const FILETIME_UNIX_EPOCH_DIFF_SECS: i64 = 11_644_473_600;
 
 // ── Tipos del marcador (contrato §1.5) ─────────────────────────────────────
 //
@@ -77,6 +84,11 @@ pub struct LifecycleMarker {
     pub started_at_ms: u64,
     pub last_alive_ms: u64,
     pub os_boot_ms: Option<u64>,
+    /// Hora de logon de la sesión de Windows actual (ms Unix). `None` fuera de
+    /// Windows, si la API falla o en un marcador anterior a 0.2.62 (sin subir
+    /// `MARKER_SCHEMA`: el `#[serde(default)]` del struct lo cubre). Con Inicio
+    /// rápido `os_boot_ms` no cambia tras un apagado; el logon sí.
+    pub os_logon_ms: Option<u64>,
     pub exit: Option<MarkerExit>,
     pub exit_intent: Option<MarkerIntent>,
     pub last_resume: Option<MarkerResume>,
@@ -161,6 +173,7 @@ struct BootPrev {
     panics: Vec<PanicTs>,
     now_ms: u64,
     os_boot_ms: Option<u64>,
+    os_logon_ms: Option<u64>,
     build_channel: &'static str,
 }
 
@@ -197,6 +210,65 @@ fn os_boot_ms() -> Option<u64> {
         0 => None,
         secs => secs.checked_mul(1000),
     }
+}
+
+/// Pura. FILETIME (ticks de 100 ns desde 1601-01-01 UTC, con signo como el
+/// `LogonTime: i64` de WTS) ⇒ ms Unix. `None` si es ≤ 0 o anterior a 1970.
+pub(crate) fn filetime_to_unix_ms(ticks: i64) -> Option<u64> {
+    if ticks <= 0 {
+        return None;
+    }
+    let ms_since_1601 = ticks / 10_000;
+    let unix_ms = ms_since_1601.checked_sub(FILETIME_UNIX_EPOCH_DIFF_SECS * 1000)?;
+    u64::try_from(unix_ms).ok()
+}
+
+/// Hora de logon de la sesión de Windows en la que corre el proceso (ms Unix),
+/// vía `WTSQuerySessionInformationW(..., WTSSessionInfo)`. `None` si la API
+/// falla o no devuelve un `WTSINFOW` completo. Con Inicio rápido (Fast Startup)
+/// el "apagado" hiberna el kernel y `os_boot_ms` no cambia, pero la sesión del
+/// usuario sí se cierra: un logon distinto delata el apagado o el cierre de sesión.
+#[cfg(target_os = "windows")]
+fn os_logon_ms() -> Option<u64> {
+    use windows::core::PWSTR;
+    use windows::Win32::System::RemoteDesktop::{
+        WTSFreeMemory, WTSQuerySessionInformationW, WTSSessionInfo, WTSINFOW,
+        WTS_CURRENT_SERVER_HANDLE, WTS_CURRENT_SESSION,
+    };
+
+    let mut buf = PWSTR::null();
+    let mut bytes: u32 = 0;
+    // SAFETY: `buf` y `bytes` son punteros válidos a locales; la API reserva el
+    // buffer con su propio asignador y lo devuelve en `buf`.
+    let queried = unsafe {
+        WTSQuerySessionInformationW(
+            WTS_CURRENT_SERVER_HANDLE,
+            WTS_CURRENT_SESSION,
+            WTSSessionInfo,
+            &mut buf,
+            &mut bytes,
+        )
+    };
+    if buf.is_null() {
+        return None;
+    }
+    let logon_ticks = if queried.is_ok() && bytes as usize >= std::mem::size_of::<WTSINFOW>() {
+        // SAFETY: la API devolvió Ok con un buffer no nulo de al menos
+        // `size_of::<WTSINFOW>()` bytes para la clase `WTSSessionInfo`, que es un
+        // `WTSINFOW`. `read_unaligned` no asume la alineación del buffer.
+        Some(unsafe { std::ptr::read_unaligned(buf.0 as *const WTSINFOW) }.LogonTime)
+    } else {
+        None
+    };
+    // SAFETY: `buf` lo reservó `WTSQuerySessionInformationW` y no se usa después;
+    // se libera SIEMPRE, aunque la lectura no haya servido.
+    unsafe { WTSFreeMemory(buf.0 as *mut core::ffi::c_void) };
+    logon_ticks.and_then(filetime_to_unix_ms)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn os_logon_ms() -> Option<u64> {
+    None
 }
 
 fn ms_to_rfc3339(ms: u64) -> Option<String> {
@@ -328,6 +400,7 @@ pub(crate) fn parse_marker(raw: Option<&str>, current_channel: &str) -> MarkerRe
 pub fn rotate_at_boot<R: Runtime>(app: &AppHandle<R>) {
     let now = now_ms();
     let os_boot = os_boot_ms();
+    let os_logon = os_logon_ms();
     let channel = current_channel();
     let file_name = marker_file_name(cfg!(debug_assertions));
 
@@ -364,6 +437,7 @@ pub fn rotate_at_boot<R: Runtime>(app: &AppHandle<R>) {
                 started_at_ms: now,
                 last_alive_ms: now,
                 os_boot_ms: os_boot,
+                os_logon_ms: os_logon,
                 exit: None,
                 exit_intent: None,
                 last_resume: None,
@@ -397,6 +471,7 @@ pub fn rotate_at_boot<R: Runtime>(app: &AppHandle<R>) {
         panics,
         now_ms: now,
         os_boot_ms: os_boot,
+        os_logon_ms: os_logon,
         build_channel: channel,
     });
 }
@@ -440,6 +515,7 @@ pub fn emit_start<R: Runtime>(app: &AppHandle<R>) {
                 current_version: &current_version,
                 panics: &boot.panics,
                 os_boot_ms: boot.os_boot_ms,
+                os_logon_ms: boot.os_logon_ms,
                 fallback_prev_version,
             });
             let extras = StartExtras {
@@ -449,6 +525,7 @@ pub fn emit_start<R: Runtime>(app: &AppHandle<R>) {
                 autostart_state: Some(autostart.state.clone()),
                 started_at_ms: boot.now_ms,
                 os_boot_ms: boot.os_boot_ms,
+                os_logon_ms: boot.os_logon_ms,
             };
             let status = if summary.prev_exit_clean == Some(false) {
                 TelemetryStatus::Warning
@@ -547,6 +624,8 @@ pub(crate) struct PrevInput<'a> {
     pub current_version: &'a str,
     pub panics: &'a [PanicTs],
     pub os_boot_ms: Option<u64>,
+    /// Hora de logon de Windows del proceso actual (ver `os_logon_ms()`).
+    pub os_logon_ms: Option<u64>,
     /// Versión previa sacada del outbox (solo release y sin marcador usable).
     pub fallback_prev_version: Option<String>,
 }
@@ -559,6 +638,7 @@ pub(crate) struct StartExtras<'a> {
     pub autostart_state: Option<String>,
     pub started_at_ms: u64,
     pub os_boot_ms: Option<u64>,
+    pub os_logon_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -584,6 +664,10 @@ pub(crate) struct PrevSummary {
     pub prev_panicked: Option<bool>,
     pub prev_panic_count: Option<u64>,
     pub os_rebooted_since_prev: Option<bool>,
+    /// Cambió la hora de logon de Windows desde el proceso anterior (tolerancia
+    /// 2 s). `null` si falta en alguno de los dos lados (no Windows, API caída o
+    /// marcador anterior a 0.2.62).
+    pub logon_changed_since_prev: Option<bool>,
     pub downtime_s: Option<u64>,
     pub clock_skew: bool,
 }
@@ -597,7 +681,9 @@ const OVERRIDABLE_BY_UPDATE: &[&str] =
 /// Pura. Reglas del contrato §1.6/§1.7. Precedencia del motivo: exit observado
 /// (con la excepción de update) → intención pendiente (no caduca por edad) →
 /// `crash_panic` (panic del hilo `main` en la ventana de vida) →
-/// `os_restart_unclean` (cambió el boot del SO) → `unclean`.
+/// `os_restart_unclean` (cambió el boot del SO) → `os_session_end_unclean`
+/// (cambió la hora de logon de Windows sin cambiar el boot: cierre de sesión o
+/// apagado con Inicio rápido) → `unclean`.
 pub(crate) fn summarize_prev(input: &PrevInput) -> PrevSummary {
     let marker = match input.read {
         MarkerRead::Ok(m) => m,
@@ -662,6 +748,10 @@ pub(crate) fn summarize_prev(input: &PrevInput) -> PrevSummary {
         (Some(a), Some(b)) => Some(a.abs_diff(b) > OS_BOOT_TOLERANCE_MS),
         _ => None,
     };
+    let logon_changed = match (marker.os_logon_ms, input.os_logon_ms) {
+        (Some(a), Some(b)) => Some(a.abs_diff(b) > LOGON_TOLERANCE_MS),
+        _ => None,
+    };
 
     // Motivo de salida.
     let intent = marker.exit_intent.as_ref();
@@ -690,6 +780,10 @@ pub(crate) fn summarize_prev(input: &PrevInput) -> PrevSummary {
             ("crash_panic".to_string(), None, "inferred", false)
         } else if os_rebooted == Some(true) {
             ("os_restart_unclean".to_string(), None, "inferred", false)
+        } else if logon_changed == Some(true) {
+            // Versión inferida de `os_session_end`: la sesión de Windows terminó
+            // (cierre de sesión o apagado con Inicio rápido) sin salida registrada.
+            ("os_session_end_unclean".to_string(), None, "inferred", false)
         } else {
             ("unclean".to_string(), None, "inferred", false)
         };
@@ -713,6 +807,7 @@ pub(crate) fn summarize_prev(input: &PrevInput) -> PrevSummary {
         prev_panicked: Some(panic_count > 0),
         prev_panic_count: Some(panic_count),
         os_rebooted_since_prev: os_rebooted,
+        logon_changed_since_prev: logon_changed,
         downtime_s: Some(downtime_s),
         clock_skew,
     }
@@ -729,6 +824,7 @@ impl PrevSummary {
             "autostart_state": extras.autostart_state,
             "started_at": ms_to_rfc3339(extras.started_at_ms),
             "os_boot_at": extras.os_boot_ms.and_then(ms_to_rfc3339),
+            "os_logon_at": extras.os_logon_ms.and_then(ms_to_rfc3339),
             "first_run": self.first_run,
             "marker_status": self.marker_status,
             "prev_session_id": self.prev_session_id,
@@ -747,6 +843,7 @@ impl PrevSummary {
             "prev_panicked": self.prev_panicked,
             "prev_panic_count": self.prev_panic_count,
             "os_rebooted_since_prev": self.os_rebooted_since_prev,
+            "logon_changed_since_prev": self.logon_changed_since_prev,
             "downtime_s": self.downtime_s,
             "clock_skew": self.clock_skew,
         })
@@ -1319,7 +1416,27 @@ mod tests {
             current_version: CURRENT,
             panics,
             os_boot_ms,
+            os_logon_ms: None,
             fallback_prev_version: fallback.map(Into::into),
+        })
+    }
+
+    /// Como `summarize`, con la hora de logon de Windows del proceso actual.
+    fn summarize_logon(
+        read: &MarkerRead,
+        now_ms: u64,
+        panics: &[PanicTs],
+        os_boot_ms: Option<u64>,
+        os_logon_ms: Option<u64>,
+    ) -> PrevSummary {
+        summarize_prev(&PrevInput {
+            read,
+            now_ms,
+            current_version: CURRENT,
+            panics,
+            os_boot_ms,
+            os_logon_ms,
+            fallback_prev_version: None,
         })
     }
 
@@ -1331,6 +1448,7 @@ mod tests {
             autostart_state: Some("enabled".into()),
             started_at_ms: T0 + 10_000_000,
             os_boot_ms: Some(T0 - 600_000),
+            os_logon_ms: Some(T0 - 540_000),
         }
     }
 
@@ -1355,6 +1473,7 @@ mod tests {
         m.last_resume = Some(MarkerResume { suspended_at_ms: 1, resumed_at_ms: 2, gap_s: 3 });
         m.last_autostart_state = Some("enabled".into());
         m.last_login_user = Some(LastLoginUser { maity_user_id: "u-1".into(), since_ms: 9 });
+        m.os_logon_ms = Some(T0 - 540_000);
         let raw = serde_json::to_string(&m).unwrap();
         assert_eq!(parse_marker(Some(&raw), "direct"), MarkerRead::Ok(m));
     }
@@ -1619,6 +1738,151 @@ mod tests {
         assert_eq!(s.prev_exit_reason.as_deref(), Some("unclean"));
     }
 
+    // ── Hora de logon de Windows (Inicio rápido, 0.2.62) ──
+
+    /// Logon del marcador de `marker()`.
+    const LOGON_PREV: u64 = T0 - 540_000;
+    /// Boot del marcador de `marker()` (igual ⇒ no hubo reinicio del kernel).
+    const OS_BOOT_PREV: u64 = T0 - 600_000;
+
+    fn marker_con_logon() -> LifecycleMarker {
+        LifecycleMarker { os_logon_ms: Some(LOGON_PREV), ..marker() }
+    }
+
+    #[test]
+    fn caso_11b_logon_distinto_con_boot_igual_es_os_session_end_unclean() {
+        // Apagado con Inicio rápido: el boot no cambia, el logon sí.
+        let s = summarize_logon(
+            &MarkerRead::Ok(marker_con_logon()),
+            T0 + 9_000_000,
+            &[],
+            Some(OS_BOOT_PREV),
+            Some(T0 + 8_000_000),
+        );
+        assert_eq!(s.prev_exit_reason.as_deref(), Some("os_session_end_unclean"));
+        assert_eq!(s.prev_exit_detail, None);
+        assert_eq!(s.prev_exit_source, Some("inferred"));
+        assert_eq!(s.prev_exit_clean, Some(false));
+        assert_eq!(s.os_rebooted_since_prev, Some(false));
+        assert_eq!(s.logon_changed_since_prev, Some(true));
+    }
+
+    #[test]
+    fn caso_11c_logon_y_boot_distintos_gana_os_restart_unclean() {
+        let s = summarize_logon(
+            &MarkerRead::Ok(marker_con_logon()),
+            T0 + 9_000_000,
+            &[],
+            Some(T0 + 8_000_000),
+            Some(T0 + 8_060_000),
+        );
+        assert_eq!(s.prev_exit_reason.as_deref(), Some("os_restart_unclean"));
+        assert_eq!(s.os_rebooted_since_prev, Some(true));
+        assert_eq!(s.logon_changed_since_prev, Some(true));
+    }
+
+    #[test]
+    fn caso_11d_logon_distinto_no_pisa_salida_intencion_ni_panico() {
+        let logon_nuevo = Some(T0 + 8_000_000);
+
+        // Salida observada os_session_end: sigue observada.
+        let mut m = marker_con_logon();
+        m.exit = Some(exit("os_session_end", Some("shutdown"), true));
+        let s = summarize_logon(&MarkerRead::Ok(m), T0 + 9_000_000, &[], Some(OS_BOOT_PREV), logon_nuevo);
+        assert_eq!(s.prev_exit_reason.as_deref(), Some("os_session_end"));
+        assert_eq!(s.prev_exit_detail.as_deref(), Some("shutdown"));
+        assert_eq!(s.prev_exit_source, Some("observed"));
+        assert_eq!(s.prev_exit_clean, Some(true));
+        assert_eq!(s.logon_changed_since_prev, Some(true));
+
+        // Intención session_end: sale de la intención.
+        let mut m = marker_con_logon();
+        m.exit_intent = Some(intent("session_end", None, Some("logoff"), T0 + 3_000_000));
+        let s = summarize_logon(&MarkerRead::Ok(m), T0 + 9_000_000, &[], Some(OS_BOOT_PREV), logon_nuevo);
+        assert_eq!(s.prev_exit_reason.as_deref(), Some("os_session_end"));
+        assert_eq!(s.prev_exit_source, Some("intent"));
+
+        // Pánico del hilo main: gana crash_panic.
+        let panics = [PanicTs { ts_ms: T0 + 1_000_000, thread: Some("main".into()) }];
+        let s = summarize_logon(
+            &MarkerRead::Ok(marker_con_logon()),
+            T0 + 9_000_000,
+            &panics,
+            Some(OS_BOOT_PREV),
+            logon_nuevo,
+        );
+        assert_eq!(s.prev_exit_reason.as_deref(), Some("crash_panic"));
+    }
+
+    #[test]
+    fn caso_11e_logon_igual_dentro_de_la_tolerancia_es_unclean() {
+        for delta in [0, LOGON_TOLERANCE_MS] {
+            let s = summarize_logon(
+                &MarkerRead::Ok(marker_con_logon()),
+                T0 + 9_000_000,
+                &[],
+                Some(OS_BOOT_PREV),
+                Some(LOGON_PREV + delta),
+            );
+            assert_eq!(s.prev_exit_reason.as_deref(), Some("unclean"), "delta {}", delta);
+            assert_eq!(s.logon_changed_since_prev, Some(false), "delta {}", delta);
+        }
+        // Un ms por encima de la tolerancia ya es otra sesión.
+        let s = summarize_logon(
+            &MarkerRead::Ok(marker_con_logon()),
+            T0 + 9_000_000,
+            &[],
+            Some(OS_BOOT_PREV),
+            Some(LOGON_PREV + LOGON_TOLERANCE_MS + 1),
+        );
+        assert_eq!(s.prev_exit_reason.as_deref(), Some("os_session_end_unclean"));
+    }
+
+    #[test]
+    fn caso_11f_marcador_viejo_sin_logon_es_unclean_con_logon_null() {
+        // JSON de un marcador de 0.2.61 (sin `os_logon_ms`): parsea y cae a unclean.
+        let raw = format!(
+            r#"{{"schema":1,"proc_session_id":"proc-1","version":"0.2.61","build":"release",
+                "build_channel":"direct","started_at_ms":{},"last_alive_ms":{},"os_boot_ms":{}}}"#,
+            T0,
+            T0 + 3_600_000,
+            OS_BOOT_PREV
+        );
+        let read = parse_marker(Some(&raw), "direct");
+        let MarkerRead::Ok(m) = &read else {
+            panic!("esperaba Ok");
+        };
+        assert_eq!(m.os_logon_ms, None);
+        let s = summarize_logon(&read, T0 + 9_000_000, &[], Some(OS_BOOT_PREV), Some(T0 + 8_000_000));
+        assert_eq!(s.logon_changed_since_prev, None);
+        assert_eq!(s.prev_exit_reason.as_deref(), Some("unclean"));
+
+        // Sin logon del lado actual (no Windows / API caída): también null.
+        let s = summarize_logon(&MarkerRead::Ok(marker_con_logon()), T0 + 9_000_000, &[], Some(OS_BOOT_PREV), None);
+        assert_eq!(s.logon_changed_since_prev, None);
+        assert_eq!(s.prev_exit_reason.as_deref(), Some("unclean"));
+
+        // Sin marcador usable: el campo queda null.
+        let s = summarize_logon(&MarkerRead::Missing, T0, &[], None, Some(T0));
+        assert_eq!(s.logon_changed_since_prev, None);
+    }
+
+    #[test]
+    fn filetime_to_unix_ms_convierte_y_rechaza_fuera_de_rango() {
+        assert_eq!(filetime_to_unix_ms(0), None);
+        assert_eq!(filetime_to_unix_ms(-1), None);
+        assert_eq!(filetime_to_unix_ms(i64::MIN), None);
+        // 1601-01-02 (anterior a 1970): None.
+        assert_eq!(filetime_to_unix_ms(864_000_000_000), None);
+        // Época Unix exacta.
+        assert_eq!(filetime_to_unix_ms(116_444_736_000_000_000), Some(0));
+        // 2026-01-01T00:00:00Z = 1_767_225_600 s Unix; +12_345 ticks = 1.2345 ms.
+        assert_eq!(filetime_to_unix_ms(134_116_992_000_000_000), Some(1_767_225_600_000));
+        assert_eq!(filetime_to_unix_ms(134_116_992_000_012_345), Some(1_767_225_600_001));
+        let at = ms_to_rfc3339(filetime_to_unix_ms(134_116_992_000_000_000).unwrap()).unwrap();
+        assert!(at.starts_with("2026-01-01T00:00:00"), "{}", at);
+    }
+
     #[test]
     fn caso_12_sin_nada_es_unclean() {
         let s = summarize(&MarkerRead::Ok(marker()), T0 + 3_700_000, &[], None, None);
@@ -1674,16 +1938,19 @@ mod tests {
         let obj = p.as_object().unwrap();
         for key in [
             "lifecycle_schema", "build", "build_channel", "started_at_boot", "autostart_state",
-            "started_at", "os_boot_at", "first_run", "marker_status", "prev_session_id",
+            "started_at", "os_boot_at", "os_logon_at", "first_run", "marker_status", "prev_session_id",
             "prev_version", "prev_version_source", "version_changed", "prev_started_at",
             "prev_last_alive_at", "prev_uptime_s", "prev_exit_reason", "prev_exit_detail",
             "prev_exit_source", "prev_exit_clean", "prev_exit_interrupted",
             "prev_recording_active_at_exit", "prev_panicked", "prev_panic_count",
-            "os_rebooted_since_prev", "downtime_s", "clock_skew",
+            "os_rebooted_since_prev", "logon_changed_since_prev", "downtime_s", "clock_skew",
         ] {
             assert!(obj.contains_key(key), "falta {}", key);
         }
-        assert_eq!(obj.len(), 27);
+        assert_eq!(obj.len(), 29);
+        assert!(p["os_logon_at"].as_str().unwrap().starts_with("2026-"));
+        // Sin logon del lado actual: la comparación no se puede hacer (null).
+        assert!(p["logon_changed_since_prev"].is_null());
         assert_eq!(p["lifecycle_schema"], 1);
         assert_eq!(p["build"], "release");
         assert_eq!(p["prev_exit_reason"], "tray_quit");
