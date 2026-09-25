@@ -436,6 +436,8 @@ Este comando ejecuta: `pnpm build` (Next.js) -> `cargo build` (Rust, debug) -> e
 
 **Criterio de exito**: Exit code 0. Si termina con exit code != 0, el build NO paso — corregir antes de entregar.
 
+**Equivalente aceptado (decisión de Julio, 2026-09-24): `pnpm run tauri:build:store` exit 0 + los lints que ese comando NO corre** — compila el MISMO Rust y Next.js (en release) y el canal que se publica es el MSIX de la Store, así que reemplaza a `tauri:build:debug` como compuerta. Los lints que faltan se corren sueltos en segundos (`cd frontend && node scripts/<x>.js`, todos exit 0): `lint-providers-tree`, `lint-tauri-events`, `lint-telemetry`, `lint-tauri-acl`, `lint-cargo-deps`, `lint-cargo-workspace`, `lint-aux-bundle`, `lint-main-bundle` (los dos últimos leen el `out/` que dejó el mismo build). Lo único que se pierde es el smoke de arranque del exe debug; lo sustituye instalar y abrir el `.msix` (`/store-msix` § 6.5).
+
 **Nota sobre firma local**: El script `tauri-auto.js` maneja la ausencia de `TAURI_SIGNING_PRIVATE_KEY` en desarrollo local (warning + exit 0, comportamiento esperado).
 
 **PROHIBIDO**:
